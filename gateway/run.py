@@ -82,26 +82,7 @@ def _normalize_research_rigor(text: str) -> str:
 
 def _looks_like_manual_research_request(text: str) -> bool:
     lower = (text or "").strip().lower()
-    if not lower.startswith("research "):
-        return False
-    research_signals = (
-        " better than ",
-        " competition",
-        " compare ",
-        " versus ",
-        " vs ",
-        " what most researchers believe",
-        " what researchers believe",
-        " what experts think",
-        " in 10 years",
-        " future of ",
-        " publish ",
-        " report",
-        " memo",
-        " deep research",
-        " evidence",
-    )
-    return any(sig in lower for sig in research_signals)
+    return lower.startswith("research ")
 
 
 def _tool_progress_label(tool_name: str | None, *, with_emoji: bool = True) -> str:
@@ -157,6 +138,35 @@ def _build_manual_research_child_prompt(text: str, rigor: str) -> str:
         "If public publishing fails, final response must be exactly: PUBLISH_FAILED: <brief reason>. "
         "Do not paste the report into chat. Do not return file:// or container-local paths."
     )
+
+
+def _extract_public_research_url(text: str) -> str:
+    if not text:
+        return ""
+    match = re.search(r"https://research\.briankeefe\.dev/[^\s\]\)>]+", text)
+    return match.group(0) if match else ""
+
+
+def _extract_research_progress_label(output: str, fallback: str = "🧠 thinking") -> str:
+    if not output:
+        return fallback
+    for raw_line in reversed(output.splitlines()[-30:]):
+        line = raw_line.strip().lower()
+        if not line:
+            continue
+        if " web_" in line or " websearch" in line or "web_search" in line or "web_extract" in line or "browser" in line:
+            return "🌐 browsing"
+        if " skill" in line or "skill_view" in line:
+            return "📚 skimming"
+        if " process" in line or " proc" in line:
+            return "🧠 thinking"
+        if " terminal" in line or " $ " in f" {line} " or line.startswith("┊ 💻"):
+            return "🛠️ tinkering"
+        if any(tok in line for tok in ("write_file", "read_file", "patch", "search_files", "glob", "grep")):
+            return "💾 filing"
+        if "clarify" in line or "todo" in line:
+            return "📝 scribbling"
+    return fallback
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -13564,9 +13574,22 @@ class GatewayRunner:
         child_prompt = _build_manual_research_child_prompt(prompt_text, rigor)
         hermes_bin = "/opt/hermes/.venv/bin/hermes"
         command = (
-            f"{hermes_bin} -p research chat -Q --accept-hooks --source tool "
+            f"{hermes_bin} -p research chat --accept-hooks --source tool "
             f"-s {shlex.quote(skill_name)} -q {shlex.quote(child_prompt)}"
         )
+        adapter = self.adapters.get(source.platform)
+        progress_message_id: Optional[str] = None
+        if adapter:
+            try:
+                result = await adapter.send(
+                    source.chat_id,
+                    "🧠 thinking",
+                    metadata=self._thread_metadata_for_source(source, event_message_id),
+                )
+                if getattr(result, "success", False) and getattr(result, "message_id", None):
+                    progress_message_id = str(result.message_id)
+            except Exception as exc:
+                logger.warning("Manual Telegram research kickoff bubble failed: %s", exc)
         try:
             proc_session = process_registry.spawn_local(
                 command=command,
@@ -13593,13 +13616,14 @@ class GatewayRunner:
                 "user_name": source.user_name or "",
                 "thread_id": source.thread_id or "",
                 "notify_on_complete": True,
+                "direct_research_delivery": True,
+                "progress_message_id": progress_message_id,
             })
         except Exception as exc:
             logger.error("Manual Telegram research spawn failed: %s", exc, exc_info=True)
             return f"PUBLISH_FAILED: could not start research worker ({exc})"
-
-        tier_label = (rigor or "standard").strip().capitalize()
-        return f"Research started ({tier_label})."
+        # One quick start confirmation only. No parent wait/poll loops.
+        return ""
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
@@ -13626,6 +13650,8 @@ class GatewayRunner:
         user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
+        direct_research_delivery = bool(watcher.get("direct_research_delivery"))
+        progress_message_id = watcher.get("progress_message_id")
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -13654,6 +13680,32 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
+                if direct_research_delivery:
+                    final_url = _extract_public_research_url(session.output_buffer)
+                    if session.exit_code == 0 and final_url:
+                        final_text = final_url
+                    else:
+                        final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
+                            if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+                                await adapter.edit_message(
+                                    chat_id=chat_id,
+                                    message_id=str(progress_message_id),
+                                    content=final_text,
+                                )
+                            else:
+                                send_meta = {"thread_id": thread_id} if thread_id else None
+                                await adapter.send(chat_id, final_text, metadata=send_meta)
+                        except Exception as e:
+                            logger.error("Direct research delivery error: %s", e)
+                    break
+
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
                 from tools.process_registry import process_registry as _pr_check
@@ -13726,11 +13778,58 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
+                            label = _extract_research_progress_label(session.output_buffer)
+                            if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+                                await adapter.edit_message(
+                                    chat_id=chat_id,
+                                    message_id=str(progress_message_id),
+                                    content=label,
+                                )
+                            else:
+                                send_meta = {"thread_id": thread_id} if thread_id else None
+                                await adapter.send(chat_id, label, metadata=send_meta)
+                        except Exception as e:
+                            logger.error("Direct research progress error: %s", e)
+                elif has_new_output and notify_mode == "all" and not agent_notify:
+                    # New output available -- deliver status update (only in "all" mode)
+                    # Skip periodic updates for agent_notify watchers (they only care about completion)
+                    new_output = session.output_buffer[-500:] if session.output_buffer else ""
+                    message_text = (
+                        f"[Background process {session_id} is still running~ "
+                        f"New output:\n{new_output}]"
+                    )
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
                             send_meta = {"thread_id": thread_id} if thread_id else None
                             await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
-                break
+
+            elif has_new_output and direct_research_delivery:
+                adapter = None
+                for p, a in self.adapters.items():
+                    if p.value == platform_name:
+                        adapter = a
+                        break
+                if adapter and chat_id:
+                    try:
+                        send_meta = {"thread_id": thread_id} if thread_id else None
+                        label = _extract_research_progress_label(session.output_buffer)
+                        if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+                            await adapter.edit_message(
+                                chat_id=chat_id,
+                                message_id=str(progress_message_id),
+                                content=label,
+                            )
+                        else:
+                            await adapter.send(chat_id, label, metadata=send_meta)
+                    except Exception as e:
+                        logger.error("Direct research progress error: %s", e)
 
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)

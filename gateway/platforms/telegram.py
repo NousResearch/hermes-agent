@@ -437,8 +437,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
-        # Manual research rigor state: rigor_id → session_key.
-        self._research_rigor_state: Dict[str, str] = {}
+        # Manual research rigor state: rigor_id → metadata dict.
+        self._research_rigor_state: Dict[str, Dict[str, Any]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2346,7 +2346,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
             msg = await self._send_message_with_thread_fallback(**kwargs)
-            self._research_rigor_state[rigor_id] = session_key
+            self._research_rigor_state[rigor_id] = {
+                "session_key": session_key,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id is not None else None,
+                "message_id": str(msg.message_id),
+            }
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_research_rigor failed: %s", self.name, e)
@@ -2703,8 +2708,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to answer this prompt.")
                     return
 
-                session_key = self._research_rigor_state.pop(rigor_id, None)
-                if not session_key:
+                state = self._research_rigor_state.pop(rigor_id, None)
+                if not state:
                     await query.answer(text="This prompt has already been resolved.")
                     return
 

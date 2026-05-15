@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, ollama, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -45,6 +45,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "OLLAMA_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -70,7 +71,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestBundledPluginsRegister:
     """All eight bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -80,6 +81,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "ollama",
             "parallel",
             "searxng",
             "tavily",
@@ -98,6 +100,8 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
+            # ollama: search + extract via Ollama Cloud.
+            ("ollama", True, True),
         ],
     )
     def test_capability_flags_match_spec(
@@ -116,7 +120,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "ollama", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +133,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "ollama", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -244,6 +248,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_ollama_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("ollama")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("OLLAMA_API_KEY", "real")
         assert p.is_available() is True
 
 
@@ -369,6 +383,14 @@ class TestAsyncExtractDispatch:
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is False
 
+    def test_ollama_extract_is_sync(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("ollama")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is False
+
 
 # ---------------------------------------------------------------------------
 # Error response shape (preserved bit-for-bit from legacy)
@@ -421,6 +443,29 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+    def test_ollama_search_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("ollama")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_ollama_extract_returns_per_url_errors_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("ollama")
+        assert p is not None
+        result = p.extract(["https://example.com"])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert "error" in result[0]
+        assert result[0]["url"] == "https://example.com"
 
     def test_parallel_extract_returns_per_url_errors_when_unconfigured(self) -> None:
         _ensure_plugins_loaded()
@@ -496,3 +541,61 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Ollama response normalization
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaNormalization:
+    """Ollama response shapes are normalized correctly."""
+
+    def test_normalizes_standard_results(self) -> None:
+        from plugins.web.ollama.provider import _normalize_search_results
+
+        raw = {
+            "results": [
+                {"title": "A", "url": "https://a.com", "snippet": "desc A"},
+                {"title": "B", "url": "https://b.com", "snippet": "desc B"},
+            ]
+        }
+        result = _normalize_search_results(raw)
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert len(web) == 2
+        assert web[0]["title"] == "A"
+        assert web[0]["url"] == "https://a.com"
+
+    def test_normalizes_markdown_content_links(self) -> None:
+        from plugins.web.ollama.provider import _normalize_search_results
+
+        raw = {"content": "Check [Python](https://python.org) and [Rust](https://rust-lang.org)"}
+        result = _normalize_search_results(raw)
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert len(web) == 2
+        assert web[0]["title"] == "Python"
+        assert web[0]["url"] == "https://python.org"
+
+    def test_normalizes_json_string_content(self) -> None:
+        import json
+        from plugins.web.ollama.provider import _normalize_search_results
+
+        inner = [{"title": "X", "url": "https://x.io"}]
+        raw = {"content": json.dumps(inner)}
+        result = _normalize_search_results(raw)
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert len(web) == 1
+        assert web[0]["title"] == "X"
+
+    def test_normalizes_fetch_result_dict(self) -> None:
+        from plugins.web.ollama.provider import _normalize_fetch_result
+
+        raw = {"content": "Hello", "title": "Page", "metadata": {"sourceURL": "https://example.com"}}
+        result = _normalize_fetch_result(raw, fallback_url="https://example.com")
+        assert result["url"] == "https://example.com"
+        assert result["title"] == "Page"
+        assert result["content"] == "Hello"
+        assert result["metadata"]["sourceURL"] == "https://example.com"

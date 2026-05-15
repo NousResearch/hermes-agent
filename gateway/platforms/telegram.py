@@ -2712,6 +2712,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not state:
                     await query.answer(text="This prompt has already been resolved.")
                     return
+                session_key = str(state.get("session_key") or "")
 
                 await query.answer(text=f"✓ {rigor_choice.capitalize()}")
                 try:

@@ -2415,8 +2415,49 @@ def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+class TestNvidiaBillingHeaders:
+    """NVIDIA NIM billing-origin headers are scoped to NVIDIA cloud."""
+
+    def test_resolve_provider_client_cloud_adds_billing_origin_header(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+        monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="nvidia-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="nvidia",
+                model="nvidia/test-model",
+            )
+
+        assert client is not None
+        assert model == "nvidia/test-model"
+        call_kwargs = mock_openai.call_args[1]
+        headers = call_kwargs["default_headers"]
+        assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+    def test_resolve_provider_client_local_nim_skips_billing_origin_header(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+        monkeypatch.setenv("NVIDIA_BASE_URL", "http://localhost:8000/v1")
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="nvidia-local-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="nvidia",
+                model="nvidia/test-model",
+            )
+
+        assert client is not None
+        assert model == "nvidia/test-model"
+        call_kwargs = mock_openai.call_args[1]
+        headers = call_kwargs.get("default_headers", {})
+        assert "X-BILLING-INVOKE-ORIGIN" not in headers
 
 
 class TestOpenRouterExplicitApiKey:

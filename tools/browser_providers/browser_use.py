@@ -137,12 +137,22 @@ class BrowserUseProvider(CloudBrowserProvider):
             else {}
         )
 
-        response = requests.post(
-            f"{config['base_url']}/browsers",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
+        try:
+            response = requests.post(
+                f"{config['base_url']}/browsers",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            # Managed mode: propagate raw so callers can retry with the
+            # preserved idempotency key. Direct mode: wrap network failures
+            # into a clean RuntimeError for end users.
+            if managed_mode:
+                raise
+            raise RuntimeError(
+                f"Browser Use API connection failed: {exc}"
+            ) from exc
 
         if not response.ok:
             if managed_mode and not _should_preserve_pending_create_key(response):

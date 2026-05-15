@@ -475,13 +475,24 @@ TIPS = [
 ]
 
 
-def get_random_tip(exclude_recent: int = 0) -> str:
+def get_tips(lang: str | None = None) -> list[str]:
+    """Return the active tip corpus, localized when a catalog provides one."""
+    try:
+        from agent.i18n import t_list
+        localized = t_list("cli.tips", lang=lang)
+    except Exception:
+        localized = None
+    return localized if localized else TIPS
+
+
+def get_random_tip(exclude_recent: int = 0, lang: str | None = None) -> str:
     """Return a random tip string.
 
     Args:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
+        lang: optional language override for tests and explicit callers.
     """
-    return random.choice(TIPS)
+    return random.choice(get_tips(lang=lang))
 
 

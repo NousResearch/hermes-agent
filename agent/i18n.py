@@ -1,8 +1,8 @@
 """Lightweight internationalization (i18n) for Hermes static user-facing messages.
 
 Scope (thin slice, by design): only the highest-impact static strings shown
-to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
+to the user by Hermes itself -- approval prompts, CLI startup tips, a handful
+of gateway slash command replies, restart-drain notices.  Agent-generated output, log lines,
 error tracebacks, tool outputs, and slash-command descriptions all stay in
 English.
 
@@ -80,6 +80,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
 }
 
+_raw_catalog_cache: dict[str, dict[str, Any]] = {}
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 
@@ -118,8 +119,37 @@ def _normalize_lang(value: Any) -> str:
     return DEFAULT_LANGUAGE
 
 
+def _load_raw_catalog(lang: str) -> dict[str, Any]:
+    """Load one locale YAML file into a nested dict.
+
+    Raw catalogs are used for structured values such as ``cli.tips`` lists.
+    """
+    with _catalog_lock:
+        cached = _raw_catalog_cache.get(lang)
+        if cached is not None:
+            return cached
+
+    path = _locales_dir() / f"{lang}.yaml"
+    if not path.is_file():
+        logger.debug("i18n catalog missing for %s at %s", lang, path)
+        raw: dict[str, Any] = {}
+    else:
+        try:
+            import yaml  # PyYAML is already a hermes dependency
+            with path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            raw = loaded if isinstance(loaded, dict) else {}
+        except Exception as exc:
+            logger.warning("Failed to load i18n catalog %s: %s", path, exc)
+            raw = {}
+
+    with _catalog_lock:
+        _raw_catalog_cache[lang] = raw
+    return raw
+
+
 def _load_catalog(lang: str) -> dict[str, str]:
-    """Load and flatten one locale YAML file into a dotted-key dict.
+    """Flatten one locale YAML file into a dotted-key string dict.
 
     YAML files can be nested for human readability; this produces the flat
     key space :func:`t` expects.  Cached per-language for the process.
@@ -129,23 +159,7 @@ def _load_catalog(lang: str) -> dict[str, str]:
         if cached is not None:
             return cached
 
-    path = _locales_dir() / f"{lang}.yaml"
-    if not path.is_file():
-        logger.debug("i18n catalog missing for %s at %s", lang, path)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
-    try:
-        import yaml  # PyYAML is already a hermes dependency
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-    except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
-        return {}
-
+    raw = _load_raw_catalog(lang)
     flat: dict[str, str] = {}
     _flatten_into(raw, "", flat)
     with _catalog_lock:
@@ -161,6 +175,25 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     elif isinstance(node, str):
         out[prefix] = node
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
+
+
+def _lookup_raw(node: Any, key: str) -> Any:
+    """Return a raw nested catalog value for a dotted key."""
+    cur = node
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _coerce_string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = [item for item in value if isinstance(item, str) and item.strip()]
+    if len(items) != len(value):
+        return None
+    return items
 
 
 @lru_cache(maxsize=1)
@@ -191,6 +224,7 @@ def reset_language_cache() -> None:
     """
     _config_language_cached.cache_clear()
     with _catalog_lock:
+        _raw_catalog_cache.clear()
         _catalog_cache.clear()
 
 
@@ -249,10 +283,27 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     return value
 
 
+def t_list(key: str, lang: str | None = None) -> list[str] | None:
+    """Translate a dotted key to a list of strings.
+
+    This is intentionally separate from :func:`t` so existing string callers
+    keep their simple fallback behavior. Missing or invalid lists fall back to
+    English; if English is also missing, ``None`` is returned.
+    """
+    target = _normalize_lang(lang) if lang else get_language()
+    value = _coerce_string_list(_lookup_raw(_load_raw_catalog(target), key))
+
+    if value is None and target != DEFAULT_LANGUAGE:
+        value = _coerce_string_list(_lookup_raw(_load_raw_catalog(DEFAULT_LANGUAGE), key))
+
+    return value
+
+
 __all__ = [
     "SUPPORTED_LANGUAGES",
     "DEFAULT_LANGUAGE",
     "t",
+    "t_list",
     "get_language",
     "reset_language_cache",
 ]

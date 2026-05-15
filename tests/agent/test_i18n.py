@@ -24,7 +24,7 @@ def _flatten(d, prefix="") -> dict:
         key = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict):
             flat.update(_flatten(v, key))
-        else:
+        elif isinstance(v, str):
             flat[key] = v
     return flat
 
@@ -145,6 +145,32 @@ def test_t_missing_key_returns_key():
     """A missing key returns its own path -- ugly but never crashes."""
     result = i18n.t("nonexistent.key.path", lang="en")
     assert result == "nonexistent.key.path"
+
+
+def test_t_list_explicit_lang():
+    tips = i18n.t_list("cli.tips", lang="zh")
+    assert tips is not None
+    assert any("危险命令" in tip for tip in tips)
+
+
+def test_t_list_missing_key_returns_none():
+    assert i18n.t_list("nonexistent.list.path", lang="en") is None
+
+
+def test_t_list_missing_in_non_english_falls_back_to_english(tmp_path, monkeypatch):
+    fake_locales = tmp_path / "locales"
+    fake_locales.mkdir()
+    (fake_locales / "en.yaml").write_text(
+        "cli:\n  tips:\n    - English Tip\n",
+        encoding="utf-8",
+    )
+    (fake_locales / "zh.yaml").write_text("# intentionally empty\n", encoding="utf-8")
+    monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
+    i18n.reset_language_cache()
+    try:
+        assert i18n.t_list("cli.tips", lang="zh") == ["English Tip"]
+    finally:
+        i18n.reset_language_cache()
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):

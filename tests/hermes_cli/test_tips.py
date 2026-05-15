@@ -1,7 +1,7 @@
 """Tests for hermes_cli/tips.py — random tip display at session start."""
 
 import pytest
-from hermes_cli.tips import TIPS, get_random_tip
+from hermes_cli.tips import TIPS, get_random_tip, get_tips
 
 
 class TestTipsCorpus:
@@ -44,6 +44,24 @@ class TestGetRandomTip:
     def test_returns_tip_from_corpus(self):
         tip = get_random_tip()
         assert tip in TIPS
+
+    def test_default_tips_use_english_corpus(self):
+        assert get_tips(lang="en") == TIPS
+
+    def test_unknown_language_uses_english_corpus(self):
+        assert get_tips(lang="klingon") == TIPS
+
+    def test_zh_tips_use_localized_catalog(self):
+        tips = get_tips(lang="zh")
+        assert tips != TIPS
+        assert all(isinstance(tip, str) and tip.strip() for tip in tips)
+        assert any("危险命令" in tip for tip in tips)
+
+    def test_random_tip_uses_localized_corpus(self, monkeypatch):
+        import hermes_cli.tips as tips_mod
+
+        monkeypatch.setattr(tips_mod.random, "choice", lambda seq: seq[0])
+        assert get_random_tip(lang="zh") == get_tips(lang="zh")[0]
 
     def test_randomness(self):
         """Multiple calls should eventually return different tips."""

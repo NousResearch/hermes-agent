@@ -348,3 +348,21 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+cli:
+  tips:
+    - "/background <提示> 会在单独会话中运行任务，当前会话仍可继续使用。"
+    - "/branch 会复制当前会话，方便探索另一种方案而不丢失进度。"
+    - "/compress 可在上下文变长时手动压缩对话。"
+    - "/model 可在会话中切换模型，例如 /model sonnet 或 /model gpt-5。"
+    - "/reload-skills 会重新扫描 ~/.hermes/skills/，无需重启即可加载新技能。"
+    - "输入 @ 会触发文件路径补全，可交互式选择要注入的文件。"
+    - "Alt+Enter 插入换行；在 Windows Terminal 中请使用 Ctrl+Enter。"
+    - "hermes doctor --fix 会诊断并自动修复可修复的配置和依赖问题。"
+    - "设置 display.streaming: true 可实时看到模型生成的 token。"
+    - "skills.external_dirs 可从自定义目录加载技能。"
+    - "危险命令审批有 4 个级别：一次、本会话、永久允许、拒绝。"
+    - "SSRF 防护会阻止私有网络、loopback、link-local 和云元数据地址。"
+    - "上下文达到阈值时会自动压缩，并刷新记忆、总结历史。"
+    - "MCP 服务器在 config.yaml 中配置，stdio 和 HTTP 传输都受支持。"
+    - "每个 profile 都有自己的配置、API key、记忆、会话、技能和 cron 任务。"

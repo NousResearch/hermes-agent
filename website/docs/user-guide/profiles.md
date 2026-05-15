@@ -32,6 +32,16 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+### Blank profile without bundled skills (`--no-skills`)
+
+```bash
+hermes profile create minimal --no-skills
+```
+
+Creates a fresh profile without copying or seeding the bundled skills that normally ship with Hermes. Use this for minimal test profiles, agent sandboxes, or profiles where you want to install only a curated set of skills later with `hermes skills install`.
+
+Hermes records this choice with a `.no-bundled-skills` marker in the profile home so future skill seeding keeps respecting the opt-out.
+
 ### Clone config only (`--clone`)
 
 ```bash

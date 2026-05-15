@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
 MENU_COMMANDS = {"kb"}
+LEGACY_COMMANDS = {"kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
 SUPPORTED_COMMANDS = MENU_COMMANDS
 
 
@@ -46,7 +47,7 @@ def _command_from_text(text: str) -> str | None:
         return None
     token = stripped.split(maxsplit=1)[0][1:]
     command = token.split("@", 1)[0].lower()
-    return command if command in MENU_COMMANDS else None
+    return command if command in MENU_COMMANDS or command in LEGACY_COMMANDS else None
 
 
 def _command_args_from_text(text: str) -> str:
@@ -64,6 +65,13 @@ def _short(value: Any, default: str = "unknown") -> str:
         return "yes" if value else "no"
     text = str(value).strip()
     return text if text else default
+
+
+def _clip(value: Any, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", _short(value, "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "..."
 
 
 def _maybe_json(value: Any) -> Any:
@@ -541,21 +549,62 @@ def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
         lines.append(f"Target: {target}")
     if detail:
         lines.append("")
-        lines.append(detail)
+        lines.append("Summary: " + _clip(detail, 420))
     if proposal_ids:
         lines.append("")
         lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
-        lines.append("Preview a decision first, then confirm only if it matches.")
-        lines.append(f"Commands: /kb queue approve {index} · /kb queue reject {index} · /kb queue archive {index}")
+        lines.append("Preview decisions:")
+        lines.append(f"- /kb queue approve {index}")
+        lines.append(f"- /kb queue reject {index}")
+        lines.append(f"- /kb queue archive {index}")
+        lines.append(f"Apply after preview: /kb queue reject {index} confirm")
     else:
         lines.append("")
         lines.append("This item did not include proposal ids, so Telegram cannot apply a decision yet. Use the KB workbench for details.")
     return "\n".join(lines)
 
 
-def _preview_text(decision: str, proposal_ids: list[str], payload: Any, *, item: dict[str, Any] | None = None) -> str:
-    item_title = _item_title(item) if isinstance(item, dict) else ""
-    item_target = _item_target(item) if isinstance(item, dict) else ""
+def _selection_lines(selection: list[tuple[int, dict[str, Any]]]) -> list[str]:
+    lines: list[str] = []
+    for index, item in selection:
+        lines.append(f"{index}. {_item_title(item)}")
+        target = _item_target(item)
+        kind = _item_kind(item)
+        detail = _item_detail(item)
+        if target:
+            lines.append(f"   Target: {target}")
+        if kind:
+            lines.append(f"   Type: {kind}")
+        if detail:
+            lines.append(f"   Summary: {_clip(detail, 180)}")
+    return lines
+
+
+def _format_indices(indices: list[int]) -> str:
+    return ",".join(str(index) for index in indices)
+
+
+def _proposal_ids_for_selection(selection: list[tuple[int, dict[str, Any]]]) -> list[str]:
+    proposal_ids: list[str] = []
+    seen: set[str] = set()
+    for _, item in selection:
+        for proposal_id in _proposal_ids_for_item(item):
+            if proposal_id not in seen:
+                seen.add(proposal_id)
+                proposal_ids.append(proposal_id)
+    return proposal_ids
+
+
+def _preview_text(
+    decision: str,
+    proposal_ids: list[str],
+    payload: Any,
+    *,
+    selection: list[tuple[int, dict[str, Any]]] | None = None,
+    item: dict[str, Any] | None = None,
+) -> str:
+    if selection is None:
+        selection = [(0, item)] if isinstance(item, dict) else []
     if isinstance(payload, dict) and payload.get("error"):
         return f"Queue {decision} preview failed\n{payload['error']}"
     if isinstance(payload, dict):
@@ -568,22 +617,21 @@ def _preview_text(decision: str, proposal_ids: list[str], payload: Any, *, item:
             or f"{decision.title()} {len(proposal_ids)} proposal(s).",
         )
         lines = [f"Queue {decision} preview"]
-        if item_title:
-            lines.append(f"Item: {item_title}")
-        if item_target:
-            lines.append(f"Target: {item_target}")
+        if selection:
+            lines.append(f"Items: {len(selection)}")
+            lines.extend(_selection_lines(selection))
         lines.extend(
             [
                 f"Status: {status} · ok: {ok}",
                 f"Proposal ids: {', '.join(proposal_ids[:5])}",
-                summary,
+                "Plan: " + _clip(summary, 260),
                 "Confirm only if this item and decision match what you intend.",
             ]
         )
         return "\n".join(lines)
     lines = [f"Queue {decision} preview"]
-    if item_title:
-        lines.append(f"Item: {item_title}")
+    if selection:
+        lines.extend(_selection_lines(selection))
     lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
     return "\n".join(lines)
 
@@ -607,26 +655,79 @@ def _preview_allows_confirmation(payload: Any) -> bool:
     return True
 
 
-def _confirmed_text(decision: str, payload: Any) -> str:
+def _git_summary(git_state: dict[str, Any]) -> str:
+    after = git_state.get("after") if isinstance(git_state.get("after"), dict) else {}
+    before = git_state.get("before") if isinstance(git_state.get("before"), dict) else {}
+    branch = _short(after.get("branch") or git_state.get("branch") or before.get("branch"), "")
+    changed = after.get("changed_count")
+    if changed is None and isinstance(after.get("changes"), list):
+        changed = len(after["changes"])
+    if changed is None:
+        changed = git_state.get("changed_count")
+    if changed is not None:
+        suffix = f" on {branch}" if branch else ""
+        return f"{changed} changed path(s){suffix}"
+    return _short(git_state.get("summary") or git_state.get("status"), "")
+
+
+def _decision_past_tense(decision: str) -> str:
+    return {
+        "approve": "Approved",
+        "reject": "Rejected",
+        "archive": "Archived",
+    }.get(decision, f"{decision.title()}ed")
+
+
+def _confirmed_text(
+    decision: str,
+    payload: Any,
+    *,
+    selection: list[tuple[int, dict[str, Any]]] | None = None,
+    proposal_ids: list[str] | None = None,
+) -> str:
     if isinstance(payload, dict) and payload.get("error"):
         return f"Queue {decision} failed\n{payload['error']}"
+    selection = selection or []
+    proposal_ids = proposal_ids or []
+    past_tense = _decision_past_tense(decision)
     if isinstance(payload, dict):
         publication = payload.get("publication") if isinstance(payload.get("publication"), dict) else {}
         git_state = payload.get("git") if isinstance(payload.get("git"), dict) else {}
         lines = [
-            f"Queue {decision} applied",
-            f"Status: {_short(payload.get('status'))} · ok: {_short(payload.get('ok'))}",
+            f"Queue {decision.title()} Applied",
+            f"{past_tense} {len(proposal_ids) or len(selection)} proposal(s).",
         ]
+        if selection:
+            lines.append("")
+            lines.append("Changed:")
+            lines.extend(_selection_lines(selection))
+        if proposal_ids:
+            lines.append("")
+            lines.append(f"Proposal ids: {', '.join(proposal_ids[:8])}")
+        lines.extend(
+            [
+                f"Status: {_short(payload.get('status'))} · ok: {_short(payload.get('ok'))}",
+            ]
+        )
         if publication:
             lines.append(
                 "Publication: "
                 + _short(publication.get("status") or publication.get("state") or publication.get("reason"))
             )
         if git_state:
-            lines.append("Git: " + _short(git_state.get("summary") or git_state.get("status") or git_state))
-        lines.append("Use /kb queue to refresh.")
+            git_summary = _git_summary(git_state)
+            if git_summary:
+                lines.append("Git: " + git_summary)
+        lines.append("Next: /kb queue")
         return "\n".join(lines)
-    return f"Queue {decision} applied\nUse /kb queue to refresh."
+    lines = [
+        f"Queue {decision.title()} Applied",
+        f"{past_tense} {len(proposal_ids) or len(selection)} proposal(s).",
+    ]
+    if selection:
+        lines.extend(["", "Changed:", *_selection_lines(selection)])
+    lines.append("Next: /kb queue")
+    return "\n".join(lines)
 
 
 def _queue_summary_payload(ctx: Any, target: str, *, limit: int = 5) -> tuple[Any | None, list[str]]:
@@ -656,25 +757,61 @@ def _queue_item_at(data: Any, index: int) -> dict[str, Any] | None:
     return item if isinstance(item, dict) else None
 
 
-def _parse_queue_command_args(args: str, *, command: str) -> tuple[str, int | None, str | None, bool]:
+def _parse_queue_indices(tokens: list[str]) -> list[int]:
+    text = " ".join(tokens)
+    indices: list[int] = []
+    seen: set[int] = set()
+    for match in re.finditer(r"\d+\s*-\s*\d+|\d+", text):
+        token = match.group(0).strip()
+        if re.fullmatch(r"\d+\s*-\s*\d+", token):
+            start_text, end_text = re.split(r"\s*-\s*", token, maxsplit=1)
+            start, end = int(start_text), int(end_text)
+            step = 1 if end >= start else -1
+            candidates = range(start, end + step, step)
+        else:
+            candidates = [int(token)]
+        for index in candidates:
+            if index > 0 and index not in seen:
+                seen.add(index)
+                indices.append(index)
+    return indices
+
+
+def _queue_items_at(data: Any, indices: list[int]) -> tuple[list[tuple[int, dict[str, Any]]], list[int]]:
+    selection: list[tuple[int, dict[str, Any]]] = []
+    missing: list[int] = []
+    for index in indices:
+        item = _queue_item_at(data, index)
+        if item is None:
+            missing.append(index)
+        else:
+            selection.append((index, item))
+    return selection, missing
+
+
+def _parse_queue_command_args(args: str, *, command: str) -> tuple[str, list[int], str | None, bool]:
     text = (args or "").strip()
     if not text:
-        return "dashboard", None, None, False
+        return "dashboard", [], None, False
     parts = text.split()
     first = parts[0].lower()
     if command == "kbreview":
-        if first.isdigit():
-            return "review", int(first), None, False
-        if first in {"review", "show", "detail", "details"} and len(parts) > 1 and parts[1].isdigit():
-            return "review", int(parts[1]), None, False
+        if first in {"review", "show", "detail", "details"}:
+            indices = _parse_queue_indices(parts[1:])
+        else:
+            indices = _parse_queue_indices(parts)
+        return ("review", indices[:1], None, False) if indices else ("help", [], None, False)
     if first.isdigit():
-        return "review", int(first), None, False
-    if first in {"review", "show", "detail", "details"} and len(parts) > 1 and parts[1].isdigit():
-        return "review", int(parts[1]), None, False
-    if first in {"approve", "reject", "archive"} and len(parts) > 1 and parts[1].isdigit():
-        confirm = any(part.lower() in {"confirm", "confirmed", "apply"} for part in parts[2:])
-        return "decision", int(parts[1]), first, confirm
-    return "help", None, None, False
+        return "review", [int(first)], None, False
+    if first in {"review", "show", "detail", "details"}:
+        indices = _parse_queue_indices(parts[1:])
+        return ("review", indices[:1], None, False) if indices else ("help", [], None, False)
+    if first in {"approve", "reject", "archive"}:
+        confirm = any(part.lower() in {"confirm", "confirmed", "apply"} for part in parts[1:])
+        index_tokens = [part for part in parts[1:] if part.lower() not in {"confirm", "confirmed", "apply"}]
+        indices = _parse_queue_indices(index_tokens)
+        return ("decision", indices, first, confirm) if indices else ("help", [], None, False)
+    return "help", [], None, False
 
 
 def _queue_command_help() -> dict[str, Any]:
@@ -687,6 +824,7 @@ def _queue_command_help() -> dict[str, Any]:
                 "Use /kb queue review 1 to inspect one item.",
                 "Use /kb queue reject 1 to preview a decision.",
                 "Use /kb queue reject 1 confirm to apply it.",
+                "Use /kb queue reject 1,2 confirm to apply the same decision to multiple items.",
             ]
         ),
         "actions": [],
@@ -714,21 +852,23 @@ def _render_queue_text_decision(
     target: str,
     data: Any,
     *,
-    index: int,
+    indices: list[int],
     decision: str,
     confirm: bool,
 ) -> dict[str, Any]:
-    item = _queue_item_at(data, index)
-    if item is None:
+    selection, missing = _queue_items_at(data, indices)
+    if not selection:
         total = len(_queue_items_from_payload(data))
         return {
             "title": "KB Queue",
-            "text": f"KB Queue\nNo item {index} in the current queue window ({total} shown). Use /kb queue to refresh.",
+            "text": f"KB Queue\nNo selected items in the current queue window ({total} shown). Use /kb queue to refresh.",
             "actions": [],
         }
-    proposal_ids = _proposal_ids_for_item(item)
+    proposal_ids = _proposal_ids_for_selection(selection)
     if not proposal_ids:
-        return {"title": "KB Queue", "text": "No proposal ids were available for this queue item.", "actions": []}
+        return {"title": "KB Queue", "text": "No proposal ids were available for the selected queue item(s).", "actions": []}
+    selected_titles = ", ".join(_item_title(item) for _, item in selection)
+    index_text = _format_indices([index for index, _ in selection])
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
     confirmed_tool = _mcp_tool_name(target, "queue.batch_decide_confirmed")
     actor = "telegram:operator"
@@ -741,17 +881,23 @@ def _render_queue_text_decision(
                 "decision": decision,
                 "actor": actor,
                 "source": source,
-                "note": f"Previewed from Telegram /kb queue text command for {_item_title(item)}",
+                "note": f"Previewed from Telegram /kb queue text command for {selected_titles}",
             },
         )
     )
     if not confirm:
-        text = _preview_text(decision, proposal_ids, preview_payload, item=item)
+        text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
+        if missing:
+            text += "\nMissing queue item(s): " + ", ".join(str(index) for index in missing)
         if _preview_allows_confirmation(preview_payload):
-            text += f"\nTo apply: /kb queue {decision} {index} confirm"
+            text += f"\nTo apply: /kb queue {decision} {index_text} confirm"
         return {"title": "KB Queue", "text": text, "actions": []}
     if not _preview_allows_confirmation(preview_payload):
-        return {"title": "KB Queue", "text": _preview_text(decision, proposal_ids, preview_payload, item=item), "actions": []}
+        return {
+            "title": "KB Queue",
+            "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection),
+            "actions": [],
+        }
     confirmed_payload = _result_payload(
         ctx.dispatch_tool(
             confirmed_tool,
@@ -766,13 +912,16 @@ def _render_queue_text_decision(
                     "surface": "telegram",
                     "action": f"queue.{decision}",
                     "preview_required": True,
-                    "confirmation_text": f"/kb queue {decision} {index} confirm",
+                    "confirmation_text": f"/kb queue {decision} {index_text} confirm",
                 },
-                "note": f"Confirmed from Telegram /kb queue text command for {_item_title(item)}",
+                "note": f"Confirmed from Telegram /kb queue text command for {selected_titles}",
             },
         )
     )
-    return {"title": "KB Queue", "text": _confirmed_text(decision, confirmed_payload), "actions": []}
+    text = _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids)
+    if missing:
+        text += "\nSkipped missing queue item(s): " + ", ".join(str(index) for index in missing)
+    return {"title": "KB Queue", "text": text, "actions": []}
 
 
 def _workflow_id_from_args(args: str) -> tuple[str, str]:
@@ -927,19 +1076,25 @@ def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = Non
         lines.append("No proposal previews returned.")
     for idx, item in enumerate(items[:5], start=1):
         if isinstance(item, dict):
-            meta = _item_kind(item)
+            lines.append("")
+            lines.append(f"{idx}. {_item_title(item)}")
+            target_path = _item_target(item)
+            kind = _item_kind(item)
             preview = _item_detail(item)
-            line = f"{idx}. {_item_title(item)}"
-            if meta:
-                line += f" ({meta})"
+            if target_path:
+                lines.append(f"   Target: {target_path}")
+            if kind:
+                lines.append(f"   Type: {kind}")
             if preview:
-                line += f"\n   {preview}"
-            lines.append(line)
+                lines.append(f"   Summary: {_clip(preview, 220)}")
+            lines.append(f"   Review: /kb queue review {idx}")
         else:
             lines.append(f"{idx}. {_short(item)}")
     if items:
         lines.append("")
-        lines.append("Send /kb queue review N to inspect one item before choosing a decision.")
+        lines.append("Decide one: /kb queue reject 1")
+        lines.append("Batch: /kb queue reject 1,2")
+        lines.append("Confirm after preview: /kb queue reject 1 confirm")
     return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
 
 
@@ -1042,16 +1197,16 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         )
         return _render_error("KB Runs", target, errors) if data is None else _render_runs(data)
     if command in {"kbqueue", "kbreview"}:
-        mode, index, decision, confirm = _parse_queue_command_args(args, command=command)
+        mode, indices, decision, confirm = _parse_queue_command_args(args, command=command)
         if mode == "help":
             return _queue_command_help()
         data, errors = _queue_summary_payload(ctx, target, limit=5)
         if data is None:
             return _render_error("KB Queue", target, errors)
-        if mode == "review" and index is not None:
-            return _render_queue_item(data, index=index, ctx=ctx, target=target)
-        if mode == "decision" and index is not None and decision:
-            return _render_queue_text_decision(ctx, target, data, index=index, decision=decision, confirm=confirm)
+        if mode == "review" and indices:
+            return _render_queue_item(data, index=indices[0], ctx=ctx, target=target)
+        if mode == "decision" and indices and decision:
+            return _render_queue_text_decision(ctx, target, data, indices=indices, decision=decision, confirm=confirm)
         return _render_queue(data, ctx=ctx, target=target)
     if command == "kbrun":
         workflow_id, intent, confirm = _workflow_args_from_text(args)

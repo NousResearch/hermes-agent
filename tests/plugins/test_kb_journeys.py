@@ -265,17 +265,34 @@ def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
         "/runs",
         "/run",
         "/review",
-        "/kbqueue",
-        "/kbreview",
-        "/kbtoday",
-        "/kbruns",
-        "/kbrun",
     ]:
         result = hook(event=_event(command), gateway=_authorized_gateway(adapter), session_store=None)
         assert result is None
 
     assert ctx.calls == []
     assert adapter.sent == []
+
+
+def test_legacy_kb_slash_commands_are_supported_but_not_registered(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {"result": {"total": 0, "items": []}},
+            "mcp_kb_engine_prod_attention_cockpit": {"result": {"readiness": {"status": "ready"}}},
+            "mcp_kb_engine_prod_run_health": {"result": {"active": [], "recent": []}},
+            "mcp_kb_engine_prod_workflow_plan_request": {"result": {"status": "ready"}},
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    for command in ["/kbqueue", "/kbreview 1", "/kbtoday", "/kbruns", "/kbrun sync"]:
+        result = hook(event=_event(command), gateway=_authorized_gateway(adapter), session_store=None)
+        assert result == {"action": "skip", "reason": "kb_journeys"}
+
+    assert adapter.sent
 
 
 def test_register_exposes_single_clear_kb_menu_command():
@@ -337,9 +354,11 @@ def test_kb_root_queue_dashboard_is_text_first(monkeypatch):
     assert adapter.sent
     text = adapter.sent[0]["text"]
     assert "KB Queue" in text
-    assert "9" in text
+    assert "9 pending" in text
     assert "Admit Stanford DAS Lab" in text
-    assert "Send /kb queue review N" in text
+    assert "Target: accounts/stanford-das-lab" in text
+    assert "Review: /kb queue review 1" in text
+    assert "Batch: /kb queue reject 1,2" in text
     assert adapter.sent[0]["actions"] == []
     assert adapter.sent[0]["reply_to"] == "m1"
 
@@ -378,7 +397,8 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     text = adapter.sent[0]["text"]
     assert "Queue Item 1" in text
     assert "Keio University" in text
-    assert "Commands:" in text
+    assert "Target: accounts/keio-university" in text
+    assert "Preview decisions:" in text
     assert "/kb queue reject 1" in text
     assert adapter.sent[0]["actions"] == []
 
@@ -407,7 +427,15 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
                 "result": {"status": "preview", "ok": True, "plan": {"summary": "Reject 1 proposal."}}
             },
             "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
-                "result": {"status": "applied", "ok": True, "publication": {"status": "manual"}}
+                "result": {
+                    "status": "applied",
+                    "ok": True,
+                    "publication": {"status": "manual"},
+                    "git": {
+                        "before": {"branch": "main", "changed_count": 0},
+                        "after": {"branch": "main", "changed_count": 3, "changes": ["a", "b", "c"]},
+                    },
+                }
             },
         }
     )
@@ -426,11 +454,68 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     _drain_scheduled_tasks()
 
     assert applied == {"action": "skip", "reason": "kb_journeys"}
-    assert "Queue reject applied" in adapter.sent[1]["text"]
+    applied_text = adapter.sent[1]["text"]
+    assert "Queue Reject Applied" in applied_text
+    assert "Mistral" in applied_text
+    assert "Target: accounts/mistral" in applied_text
+    assert "Proposal ids: act_2" in applied_text
+    assert "Git: 3 changed path(s) on main" in applied_text
+    assert "{'before':" not in applied_text
     assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[-2][1]["proposal_ids"] == ["act_2"]
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+
+
+def test_kbqueue_decision_supports_batch_text_commands_and_legacy_alias(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 3,
+                    "items": [
+                        {
+                            "item_id": "accounts/keio-university",
+                            "title": "Keio University",
+                            "kind": "proposal_entity",
+                            "preview": "Admission proposal.",
+                            "raw": {"proposal_ids": ["act_1"]},
+                        },
+                        {
+                            "item_id": "accounts/mistral",
+                            "title": "Mistral",
+                            "kind": "proposal_entity",
+                            "preview": "Admission proposal.",
+                            "raw": {"proposal_ids": ["act_2", "act_3"]},
+                        },
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {"status": "preview", "ok": True, "plan": {"summary": "Reject 3 proposals."}}
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {"status": "applied", "ok": True, "publication": {"status": "disabled"}}
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kbqueue reject 1, 2 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert "Queue Reject Applied" in adapter.sent[0]["text"]
+    assert "1. Keio University" in adapter.sent[0]["text"]
+    assert "2. Mistral" in adapter.sent[0]["text"]
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
+    assert ctx.calls[-2][1]["proposal_ids"] == ["act_1", "act_2", "act_3"]
+    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
+    assert ctx.calls[-1][1]["proposal_ids"] == ["act_1", "act_2", "act_3"]
 
 
 def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):

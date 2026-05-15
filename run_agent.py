@@ -1428,7 +1428,11 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
-    def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
+    def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
+        # Azure Foundry Entra ID bearer providers are callables — never
+        # invoke them in log paths; identify the auth surface instead.
+        if callable(key) and not isinstance(key, str):
+            return "<entra-id-bearer>"
         if not key:
             return None
         if len(key) <= 12:

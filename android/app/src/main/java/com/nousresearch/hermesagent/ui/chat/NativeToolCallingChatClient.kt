@@ -105,26 +105,28 @@ class NativeToolCallingChatClient(
                 )
                 if (shouldSkipNativeFollowUpAfterToolResult(toolResult)) {
                     externalActivityHandoff = true
-                    break
                 }
             }
 
-            if (externalActivityHandoff) {
-                return Result(
-                    content = toolCompletionReply(latestToolResult),
-                    executedToolCalls = executedToolCalls,
-                )
-            }
-
             messages = NativeToolContextCompressor.compactMessages(messages)
-            val followUp = postChatCompletion(
-                normalizedBaseUrl = normalizedBaseUrl,
-                modelName = modelName,
-                sessionId = sessionId,
-                messages = messages,
-                toolSpecs = initialToolSpecs,
-                maxTokens = NATIVE_TOOL_MAX_TOKENS,
-            )
+            val followUp = try {
+                postChatCompletion(
+                    normalizedBaseUrl = normalizedBaseUrl,
+                    modelName = modelName,
+                    sessionId = sessionId,
+                    messages = messages,
+                    toolSpecs = initialToolSpecs,
+                    maxTokens = NATIVE_TOOL_MAX_TOKENS,
+                )
+            } catch (error: Exception) {
+                if (externalActivityHandoff) {
+                    return Result(
+                        content = toolCompletionReply(latestToolResult),
+                        executedToolCalls = executedToolCalls,
+                    )
+                }
+                throw error
+            }
             if (followUp.toolCalls.isEmpty()) {
                 return Result(
                     content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },

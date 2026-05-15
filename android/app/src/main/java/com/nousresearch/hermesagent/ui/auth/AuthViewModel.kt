@@ -12,7 +12,6 @@ import com.nousresearch.hermesagent.auth.Corr3xtAuthClient
 import com.nousresearch.hermesagent.auth.OpenRouterLoopbackOAuthServer
 import com.nousresearch.hermesagent.auth.OpenRouterOAuthClient
 import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
-import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthCatalog
 import com.nousresearch.hermesagent.data.AuthOption
@@ -124,15 +123,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
         val existing = appSettingsStore.load()
         appSettingsStore.save(
-            AppSettings(
-                provider = existing.provider,
-                baseUrl = existing.baseUrl,
-                model = existing.model,
+            existing.copy(
                 corr3xtBaseUrl = normalized,
-                dataSaverMode = existing.dataSaverMode,
-                onDeviceBackend = existing.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
-                languageTag = existing.languageTag,
             )
         )
         _uiState.update {
@@ -348,15 +340,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         val existing = appSettingsStore.load()
         appSettingsStore.save(
-            AppSettings(
+            existing.copy(
                 provider = option.runtimeProvider,
                 baseUrl = option.defaultBaseUrl,
                 model = option.defaultModel,
-                corr3xtBaseUrl = existing.corr3xtBaseUrl,
-                dataSaverMode = existing.dataSaverMode,
-                onDeviceBackend = existing.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
-                languageTag = existing.languageTag,
             )
         )
         _uiState.update {

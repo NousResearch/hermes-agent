@@ -77,6 +77,26 @@ fun SettingsScreen(
                         onSelectLanguage = viewModel::selectLanguage,
                         strings = strings,
                     )
+                    AppearanceCard(
+                        chatDisplayMode = uiState.chatDisplayMode,
+                        keywordHighlightingEnabled = uiState.keywordHighlightingEnabled,
+                        themePrimaryHex = uiState.themePrimaryHex,
+                        themeSecondaryHex = uiState.themeSecondaryHex,
+                        themeBackgroundHex = uiState.themeBackgroundHex,
+                        themeSurfaceHex = uiState.themeSurfaceHex,
+                        themeSurfaceVariantHex = uiState.themeSurfaceVariantHex,
+                        themeCardShape = uiState.themeCardShape,
+                        onChatDisplayModeChange = viewModel::updateChatDisplayMode,
+                        onKeywordHighlightingChange = viewModel::updateKeywordHighlighting,
+                        onPrimaryHexChange = viewModel::updateThemePrimaryHex,
+                        onSecondaryHexChange = viewModel::updateThemeSecondaryHex,
+                        onBackgroundHexChange = viewModel::updateThemeBackgroundHex,
+                        onSurfaceHexChange = viewModel::updateThemeSurfaceHex,
+                        onSurfaceVariantHexChange = viewModel::updateThemeSurfaceVariantHex,
+                        onCardShapeChange = viewModel::updateThemeCardShape,
+                        onApplyPreset = viewModel::applyThemePreset,
+                        onSaveAppearance = viewModel::saveAppearance,
+                    )
                     OnDeviceInferenceCard(
                         onDeviceBackend = uiState.onDeviceBackend,
                         speculativeDecodingMode = uiState.liteRtLmSpeculativeDecodingMode,
@@ -124,6 +144,151 @@ fun SettingsScreen(
                         Text(uiState.status)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearanceCard(
+    chatDisplayMode: String,
+    keywordHighlightingEnabled: Boolean,
+    themePrimaryHex: String,
+    themeSecondaryHex: String,
+    themeBackgroundHex: String,
+    themeSurfaceHex: String,
+    themeSurfaceVariantHex: String,
+    themeCardShape: String,
+    onChatDisplayModeChange: (String) -> Unit,
+    onKeywordHighlightingChange: (Boolean) -> Unit,
+    onPrimaryHexChange: (String) -> Unit,
+    onSecondaryHexChange: (String) -> Unit,
+    onBackgroundHexChange: (String) -> Unit,
+    onSurfaceHexChange: (String) -> Unit,
+    onSurfaceVariantHexChange: (String) -> Unit,
+    onCardShapeChange: (String) -> Unit,
+    onApplyPreset: (AppearanceThemePreset) -> Unit,
+    onSaveAppearance: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Theme and chat layout", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Tune compact or expanded chat, keyword highlighting, app colours, and rounded or squared cards.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text("Chat display", style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    modifier = Modifier.testTag("ChatDisplayCompact"),
+                    onClick = { onChatDisplayModeChange("compact") },
+                    enabled = chatDisplayMode != "compact",
+                ) {
+                    Text("Compact")
+                }
+                Button(
+                    modifier = Modifier.testTag("ChatDisplayExpanded"),
+                    onClick = { onChatDisplayModeChange("expanded") },
+                    enabled = chatDisplayMode != "expanded",
+                ) {
+                    Text("Expanded")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Keyword and skill highlighting", style = MaterialTheme.typography.titleSmall)
+                    Text("Subtle pills for commands, tools, skills, attachments, and agent actions.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = keywordHighlightingEnabled, onCheckedChange = onKeywordHighlightingChange)
+            }
+            Text("Colour presets", style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                appearanceThemePresets.forEach { preset ->
+                    Button(onClick = { onApplyPreset(preset) }) {
+                        Text(preset.label)
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = themePrimaryHex,
+                onValueChange = onPrimaryHexChange,
+                label = { Text("Accent / user bubble hex") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = themeSecondaryHex,
+                onValueChange = onSecondaryHexChange,
+                label = { Text("Secondary accent hex") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = themeBackgroundHex,
+                onValueChange = onBackgroundHexChange,
+                label = { Text("Background hex") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = themeSurfaceHex,
+                onValueChange = onSurfaceHexChange,
+                label = { Text("Composer/card surface hex") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = themeSurfaceVariantHex,
+                onValueChange = onSurfaceVariantHexChange,
+                label = { Text("Assistant/card panel hex") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Text("Cards and boxes", style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("rounded", "soft", "square").forEach { shape ->
+                    Button(
+                        modifier = Modifier.testTag("CardShape-$shape"),
+                        onClick = { onCardShapeChange(shape) },
+                        enabled = themeCardShape != shape,
+                    ) {
+                        Text(shape.replaceFirstChar { it.uppercase() })
+                    }
+                }
+            }
+            Button(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("SaveAppearanceButton"),
+                onClick = onSaveAppearance,
+            ) {
+                Text("Save appearance")
             }
         }
     }

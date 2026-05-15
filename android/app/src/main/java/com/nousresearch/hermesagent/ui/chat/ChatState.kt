@@ -5,6 +5,13 @@ data class ChatUiMessage(
     val role: String,
     val content: String,
     val createdAtEpochMs: Long,
+    val attachments: List<ChatAttachment> = emptyList(),
+)
+
+data class ChatTurn(
+    val id: String,
+    val userMessage: ChatUiMessage?,
+    val assistantMessages: List<ChatUiMessage>,
 )
 
 data class ChatConversationSummary(
@@ -35,3 +42,48 @@ data class ChatUiState(
     val status: String = "",
     val error: String = "",
 )
+
+fun buildChatTurns(messages: List<ChatUiMessage>): List<ChatTurn> {
+    val turns = mutableListOf<ChatTurn>()
+    var pendingUser: ChatUiMessage? = null
+    var assistantMessages = mutableListOf<ChatUiMessage>()
+
+    fun flush() {
+        if (pendingUser == null && assistantMessages.isEmpty()) return
+        val id = pendingUser?.id ?: assistantMessages.first().id
+        turns += ChatTurn(
+            id = id,
+            userMessage = pendingUser,
+            assistantMessages = assistantMessages.toList(),
+        )
+        pendingUser = null
+        assistantMessages = mutableListOf()
+    }
+
+    messages.forEach { message ->
+        if (message.role == "user") {
+            flush()
+            pendingUser = message
+        } else {
+            assistantMessages += message
+        }
+    }
+    flush()
+    return turns
+}
+
+fun minuteBucket(epochMs: Long): Long = epochMs / 60_000L
+
+fun shortPromptPreview(text: String, maxLength: Int = 96): String {
+    val singleLine = text
+        .lineSequence()
+        .firstOrNull { it.isNotBlank() }
+        .orEmpty()
+        .replace(Regex("\\s+"), " ")
+        .trim()
+    return when {
+        singleLine.isBlank() -> "Attachment"
+        singleLine.length <= maxLength -> singleLine
+        else -> singleLine.take(maxLength - 1).trimEnd() + "…"
+    }
+}

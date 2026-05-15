@@ -13,6 +13,14 @@ data class AppSettings(
     val onDeviceBackend: String = "none",
     val liteRtLmSpeculativeDecodingMode: String = "auto",
     val languageTag: String = "en",
+    val chatDisplayMode: String = "compact",
+    val keywordHighlightingEnabled: Boolean = true,
+    val themePrimaryHex: String = "#8C7BFF",
+    val themeSecondaryHex: String = "#C6A15B",
+    val themeBackgroundHex: String = "#090B10",
+    val themeSurfaceHex: String = "#11141C",
+    val themeSurfaceVariantHex: String = "#1B202B",
+    val themeCardShape: String = "rounded",
 )
 
 class AppSettingsStore(context: Context) {
@@ -33,6 +41,14 @@ class AppSettingsStore(context: Context) {
                 "auto",
             ).orEmpty(),
             languageTag = preferences.getString(KEY_LANGUAGE_TAG, "en").orEmpty(),
+            chatDisplayMode = preferences.getString(KEY_CHAT_DISPLAY_MODE, "compact").orEmpty(),
+            keywordHighlightingEnabled = preferences.getBoolean(KEY_KEYWORD_HIGHLIGHTING_ENABLED, true),
+            themePrimaryHex = preferences.getString(KEY_THEME_PRIMARY_HEX, "#8C7BFF").orEmpty(),
+            themeSecondaryHex = preferences.getString(KEY_THEME_SECONDARY_HEX, "#C6A15B").orEmpty(),
+            themeBackgroundHex = preferences.getString(KEY_THEME_BACKGROUND_HEX, "#090B10").orEmpty(),
+            themeSurfaceHex = preferences.getString(KEY_THEME_SURFACE_HEX, "#11141C").orEmpty(),
+            themeSurfaceVariantHex = preferences.getString(KEY_THEME_SURFACE_VARIANT_HEX, "#1B202B").orEmpty(),
+            themeCardShape = preferences.getString(KEY_THEME_CARD_SHAPE, "rounded").orEmpty(),
         )
     }
 
@@ -48,6 +64,14 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_ON_DEVICE_BACKEND, settings.onDeviceBackend)
             .putString(KEY_LITERT_LM_SPECULATIVE_DECODING_MODE, settings.liteRtLmSpeculativeDecodingMode)
             .putString(KEY_LANGUAGE_TAG, settings.languageTag)
+            .putString(KEY_CHAT_DISPLAY_MODE, settings.chatDisplayMode)
+            .putBoolean(KEY_KEYWORD_HIGHLIGHTING_ENABLED, settings.keywordHighlightingEnabled)
+            .putString(KEY_THEME_PRIMARY_HEX, settings.themePrimaryHex)
+            .putString(KEY_THEME_SECONDARY_HEX, settings.themeSecondaryHex)
+            .putString(KEY_THEME_BACKGROUND_HEX, settings.themeBackgroundHex)
+            .putString(KEY_THEME_SURFACE_HEX, settings.themeSurfaceHex)
+            .putString(KEY_THEME_SURFACE_VARIANT_HEX, settings.themeSurfaceVariantHex)
+            .putString(KEY_THEME_CARD_SHAPE, settings.themeCardShape)
             .apply()
     }
 
@@ -63,5 +87,13 @@ class AppSettingsStore(context: Context) {
         private const val KEY_ON_DEVICE_BACKEND = "on_device_backend"
         private const val KEY_LITERT_LM_SPECULATIVE_DECODING_MODE = "litert_lm_speculative_decoding_mode"
         private const val KEY_LANGUAGE_TAG = "language_tag"
+        private const val KEY_CHAT_DISPLAY_MODE = "chat_display_mode"
+        private const val KEY_KEYWORD_HIGHLIGHTING_ENABLED = "keyword_highlighting_enabled"
+        private const val KEY_THEME_PRIMARY_HEX = "theme_primary_hex"
+        private const val KEY_THEME_SECONDARY_HEX = "theme_secondary_hex"
+        private const val KEY_THEME_BACKGROUND_HEX = "theme_background_hex"
+        private const val KEY_THEME_SURFACE_HEX = "theme_surface_hex"
+        private const val KEY_THEME_SURFACE_VARIANT_HEX = "theme_surface_variant_hex"
+        private const val KEY_THEME_CARD_SHAPE = "theme_card_shape"
     }
 }

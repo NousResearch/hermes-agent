@@ -12,7 +12,6 @@ import com.nousresearch.hermesagent.backend.BackendKind
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
-import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import com.nousresearch.hermesagent.data.ProviderPresets
@@ -20,6 +19,7 @@ import com.nousresearch.hermesagent.data.ProviderSetupTarget
 import com.nousresearch.hermesagent.data.SecureSecretsStore
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
 import com.nousresearch.hermesagent.ui.i18n.AppLanguage
+import com.nousresearch.hermesagent.ui.theme.normalizeThemeHex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +40,14 @@ data class SettingsUiState(
     val onDeviceBackend: String = BackendKind.NONE.persistedValue,
     val liteRtLmSpeculativeDecodingMode: String = "auto",
     val languageTag: String = AppLanguage.ENGLISH.tag,
+    val chatDisplayMode: String = "compact",
+    val keywordHighlightingEnabled: Boolean = true,
+    val themePrimaryHex: String = "#8C7BFF",
+    val themeSecondaryHex: String = "#C6A15B",
+    val themeBackgroundHex: String = "#090B10",
+    val themeSurfaceHex: String = "#11141C",
+    val themeSurfaceVariantHex: String = "#1B202B",
+    val themeCardShape: String = "rounded",
     val onDeviceSummary: String = "Remote provider mode",
     val status: String = "",
 )
@@ -79,6 +87,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 stored.liteRtLmSpeculativeDecodingMode,
             ),
             languageTag = AppLanguage.fromTag(stored.languageTag).tag,
+            chatDisplayMode = normalizeChatDisplayMode(stored.chatDisplayMode),
+            keywordHighlightingEnabled = stored.keywordHighlightingEnabled,
+            themePrimaryHex = normalizeThemeHex(stored.themePrimaryHex, "#8C7BFF"),
+            themeSecondaryHex = normalizeThemeHex(stored.themeSecondaryHex, "#C6A15B"),
+            themeBackgroundHex = normalizeThemeHex(stored.themeBackgroundHex, "#090B10"),
+            themeSurfaceHex = normalizeThemeHex(stored.themeSurfaceHex, "#11141C"),
+            themeSurfaceVariantHex = normalizeThemeHex(stored.themeSurfaceVariantHex, "#1B202B"),
+            themeCardShape = normalizeThemeCardShape(stored.themeCardShape),
             onDeviceSummary = defaultOnDeviceSummary(stored.onDeviceBackend),
         )
     }
@@ -131,6 +147,82 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
     fun updateLiteRtLmSpeculativeDecodingMode(value: String) = _uiState.update {
         it.copy(liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(value))
+    }
+    fun updateChatDisplayMode(value: String) {
+        val normalized = normalizeChatDisplayMode(value)
+        settingsStore.save(settingsStore.load().copy(chatDisplayMode = normalized))
+        _uiState.update {
+            it.copy(
+                chatDisplayMode = normalized,
+                status = "Chat display mode set to ${normalized.replaceFirstChar { char -> char.uppercase() }}.",
+            )
+        }
+    }
+    fun updateKeywordHighlighting(enabled: Boolean) {
+        settingsStore.save(settingsStore.load().copy(keywordHighlightingEnabled = enabled))
+        _uiState.update {
+            it.copy(
+                keywordHighlightingEnabled = enabled,
+                status = if (enabled) "Keyword highlighting is on." else "Keyword highlighting is off.",
+            )
+        }
+    }
+    fun updateThemePrimaryHex(value: String) = _uiState.update { it.copy(themePrimaryHex = value) }
+    fun updateThemeSecondaryHex(value: String) = _uiState.update { it.copy(themeSecondaryHex = value) }
+    fun updateThemeBackgroundHex(value: String) = _uiState.update { it.copy(themeBackgroundHex = value) }
+    fun updateThemeSurfaceHex(value: String) = _uiState.update { it.copy(themeSurfaceHex = value) }
+    fun updateThemeSurfaceVariantHex(value: String) = _uiState.update { it.copy(themeSurfaceVariantHex = value) }
+    fun updateThemeCardShape(value: String) {
+        val normalized = normalizeThemeCardShape(value)
+        settingsStore.save(settingsStore.load().copy(themeCardShape = normalized))
+        _uiState.update {
+            it.copy(
+                themeCardShape = normalized,
+                status = "Card shape set to ${normalized.replaceFirstChar { char -> char.uppercase() }}.",
+            )
+        }
+    }
+
+    fun applyThemePreset(preset: AppearanceThemePreset) {
+        _uiState.update {
+            it.copy(
+                themePrimaryHex = preset.primaryHex,
+                themeSecondaryHex = preset.secondaryHex,
+                themeBackgroundHex = preset.backgroundHex,
+                themeSurfaceHex = preset.surfaceHex,
+                themeSurfaceVariantHex = preset.surfaceVariantHex,
+                status = "Loaded ${preset.label} colours. Save appearance to persist them.",
+            )
+        }
+    }
+
+    fun saveAppearance() {
+        val snapshot = _uiState.value
+        val existing = settingsStore.load()
+        val updated = existing.copy(
+            chatDisplayMode = normalizeChatDisplayMode(snapshot.chatDisplayMode),
+            keywordHighlightingEnabled = snapshot.keywordHighlightingEnabled,
+            themePrimaryHex = normalizeThemeHex(snapshot.themePrimaryHex, "#8C7BFF"),
+            themeSecondaryHex = normalizeThemeHex(snapshot.themeSecondaryHex, "#C6A15B"),
+            themeBackgroundHex = normalizeThemeHex(snapshot.themeBackgroundHex, "#090B10"),
+            themeSurfaceHex = normalizeThemeHex(snapshot.themeSurfaceHex, "#11141C"),
+            themeSurfaceVariantHex = normalizeThemeHex(snapshot.themeSurfaceVariantHex, "#1B202B"),
+            themeCardShape = normalizeThemeCardShape(snapshot.themeCardShape),
+        )
+        settingsStore.save(updated)
+        _uiState.update {
+            it.copy(
+                chatDisplayMode = updated.chatDisplayMode,
+                keywordHighlightingEnabled = updated.keywordHighlightingEnabled,
+                themePrimaryHex = updated.themePrimaryHex,
+                themeSecondaryHex = updated.themeSecondaryHex,
+                themeBackgroundHex = updated.themeBackgroundHex,
+                themeSurfaceHex = updated.themeSurfaceHex,
+                themeSurfaceVariantHex = updated.themeSurfaceVariantHex,
+                themeCardShape = updated.themeCardShape,
+                status = "Appearance saved.",
+            )
+        }
     }
 
     private fun loadApiKeyForProvider(provider: String) {
@@ -373,17 +465,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val resolvedModel = snapshot.model.ifBlank { preset?.modelHint.orEmpty() }
             val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, resolvedBaseUrl)
             val existingSettings = settingsStore.load()
-            val updatedSettings = AppSettings(
+            val updatedSettings = existingSettings.copy(
                 provider = snapshot.provider,
                 baseUrl = resolvedBaseUrl,
                 model = resolvedModel,
-                corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
-                dataSaverMode = existingSettings.dataSaverMode,
-                offlineAirplaneMode = existingSettings.offlineAirplaneMode,
-                portalEnabled = existingSettings.portalEnabled,
-                onDeviceBackend = existingSettings.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
-                languageTag = existingSettings.languageTag,
             )
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -484,17 +569,23 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             runCatching {
                 withContext(Dispatchers.IO) {
                     val existingSettings = settingsStore.load()
-                    val updatedSettings = AppSettings(
+                    val updatedSettings = existingSettings.copy(
                         provider = snapshot.provider,
                         baseUrl = snapshot.baseUrl,
                         model = snapshot.model,
-                        corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                         dataSaverMode = snapshot.dataSaverMode,
                         offlineAirplaneMode = snapshot.offlineAirplaneMode,
-                        portalEnabled = existingSettings.portalEnabled,
                         onDeviceBackend = snapshot.onDeviceBackend,
                         liteRtLmSpeculativeDecodingMode = snapshot.liteRtLmSpeculativeDecodingMode,
                         languageTag = snapshot.languageTag,
+                        chatDisplayMode = normalizeChatDisplayMode(snapshot.chatDisplayMode),
+                        keywordHighlightingEnabled = snapshot.keywordHighlightingEnabled,
+                        themePrimaryHex = normalizeThemeHex(snapshot.themePrimaryHex, "#8C7BFF"),
+                        themeSecondaryHex = normalizeThemeHex(snapshot.themeSecondaryHex, "#C6A15B"),
+                        themeBackgroundHex = normalizeThemeHex(snapshot.themeBackgroundHex, "#090B10"),
+                        themeSurfaceHex = normalizeThemeHex(snapshot.themeSurfaceHex, "#11141C"),
+                        themeSurfaceVariantHex = normalizeThemeHex(snapshot.themeSurfaceVariantHex, "#1B202B"),
+                        themeCardShape = normalizeThemeCardShape(snapshot.themeCardShape),
                     )
                     settingsStore.save(updatedSettings)
 
@@ -573,4 +664,68 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             else -> "auto"
         }
     }
+
+    private fun normalizeChatDisplayMode(value: String): String {
+        return when (value.trim().lowercase()) {
+            "expanded", "classic", "full" -> "expanded"
+            else -> "compact"
+        }
+    }
+
+    private fun normalizeThemeCardShape(value: String): String {
+        return when (value.trim().lowercase()) {
+            "square", "squared" -> "square"
+            "soft" -> "soft"
+            else -> "rounded"
+        }
+    }
 }
+
+data class AppearanceThemePreset(
+    val id: String,
+    val label: String,
+    val primaryHex: String,
+    val secondaryHex: String,
+    val backgroundHex: String,
+    val surfaceHex: String,
+    val surfaceVariantHex: String,
+)
+
+val appearanceThemePresets = listOf(
+    AppearanceThemePreset(
+        id = "hermes",
+        label = "Hermes purple",
+        primaryHex = "#8C7BFF",
+        secondaryHex = "#C6A15B",
+        backgroundHex = "#090B10",
+        surfaceHex = "#11141C",
+        surfaceVariantHex = "#1B202B",
+    ),
+    AppearanceThemePreset(
+        id = "gold",
+        label = "Gold noir",
+        primaryHex = "#D2B35E",
+        secondaryHex = "#8C7BFF",
+        backgroundHex = "#080808",
+        surfaceHex = "#14130F",
+        surfaceVariantHex = "#211D14",
+    ),
+    AppearanceThemePreset(
+        id = "graphite",
+        label = "Graphite",
+        primaryHex = "#9AA4B2",
+        secondaryHex = "#72D6C9",
+        backgroundHex = "#090A0C",
+        surfaceHex = "#13161B",
+        surfaceVariantHex = "#20252D",
+    ),
+    AppearanceThemePreset(
+        id = "contrast",
+        label = "High contrast",
+        primaryHex = "#B6A7FF",
+        secondaryHex = "#FFD166",
+        backgroundHex = "#000000",
+        surfaceHex = "#0E0E12",
+        surfaceVariantHex = "#24242C",
+    ),
+)

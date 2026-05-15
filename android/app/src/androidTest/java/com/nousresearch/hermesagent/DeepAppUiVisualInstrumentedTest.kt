@@ -26,7 +26,10 @@ import com.nousresearch.hermesagent.auth.OpenRouterLoopbackOAuthServer
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthSessionStore
+import com.nousresearch.hermesagent.data.ConversationStore
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
+import com.nousresearch.hermesagent.data.StoredConversationAttachment
+import com.nousresearch.hermesagent.data.StoredConversationMessage
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
 import com.nousresearch.hermesagent.ui.boot.BootUiState
 import com.nousresearch.hermesagent.ui.shell.AppShellScreen
@@ -99,6 +102,10 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("HermesNavSettings").performClick()
         composeRule.onAllNodesWithText("Settings")[0].assertIsDisplayed()
         capture("03-settings")
+        composeRule.onNodeWithText("Theme and chat layout").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("ChatDisplayExpanded").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("CardShape-square").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag("SaveAppearanceButton").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("Check setup").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("LiteRtLmMtpMode-auto").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag("LiteRtLmMtpMode-enabled").performScrollTo().assertIsDisplayed()
@@ -125,6 +132,80 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("HermesNavNousPortal").performClick()
         composeRule.onAllNodesWithText("Nous Portal")[0].assertIsDisplayed()
         capture("08-portal-spanish")
+    }
+
+    @Test
+    fun compactChatModeCollapsesPromptAndExpandedModeToggleWorks() {
+        val conversationStore = ConversationStore(app)
+        conversationStore.clearAll()
+        AppSettingsStore(app).save(
+            AppSettings(
+                provider = "openrouter",
+                baseUrl = "https://openrouter.ai/api/v1",
+                model = "anthropic/claude-sonnet-4",
+                onDeviceBackend = BackendKind.NONE.persistedValue,
+                languageTag = "en",
+                chatDisplayMode = "compact",
+            )
+        )
+        val seededConversation = conversationStore.createNewConversation("Compact layout validation")
+        val now = System.currentTimeMillis()
+        conversationStore.upsertMessage(
+            seededConversation.sessionId,
+            StoredConversationMessage(
+                id = "compact-user",
+                role = "user",
+                content = "/help\nUse the camera, file attachment, and voice input.",
+                createdAtEpochMs = now,
+                attachments = listOf(
+                    StoredConversationAttachment(
+                        uri = "content://hermes-test/attachment.png",
+                        displayName = "attachment.png",
+                        mimeType = "image/png",
+                        sizeBytes = 1024L,
+                    ),
+                ),
+            ),
+        )
+        conversationStore.upsertMessage(
+            seededConversation.sessionId,
+            StoredConversationMessage(
+                id = "compact-assistant",
+                role = "assistant",
+                content = "Available app commands include /help, /history, /provider, and /signin. Camera, image upload, voice input, tool calls, skills, and agent actions are highlighted.",
+                createdAtEpochMs = now + 1_000L,
+            ),
+        )
+
+        composeRule.setContent {
+            AppShellScreen(
+                bootUiState = BootUiState(
+                    status = "Hermes backend is ready",
+                    ready = true,
+                    probeResult = "compact-chat-test",
+                    baseUrl = "http://127.0.0.1:15436/v1",
+                ),
+                onRetryHermes = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("HermesCompactChatTurn").assertIsDisplayed()
+        composeRule.onNodeWithTag("HermesCompactPromptHeader").assertIsDisplayed()
+        composeRule.onNodeWithText("1 attachment").assertIsDisplayed()
+        composeRule.onNodeWithText("Available app commands", substring = true).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("HermesCompactPromptHeader").performClick()
+        composeRule.onNodeWithText("Your full prompt").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("HermesChatDisplayToggle").performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            AppSettingsStore(app).load().chatDisplayMode == "expanded"
+        }
+        assertEquals("expanded", AppSettingsStore(app).load().chatDisplayMode)
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.onAllNodesWithText("You").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText("You").performScrollTo().assertIsDisplayed()
     }
 
     @Test

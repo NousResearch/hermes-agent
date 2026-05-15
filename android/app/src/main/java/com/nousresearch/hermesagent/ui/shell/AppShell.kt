@@ -54,6 +54,7 @@ import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
 import com.nousresearch.hermesagent.ui.settings.SettingsScreen
 import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
+import com.nousresearch.hermesagent.ui.theme.HermesThemeConfig
 import com.nousresearch.hermesagent.ui.theme.HermesTheme
 
 @Composable
@@ -89,7 +90,16 @@ fun AppShellScreen(
         setActions(emptyList())
     }
 
-    HermesTheme {
+    HermesTheme(
+        config = HermesThemeConfig(
+            primaryHex = settingsState.themePrimaryHex,
+            secondaryHex = settingsState.themeSecondaryHex,
+            backgroundHex = settingsState.themeBackgroundHex,
+            surfaceHex = settingsState.themeSurfaceHex,
+            surfaceVariantHex = settingsState.themeSurfaceVariantHex,
+            cardShape = settingsState.themeCardShape,
+        ),
+    ) {
         CompositionLocalProvider(LocalHermesStrings provides strings) {
             Scaffold(
                 modifier = Modifier.fillMaxSize(),

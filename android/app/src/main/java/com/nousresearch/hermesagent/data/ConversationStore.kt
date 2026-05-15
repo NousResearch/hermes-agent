@@ -10,6 +10,14 @@ data class StoredConversationMessage(
     val role: String,
     val content: String,
     val createdAtEpochMs: Long,
+    val attachments: List<StoredConversationAttachment> = emptyList(),
+)
+
+data class StoredConversationAttachment(
+    val uri: String,
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long = 0L,
 )
 
 data class StoredConversation(
@@ -248,15 +256,48 @@ class ConversationStore(context: Context) {
             put("role", role)
             put("content", content)
             put("createdAtEpochMs", createdAtEpochMs)
+            put(
+                "attachments",
+                JSONArray().apply {
+                    attachments.forEach { attachment ->
+                        put(
+                            JSONObject().apply {
+                                put("uri", attachment.uri)
+                                put("displayName", attachment.displayName)
+                                put("mimeType", attachment.mimeType)
+                                put("sizeBytes", attachment.sizeBytes)
+                            }
+                        )
+                    }
+                },
+            )
         }
     }
 
     private fun JSONObject.toMessage(): StoredConversationMessage {
+        val attachments = optJSONArray("attachments")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val uri = item.optString("uri")
+                    if (uri.isBlank()) continue
+                    add(
+                        StoredConversationAttachment(
+                            uri = uri,
+                            displayName = item.optString("displayName", "attachment"),
+                            mimeType = item.optString("mimeType", "application/octet-stream"),
+                            sizeBytes = item.optLong("sizeBytes", 0L).coerceAtLeast(0L),
+                        )
+                    )
+                }
+            }
+        }.orEmpty()
         return StoredConversationMessage(
             id = optString("id", UUID.randomUUID().toString()),
             role = optString("role", "assistant"),
             content = optString("content", ""),
             createdAtEpochMs = optLong("createdAtEpochMs", System.currentTimeMillis()),
+            attachments = attachments,
         )
     }
 

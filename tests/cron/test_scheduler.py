@@ -959,6 +959,49 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    def test_run_job_prefers_job_reasoning_effort_over_global_config(self, tmp_path):
+        job = {
+            "id": "reasoning-job",
+            "name": "test",
+            "prompt": "hello",
+            "reasoning_effort": "xhigh",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: low\n",
+            encoding="utf-8",
+        )
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_run_job_uses_global_reasoning_effort_when_job_unset(self, tmp_path):
+        job = {
+            "id": "reasoning-global-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: high\n",
+            encoding="utf-8",
+        )
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
         resolves them from ``hermes tools`` platform config for ``cron``

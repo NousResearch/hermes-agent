@@ -33,6 +33,13 @@ from cron.jobs import (
 )
 
 
+def _normalize_reasoning_effort_param(value: Optional[Any]) -> Optional[str]:
+    """Normalize and validate the cron tool's reasoning_effort parameter."""
+    from cron.jobs import _normalize_reasoning_effort
+
+    return _normalize_reasoning_effort(value)
+
+
 # ---------------------------------------------------------------------------
 # Cron prompt scanning — critical-severity patterns only, since cron prompts
 # run in fresh sessions with full tool access.
@@ -279,6 +286,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("reasoning_effort"):
+        result["reasoning_effort"] = job["reasoning_effort"]
     return result
 
 
@@ -301,6 +310,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -367,6 +377,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
+                reasoning_effort=_normalize_reasoning_effort_param(reasoning_effort),
                 no_agent=_no_agent,
             )
             return json.dumps(
@@ -481,6 +492,8 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if reasoning_effort is not None:
+                updates["reasoning_effort"] = _normalize_reasoning_effort_param(reasoning_effort)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -634,6 +647,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": ["", "none", "minimal", "low", "medium", "high", "xhigh"],
+                "description": "Optional per-job reasoning effort override. Values: none, minimal, low, medium, high, xhigh. When unset, the job uses global agent.reasoning_effort. On update, pass empty string to clear."
+            },
         },
         "required": ["action"]
     }
@@ -681,6 +699,7 @@ registry.register(
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
+        reasoning_effort=args.get("reasoning_effort"),
         no_agent=args.get("no_agent"),
         task_id=kw.get("task_id"),
     ))(),

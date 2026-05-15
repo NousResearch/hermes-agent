@@ -479,6 +479,30 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_reasoning_effort(reasoning_effort: Optional[str]) -> Optional[str]:
+    """Normalize and validate a per-job reasoning effort override.
+
+    Empty / None clears the job-level override, causing the scheduler to fall
+    back to the global ``agent.reasoning_effort`` config.  Accepted values
+    mirror ``hermes_constants.parse_reasoning_effort``: none, minimal, low,
+    medium, high, xhigh.
+    """
+    if reasoning_effort is None:
+        return None
+    effort = str(reasoning_effort).strip().lower()
+    if not effort:
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    valid = {"none", *VALID_REASONING_EFFORTS}
+    if effort not in valid:
+        allowed = ", ".join(["none", *VALID_REASONING_EFFORTS])
+        raise ValueError(
+            f"Invalid reasoning_effort {reasoning_effort!r}. Expected one of: {allowed}."
+        )
+    return effort
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -495,6 +519,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -536,6 +561,9 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        reasoning_effort: Optional per-job reasoning override. One of
+                none|minimal|low|medium|high|xhigh. When unset, cron falls
+                back to the global agent.reasoning_effort config.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -573,6 +601,7 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -627,6 +656,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "reasoning_effort": normalized_reasoning_effort,
     }
 
     jobs = load_jobs()
@@ -668,6 +698,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        if "reasoning_effort" in updates:
+            updates["reasoning_effort"] = _normalize_reasoning_effort(
+                updates["reasoning_effort"]
+            )
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

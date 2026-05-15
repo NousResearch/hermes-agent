@@ -219,6 +219,53 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_create_and_update_reasoning_effort(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Think carefully about the day ahead",
+                schedule="every 1h",
+                reasoning_effort="xhigh",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "xhigh"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["reasoning_effort"] == "xhigh"
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort="high",
+            )
+        )
+        assert updated["success"] is True
+        assert updated["job"]["reasoning_effort"] == "high"
+
+        cleared = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort="",
+            )
+        )
+        assert cleared["success"] is True
+        assert cleared["job"].get("reasoning_effort") is None
+
+    def test_invalid_reasoning_effort_rejected(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Think with maximum galaxy brain",
+                schedule="every 1h",
+                reasoning_effort="galaxy",
+            )
+        )
+        assert created["success"] is False
+        assert "reasoning_effort" in created["error"]
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

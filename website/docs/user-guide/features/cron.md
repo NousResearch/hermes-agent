@@ -15,6 +15,7 @@ Cron jobs can:
 - schedule one-shot or recurring tasks
 - pause, resume, edit, trigger, and remove jobs
 - attach zero, one, or multiple skills to a job
+- pin per-job model/provider settings and reasoning effort for higher-quality scheduled runs
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
@@ -88,6 +89,23 @@ cronjob(
 ```
 
 This is useful when you want a scheduled agent to inherit reusable workflows without stuffing the full skill text into the cron prompt itself.
+
+## Per-job reasoning effort
+
+By default, scheduled jobs inherit the global `agent.reasoning_effort` setting from `config.yaml`. For important scheduled work, you can override that per job so deeper background analysis does not have to share the same latency/quality tradeoff as interactive chat.
+
+Supported values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+```python
+cronjob(
+    action="create",
+    schedule="0 9 * * *",
+    prompt="Research the market and send a concise morning strategy brief.",
+    reasoning_effort="xhigh",
+)
+```
+
+Set `reasoning_effort` on an existing job with `action="update"`; pass an empty string to clear the job-level override and return to the global config default.
 
 ## Running a job inside a project directory
 

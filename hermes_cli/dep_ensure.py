@@ -1,7 +1,17 @@
 """Lazy dependency bootstrapper for non-Python runtime deps.
 
-Wraps install.sh --ensure to install node, browser, ripgrep, ffmpeg
-on first use. Prompts interactively unless told not to.
+Detection and prompting live here in Python — not in install.sh — because:
+  1. shutil.which() works on every platform; install.sh needs bash.
+  2. Detection is instant; spawning bash for a "is node installed?" check is waste.
+  3. Python controls the UX (rich prompts, non-interactive fallback, TTY detection).
+
+install.sh is still the *installation* backend because it has 1900 lines of
+battle-tested OS detection and package-manager logic (apt/brew/pacman/dnf/
+zypper/Termux/…).  Reimplementing that in Python would be huge duplication.
+
+Deps that degrade gracefully (ripgrep → grep fallback, ffmpeg → skip conversion)
+don't need ensure_dependency wired in — only hard-fail sites do (TUI needs node,
+browser tool needs agent-browser).
 """
 from __future__ import annotations
 

@@ -50,6 +50,27 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build web dashboard
+        run: cd web && npm ci && npm run build
+
+      - name: Build TUI bundle
+        run: cd ui-tui && npm ci && npm run build
+
+      - name: Bundle TUI into hermes_cli
+        run: |
+          mkdir -p hermes_cli/tui_dist
+          cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js
+
+      - name: Verify frontend assets exist
+        run: |
+          test -f hermes_cli/web_dist/index.html || { echo "ERROR: web_dist not built"; exit 1; }
+          test -f hermes_cli/tui_dist/entry.js || { echo "ERROR: tui_dist not built"; exit 1; }
+
       - name: Build wheel and sdist
         run: uv build --sdist --wheel
 

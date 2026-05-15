@@ -129,6 +129,20 @@ class TestCronjobRequirements:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         assert check_cronjob_requirements() is False
 
+    @pytest.mark.parametrize(
+        "var_name",
+        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"],
+    )
+    @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
+    def test_rejects_false_like_any_session_env(
+        self, monkeypatch, var_name, false_like_value
+    ):
+        """All three session env vars share the same truthy semantics."""
+        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+            monkeypatch.delenv(v, raising=False)
+        monkeypatch.setenv(var_name, false_like_value)
+        assert check_cronjob_requirements() is False
+
 
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)

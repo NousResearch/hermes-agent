@@ -28,7 +28,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
-    _derive_chat_session_id,
+    _new_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -1120,47 +1120,32 @@ class TestChatCompletionsEndpoint:
             assert "Provider failed" in data["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_stable_session_id_across_turns(self, adapter):
-        """Same conversation (same first user message) produces the same session_id."""
+    async def test_no_header_requests_get_fresh_session_ids(self, adapter):
+        """Requests without X-Hermes-Session-Id do not collide on common prompts."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
         session_ids = []
         async with TestClient(TestServer(app)) as cli:
-            # Turn 1: single user message
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [{"role": "user", "content": "Hello"}],
-                    },
-                )
-                session_ids.append(mock_run.call_args.kwargs["session_id"])
+            for _ in range(2):
+                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                    mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                    await cli.post(
+                        "/v1/chat/completions",
+                        json={
+                            "model": "hermes-agent",
+                            "messages": [{"role": "user", "content": "Hello"}],
+                        },
+                    )
+                    session_ids.append(mock_run.call_args.kwargs["session_id"])
 
-            # Turn 2: same first message, conversation grew
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [
-                            {"role": "user", "content": "Hello"},
-                            {"role": "assistant", "content": "Hi there!"},
-                            {"role": "user", "content": "How are you?"},
-                        ],
-                    },
-                )
-                session_ids.append(mock_run.call_args.kwargs["session_id"])
-
-        assert session_ids[0] == session_ids[1], "Session ID should be stable across turns"
-        assert session_ids[0].startswith("api-"), "Derived session IDs should have api- prefix"
+        assert session_ids[0] != session_ids[1]
+        assert session_ids[0].startswith("api-")
+        assert session_ids[1].startswith("api-")
 
     @pytest.mark.asyncio
     async def test_different_conversations_get_different_session_ids(self, adapter):
-        """Different first messages produce different session_ids."""
+        """Different requests produce different session_ids."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
@@ -1182,34 +1167,16 @@ class TestChatCompletionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# _derive_chat_session_id unit tests
+# _new_chat_session_id unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestDeriveChatSessionId:
-    def test_deterministic(self):
-        """Same inputs always produce the same session ID."""
-        a = _derive_chat_session_id("sys", "hello")
-        b = _derive_chat_session_id("sys", "hello")
-        assert a == b
-
+class TestNewChatSessionId:
     def test_prefix(self):
-        assert _derive_chat_session_id(None, "hi").startswith("api-")
+        assert _new_chat_session_id().startswith("api-")
 
-    def test_different_system_prompt(self):
-        a = _derive_chat_session_id("You are a pirate.", "Hello")
-        b = _derive_chat_session_id("You are a robot.", "Hello")
-        assert a != b
-
-    def test_different_first_message(self):
-        a = _derive_chat_session_id(None, "Hello")
-        b = _derive_chat_session_id(None, "Goodbye")
-        assert a != b
-
-    def test_none_system_prompt(self):
-        """None system prompt doesn't crash."""
-        sid = _derive_chat_session_id(None, "test")
-        assert isinstance(sid, str) and len(sid) > 4
+    def test_ids_are_unique(self):
+        assert _new_chat_session_id() != _new_chat_session_id()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,11 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for hermes-agent
+# approve: true + request_changes_workflow: true required for Gate 3 (CR APPROVED)
+language: en-US
 reviews:
   profile: chill
+  approve: true
+  request_changes_workflow: true
   auto_review:
     enabled: true
     drafts: false

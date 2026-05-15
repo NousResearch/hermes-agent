@@ -25,8 +25,8 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -38,7 +38,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -46,6 +51,13 @@ def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
     home = tmp_path / ".hermes"
     home.mkdir()
+    for env_name in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -290,6 +302,68 @@ def test_task_dependency_graph_endpoint_returns_bounded_safe_dag(client):
     )
     assert {"parent_id": implementation["id"], "child_id": verification["id"]} in data["edges"]
     assert {"parent_id": verification["id"], "child_id": review["id"]} in data["edges"]
+
+
+def test_task_dependency_graph_high_fanout_fetches_only_bounded_link_rows(kanban_home):
+    """High-fanout expansion should not fetch every matching task_links row."""
+
+    class GuardedCursor:
+        def __init__(self, cursor, max_rows):
+            self._cursor = cursor
+            self._max_rows = max_rows
+
+        def fetchall(self):
+            rows = self._cursor.fetchall()
+            assert len(rows) <= self._max_rows, (
+                f"dependency graph fetched {len(rows)} task_links rows; "
+                f"expected at most {self._max_rows}"
+            )
+            return rows
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class GuardedConnection:
+        def __init__(self, conn, max_task_link_rows):
+            self._conn = conn
+            self._max_task_link_rows = max_task_link_rows
+
+        def execute(self, sql, params=()):
+            cursor = self._conn.execute(sql, params)
+            normalized = " ".join(sql.lower().split())
+            if " from task_links " in f" {normalized} ":
+                return GuardedCursor(cursor, self._max_task_link_rows)
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    mod = _load_plugin_module()
+    conn = kb.connect()
+    try:
+        root_id = kb.create_task(conn, title="High fanout root")
+        child_ids = [
+            kb.create_task(conn, title=f"High fanout child {i:02d}", parents=[root_id])
+            for i in range(30)
+        ]
+
+        graph = mod._bounded_dependency_graph(
+            GuardedConnection(conn, max_task_link_rows=6),
+            root_id,
+            depth_limit=1,
+            node_limit=5,
+        )
+    finally:
+        conn.close()
+
+    assert graph["truncated"] is True
+    assert graph["overflow_count"] >= 1
+    assert len(graph["nodes"]) == 5
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert root_id in node_ids
+    assert 0 < len(node_ids.intersection(child_ids)) < len(child_ids)
+    assert len(graph["edges"]) == 4
+    assert all(edge["parent_id"] == root_id for edge in graph["edges"])
 
 
 def test_task_detail_404_on_unknown(client):

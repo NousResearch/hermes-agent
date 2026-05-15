@@ -482,17 +482,28 @@ def _bounded_dependency_graph(
             current, depth = queue.pop(0)
             if depth >= depth_limit:
                 continue
+            link_row_limit = max(1, node_limit + 1)
+            if len(nodes) >= node_limit:
+                more = conn.execute(
+                    "SELECT 1 FROM task_links WHERE "
+                    + ("child_id = ?" if direction == "upstream" else "parent_id = ?")
+                    + " LIMIT 1",
+                    (current,),
+                ).fetchone()
+                if more:
+                    overflow_count += 1
+                continue
             if direction == "upstream":
                 rows = conn.execute(
                     "SELECT parent_id AS next_id, parent_id, child_id "
-                    "FROM task_links WHERE child_id = ? ORDER BY parent_id",
-                    (current,),
+                    "FROM task_links WHERE child_id = ? ORDER BY parent_id LIMIT ?",
+                    (current, link_row_limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT child_id AS next_id, parent_id, child_id "
-                    "FROM task_links WHERE parent_id = ? ORDER BY child_id",
-                    (current,),
+                    "FROM task_links WHERE parent_id = ? ORDER BY child_id LIMIT ?",
+                    (current, link_row_limit),
                 ).fetchall()
             for link in rows:
                 next_id = link["next_id"]

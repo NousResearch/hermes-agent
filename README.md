@@ -32,8 +32,8 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 This branch documents a measured performance pass focused on startup hot paths,
 tool discovery, SQLite session persistence, TUI MCP reloads, adaptive
-parallelism, delegation config reuse, parallel guard fast paths, and runtime
-local-endpoint probe avoidance. The numbers below are
+parallelism, delegation config reuse, parallel guard fast paths, model metadata
+disk caching, and runtime local-endpoint probe avoidance. The numbers below are
 local Windows benchmark results from `scripts/benchmark_startup_perf.py` and
 `scripts/benchmark_runtime_usage.py`; they are measurements for this branch, not
 universal guarantees.
@@ -66,6 +66,7 @@ specific benchmark claim it represents.
 | <img src="docs/assets/10x-fast/perf-plugin-discovery.svg" width="320" alt="plugin discovery old 0.5571s new 0.1930s gain 2.89x"> | `#plugin-discovery` `#startup` | 0.5571s | 0.1930s | **2.89x** |
 | <img src="docs/assets/10x-fast/perf-session-batch-writes.svg" width="320" alt="SQLite session writes old 0.6329s new 0.0240s gain 24.21x"> | `#sqlite` `#session-db` | 0.6329s | 0.0240s | **24.21x** |
 | <img src="docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg" width="320" alt="dead local endpoint old 51.4181s new 5.5563s gain 9.25x"> | `#runtime` `#local-endpoint` | 51.4181s | 5.5563s | **9.25x** |
+| <img src="docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg" width="320" alt="OpenRouter model metadata cold process old network timeout path 10 seconds new disk cache 0.0073 seconds gain up to 1378x"> | `#runtime` `#metadata` `#offline-cache` | up to 10.0000s | 0.0073s | **up to 1378x** |
 | <img src="docs/assets/10x-fast/phase-7-delegate-parallel-guard.svg" width="320" alt="parallel guard old 6.9878s new 1.6403s gain 4.26x"> | `#delegation` `#parallel-tools` | 6.9878s | 1.6403s | **4.26x** |
 | <img src="docs/assets/10x-fast/runtime-benchmark-suite.svg" width="320" alt="runtime benchmark suite showing gains up to 22.10x"> | `#runtime` `#benchmark-suite` | mixed hot paths | latest medians | **up to 22.10x** |
 | <img src="docs/assets/10x-fast/generated/parallel-runtime.png" width="320" alt="parallel runtime generated comparison old 0.3036s new 0.0590s gain 5.14x"> | `#parallel-tools` `#generated` | 0.3036s | 0.0590s | **5.14x** |
@@ -85,6 +86,8 @@ specific benchmark claim it represents.
 ### Runtime Hot Paths
 
 ![runtime local endpoint fast path comparison](docs/assets/10x-fast/runtime-local-endpoint-fast-path.svg)
+
+![OpenRouter metadata disk cache comparison](docs/assets/10x-fast/runtime-openrouter-metadata-cache.svg)
 
 ![runtime benchmark suite](docs/assets/10x-fast/runtime-benchmark-suite.svg)
 

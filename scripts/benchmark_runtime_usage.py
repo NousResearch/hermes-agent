@@ -419,6 +419,53 @@ def case():
 
 run_measured(case)
 """,
+    "openrouter_metadata_disk_cache": COMMON_PREFIX
+    + r"""
+def case():
+    os.environ["HERMES_OPENROUTER_METADATA_DISK_CACHE"] = "1"
+    os.environ["HERMES_OPENROUTER_METADATA_CACHE_TTL"] = "3600"
+
+    import agent.model_metadata as mm
+
+    cache_path = Path(os.environ["HERMES_HOME"]) / "cache" / "openrouter_model_metadata.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    models = {
+        f"provider/model-{idx}": {
+            "context_length": 128000 + idx,
+            "max_completion_tokens": 4096,
+            "name": f"Model {idx}",
+            "pricing": {},
+        }
+        for idx in range(500)
+    }
+    cache_path.write_text(
+        json.dumps({
+            "version": mm._MODEL_METADATA_DISK_CACHE_VERSION,
+            "source_url": "bench",
+            "fetched_at": time.time(),
+            "models": models,
+        }),
+        encoding="utf-8",
+    )
+    mm.requests.get = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("network should not be used"))
+
+    iterations = 100
+    start = time.perf_counter()
+    result = {}
+    for _ in range(iterations):
+        mm._model_metadata_cache = {}
+        mm._model_metadata_cache_time = 0
+        result = mm.fetch_model_metadata()
+    elapsed = time.perf_counter() - start
+    return {
+        "_elapsed": elapsed,
+        "iterations": iterations,
+        "models": len(result),
+        "per_lookup_ms": (elapsed / iterations) * 1000,
+    }
+
+run_measured(case)
+""",
     "parallel_guard_read_files": COMMON_PREFIX
     + r"""
 def case():
@@ -547,7 +594,7 @@ def _fmt_seconds(value: float | None) -> str:
 
 def _notes(sample: dict) -> str:
     notes = []
-    for key in ("tools", "valid_tools", "tasks", "messages", "iterations"):
+    for key in ("tools", "valid_tools", "tasks", "messages", "iterations", "models"):
         if key in sample:
             notes.append(f"{key}={sample[key]}")
     if sample.get("allowed") is not None:
@@ -556,6 +603,8 @@ def _notes(sample: dict) -> str:
         notes.append(f"per_call={sample['per_call_ms']:.4f}ms")
     if "per_batch_ms" in sample:
         notes.append(f"per_batch={sample['per_batch_ms']:.4f}ms")
+    if "per_lookup_ms" in sample:
+        notes.append(f"per_lookup={sample['per_lookup_ms']:.4f}ms")
     if "sequential_equivalent" in sample:
         notes.append(f"seq={sample['sequential_equivalent']:.4f}s")
     if "concurrent" in sample:
@@ -589,12 +638,19 @@ def _notes(sample: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-n", "--samples", type=int, default=3)
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=sorted(CASES),
+        help="Run only the named case. Repeat to run multiple cases.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown.")
     args = parser.parse_args()
 
+    selected_cases = {name: CASES[name] for name in (args.case or CASES.keys())}
     results = {
         name: _summarize([_run_case(name, code) for _ in range(args.samples)])
-        for name, code in CASES.items()
+        for name, code in selected_cases.items()
     }
 
     if args.json:

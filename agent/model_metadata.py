@@ -5,6 +5,7 @@ and run_agent.py for pre-flight context checks.
 """
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -19,7 +20,7 @@ import yaml
 
 from utils import base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,9 @@ def _strip_provider_prefix(model: str) -> str:
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
+_MODEL_METADATA_DISK_CACHE_VERSION = 1
 _MODEL_CACHE_TTL = 3600
+_openrouter_metadata_cache_config: Optional[Dict[str, Any]] = None
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
@@ -599,12 +602,130 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
         cache.setdefault(bare_model, entry)
 
 
+def _parse_bool_env(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _read_openrouter_metadata_cache_config() -> Dict[str, Any]:
+    """Read only the OpenRouter cache keys without importing full CLI config."""
+    global _openrouter_metadata_cache_config
+    if _openrouter_metadata_cache_config is not None:
+        return _openrouter_metadata_cache_config
+
+    path = get_hermes_home() / "config.yaml"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        openrouter_cfg = payload.get("openrouter", {})
+        if not isinstance(openrouter_cfg, dict):
+            openrouter_cfg = {}
+        _openrouter_metadata_cache_config = openrouter_cfg
+    except Exception:
+        _openrouter_metadata_cache_config = {}
+    return _openrouter_metadata_cache_config
+
+
+def _openrouter_metadata_disk_cache_enabled() -> bool:
+    env_value = _parse_bool_env(os.getenv("HERMES_OPENROUTER_METADATA_DISK_CACHE"))
+    if env_value is not None:
+        return env_value
+    value = _read_openrouter_metadata_cache_config().get("model_metadata_disk_cache", True)
+    if isinstance(value, str):
+        parsed = _parse_bool_env(value)
+        return True if parsed is None else parsed
+    return bool(value)
+
+
+def _openrouter_metadata_cache_ttl() -> float:
+    env_value = os.getenv("HERMES_OPENROUTER_METADATA_CACHE_TTL")
+    if env_value:
+        try:
+            return max(0.0, float(env_value))
+        except ValueError:
+            pass
+
+    value = _read_openrouter_metadata_cache_config().get("model_metadata_cache_ttl", _MODEL_CACHE_TTL)
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return float(_MODEL_CACHE_TTL)
+
+
+def _openrouter_model_metadata_cache_path() -> Path:
+    return get_hermes_home() / "cache" / "openrouter_model_metadata.json"
+
+
+def _read_openrouter_model_metadata_disk_cache(
+    *,
+    max_age_seconds: Optional[float] = None,
+) -> Optional[tuple[Dict[str, Dict[str, Any]], float]]:
+    if not _openrouter_metadata_disk_cache_enabled():
+        return None
+
+    path = _openrouter_model_metadata_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.debug("Ignoring unreadable OpenRouter metadata cache %s: %s", path, exc)
+        return None
+
+    if not isinstance(payload, dict) or payload.get("version") != _MODEL_METADATA_DISK_CACHE_VERSION:
+        return None
+    models = payload.get("models")
+    fetched_at = payload.get("fetched_at")
+    if not isinstance(models, dict) or not isinstance(fetched_at, (int, float)):
+        return None
+    age = time.time() - float(fetched_at)
+    if max_age_seconds is not None and age > max_age_seconds:
+        return None
+    return models, float(fetched_at)
+
+
+def _write_openrouter_model_metadata_disk_cache(
+    cache: Dict[str, Dict[str, Any]],
+    fetched_at: float,
+) -> None:
+    if not cache or not _openrouter_metadata_disk_cache_enabled():
+        return
+
+    path = _openrouter_model_metadata_cache_path()
+    payload = {
+        "version": _MODEL_METADATA_DISK_CACHE_VERSION,
+        "source_url": OPENROUTER_MODELS_URL,
+        "fetched_at": fetched_at,
+        "models": cache,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Failed to write OpenRouter metadata cache %s: %s", path, exc)
+
+
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
+    """Fetch model metadata from OpenRouter with memory and disk caching."""
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+    cache_ttl = _openrouter_metadata_cache_ttl()
+    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < cache_ttl:
         return _model_metadata_cache
+
+    if not force_refresh:
+        disk_cached = _read_openrouter_model_metadata_disk_cache(max_age_seconds=cache_ttl)
+        if disk_cached is not None:
+            _model_metadata_cache, _model_metadata_cache_time = disk_cached
+            logger.debug("Loaded metadata for %s models from OpenRouter disk cache", len(_model_metadata_cache))
+            return _model_metadata_cache
 
     try:
         response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
@@ -627,10 +748,19 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
         _model_metadata_cache = cache
         _model_metadata_cache_time = time.time()
+        _write_openrouter_model_metadata_disk_cache(cache, _model_metadata_cache_time)
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
+        disk_cached = _read_openrouter_model_metadata_disk_cache()
+        if disk_cached is not None:
+            _model_metadata_cache, _model_metadata_cache_time = disk_cached
+            logger.debug(
+                "Using stale OpenRouter metadata disk cache after fetch failure: %s",
+                e,
+            )
+            return _model_metadata_cache
         logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
         return _model_metadata_cache or {}
 

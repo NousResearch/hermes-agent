@@ -11,6 +11,7 @@ Coverage levels:
 """
 
 import os
+import json
 import time
 import tempfile
 
@@ -751,6 +752,14 @@ class TestFetchModelMetadata:
         mm._model_metadata_cache = {}
         mm._model_metadata_cache_time = 0
 
+    def setup_method(self):
+        os.environ["HERMES_OPENROUTER_METADATA_DISK_CACHE"] = "0"
+        self._reset_cache()
+
+    def teardown_method(self):
+        os.environ.pop("HERMES_OPENROUTER_METADATA_DISK_CACHE", None)
+        self._reset_cache()
+
     @patch("agent.model_metadata.requests.get")
     def test_caches_result(self, mock_get):
         self._reset_cache()
@@ -861,6 +870,114 @@ class TestFetchModelMetadata:
 
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+
+class TestFetchModelMetadataDiskCache:
+    def _reset_cache(self):
+        import agent.model_metadata as mm
+        mm._model_metadata_cache = {}
+        mm._model_metadata_cache_time = 0
+
+    def setup_method(self):
+        os.environ["HERMES_OPENROUTER_METADATA_DISK_CACHE"] = "1"
+        os.environ.pop("HERMES_OPENROUTER_METADATA_CACHE_TTL", None)
+        self._reset_cache()
+
+    def teardown_method(self):
+        os.environ.pop("HERMES_OPENROUTER_METADATA_DISK_CACHE", None)
+        os.environ.pop("HERMES_OPENROUTER_METADATA_CACHE_TTL", None)
+        self._reset_cache()
+
+    @patch("agent.model_metadata.requests.get")
+    def test_successful_fetch_writes_disk_cache(self, mock_get, tmp_path):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "openrouter_model_metadata.json"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "provider/test-model", "context_length": 99999, "name": "Test"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with patch("agent.model_metadata._openrouter_model_metadata_cache_path", return_value=cache_file):
+            result = fetch_model_metadata(force_refresh=True)
+
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        assert result["provider/test-model"]["context_length"] == 99999
+        assert payload["version"] == mm._MODEL_METADATA_DISK_CACHE_VERSION
+        assert payload["models"]["test-model"]["context_length"] == 99999
+
+    @patch("agent.model_metadata.requests.get")
+    def test_fresh_disk_cache_avoids_network_on_cold_process(self, mock_get, tmp_path):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "openrouter_model_metadata.json"
+        cache_file.write_text(
+            json.dumps({
+                "version": mm._MODEL_METADATA_DISK_CACHE_VERSION,
+                "source_url": "test",
+                "fetched_at": time.time(),
+                "models": {"disk/model": {"context_length": 654321}},
+            }),
+            encoding="utf-8",
+        )
+
+        with patch("agent.model_metadata._openrouter_model_metadata_cache_path", return_value=cache_file):
+            result = fetch_model_metadata()
+
+        assert result["disk/model"]["context_length"] == 654321
+        mock_get.assert_not_called()
+
+    @patch("agent.model_metadata.requests.get")
+    def test_stale_disk_cache_used_after_network_failure(self, mock_get, tmp_path):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "openrouter_model_metadata.json"
+        cache_file.write_text(
+            json.dumps({
+                "version": mm._MODEL_METADATA_DISK_CACHE_VERSION,
+                "source_url": "test",
+                "fetched_at": time.time() - _MODEL_CACHE_TTL - 60,
+                "models": {"stale/model": {"context_length": 111111}},
+            }),
+            encoding="utf-8",
+        )
+        mock_get.side_effect = Exception("offline")
+
+        with patch("agent.model_metadata._openrouter_model_metadata_cache_path", return_value=cache_file):
+            result = fetch_model_metadata()
+
+        assert result["stale/model"]["context_length"] == 111111
+        assert mock_get.call_count == 1
+
+    @patch("agent.model_metadata.requests.get")
+    def test_force_refresh_bypasses_fresh_disk_cache(self, mock_get, tmp_path):
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "openrouter_model_metadata.json"
+        cache_file.write_text(
+            json.dumps({
+                "version": mm._MODEL_METADATA_DISK_CACHE_VERSION,
+                "source_url": "test",
+                "fetched_at": time.time(),
+                "models": {"disk/model": {"context_length": 654321}},
+            }),
+            encoding="utf-8",
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "net/model", "context_length": 222222, "name": "Network"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with patch("agent.model_metadata._openrouter_model_metadata_cache_path", return_value=cache_file):
+            result = fetch_model_metadata(force_refresh=True)
+
+        assert "net/model" in result
+        assert "disk/model" not in result
+        assert mock_get.call_count == 1
 
 
 # =========================================================================

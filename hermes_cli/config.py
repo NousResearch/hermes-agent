@@ -691,9 +691,17 @@ DEFAULT_CONFIG = {
     #   See: https://openrouter.ai/docs/guides/features/response-caching
     # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
     #   Default 300 (5 minutes). Only used when response_cache is enabled.
+    # model_metadata_disk_cache: persist model/context/pricing metadata so fresh
+    #   Hermes processes avoid a cold OpenRouter /models request and can keep
+    #   working from stale metadata when offline.
+    # model_metadata_cache_ttl: freshness window for the memory/disk metadata
+    #   cache in seconds. Set HERMES_OPENROUTER_METADATA_CACHE_TTL to override
+    #   this for a process without editing config.yaml.
     "openrouter": {
         "response_cache": True,
         "response_cache_ttl": 300,
+        "model_metadata_disk_cache": True,
+        "model_metadata_cache_ttl": 3600,
     },
 
     # AWS Bedrock provider configuration.

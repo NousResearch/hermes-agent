@@ -230,6 +230,8 @@ class TestDefaultConfig:
         or_cfg = DEFAULT_CONFIG["openrouter"]
         assert or_cfg["response_cache"] is True
         assert or_cfg["response_cache_ttl"] == 300
+        assert or_cfg["model_metadata_disk_cache"] is True
+        assert or_cfg["model_metadata_cache_ttl"] == 3600
 
 
 # ---------------------------------------------------------------------------

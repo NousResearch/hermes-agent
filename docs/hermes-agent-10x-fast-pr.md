@@ -251,6 +251,15 @@ Generated visuals for README/PR:
 
 ![Delegate task and parallel guard comparison](assets/10x-fast/phase-7-delegate-parallel-guard.svg)
 
+24. Added offline-first OpenRouter model metadata caching.
+    `agent/model_metadata.py` now writes versioned context/pricing metadata to
+    `$HERMES_HOME/cache/openrouter_model_metadata.json`, reads a fresh disk
+    cache before making a cold `/models` request in new processes, and falls
+    back to stale disk metadata if refresh fails. `force_refresh=True` still
+    bypasses the disk cache.
+
+![OpenRouter metadata disk cache comparison](assets/10x-fast/runtime-openrouter-metadata-cache.svg)
+
 ## Latest Local Benchmark
 
 Command:
@@ -294,6 +303,7 @@ Results after Phase 3:
 | `delegate_task_batch_scheduler` | 0.3971s | mocked 3-task scheduler; `config_loads=1`; child run phase ~0.0535s |
 | `parallel_tool_batch_sleep` | 0.0590s | 5.14x faster than sequential equivalent |
 | `tool_dispatch_noop` | 0.0992s | 0.0308ms per dispatch over 3000 calls |
+| `openrouter_metadata_disk_cache` | 0.7499s | 100 cold memory resets over 500 models; ~0.0073s per disk lookup |
 | `parallel_guard_read_files` | 1.6403s | 0.1673ms per 8-tool safety decision; 4.26x lower median than the prior 6.9878s |
 | `session_append_messages_batch` | 0.0192s | 22.10x faster than loop writes for 240 messages |
 
@@ -340,4 +350,6 @@ python -m py_compile run_agent.py tools\delegate_tool.py scripts\benchmark_runti
 python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
 python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization -q
 python scripts\benchmark_runtime_usage.py -n 3
+python -m pytest tests\agent\test_model_metadata.py tests\agent\test_openrouter_response_cache.py::TestDefaultConfig -q
+python scripts\benchmark_runtime_usage.py --case openrouter_metadata_disk_cache --samples 5
 ```

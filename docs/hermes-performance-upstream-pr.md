@@ -227,6 +227,34 @@ Expected effect:
 
 - Lower fixed cost on every safe parallel read batch.
 
+### 9. OpenRouter metadata disk cache
+
+Files:
+
+- `agent/model_metadata.py`
+- `hermes_cli/config.py`
+- `tests/agent/test_model_metadata.py`
+- `tests/agent/test_openrouter_response_cache.py`
+
+Changes:
+
+- `fetch_model_metadata()` now keeps the existing in-memory cache and adds a
+  versioned disk cache at `$HERMES_HOME/cache/openrouter_model_metadata.json`.
+- Fresh disk cache entries are used before making a new OpenRouter `/models`
+  request in a fresh Hermes process.
+- `force_refresh=True` still bypasses the disk cache and refreshes from the
+  network.
+- If refresh fails and a stale disk cache exists, Hermes uses the stale cache
+  instead of losing context/pricing metadata.
+- Added `openrouter.model_metadata_disk_cache` and
+  `openrouter.model_metadata_cache_ttl` config defaults, plus environment
+  overrides for process-local experiments.
+
+Expected effect:
+
+- Faster repeated Hermes starts/subagent builds that need model metadata, and
+  more reliable offline/provider-outage behavior.
+
 ## Benchmarks
 
 Reference baseline for the startup comparisons came from detached `main` at:
@@ -264,6 +292,7 @@ python scripts\benchmark_runtime_usage.py -n 3
 | `delegate_task_batch_scheduler` | 0.3922s | `config_loads=1`; child run phase ~0.0541s |
 | `parallel_tool_batch_sleep` | 0.0547s | 5.55x over sequential equivalent |
 | `tool_dispatch_noop` | 0.0860s | ~0.0317ms per dispatch |
+| `openrouter_metadata_disk_cache` | 0.7499s | 100 cold memory resets over 500 models; ~0.0073s per disk lookup |
 | `parallel_guard_read_files` | 1.5366s | ~0.1557ms per 8-tool safety decision |
 | `session_append_messages_batch` | 0.0264s | latest sample 24.77x vs loop write |
 
@@ -293,6 +322,7 @@ python -m pytest tests\tools\test_registry.py tests\test_toolsets.py tests\test_
 python -m pytest tests\test_tui_gateway_server.py::test_config_get_mtime_includes_mcp_fingerprint tests\test_tui_gateway_server.py::test_mcp_config_fingerprint_treats_missing_section_as_empty tests\agent\test_model_metadata_local_ctx.py -q
 python -m pytest tests\tools\test_delegate.py tests\tools\test_delegate_subagent_timeout_diagnostic.py -q
 python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution tests\run_agent\test_run_agent.py::TestParallelScopePathNormalization tests\run_agent\test_tool_executor_contextvar_propagation.py tests\run_agent\test_concurrent_interrupt.py tests\run_agent\test_tool_call_guardrail_runtime.py -q
+python -m pytest tests\agent\test_model_metadata.py tests\agent\test_openrouter_response_cache.py::TestDefaultConfig -q
 ```
 
 Latest focused results:
@@ -301,10 +331,11 @@ Latest focused results:
 - TUI MCP fingerprint + model metadata local context: `27 passed`
 - Delegation + timeout diagnostics: `128 passed`
 - Concurrent tool execution + guardrails + interrupts: `40 passed`
+- Model metadata + OpenRouter default config: `99 passed`
 
 Total focused regression count in this pass:
 
-- `466 passed`
+- `565 passed`
 
 This was a targeted hot-path regression run, not the full repository suite.
 
@@ -331,6 +362,10 @@ This was a targeted hot-path regression run, not the full repository suite.
 
 - Risk: parallel guard fast path changes behavior.
   Mitigation: added focused tests for path normalization and cached-arg reuse.
+
+- Risk: stale OpenRouter model metadata.
+  Mitigation: cache is versioned, TTL-bound for normal reads, bypassed by
+  `force_refresh=True`, and stale reads are only used after refresh failure.
 
 ## Reviewer Guide
 

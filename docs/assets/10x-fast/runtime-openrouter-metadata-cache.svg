@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">OpenRouter metadata cache comparison</title>
+  <desc id="desc">Before cold process metadata lookup could wait on a network request up to 10 seconds; after fresh disk cache lookup takes 0.0073 seconds per lookup, up to 1378x faster in the avoided-timeout path.</desc>
+  <rect width="960" height="540" fill="#101820"/>
+  <rect x="36" y="36" width="888" height="468" rx="8" fill="#16232e" stroke="#3f5d6f" stroke-width="2"/>
+  <text x="70" y="92" fill="#f7fbff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="34" font-weight="700">Model metadata lookup</text>
+  <text x="70" y="126" fill="#b9cad6" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18">fresh process, OpenRouter context/pricing metadata</text>
+  <g transform="translate(70 176)">
+    <text x="0" y="0" fill="#ffcf99" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700">Before</text>
+    <rect x="0" y="24" width="700" height="70" rx="6" fill="#5f2435"/>
+    <rect x="0" y="24" width="700" height="70" rx="6" fill="#d95555" opacity="0.82"/>
+    <text x="24" y="68" fill="#fff8f3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="25" font-weight="700">network /models probe on cold process</text>
+    <text x="720" y="68" fill="#fff8f3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700" text-anchor="end">10.0000s</text>
+  </g>
+  <g transform="translate(70 306)">
+    <text x="0" y="0" fill="#a8f0cf" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700">After</text>
+    <rect x="0" y="24" width="700" height="70" rx="6" fill="#173f37"/>
+    <rect x="0" y="24" width="24" height="70" rx="6" fill="#22b07d"/>
+    <text x="24" y="68" fill="#f2fffb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="25" font-weight="700">fresh disk cache hit</text>
+    <text x="720" y="68" fill="#f2fffb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700" text-anchor="end">0.0073s</text>
+  </g>
+  <g transform="translate(70 430)">
+    <rect x="0" y="0" width="820" height="52" rx="6" fill="#0c131a" stroke="#315066"/>
+    <text x="24" y="34" fill="#f7fbff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="700">up to 1378x faster when the network probe is avoided</text>
+    <text x="796" y="34" fill="#90d7ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" text-anchor="end">#metadata #offline-cache #startup</text>
+  </g>
+</svg>

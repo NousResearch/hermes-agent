@@ -49,6 +49,11 @@ benchmark results, and the playbook for the next upstream Hermes release.
 - Added a fast path for all-`read_file` parallel guard checks.
 - Reused parsed guard arguments in concurrent tool execution to avoid parsing
   the same JSON twice.
+- Added persistent OpenRouter model metadata caching so fresh Hermes processes
+  can resolve context/pricing metadata from disk instead of repeating a cold
+  `/models` request.
+- Added stale disk-cache fallback when metadata refresh fails, preserving
+  operation during brief offline/provider outages.
 
 ### Documentation And Visuals
 
@@ -56,6 +61,8 @@ benchmark results, and the playbook for the next upstream Hermes release.
 - Added macro promotional comparison image:
   `docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png`.
 - Added deterministic SVG comparisons for each measured item.
+- Added `runtime-openrouter-metadata-cache.svg` for the model metadata
+  offline-cache comparison.
 - Added PR docs mapping each image to old value, new value, and gain.
 - Updated upstream PR body docs and public-fork PR body.
 
@@ -93,6 +100,12 @@ python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution 
 ```
 
 Result: `40 passed`.
+
+```powershell
+python -m pytest tests\agent\test_model_metadata.py::TestFetchModelMetadata tests\agent\test_model_metadata.py::TestFetchModelMetadataDiskCache -q
+```
+
+Result: `11 passed`.
 
 ## Full Suite Attempt
 
@@ -168,6 +181,7 @@ python scripts\benchmark_runtime_usage.py -n 3
 | `delegate_task_batch_scheduler` | 0.3922s | `config_loads=1`; child run phase ~0.0541s |
 | `parallel_tool_batch_sleep` | 0.0547s | 5.55x over sequential equivalent |
 | `tool_dispatch_noop` | 0.0860s | ~0.0317ms per dispatch |
+| `openrouter_metadata_disk_cache` | 0.7499s | 100 cold memory resets over 500 models; ~0.0073s per disk lookup, avoids cold network probe within TTL |
 | `parallel_guard_read_files` | 1.5366s | ~0.1557ms per 8-tool guard decision |
 | `session_append_messages_batch` | 0.0264s | latest sample speedup 24.77x vs loop write |
 

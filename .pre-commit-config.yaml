@@ -15,3 +15,16 @@ repos:
       - id: check-yaml
         args: [--allow-multiple-documents]
         exclude: ^website/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.3
+    hooks:
+      - id: gitleaks
+        args: [--config=.gitleaks.toml]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: ^(tests/|skills/|optional-skills/|website/|web/|docs/|\.pytest_cache/|\.ruff_cache/)

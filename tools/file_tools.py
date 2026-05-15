@@ -555,6 +555,10 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
+# Per-task last-known CWD — preserved across env re-creation so
+# relative-path file writes land in the right directory after the
+# terminal environment is cleaned up and rebuilt (root cause of #26211).
+_last_known_cwd: dict = {}
 
 # Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
@@ -789,7 +793,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
                 return cached
             else:
-                # Environment was cleaned up -- invalidate stale cache entry
+                # Environment was cleaned up -- preserve the old cwd before
+                # invalidating the stale cache entry (fixes #26211: silent
+                # file-creation failures in long-running conversations).
+                old_cwd = getattr(cached, "cwd", None)
+                if old_cwd:
+                    with _file_ops_lock:
+                        _last_known_cwd[task_id] = old_cwd
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
@@ -827,7 +837,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             else:
                 image = ""
 
-            cwd = overrides.get("cwd") or config["cwd"]
+            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None

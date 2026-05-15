@@ -98,6 +98,7 @@ from agent.markdown_tables import (
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_OSC8_SEQUENCE_RE = re.compile(r"\x1b]8;[^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -2332,7 +2333,7 @@ class ChatConsole:
         # Read terminal width at render time so panels adapt to current size
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
-        output = self._buffer.getvalue()
+        output = _OSC8_SEQUENCE_RE.sub("", self._buffer.getvalue())
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 

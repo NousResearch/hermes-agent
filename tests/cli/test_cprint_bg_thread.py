@@ -12,6 +12,7 @@ These tests verify the routing logic without spinning up a real PT app.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -262,6 +263,24 @@ def test_replay_output_history_rerenders_callable_entries(monkeypatch):
     assert widths_seen == ["called"]
     assert printed == ["top border\nbody"]
     assert list(cli._OUTPUT_HISTORY) == [_render_current_width]
+
+
+def test_chat_console_strips_osc8_sequences_but_keeps_link_text(monkeypatch):
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", lambda text: printed.append(text))
+    monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((160, 24)))
+
+    console = cli.ChatConsole()
+    console.print(
+        "\x1b]8;;https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.7\x1b\\"
+        "Hermes Agent v0.13.0 (2026.5.7)"
+        "\x1b]8;;\x1b\\"
+    )
+
+    joined = " ".join(part.strip() for part in printed if part.strip())
+    assert joined == "Hermes Agent v0.13.0 (2026.5.7)"
+    assert "\x1b]8;" not in joined
+    assert "releases/tag/" not in joined
 
 
 def test_replay_output_history_batches_rendered_lines_into_one_print(monkeypatch):

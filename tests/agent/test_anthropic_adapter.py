@@ -305,6 +305,115 @@ class TestResolveAnthropicToken:
 
         assert resolve_anthropic_token() == "sk-ant-oat01-static-token"
 
+    def test_falls_back_to_credential_pool_when_only_hermes_pkce_exists(self, monkeypatch, tmp_path):
+        """`hermes auth add anthropic --type oauth` (PKCE) stores its token
+        only in the credential_pool — not in env vars or Claude Code files.
+        Cron jobs in this state must still resolve the token. Regression
+        for #26344.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        # Empty HOME so the Claude Code keychain + ~/.claude paths return
+        # nothing. HERMES_HOME points to a separate subpath so the auth.json
+        # seat belt in _auth_file_path doesn't refuse the test read (it
+        # triggers when the resolved path equals Path.home() / .hermes / auth.json).
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: fake_home)
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [{
+                    "id": "pkce-1",
+                    "label": "claude-pro",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:hermes_pkce",
+                    "access_token": "sk-ant-oat01-pkce-token",
+                    "refresh_token": "rt-1",
+                    "expires_at_ms": int(time.time() * 1000) + 3600_000,
+                }],
+            },
+        }))
+
+        assert resolve_anthropic_token() == "sk-ant-oat01-pkce-token"
+
+    def test_pool_lookup_skips_exhausted_entries(self, monkeypatch, tmp_path):
+        """Entries in exhaustion cooldown are skipped so the resolver
+        doesn't hand back a token the pool already knows is rate-limited."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: fake_home)
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "exhausted",
+                        "label": "rate-limited",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:hermes_pkce",
+                        "access_token": "sk-ant-oat01-exhausted",
+                        "last_status": "exhausted",
+                        "last_error_reset_at": time.time() + 3600,
+                    },
+                    {
+                        "id": "fresh",
+                        "label": "fresh",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:hermes_pkce",
+                        "access_token": "sk-ant-oat01-fresh",
+                    },
+                ],
+            },
+        }))
+
+        assert resolve_anthropic_token() == "sk-ant-oat01-fresh"
+
+    def test_env_anthropic_token_still_wins_over_pool(self, monkeypatch, tmp_path):
+        """The env-var path is unchanged: it must win over the pool so
+        users can override the resolved credential without editing auth.json.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-env")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: fake_home)
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [{
+                    "id": "pkce-1",
+                    "label": "pool-cred",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:hermes_pkce",
+                    "access_token": "sk-ant-oat01-pool",
+                }],
+            },
+        }))
+
+        assert resolve_anthropic_token() == "sk-ant-oat01-env"
+
 
 class TestRefreshOauthToken:
     def test_returns_none_without_refresh_token(self):

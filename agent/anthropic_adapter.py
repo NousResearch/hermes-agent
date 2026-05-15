@@ -950,6 +950,51 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_token_from_pool() -> Optional[str]:
+    """Pull the first usable Anthropic access_token from the credential pool.
+
+    The credential pool (``~/.hermes/auth.json::credential_pool["anthropic"]``)
+    is populated by ``hermes auth add anthropic`` — including the PKCE OAuth
+    flow (``--type oauth``) and manual API keys (``--type api_key``). Without
+    consulting the pool, code paths that don't go through ``CredentialPool``
+    explicitly (cron jobs, the auxiliary client fallback, ``hermes debug``)
+    cannot see tokens stored only via Hermes-native auth.
+
+    Reads the pool raw and skips entries currently in exhaustion cooldown.
+    Rotation/refresh/heartbeat semantics still belong to
+    ``CredentialPool.select()`` — this is a lightweight read-only fallback
+    for callers that only need a single token string. Returns None on any
+    error (pool unavailable, malformed entries, test seat belt tripped).
+    """
+    try:
+        from hermes_cli.auth import read_credential_pool
+        entries = read_credential_pool("anthropic")
+    except Exception as e:
+        logger.debug("Credential pool lookup failed: %s", e)
+        return None
+
+    if not isinstance(entries, list):
+        return None
+
+    import time as _time
+    now_s = _time.time()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = (entry.get("access_token") or "").strip()
+        if not token:
+            continue
+        # Skip entries currently in exhaustion cooldown — pool selection
+        # would also skip them, and returning an exhausted token would
+        # produce a misleading 401 rather than a clean "no creds" error.
+        if entry.get("last_status") == "exhausted":
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > now_s:
+                continue
+        return token
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -958,7 +1003,9 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Hermes credential_pool (``~/.hermes/auth.json``) — populated by
+         ``hermes auth add anthropic`` for both PKCE OAuth and manual API keys.
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -985,7 +1032,16 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool — `hermes auth add anthropic --type oauth`
+    # (PKCE) stores its token only here, not in any env var or Claude Code
+    # file. Without this lookup, cron jobs that route through
+    # ``resolve_runtime_provider`` raise AuthError even when
+    # ``hermes auth status anthropic`` reports ``logged in``. See #26344.
+    pool_token = _resolve_anthropic_token_from_pool()
+    if pool_token:
+        return pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:

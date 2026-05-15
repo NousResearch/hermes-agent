@@ -186,7 +186,18 @@ def _detect_target() -> str | None:
     system = platform.system()
     machine = platform.machine().lower()
 
-    # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
+    # Termux on Android uses Bionic libc, not glibc. The Linux binaries
+    # are dynamically linked against /lib/ld-linux-aarch64.so.1 which does
+    # not exist in Termux — the binary will spawn-fail even though the file
+    # exists. Detect Termux and return None to skip tirith gracefully.
+    _is_termux = (
+        os.environ.get("PREFIX", "").startswith("/data/data/com.termux")
+        or os.environ.get("TERMUX_VERSION") is not None
+        or system == "Android"
+    )
+    if _is_termux:
+        return None
+
     if system == "Darwin":
         plat = "apple-darwin"
     elif system in {"Linux", "Android"}:
@@ -632,7 +643,20 @@ def check_command_security(command: str) -> dict:
     fail_open = cfg["tirith_fail_open"]
 
     if tirith_path is None:
-        logger.warning("tirith path resolved to None; scanning disabled")
+        # Check if we are on Termux — provide a specific message instead of
+        # a generic warning (issue #26275).
+        _is_termux = (
+            os.environ.get("PREFIX", "").startswith("/data/data/com.termux")
+            or os.environ.get("TERMUX_VERSION") is not None
+        )
+        if _is_termux:
+            logger.debug(
+                "tirith disabled on Termux — the glibc-linked binary cannot run "
+                "under Bionic libc. Run Hermes inside a proot-distro Ubuntu "
+                "environment for full tirith support."
+            )
+        else:
+            logger.warning("tirith path resolved to None; scanning disabled")
         if fail_open:
             return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
         return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}

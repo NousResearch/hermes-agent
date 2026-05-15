@@ -166,7 +166,7 @@ youtube = [
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
-livekit = ["livekit>=1.0.17,<2", "livekit-api>=1.0.7,<2"]
+livekit = ["livekit==1.1.7", "livekit-api==1.1.0"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git@c20c85256e5a45ad31edf8b7276e9c5ee1995a30",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git@30517b667f18a3dfb7ef33fb56cf686d5820ba2b",

@@ -257,6 +257,13 @@ class TestBuildToolStart:
         assert result.content[0].new_text == "new advice"
         assert result.raw_input is None
 
+    def test_build_tool_start_polished_fallback_uses_module_json(self):
+        """Polished fallback tools should not trip local import shadowing."""
+        result = build_tool_start("tc-browser-back", "browser_back", {})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"
+        assert result.raw_input is None
+
     def test_build_tool_start_generic_fallback(self):
         """Unknown tools should get a generic text representation."""
         args = {"foo": "bar", "baz": 42}

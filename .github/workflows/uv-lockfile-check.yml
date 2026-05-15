@@ -45,13 +45,13 @@ name: uv.lock check
 
 on:
   push:
-    branches: [main]
+    branches: [main, inkbox]
     paths:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/uv-lockfile-check.yml'
   pull_request:
-    branches: [main]
+    branches: [main, inkbox]
     paths:
       - 'pyproject.toml'
       - 'uv.lock'

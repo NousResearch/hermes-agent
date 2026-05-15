@@ -21,7 +21,7 @@ name: OSV-Scanner
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, inkbox]
     paths:
       - 'uv.lock'
       - 'pyproject.toml'
@@ -33,7 +33,7 @@ on:
       - 'website/package-lock.json'
       - '.github/workflows/osv-scanner.yml'
   push:
-    branches: [main]
+    branches: [main, inkbox]
     paths:
       - 'uv.lock'
       - 'pyproject.toml'

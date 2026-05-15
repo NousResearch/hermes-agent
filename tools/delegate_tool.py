@@ -2371,17 +2371,38 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         base_lower = configured_base_url.lower()
         provider = "custom"
         api_mode = "chat_completions"
-        try:
-            from hermes_cli.runtime_provider import _detect_api_mode_for_url
+        detected_api_mode = None
+        if configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
 
-            detected_api_mode = _detect_api_mode_for_url(configured_base_url)
-        except Exception as exc:
-            logger.debug(
-                "Could not infer delegation API mode from base_url '%s': %s",
-                configured_base_url,
-                exc,
-            )
-            detected_api_mode = None
+                runtime = resolve_runtime_provider(
+                    requested=configured_provider,
+                    explicit_api_key=configured_api_key,
+                    explicit_base_url=configured_base_url,
+                    target_model=configured_model,
+                )
+                runtime_api_mode = runtime.get("api_mode")
+                if isinstance(runtime_api_mode, str) and runtime_api_mode.strip():
+                    detected_api_mode = runtime_api_mode.strip()
+            except Exception as exc:
+                logger.debug(
+                    "Could not resolve delegation provider '%s' for direct base_url '%s': %s",
+                    configured_provider,
+                    configured_base_url,
+                    exc,
+                )
+        if not detected_api_mode:
+            try:
+                from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+                detected_api_mode = _detect_api_mode_for_url(configured_base_url)
+            except Exception as exc:
+                logger.debug(
+                    "Could not infer delegation API mode from base_url '%s': %s",
+                    configured_base_url,
+                    exc,
+                )
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower

@@ -936,6 +936,32 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["api_mode"], "anthropic_messages")
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_direct_endpoint_uses_configured_provider_api_mode(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://open.bigmodel.cn/api/custom",
+            "api_key": "provider-key",
+            "api_mode": "anthropic_messages",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "glm-4.6",
+            "provider": "ccr",
+            "base_url": "https://open.bigmodel.cn/api/custom",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        mock_resolve.assert_called_once_with(
+            requested="ccr",
+            explicit_api_key=None,
+            explicit_base_url="https://open.bigmodel.cn/api/custom",
+            target_model="glm-4.6",
+        )
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://open.bigmodel.cn/api/custom")
+        self.assertIsNone(creds["api_key"])
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):

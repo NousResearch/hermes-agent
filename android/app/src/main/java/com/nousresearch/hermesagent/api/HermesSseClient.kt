@@ -12,6 +12,7 @@ class HermesSseClient(
     baseUrl: String,
     private val apiKey: String? = null,
     private val httpClient: OkHttpClient = OkHttpClient(),
+    private val networkGuard: (String) -> Unit = {},
 ) {
     private val normalizedBaseUrl = baseUrl.trimEnd('/')
 
@@ -34,8 +35,10 @@ class HermesSseClient(
                 }
             )
             }
+            val chatUrl = "$normalizedBaseUrl/v1/chat/completions"
+            networkGuard(chatUrl)
             val builder = Request.Builder()
-                .url("$normalizedBaseUrl/v1/chat/completions")
+                .url(chatUrl)
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             if (!apiKey.isNullOrBlank()) {
                 builder.header("Authorization", "Bearer $apiKey")

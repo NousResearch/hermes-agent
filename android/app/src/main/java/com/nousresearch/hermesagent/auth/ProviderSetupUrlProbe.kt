@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.auth
 
+import android.content.Context
 import android.net.Uri
+import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.UnknownHostException
@@ -24,12 +26,19 @@ object ProviderSetupUrlProbe {
         "use a desktop browser",
     )
 
-    fun probe(url: String, timeoutMs: Int = DEFAULT_TIMEOUT_MS): ProviderSetupProbeResult {
+    fun probe(url: String, timeoutMs: Int = DEFAULT_TIMEOUT_MS, context: Context? = null): ProviderSetupProbeResult {
         val target = url.trim()
         val parsed = runCatching { Uri.parse(target) }.getOrNull()
         val scheme = parsed?.scheme?.lowercase().orEmpty()
         if (target.isBlank() || scheme !in setOf("http", "https") || parsed?.host.isNullOrBlank()) {
             return ProviderSetupProbeResult(target, reachable = false, statusLabel = "invalid URL")
+        }
+        if (context != null && HermesNetworkPolicy.isExternalNetworkBlocked(context, target)) {
+            return ProviderSetupProbeResult(
+                target,
+                reachable = false,
+                statusLabel = HermesNetworkPolicy.offlineBlockedMessage("provider setup probe"),
+            )
         }
         return try {
             val connection = (URL(target).openConnection() as HttpURLConnection).apply {

@@ -8,6 +8,8 @@ data class AppSettings(
     val model: String = "",
     val corr3xtBaseUrl: String = "",
     val dataSaverMode: Boolean = false,
+    val offlineAirplaneMode: Boolean = false,
+    val portalEnabled: Boolean = true,
     val onDeviceBackend: String = "none",
     val liteRtLmSpeculativeDecodingMode: String = "auto",
     val languageTag: String = "en",
@@ -23,6 +25,8 @@ class AppSettingsStore(context: Context) {
             model = preferences.getString(KEY_MODEL, "").orEmpty(),
             corr3xtBaseUrl = preferences.getString(KEY_CORR3XT_BASE_URL, "").orEmpty(),
             dataSaverMode = preferences.getBoolean(KEY_DATA_SAVER_MODE, false),
+            offlineAirplaneMode = preferences.getBoolean(KEY_OFFLINE_AIRPLANE_MODE, false),
+            portalEnabled = preferences.getBoolean(KEY_PORTAL_ENABLED, true),
             onDeviceBackend = preferences.getString(KEY_ON_DEVICE_BACKEND, "none").orEmpty(),
             liteRtLmSpeculativeDecodingMode = preferences.getString(
                 KEY_LITERT_LM_SPECULATIVE_DECODING_MODE,
@@ -39,6 +43,8 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_MODEL, settings.model)
             .putString(KEY_CORR3XT_BASE_URL, settings.corr3xtBaseUrl)
             .putBoolean(KEY_DATA_SAVER_MODE, settings.dataSaverMode)
+            .putBoolean(KEY_OFFLINE_AIRPLANE_MODE, settings.offlineAirplaneMode)
+            .putBoolean(KEY_PORTAL_ENABLED, settings.portalEnabled)
             .putString(KEY_ON_DEVICE_BACKEND, settings.onDeviceBackend)
             .putString(KEY_LITERT_LM_SPECULATIVE_DECODING_MODE, settings.liteRtLmSpeculativeDecodingMode)
             .putString(KEY_LANGUAGE_TAG, settings.languageTag)
@@ -52,6 +58,8 @@ class AppSettingsStore(context: Context) {
         private const val KEY_MODEL = "model"
         private const val KEY_CORR3XT_BASE_URL = "corr3xt_base_url"
         private const val KEY_DATA_SAVER_MODE = "data_saver_mode"
+        private const val KEY_OFFLINE_AIRPLANE_MODE = "offline_airplane_mode"
+        private const val KEY_PORTAL_ENABLED = "portal_enabled"
         private const val KEY_ON_DEVICE_BACKEND = "on_device_backend"
         private const val KEY_LITERT_LM_SPECULATIVE_DECODING_MODE = "litert_lm_speculative_decoding_mode"
         private const val KEY_LANGUAGE_TAG = "language_tag"

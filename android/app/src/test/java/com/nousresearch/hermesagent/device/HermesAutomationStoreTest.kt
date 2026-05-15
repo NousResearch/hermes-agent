@@ -1781,6 +1781,106 @@ class HermesAutomationStoreTest {
     }
 
     @Test
+    fun bridgeCreatesAdvancedSocialDmAndEmailWorkflowRecords() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = HermesAutomationStore(context)
+        store.clear()
+        store.setVariable("DM_REPLY", "Thanks, I will follow up from Hermes.")
+        store.setVariable("EMAIL_SUBJECT", "Hermes mobile follow-up")
+        store.setVariable("EMAIL_BODY", "Drafted locally by Hermes after the DM workflow.")
+
+        val launchTikTok = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_app_launch_task",
+                org.json.JSONObject()
+                    .put("id", "auto-tiktok-open")
+                    .put("label", "Open TikTok")
+                    .put("package_name", "com.zhiliaoapp.musically")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(launchTikTok.toString(), launchTikTok.getBoolean("success"))
+        assertEquals(ACTION_TYPE_APP_LAUNCH, launchTikTok.getJSONObject("automation").getString("action_type"))
+
+        val scrollFeed = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_ui_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-tiktok-scroll")
+                    .put("label", "Scroll TikTok feed")
+                    .put("ui_action", "scroll_down")
+                    .put("package_name", "com.zhiliaoapp.musically")
+                    .put("class_name", "RecyclerView")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(scrollFeed.toString(), scrollFeed.getBoolean("success"))
+        val scrollPayload = org.json.JSONObject(scrollFeed.getJSONObject("automation").getString("command"))
+        assertEquals(ACTION_TYPE_UI_ACTION, scrollFeed.getJSONObject("automation").getString("action_type"))
+        assertEquals("scroll_forward", scrollPayload.getString("ui_action"))
+
+        val typeDm = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_ui_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-dm-type")
+                    .put("label", "Type DM reply")
+                    .put("ui_action", "set_text")
+                    .put("package_name", "com.zhiliaoapp.musically")
+                    .put("view_id", "com.zhiliaoapp.musically:id/message_edit_text")
+                    .put("value", "%DM_REPLY")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(typeDm.toString(), typeDm.getBoolean("success"))
+        val dmPayload = org.json.JSONObject(typeDm.getJSONObject("automation").getString("command"))
+        assertEquals("%DM_REPLY", dmPayload.getString("value"))
+
+        val sendDm = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_ui_action_task",
+                org.json.JSONObject()
+                    .put("id", "auto-dm-send")
+                    .put("label", "Tap DM send")
+                    .put("ui_action", "click")
+                    .put("package_name", "com.zhiliaoapp.musically")
+                    .put("content_description_contains", "Send")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(sendDm.toString(), sendDm.getBoolean("success"))
+
+        val emailDraft = org.json.JSONObject(
+            HermesAutomationBridge.performActionJson(
+                context,
+                "create_email_draft_task",
+                org.json.JSONObject()
+                    .put("id", "auto-email-draft")
+                    .put("label", "Draft follow-up email")
+                    .put("to", "ops@example.com")
+                    .put("subject", "%EMAIL_SUBJECT")
+                    .put("body", "%EMAIL_BODY")
+                    .put("enabled", false),
+            ),
+        )
+        assertTrue(emailDraft.toString(), emailDraft.getBoolean("success"))
+        val emailPayload = org.json.JSONObject(emailDraft.getJSONObject("automation").getString("command"))
+        assertEquals(ACTION_TYPE_INTENT, emailDraft.getJSONObject("automation").getString("action_type"))
+        assertEquals("start_activity", emailPayload.getString("intent_task_action"))
+        assertEquals("android.intent.action.SENDTO", emailPayload.getString("intent_action"))
+        assertEquals("mailto:ops@example.com", emailPayload.getString("data_uri"))
+        assertEquals("%EMAIL_SUBJECT", emailPayload.getJSONObject("extras").getString("android.intent.extra.SUBJECT"))
+        assertEquals("%EMAIL_BODY", emailPayload.getJSONObject("extras").getString("android.intent.extra.TEXT"))
+
+        assertEquals(5, store.list().size)
+        assertTrue(store.list().all { !it.enabled })
+    }
+
+    @Test
     fun bridgeCreatesAndRunsAppLaunchRecordsSafely() {
         val context = RuntimeEnvironment.getApplication()
         HermesAutomationStore(context).clear()

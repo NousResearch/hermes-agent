@@ -64,7 +64,7 @@ class NativeToolCallingChatClient(
         var executedToolCalls = 0
         var latestToolResult = ""
         val initialToolSpecs = compactToolSpecsFor(userText)
-        val messages = JSONArray()
+        var messages = JSONArray()
             .put(systemMessage(toolsEnabled = initialToolSpecs.length() > 0))
             .put(
                 ChatMessage(
@@ -101,7 +101,7 @@ class NativeToolCallingChatClient(
                         .put("role", "tool")
                         .put("tool_call_id", toolCall.id)
                         .put("name", toolCall.name)
-                        .put("content", toolResult)
+                        .put("content", NativeToolContextCompressor.compactToolResult(toolResult))
                 )
                 if (shouldSkipNativeFollowUpAfterToolResult(toolResult)) {
                     externalActivityHandoff = true
@@ -116,6 +116,7 @@ class NativeToolCallingChatClient(
                 )
             }
 
+            messages = NativeToolContextCompressor.compactMessages(messages)
             val followUp = postChatCompletion(
                 normalizedBaseUrl = normalizedBaseUrl,
                 modelName = modelName,
@@ -1497,7 +1498,7 @@ class NativeToolCallingChatClient(
                             .put("name", "android_automation_tool")
                             .put(
                                 "description",
-                                "Create, list, run, enable, disable, delete, export, or import saved Android automations and variables. Supports shell, file-write, file-delete, variable set/clear/append/add/subtract/literal-replace, clipboard set, Tasker Flash/toast messages, vibration, safe Android system-action, accessibility UI-action, app-launch, Android intent, Shizuku/Sui package-permission/data-clear/connectivity-toggle, offline sunrise/sunset, notification post/cancel tasks, screen-aware overlay scene show/hide tasks, launcher shortcuts, a user-added Hermes Quick Settings tile, a Hermes home-screen widget, and token-protected Tasker/Locale action, condition, and event plugins bound to saved automations or Hermes/Shizuku state; direct sunrise/sunset calculation; safe Tasker XML/Data URI import; provider-backed calendar scan/watch actions; provider-backed location scan/watch actions; Shizuku-backed logcat scan/watch actions with a bounded scan cursor; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/calendar-event/location/sensor/logcat-entry/Shizuku-state/external-trigger/remote-dispatch phone triggers; OpenGUI-style standby heartbeat, standby device listing, standby dispatch payloads, execution status queries, lifecycle state for /pause /resume /cancel, raw slash payloads, and IM command strings such as !opengui devices, /opengui devices, /status, /run, and /do; Tasker-style %VARIABLE expansion; and Hermes automation bundle backup/restore. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. The Tasker condition plugin can expose Shizuku availability, saved automation enabled/disabled state, last-run success/failure, and saved Hermes variable set/equality state to Tasker profiles. The Tasker event plugin can trigger Tasker profiles from verified Hermes automation finished/succeeded/failed events and Shizuku available/unavailable updates while returning Tasker-local %hermes_* event variables. Tasker import supports a safe subset of exported Tasker actions including global UI navigation, safe settings panels, Flash, Vibrate, Vibrate Pattern, Set Clipboard, HTTP request, audio, Variable Set, Variable Clear, Variable Add, Variable Subtract, and replace-enabled Variable Search Replace, and leaves records disabled unless enable_imported is set. Overlay scenes require Android draw-over-other-apps permission and support bounded title/text/button/position/width payloads, not arbitrary scene code. Notification post actions require Android notification permission on Android 13+. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Calendar-event triggers can be explicit event dispatches or scanned/watched from Android Calendar after the user grants calendar access. Location triggers can be explicit event dispatches or scanned/watched from Android location providers after the user grants location access. Sensor, logcat-entry, and external triggers are explicit event dispatches; external triggers also have an exported broadcast receiver guarded by a required shared token. Remote dispatch can list this phone with operator_devices, record OpenGUI standby heartbeats with operator_heartbeat, parse OpenGUI-style messages with operator_command, run enabled records by automation_id, by OpenGUI taskName/label, or by trigger remote_dispatch, exposes %DISPATCH_SOURCE, %DISPATCH_CHANNEL, %DISPATCH_EXECUTION_ID, %DISPATCH_TASK_ID, and %DISPATCH_TASK_NAME, and can be inspected with operator_execution_status or lifecycle actions. Quick Settings tile actions can set, get, clear, or run the configured tile automation; the user still has to add the Hermes tile from Android Quick Settings. Home-screen widget actions can set, get, list, clear, request pinning for, or run the configured widget automation; Android launchers still control final widget placement. Location triggers can match latitude/longitude/radius, provider, name, and accuracy, and expose %LOC, %LAT, %LON, %LOCACC, %LOCPROVIDER, %LOCNAME, and LOCATION_* aliases. start_location_watcher and scan_location require Android location permission and at least one enabled location record. Sunrise/sunset actions accept latitude, longitude, optional date, and optional timezone, and expose %SUNRISE, %SUNSET, %SUN_DAWN, %SUN_DUSK, %SOLAR_NOON, %SUN_DAYLIGHT_MINUTES, %SUN_STATE, %SUN_DATE, %SUN_TIMEZONE, %SUN_LAT, and %SUN_LON. Notification actions can post, update, or cancel app notifications with title, text, channel, priority, group, ongoing, and only-alert-once fields. Variable actions can set, clear, append, add, subtract, or literal-replace a saved Hermes automation variable at run time and expand existing variables in the target name and value. Clipboard actions set Android clipboard text and expand saved variables at run time. Toast actions show bounded Android toast/Tasker Flash messages and expand saved variables at run time. Vibration actions use Android's normal vibrator permission and cap duration/pattern totals. Sensor triggers can match type/name, event, value name, and min/max value, and expose %SENSOR, %SENSOR_EVENT, %SENSOR_VALUE, %SENSOR_VALUE_NAME, %SENSOR_UNIT, and %SENSOR_ACCURACY. start_calendar_watcher and scan_calendar_events require calendar permission and at least one enabled calendar_event record; watcher scans dedupe recently seen events and reset_calendar_watcher_cursor clears that cursor. Logcat-entry triggers can match tag, message text, level, pid, and package filters, expose %LOGCAT_TAG, %LOGCAT_MESSAGE, %LOGCAT_LEVEL, %LOGCAT_PID, %LOGCAT_PACKAGE, and %LOGCAT_TIME. start_logcat_watcher and scan_logcat_entries require Shizuku/Sui running with Hermes permission and at least one enabled logcat_entry record; watcher scans dedupe recently seen log lines and reset_logcat_watcher_cursor clears that cursor. External triggers can match trigger_id, external_token, optional trigger_package_name, and optional referrer_contains, and expose %SA_TRIGGER_ID, %SA_TRIGGER_PACKAGE_NAME, %SA_REFERRER, and %SA_EXTRAS. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
+                                "Create, list, run, enable, disable, delete, export, or import saved Android automations and variables. Supports shell, file-write, file-delete, variable set/clear/append/add/subtract/literal-replace, clipboard set, Tasker Flash/toast messages, vibration, safe Android system-action, accessibility UI-action, app-launch, Android intent, email draft composition, Shizuku/Sui package-permission/data-clear/connectivity-toggle, offline sunrise/sunset, notification post/cancel tasks, screen-aware overlay scene show/hide tasks, launcher shortcuts, a user-added Hermes Quick Settings tile, a Hermes home-screen widget, and token-protected Tasker/Locale action, condition, and event plugins bound to saved automations or Hermes/Shizuku state; direct sunrise/sunset calculation; safe Tasker XML/Data URI import; provider-backed calendar scan/watch actions; provider-backed location scan/watch actions; Shizuku-backed logcat scan/watch actions with a bounded scan cursor; manual tasks; interval tasks; Tasker-style time/day triggers; boot/power/battery/app-foreground/notification-posted/calendar-event/location/sensor/logcat-entry/Shizuku-state/external-trigger/remote-dispatch phone triggers; OpenGUI-style standby heartbeat, standby device listing, standby dispatch payloads, execution status queries, lifecycle state for /pause /resume /cancel, raw slash payloads, and IM command strings such as !opengui devices, /opengui devices, /status, /run, and /do; Tasker-style %VARIABLE expansion; and Hermes automation bundle backup/restore. Shizuku execution must be explicitly requested per shell task or by create_shizuku_action_task. The Tasker condition plugin can expose Shizuku availability, saved automation enabled/disabled state, last-run success/failure, and saved Hermes variable set/equality state to Tasker profiles. The Tasker event plugin can trigger Tasker profiles from verified Hermes automation finished/succeeded/failed events and Shizuku available/unavailable updates while returning Tasker-local %hermes_* event variables. Tasker import supports a safe subset of exported Tasker actions including global UI navigation, safe settings panels, Flash, Vibrate, Vibrate Pattern, Set Clipboard, HTTP request, audio, Variable Set, Variable Clear, Variable Add, Variable Subtract, and replace-enabled Variable Search Replace, and leaves records disabled unless enable_imported is set. Overlay scenes require Android draw-over-other-apps permission and support bounded title/text/button/position/width payloads, not arbitrary scene code. Notification post actions require Android notification permission on Android 13+. App-foreground triggers require the user-enabled Hermes accessibility service. Notification-posted triggers require user-enabled Hermes notification access. Calendar-event triggers can be explicit event dispatches or scanned/watched from Android Calendar after the user grants calendar access. Location triggers can be explicit event dispatches or scanned/watched from Android location providers after the user grants location access. Sensor, logcat-entry, and external triggers are explicit event dispatches; external triggers also have an exported broadcast receiver guarded by a required shared token. Remote dispatch can list this phone with operator_devices, record OpenGUI standby heartbeats with operator_heartbeat, parse OpenGUI-style messages with operator_command, run enabled records by automation_id, by OpenGUI taskName/label, or by trigger remote_dispatch, exposes %DISPATCH_SOURCE, %DISPATCH_CHANNEL, %DISPATCH_EXECUTION_ID, %DISPATCH_TASK_ID, and %DISPATCH_TASK_NAME, and can be inspected with operator_execution_status or lifecycle actions. Quick Settings tile actions can set, get, clear, or run the configured tile automation; the user still has to add the Hermes tile from Android Quick Settings. Home-screen widget actions can set, get, list, clear, request pinning for, or run the configured widget automation; Android launchers still control final widget placement. Location triggers can match latitude/longitude/radius, provider, name, and accuracy, and expose %LOC, %LAT, %LON, %LOCACC, %LOCPROVIDER, %LOCNAME, and LOCATION_* aliases. start_location_watcher and scan_location require Android location permission and at least one enabled location record. Sunrise/sunset actions accept latitude, longitude, optional date, and optional timezone, and expose %SUNRISE, %SUNSET, %SUN_DAWN, %SUN_DUSK, %SOLAR_NOON, %SUN_DAYLIGHT_MINUTES, %SUN_STATE, %SUN_DATE, %SUN_TIMEZONE, %SUN_LAT, and %SUN_LON. Notification actions can post, update, or cancel app notifications with title, text, channel, priority, group, ongoing, and only-alert-once fields. Variable actions can set, clear, append, add, subtract, or literal-replace a saved Hermes automation variable at run time and expand existing variables in the target name and value. Clipboard actions set Android clipboard text and expand saved variables at run time. Toast actions show bounded Android toast/Tasker Flash messages and expand saved variables at run time. Vibration actions use Android's normal vibrator permission and cap duration/pattern totals. Email draft actions open Android's mail composer with recipient, subject, and body fields; actual send remains controlled by the selected email app or a separate user-approved UI action. Sensor triggers can match type/name, event, value name, and min/max value, and expose %SENSOR, %SENSOR_EVENT, %SENSOR_VALUE, %SENSOR_VALUE_NAME, %SENSOR_UNIT, and %SENSOR_ACCURACY. start_calendar_watcher and scan_calendar_events require calendar permission and at least one enabled calendar_event record; watcher scans dedupe recently seen events and reset_calendar_watcher_cursor clears that cursor. Logcat-entry triggers can match tag, message text, level, pid, and package filters, expose %LOGCAT_TAG, %LOGCAT_MESSAGE, %LOGCAT_LEVEL, %LOGCAT_PID, %LOGCAT_PACKAGE, and %LOGCAT_TIME. start_logcat_watcher and scan_logcat_entries require Shizuku/Sui running with Hermes permission and at least one enabled logcat_entry record; watcher scans dedupe recently seen log lines and reset_logcat_watcher_cursor clears that cursor. External triggers can match trigger_id, external_token, optional trigger_package_name, and optional referrer_contains, and expose %SA_TRIGGER_ID, %SA_TRIGGER_PACKAGE_NAME, %SA_REFERRER, and %SA_EXTRAS. Shizuku-state triggers expose %SHIZUKU_AVAILABLE, %SHIZUKU_INSTALLED, %SUI_INSTALLED, %SHIZUKU_RUNNING, %SHIZUKU_PERMISSION_GRANTED, %SHIZUKU_PRIVILEGE_LABEL, and %SHIZUKU_UID.",
                             )
                             .put(
                                 "parameters",
@@ -1510,7 +1511,7 @@ class NativeToolCallingChatClient(
                                                 "action",
                                                 JSONObject()
                                                     .put("type", "string")
-                                                    .put("description", "list, operator_devices, operator_standby_status, operator_heartbeat, operator_execution_status, operator_cancel_execution, operator_pause_execution, operator_resume_execution, operator_command, run_history, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_shizuku_action_task, create_sunrise_sunset_task, create_notification_task, create_variable_action_task, create_wait_task, create_clipboard_task, create_toast_task, show_toast, create_vibration_task, create_overlay_scene_task, overlay_scene_status, show_overlay_scene, hide_overlay_scene, create_launcher_shortcut, list_launcher_shortcuts, remove_launcher_shortcut, set_quick_settings_tile_automation, get_quick_settings_tile_automation, clear_quick_settings_tile_automation, run_quick_settings_tile, set_home_screen_widget_automation, get_home_screen_widget_automation, list_home_screen_widgets, clear_home_screen_widget_automation, run_home_screen_widget, calculate_sunrise_sunset, export_automations, import_automations, import_tasker_xml, calendar_watcher_status, start_calendar_watcher, stop_calendar_watcher, scan_calendar_events, reset_calendar_watcher_cursor, location_watcher_status, start_location_watcher, stop_location_watcher, scan_location, sensor_watcher_status, start_sensor_watcher, stop_sensor_watcher, logcat_watcher_status, start_logcat_watcher, stop_logcat_watcher, scan_logcat_entries, reset_logcat_watcher_cursor, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_calendar_event_trigger, run_location_trigger, run_sensor_trigger, run_logcat_entry_trigger, run_external_trigger, run_remote_dispatch, submit_standby_dispatch, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
+                                                    .put("description", "list, operator_devices, operator_standby_status, operator_heartbeat, operator_execution_status, operator_cancel_execution, operator_pause_execution, operator_resume_execution, operator_command, run_history, create_shell_task, create_file_write_task, create_file_delete_task, create_system_action_task, create_ui_action_task, create_app_launch_task, create_intent_task, create_email_draft_task, create_shizuku_action_task, create_sunrise_sunset_task, create_notification_task, create_variable_action_task, create_wait_task, create_clipboard_task, create_toast_task, show_toast, create_vibration_task, create_overlay_scene_task, overlay_scene_status, show_overlay_scene, hide_overlay_scene, create_launcher_shortcut, list_launcher_shortcuts, remove_launcher_shortcut, set_quick_settings_tile_automation, get_quick_settings_tile_automation, clear_quick_settings_tile_automation, run_quick_settings_tile, set_home_screen_widget_automation, get_home_screen_widget_automation, list_home_screen_widgets, clear_home_screen_widget_automation, run_home_screen_widget, calculate_sunrise_sunset, export_automations, import_automations, import_tasker_xml, calendar_watcher_status, start_calendar_watcher, stop_calendar_watcher, scan_calendar_events, reset_calendar_watcher_cursor, location_watcher_status, start_location_watcher, stop_location_watcher, scan_location, sensor_watcher_status, start_sensor_watcher, stop_sensor_watcher, logcat_watcher_status, start_logcat_watcher, stop_logcat_watcher, scan_logcat_entries, reset_logcat_watcher_cursor, run, run_trigger, run_app_foreground_trigger, run_notification_posted_trigger, run_calendar_event_trigger, run_location_trigger, run_sensor_trigger, run_logcat_entry_trigger, run_external_trigger, run_remote_dispatch, submit_standby_dispatch, run_shizuku_state_trigger, run_time_trigger, delete, enable, disable, list_variables, set_variable, get_variable, or delete_variable."),
                                             )
                                             .put(
                                                 "bundle",
@@ -1565,6 +1566,24 @@ class NativeToolCallingChatClient(
                                                 JSONObject()
                                                     .put("type", "string")
                                                     .put("description", "Human-readable label for create_*_task actions."),
+                                            )
+                                            .put(
+                                                "to",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Recipient email address for create_email_draft_task. Also accepts recipient, recipient_email, email_to, or to_address."),
+                                            )
+                                            .put(
+                                                "subject",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Email subject for create_email_draft_task. Saved variables can be referenced as %NAME or {{NAME}}."),
+                                            )
+                                            .put(
+                                                "body",
+                                                JSONObject()
+                                                    .put("type", "string")
+                                                    .put("description", "Email body for create_email_draft_task. Saved variables can be referenced as %NAME or {{NAME}}."),
                                             )
                                             .put(
                                                 "command",
@@ -2711,7 +2730,7 @@ class NativeToolCallingChatClient(
         private const val HTML_GENERATION_TIMEOUT_MS = 45_000L
         private const val NATIVE_TOOL_MAX_TOKENS = 1024
         private const val HTML_GENERATION_MAX_TOKENS = 768
-        private const val MAX_NATIVE_TOOL_ROUNDS = 3
+        private const val MAX_NATIVE_TOOL_ROUNDS = 6
         private const val PRIVILEGED_TOOL_TIMEOUT_SECONDS = 30
         private const val MAX_TOOL_RESULT_CHARS = 12_000
         private const val MAX_NATIVE_ERROR_CHARS = 360
@@ -2813,4 +2832,184 @@ class NativeToolCallingChatClient(
         val path: String,
         val marker: String?,
     )
+}
+
+internal object NativeToolContextCompressor {
+    private const val MAX_TOOL_RESULT_CONTEXT_CHARS = 3_200
+    private const val MAX_NATIVE_MESSAGE_CONTEXT_CHARS = 12_000
+    private const val MAX_SUMMARY_CHARS = 2_400
+    private const val STRING_FIELD_LIMIT = 600
+    private const val OUTPUT_FIELD_LIMIT = 1_400
+
+    fun compactToolResult(toolResult: String): String {
+        if (toolResult.length <= MAX_TOOL_RESULT_CONTEXT_CHARS) {
+            return toolResult
+        }
+        val parsed = runCatching { JSONObject(toolResult) }.getOrNull()
+        if (parsed != null) {
+            return compactJsonToolResult(parsed, toolResult.length)
+        }
+        return compactStringValue(toolResult, MAX_TOOL_RESULT_CONTEXT_CHARS)
+    }
+
+    fun compactMessages(messages: JSONArray): JSONArray {
+        if (messages.toString().length <= MAX_NATIVE_MESSAGE_CONTEXT_CHARS) {
+            return messages
+        }
+        val keepStart = latestAssistantBlockStart(messages)
+        if (keepStart <= 2) {
+            return messages
+        }
+        val compacted = JSONArray()
+        for (index in 0 until minOf(2, messages.length())) {
+            compacted.put(messages.get(index))
+        }
+        val summary = summarizeMessages(messages, start = 2, endExclusive = keepStart)
+        if (summary.isNotBlank()) {
+            compacted.put(
+                JSONObject()
+                    .put("role", "system")
+                    .put(
+                        "content",
+                        "Hermes compacted prior native tool context to keep local mobile inference within context. " +
+                            summary,
+                    ),
+            )
+        }
+        for (index in keepStart until messages.length()) {
+            compacted.put(messages.get(index))
+        }
+        return compacted
+    }
+
+    private fun compactJsonToolResult(parsed: JSONObject, originalLength: Int): String {
+        val compacted = JSONObject()
+            .put("_hermes_context_compressed", true)
+            .put("_original_chars", originalLength)
+        for (key in parsed.keys()) {
+            val value = parsed.opt(key)
+            compacted.put(key, compactJsonValue(key, value))
+        }
+        val asText = compacted.toString()
+        return if (asText.length <= MAX_TOOL_RESULT_CONTEXT_CHARS) {
+            asText
+        } else {
+            compactStringValue(asText, MAX_TOOL_RESULT_CONTEXT_CHARS)
+        }
+    }
+
+    private fun compactJsonValue(key: String, value: Any?): Any {
+        return when (value) {
+            null, JSONObject.NULL -> JSONObject.NULL
+            is String -> compactStringValue(value, if (key == "output" || key == "error") OUTPUT_FIELD_LIMIT else STRING_FIELD_LIMIT)
+            is Number, is Boolean -> value
+            is JSONObject, is JSONArray -> {
+                val text = value.toString()
+                if (text.length <= STRING_FIELD_LIMIT) {
+                    value
+                } else {
+                    JSONObject()
+                        .put("type", if (value is JSONArray) "array" else "object")
+                        .put("original_chars", text.length)
+                        .put("summary", compactStringValue(text, STRING_FIELD_LIMIT))
+                }
+            }
+            else -> compactStringValue(value.toString(), STRING_FIELD_LIMIT)
+        }
+    }
+
+    private fun latestAssistantBlockStart(messages: JSONArray): Int {
+        var lastAssistantIndex = -1
+        for (index in 2 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("role") == "assistant") {
+                lastAssistantIndex = index
+            }
+        }
+        return lastAssistantIndex.takeIf { it >= 2 } ?: 2
+    }
+
+    private fun summarizeMessages(messages: JSONArray, start: Int, endExclusive: Int): String {
+        if (start >= endExclusive) {
+            return ""
+        }
+        val lines = mutableListOf<String>()
+        var toolCount = 0
+        for (index in start until endExclusive) {
+            val message = messages.optJSONObject(index) ?: continue
+            when (message.optString("role")) {
+                "assistant" -> {
+                    val toolNames = message.optJSONArray("tool_calls")
+                        ?.let { calls ->
+                            buildList {
+                                for (callIndex in 0 until calls.length()) {
+                                    calls.optJSONObject(callIndex)
+                                        ?.optJSONObject("function")
+                                        ?.optString("name")
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let(::add)
+                                }
+                            }
+                        }
+                        .orEmpty()
+                    val content = message.optString("content").takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+                    val assistantLine = buildString {
+                        append("assistant")
+                        if (toolNames.isNotEmpty()) {
+                            append(" requested ")
+                            append(toolNames.joinToString(", "))
+                        }
+                        if (content.isNotBlank()) {
+                            append(": ")
+                            append(singleLine(content, 220))
+                        }
+                    }
+                    lines += assistantLine
+                }
+                "tool" -> {
+                    toolCount += 1
+                    val name = message.optString("name").ifBlank { "tool" }
+                    val content = message.optString("content")
+                    lines += "tool[$toolCount] $name: ${toolResultSummary(content)}"
+                }
+            }
+        }
+        val joined = lines.joinToString(" | ")
+        return if (joined.length <= MAX_SUMMARY_CHARS) joined else compactStringValue(joined, MAX_SUMMARY_CHARS)
+    }
+
+    private fun toolResultSummary(content: String): String {
+        val parsed = runCatching { JSONObject(content) }.getOrNull()
+        if (parsed != null) {
+            val parts = mutableListOf<String>()
+            listOf("exit_code", "success", "action", "path", "message", "error", "cwd").forEach { key ->
+                if (parsed.has(key) && !parsed.isNull(key)) {
+                    parts += "$key=${singleLine(parsed.optString(key), 180)}"
+                }
+            }
+            if (parsed.optBoolean("_hermes_context_compressed", false)) {
+                parts += "compressed_from=${parsed.optInt("_original_chars")} chars"
+            }
+            if (parts.isNotEmpty()) {
+                return parts.joinToString("; ")
+            }
+        }
+        return singleLine(content, 260)
+    }
+
+    private fun compactStringValue(value: String, limit: Int): String {
+        if (value.length <= limit) {
+            return value
+        }
+        val headLength = (limit * 2 / 3).coerceAtLeast(1)
+        val tailLength = (limit - headLength - 80).coerceAtLeast(1)
+        val omitted = (value.length - headLength - tailLength).coerceAtLeast(0)
+        return value.take(headLength) +
+            "\n[hermes context compressed; omitted $omitted chars]\n" +
+            value.takeLast(tailLength)
+    }
+
+    private fun singleLine(value: String, limit: Int): String {
+        return compactStringValue(value.replace(Regex("""\s+"""), " ").trim(), limit)
+    }
 }

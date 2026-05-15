@@ -105,6 +105,17 @@ object HermesRuntimeManager {
                 DeviceStateWriter.write(appContext)
                 return currentState
             }
+            if (settings.offlineAirplaneMode) {
+                currentState = RuntimeState(
+                    started = false,
+                    hermesHome = File(appContext.filesDir, "hermes-home").absolutePath,
+                    error = localBackendStatus.statusMessage.ifBlank {
+                        "Offline airplane mode is on and no on-device backend is ready."
+                    },
+                )
+                DeviceStateWriter.write(appContext)
+                return currentState
+            }
             val localBackendFallbackWarning =
                 localBackendFallbackWarning(selectedLocalBackend, localBackendStatus)
 

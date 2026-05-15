@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.text.format.Formatter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -242,7 +243,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    HuggingFaceModelIndexClient.fetchDetectedModels()
+                    HuggingFaceModelIndexClient.fetchDetectedModels(context = getApplication())
                 }
             }.onSuccess { models ->
                 _uiState.update { state ->
@@ -266,6 +267,43 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                     it.copy(
                         workerCatalogStatus = "Unable to load signed model catalog: ${error.message ?: error.javaClass.simpleName}",
                     )
+                }
+            }
+        }
+    }
+
+    fun importLocalModelFile(uri: Uri) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            _uiState.update { it.copy(inspectionStatus = "Importing local model from phone files…") }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
+                    HermesModelDownloadManager.importLocalModelFile(
+                        context = context,
+                        store = downloadStore,
+                        sourceUri = uri,
+                    )
+                }
+            }.onSuccess { record ->
+                refreshDownloads()
+                _uiState.update {
+                    it.copy(
+                        pendingAutoStartRecordId = "",
+                        runtimeFlavor = record.runtimeFlavor,
+                        inspectionStatus = "Imported ${record.title} and marked it as the preferred local model.",
+                        candidateSummary = "Local file · ${record.runtimeFlavor} · ${Formatter.formatShortFileSize(context, record.totalBytes)}",
+                        candidateRamWarning = "",
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(inspectionStatus = error.message ?: error.javaClass.simpleName)
                 }
             }
         }

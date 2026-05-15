@@ -1,5 +1,7 @@
 package com.nousresearch.hermesagent.device
 
+import android.content.Context
+import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -46,12 +48,17 @@ object HermesHttpRequestBridge {
         return payload
     }
 
-    fun performHttpRequestJson(payload: JSONObject): JSONObject {
+    fun performHttpRequestJson(context: Context, payload: JSONObject): JSONObject {
         val method = normalizeMethod(payload.optString("method"))
             ?: return errorJson("Unsupported HTTP method: ${payload.optString("method")}")
         val url = payload.optString("url").trim()
         if (!isHttpUrl(url)) {
             return errorJson("http_request url must start with http:// or https://")
+        }
+        if (HermesNetworkPolicy.isExternalNetworkBlocked(context, url)) {
+            return errorJson(HermesNetworkPolicy.offlineBlockedMessage("HTTP automation request"))
+                .put("method", method)
+                .put("url", url)
         }
         if (url.length > MAX_URL_CHARS || url.indexOf('\u0000') >= 0) {
             return errorJson("http_request url is invalid")

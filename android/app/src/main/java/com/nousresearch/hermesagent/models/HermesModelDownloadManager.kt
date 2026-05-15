@@ -7,7 +7,9 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.text.format.Formatter
+import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import org.json.JSONObject
@@ -91,8 +93,56 @@ object HermesModelDownloadManager {
             ?: File(context.filesDir, "downloads")).resolve("models").apply { mkdirs() }
     }
 
+    fun importLocalModelFile(
+        context: Context,
+        store: LocalModelDownloadStore,
+        sourceUri: Uri,
+    ): LocalModelDownloadRecord {
+        val directory = modelsDirectory(context)
+        val displayName = displayNameForUri(context, sourceUri)
+        val targetFile = directory.resolve(uniqueFileName(directory, sanitizeFileName(displayName)))
+        context.contentResolver.openInputStream(sourceUri)?.use { input ->
+            targetFile.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw IllegalArgumentException("Unable to read selected model file")
+        if (!targetFile.isImportableModelFile()) {
+            runCatching { targetFile.delete() }
+            throw IllegalArgumentException("Selected file must be a non-empty .gguf, .litertlm, or Android .task model")
+        }
+        val now = System.currentTimeMillis()
+        val record = LocalModelDownloadRecord(
+            title = targetFile.name,
+            sourceUrl = sourceUri.toString(),
+            repoOrUrl = "Local file",
+            filePath = displayName,
+            revision = "local",
+            runtimeFlavor = runtimeFlavorForLocalFile(targetFile),
+            destinationFileName = targetFile.name,
+            destinationPath = targetFile.absolutePath,
+            downloadManagerId = -1L,
+            totalBytes = targetFile.length(),
+            downloadedBytes = targetFile.length(),
+            status = "completed",
+            statusMessage = "Imported from phone files",
+            supportsResume = false,
+            updatedAtEpochMs = now,
+        )
+        store.upsertDownload(record)
+        store.setPreferredDownloadId(record.id)
+        return record
+    }
+
     fun inspectCandidate(context: Context, draft: ModelDownloadDraft, hfToken: String): ModelDownloadInspection {
+        HermesNetworkPolicy.requireExternalNetworkAllowed(
+            context,
+            draft.repoOrUrl,
+            actionLabel = "model inspection",
+        )
         val resolvedSource = resolveDownloadSource(draft, hfToken)
+        HermesNetworkPolicy.requireExternalNetworkAllowed(
+            context,
+            resolvedSource.sourceUrl,
+            actionLabel = "model inspection",
+        )
         val head = headProbe(resolvedSource.sourceUrl, hfToken)
         val totalBytes = head.contentLength.coerceAtLeast(0L)
         val memoryInfo = ActivityManager.MemoryInfo()
@@ -187,6 +237,11 @@ object HermesModelDownloadManager {
         allowRoaming: Boolean,
         recordId: String = UUID.randomUUID().toString(),
     ): LocalModelDownloadRecord {
+        HermesNetworkPolicy.requireExternalNetworkAllowed(
+            context,
+            draft.repoOrUrl,
+            actionLabel = "model download",
+        )
         val inspection = inspectCandidate(context, draft, hfToken)
         val targetFile = modelsDirectory(context).resolve(uniqueFileName(modelsDirectory(context), inspection.destinationFileName))
         val request = DownloadManager.Request(Uri.parse(inspection.sourceUrl)).apply {
@@ -386,6 +441,17 @@ object HermesModelDownloadManager {
 
     private fun runtimeFlavorForLocalFile(file: File): String {
         return if (file.name.lowercase(Locale.US).endsWith(".gguf")) "GGUF" else "LiteRT-LM"
+    }
+
+    private fun displayNameForUri(context: Context, sourceUri: Uri): String {
+        var displayName = sourceUri.lastPathSegment?.substringAfterLast('/').orEmpty()
+        context.contentResolver.query(sourceUri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIndex >= 0) {
+                displayName = cursor.getString(nameIndex).orEmpty().ifBlank { displayName }
+            }
+        }
+        return displayName.ifBlank { "model.bin" }
     }
 
     private fun localModelPreferenceRank(record: LocalModelDownloadRecord): Int {

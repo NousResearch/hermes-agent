@@ -54,6 +54,8 @@ object AuthRuntimeApplier {
                 model = resolvedModel,
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                 dataSaverMode = existingSettings.dataSaverMode,
+                offlineAirplaneMode = existingSettings.offlineAirplaneMode,
+                portalEnabled = existingSettings.portalEnabled,
                 onDeviceBackend = existingSettings.onDeviceBackend,
                 liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
                 languageTag = existingSettings.languageTag,

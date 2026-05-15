@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.models
 
+import android.content.Context
 import android.util.Base64
+import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigInteger
@@ -42,7 +44,14 @@ object HuggingFaceModelIndexClient {
         }
     """
 
-    fun fetchDetectedModels(indexUrl: String = DEFAULT_INDEX_URL): List<DetectedHfModel> {
+    fun fetchDetectedModels(indexUrl: String = DEFAULT_INDEX_URL, context: Context? = null): List<DetectedHfModel> {
+        if (context != null) {
+            HermesNetworkPolicy.requireExternalNetworkAllowed(
+                context,
+                indexUrl,
+                actionLabel = "model catalog refresh",
+            )
+        }
         val root = getJson(indexUrl)
         val canonicalPayload = root.optString("payload_canonical").ifBlank {
             stableStringify(root.getJSONObject("payload"))

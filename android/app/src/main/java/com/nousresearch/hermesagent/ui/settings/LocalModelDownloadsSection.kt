@@ -2,6 +2,8 @@
 
 package com.nousresearch.hermesagent.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -35,6 +37,7 @@ import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 @Composable
 fun LocalModelDownloadsSection(
     dataSaverMode: Boolean,
+    offlineAirplaneMode: Boolean,
     onDataSaverModeChange: (Boolean) -> Unit,
     selectedBackend: String,
     onRuntimeFlavorSelected: (String) -> Unit,
@@ -45,6 +48,11 @@ fun LocalModelDownloadsSection(
     val strings = LocalHermesStrings.current
     var detectedModelMenuExpanded by remember { mutableStateOf(false) }
     val selectedDetectedModel = uiState.detectedModels.firstOrNull { model -> model.id == uiState.selectedDetectedModelId }
+    val importModelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            viewModel.importLocalModelFile(uri)
+        }
+    }
 
     LaunchedEffect(selectedBackend) {
         viewModel.syncSelectedBackend(selectedBackend)
@@ -118,6 +126,26 @@ fun LocalModelDownloadsSection(
                 Button(onClick = viewModel::refreshDownloads) {
                     Text(strings.refreshDownloads.ifBlank { "Refresh downloads" })
                 }
+                Button(
+                    onClick = {
+                        importModelLauncher.launch(
+                            arrayOf(
+                                "application/octet-stream",
+                                "application/x-gguf",
+                                "application/zip",
+                                "*/*",
+                            )
+                        )
+                    },
+                ) {
+                    Text("Import model from phone files")
+                }
+            }
+            if (offlineAirplaneMode) {
+                Text(
+                    "Offline airplane mode is on, so Hermes will only use imported or already-downloaded local models.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             HorizontalDivider()
             Text(strings.quickLocalModelsTitle(), style = MaterialTheme.typography.titleSmall)
@@ -183,7 +211,10 @@ fun LocalModelDownloadsSection(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Button(onClick = viewModel::refreshDetectedModels) {
+                        Button(
+                            onClick = viewModel::refreshDetectedModels,
+                            enabled = !offlineAirplaneMode,
+                        ) {
                             Text(strings.refreshCatalog())
                         }
                         Button(
@@ -193,7 +224,7 @@ fun LocalModelDownloadsSection(
                                     viewModel.startDetectedModelDownload(dataSaverMode)
                                 }
                             },
-                            enabled = selectedDetectedModel != null,
+                            enabled = selectedDetectedModel != null && !offlineAirplaneMode,
                         ) {
                             Text(strings.downloadAndStart())
                         }
@@ -228,6 +259,7 @@ fun LocalModelDownloadsSection(
                                 viewModel.startRecommendedModelDownload(preset.id, dataSaverMode)
                             },
                             modifier = Modifier.fillMaxWidth(),
+                            enabled = !offlineAirplaneMode,
                         ) {
                             Text(strings.downloadAndStart())
                         }

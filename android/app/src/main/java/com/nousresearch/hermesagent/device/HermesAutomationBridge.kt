@@ -1,6 +1,8 @@
 package com.nousresearch.hermesagent.device
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import com.nousresearch.hermesagent.data.AppSettingsStore
@@ -49,6 +51,7 @@ object HermesAutomationBridge {
             "create_uri_task", "create_open_uri_task", "open_uri_task" -> createIntentTaskJson(context, arguments, "open_uri")
             "create_broadcast_task", "create_send_broadcast_task", "broadcast_task" -> createIntentTaskJson(context, arguments, "send_broadcast")
             "create_activity_task", "create_start_activity_task", "launch_activity_task" -> createIntentTaskJson(context, arguments, "start_activity")
+            "create_email_draft_task", "create_email_task", "create_compose_email_task", "create_send_email_task", "email_task", "compose_email" -> createEmailDraftTaskJson(context, arguments)
             "open_uri", "open_url", "browse_url", "open_browser", "launch_browser" -> performIntentNowJson(context, arguments, "open_uri")
             "start_activity", "launch_activity", "send_intent" -> performIntentNowJson(context, arguments, "start_activity")
             "send_broadcast", "broadcast_intent" -> performIntentNowJson(context, arguments, "send_broadcast")
@@ -65,7 +68,7 @@ object HermesAutomationBridge {
             "create_toast_task", "create_flash_task", "toast_task", "flash_task" -> createToastTaskJson(context, arguments)
             "show_toast", "toast", "flash_message", "flash" -> showToastJson(context, arguments)
             "perform_audio_action", "audio_action", "set_audio_volume", "set_sound_mode", "set_ringer_mode", "set_microphone_mute", "set_speakerphone" -> performAudioActionJson(context, action, arguments)
-            "perform_http_request", "http_request", "http_get", "http_post", "http_head" -> performHttpRequestJson(action, arguments)
+            "perform_http_request", "http_request", "http_get", "http_post", "http_head" -> performHttpRequestJson(context, action, arguments)
             "overlay_scene_status", "scene_status", "overlay_status", "show_overlay_scene", "show_scene", "overlay_scene", "hide_overlay_scene", "dismiss_overlay_scene", "clear_overlay_scene", "hide_scene" -> HermesOverlaySceneBridge.performSceneJson(context, action, arguments)
             "create_launcher_shortcut", "create_shortcut", "create_home_screen_shortcut", "pin_automation_shortcut" -> HermesLauncherShortcutBridge.createShortcutJson(context, arguments)
             "list_launcher_shortcuts", "list_shortcuts", "launcher_shortcuts" -> HermesLauncherShortcutBridge.listShortcutsJson(context)
@@ -1042,6 +1045,65 @@ object HermesAutomationBridge {
         )
     }
 
+    fun createEmailDraftTaskJson(context: Context, arguments: JSONObject): String {
+        val to = stringArgument(
+            arguments,
+            "to",
+            "recipient",
+            "recipient_email",
+            "email_to",
+            "to_address",
+            allowEmpty = true,
+        ).orEmpty().trim()
+        val cc = stringArgument(arguments, "cc", "email_cc", "cc_address", allowEmpty = true).orEmpty().trim()
+        val bcc = stringArgument(arguments, "bcc", "email_bcc", "bcc_address", allowEmpty = true).orEmpty().trim()
+        val subject = stringArgument(arguments, "subject", "email_subject", allowEmpty = true).orEmpty()
+        val body = stringArgument(arguments, "body", "email_body", "message", "content", allowEmpty = true).orEmpty()
+        listOf(to, cc, bcc, subject, body).forEach { value ->
+            if (value.indexOf('\u0000') >= 0) {
+                return errorJson("create_email_draft_task fields must not contain NUL bytes")
+            }
+        }
+        if (to.isBlank() && cc.isBlank() && bcc.isBlank() && subject.isBlank() && body.isBlank()) {
+            return errorJson("create_email_draft_task requires a recipient, subject, or body")
+        }
+        val payload = JSONObject()
+            .put("intent_task_action", "start_activity")
+            .put("intent_action", Intent.ACTION_SENDTO)
+            .put("data_uri", mailtoUri(to))
+            .put(
+                "extras",
+                JSONObject().apply {
+                    if (to.isNotBlank()) {
+                        put(Intent.EXTRA_EMAIL, to.take(MAX_EVENT_VALUE_CHARS))
+                    }
+                    if (cc.isNotBlank()) {
+                        put(Intent.EXTRA_CC, cc.take(MAX_EVENT_VALUE_CHARS))
+                    }
+                    if (bcc.isNotBlank()) {
+                        put(Intent.EXTRA_BCC, bcc.take(MAX_EVENT_VALUE_CHARS))
+                    }
+                    if (subject.isNotBlank()) {
+                        put(Intent.EXTRA_SUBJECT, subject.take(MAX_EVENT_VALUE_CHARS))
+                    }
+                    if (body.isNotBlank()) {
+                        put(Intent.EXTRA_TEXT, body.take(MAX_VARIABLE_VALUE_CHARS))
+                    }
+                },
+            )
+        val validation = HermesIntentBridge.performIntentJson(context, JSONObject(payload.toString()).put("__validate_only", true))
+        if (!validation.optBoolean("success", false) && validation.optInt("exit_code", 1) == 64) {
+            return errorJson(validation.optString("error").ifBlank { "Invalid Android email automation payload" })
+        }
+        return createRecordJson(
+            context = context,
+            arguments = arguments,
+            actionType = ACTION_TYPE_INTENT,
+            payload = payload.toString(),
+            defaultLabel = "Hermes email draft automation",
+        )
+    }
+
     fun performIntentNowJson(context: Context, arguments: JSONObject, defaultIntentTaskAction: String? = null): String {
         val payloadResult = intentPayloadFromArguments(arguments, defaultIntentTaskAction)
         if (payloadResult.error.isNotBlank()) {
@@ -1096,6 +1158,10 @@ object HermesAutomationBridge {
         copyExtrasPayload(payload, arguments)
 
         return IntentPayloadResult(payload = payload)
+    }
+
+    private fun mailtoUri(to: String): String {
+        return "mailto:${Uri.encode(to, "@,%")}"
     }
 
     fun createShizukuActionTaskJson(context: Context, arguments: JSONObject): String {
@@ -1532,7 +1598,7 @@ object HermesAutomationBridge {
         return HermesAudioActionBridge.performAudioActionJson(context, payload).toString()
     }
 
-    fun performHttpRequestJson(requestedAction: String, arguments: JSONObject): String {
+    fun performHttpRequestJson(context: Context, requestedAction: String, arguments: JSONObject): String {
         val directArguments = JSONObject(arguments.toString())
         if (!directArguments.has("method") && !directArguments.has("http_method")) {
             when (requestedAction.lowercase().replace("-", "_")) {
@@ -1544,7 +1610,7 @@ object HermesAutomationBridge {
         val payload = runCatching { HermesHttpRequestBridge.payloadFromArguments(directArguments, allowVariableUrl = false) }.getOrElse { error ->
             return errorJson(error.message ?: "http_request arguments are invalid")
         }
-        return HermesHttpRequestBridge.performHttpRequestJson(payload).toString()
+        return HermesHttpRequestBridge.performHttpRequestJson(context, payload).toString()
     }
 
     private fun createRecordJson(
@@ -2336,7 +2402,7 @@ object HermesAutomationBridge {
             ACTION_TYPE_CLIPBOARD_ACTION -> runClipboardActionRecord(context, record, variables)
             ACTION_TYPE_VIBRATION_ACTION -> runVibrationActionRecord(context, record, variables)
             ACTION_TYPE_AUDIO_ACTION -> runAudioActionRecord(context, record, variables)
-            ACTION_TYPE_HTTP_REQUEST -> runHttpRequestRecord(store, record, variables)
+            ACTION_TYPE_HTTP_REQUEST -> runHttpRequestRecord(context, store, record, variables)
             ACTION_TYPE_OVERLAY_SCENE -> runOverlaySceneRecord(context, record, variables)
             ACTION_TYPE_TOAST_ACTION -> runToastActionRecord(context, record, variables)
             else -> JSONObject(errorJson("Unsupported Android automation action type: ${record.actionType}"))
@@ -2697,6 +2763,7 @@ object HermesAutomationBridge {
     }
 
     private fun runHttpRequestRecord(
+        context: Context,
         store: HermesAutomationStore,
         record: HermesAutomationRecord,
         variables: JSONObject,
@@ -2706,7 +2773,7 @@ object HermesAutomationBridge {
         val expanded = runCatching { expandHttpRequestPayload(payload, variables) }.getOrElse { error ->
             return JSONObject(errorJson(error.message ?: "Saved http_request automation payload is invalid"))
         }
-        val result = HermesHttpRequestBridge.performHttpRequestJson(expanded)
+        val result = HermesHttpRequestBridge.performHttpRequestJson(context, expanded)
         val statusText = if (result.has("status_code")) result.optInt("status_code").toString() else ""
         val bodyText = result.optString("body")
         store.setVariable("HTTPR", statusText)

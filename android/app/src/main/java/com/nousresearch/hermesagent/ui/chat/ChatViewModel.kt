@@ -14,6 +14,7 @@ import com.nousresearch.hermesagent.api.HermesSseClient
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
 import com.nousresearch.hermesagent.data.ConversationStore
+import com.nousresearch.hermesagent.data.HermesNetworkPolicy
 import com.nousresearch.hermesagent.data.StoredConversationMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -256,7 +257,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val client = HermesSseClient(baseUrl = endpoint.baseUrl, apiKey = endpoint.apiKey)
+            val client = HermesSseClient(
+                baseUrl = endpoint.baseUrl,
+                apiKey = endpoint.apiKey,
+                networkGuard = { url ->
+                    HermesNetworkPolicy.requireExternalNetworkAllowed(
+                        getApplication<Application>(),
+                        url,
+                        actionLabel = "chat request",
+                    )
+                },
+            )
             val request = ChatCompletionRequest(
                 model = endpoint.modelName,
                 messages = listOf(ChatMessage(role = "user", content = text, contentParts = userContentParts)),

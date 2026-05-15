@@ -11,6 +11,7 @@ class HermesApiClient(
     baseUrl: String,
     private val apiKey: String? = null,
     private val httpClient: OkHttpClient = OkHttpClient(),
+    private val networkGuard: (String) -> Unit = {},
 ) {
     private val normalizedBaseUrl = baseUrl.trimEnd('/')
 
@@ -69,6 +70,7 @@ class HermesApiClient(
     }
 
     private fun requestBuilder(url: String): Request.Builder {
+        networkGuard(url)
         val builder = Request.Builder().url(url)
         if (!apiKey.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $apiKey")

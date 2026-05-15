@@ -26,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -69,18 +70,34 @@ data class NousPortalUiState(
     val portalUrl: String = DEFAULT_NOUS_PORTAL_URL,
     val loggedIn: Boolean = false,
     val inferenceUrl: String = "",
+    val portalEnabled: Boolean = true,
+    val offlineAirplaneMode: Boolean = false,
     val status: String = "Loading Nous Portal…",
 )
 
 class NousPortalViewModel(application: Application) : AndroidViewModel(application) {
-    private fun currentStrings() = hermesStringsFor(AppLanguage.fromTag(AppSettingsStore(getApplication()).load().languageTag))
+    private val settingsStore = AppSettingsStore(getApplication())
+    private fun currentStrings() = hermesStringsFor(AppLanguage.fromTag(settingsStore.load().languageTag))
 
     private val _uiState = MutableStateFlow(NousPortalUiState())
     val uiState: StateFlow<NousPortalUiState> = _uiState.asStateFlow()
 
     fun refresh() {
         viewModelScope.launch {
+            val settings = settingsStore.load()
             val strings = currentStrings()
+            if (!settings.portalEnabled || settings.offlineAirplaneMode) {
+                _uiState.value = NousPortalUiState(
+                    portalEnabled = settings.portalEnabled,
+                    offlineAirplaneMode = settings.offlineAirplaneMode,
+                    status = if (settings.offlineAirplaneMode) {
+                        "Offline airplane mode is on, so Nous Portal is blocked."
+                    } else {
+                        "Nous Portal is disabled on this device."
+                    },
+                )
+                return@launch
+            }
             _uiState.value = runCatching {
                 val payload = withContext(Dispatchers.IO) {
                     HermesRuntimeManager.ensurePythonStarted(getApplication())
@@ -95,14 +112,31 @@ class NousPortalViewModel(application: Application) : AndroidViewModel(applicati
                     portalUrl = json.optString("portal_url").ifBlank { DEFAULT_NOUS_PORTAL_URL },
                     loggedIn = loggedIn,
                     inferenceUrl = json.optString("inference_url").orEmpty(),
+                    portalEnabled = settings.portalEnabled,
+                    offlineAirplaneMode = settings.offlineAirplaneMode,
                     status = strings.portalLoadingStatus(loggedIn),
                 )
             }.getOrElse { error ->
                 NousPortalUiState(
                     portalUrl = DEFAULT_NOUS_PORTAL_URL,
+                    portalEnabled = settings.portalEnabled,
+                    offlineAirplaneMode = settings.offlineAirplaneMode,
                     status = strings.portalFallbackStatus(error.message ?: error.javaClass.simpleName),
                 )
             }
+        }
+    }
+
+    fun setPortalEnabled(enabled: Boolean) {
+        val updated = settingsStore.load().copy(portalEnabled = enabled)
+        settingsStore.save(updated)
+        _uiState.value = _uiState.value.copy(
+            portalEnabled = enabled,
+            offlineAirplaneMode = updated.offlineAirplaneMode,
+            status = if (enabled) "Nous Portal is enabled." else "Nous Portal is disabled on this device.",
+        )
+        if (enabled) {
+            refresh()
         }
     }
 }
@@ -125,6 +159,15 @@ fun NousPortalScreen(
     var pageError by remember { mutableStateOf<String?>(null) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var isFullscreen by rememberSaveable { mutableStateOf(false) }
+    val portalAvailable = uiState.portalEnabled && !uiState.offlineAirplaneMode
+
+    LaunchedEffect(portalAvailable) {
+        if (!portalAvailable) {
+            isLoading = false
+            pageError = null
+            webViewRef?.loadUrl("about:blank")
+        }
+    }
 
     SideEffect {
         onContextActionsChanged(
@@ -135,10 +178,12 @@ fun NousPortalScreen(
                     description = "Reload the embedded Nous Portal page.",
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = {
-                        isLoading = true
-                        pageError = null
-                        viewModel.refresh()
-                        webViewRef?.reload()
+                        if (portalAvailable) {
+                            isLoading = true
+                            pageError = null
+                            viewModel.refresh()
+                            webViewRef?.reload()
+                        }
                     },
                 ),
                 ShellActionItem(
@@ -153,8 +198,10 @@ fun NousPortalScreen(
                     description = "Open the full portal in your browser if the embed is limited.",
                     iconRes = R.drawable.ic_action_external,
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.portalUrl))
-                        context.startActivity(intent)
+                        if (portalAvailable) {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uiState.portalUrl))
+                            context.startActivity(intent)
+                        }
                     },
                 ),
             )
@@ -177,9 +224,12 @@ fun NousPortalScreen(
                             status = uiState.status,
                             inferenceUrl = uiState.inferenceUrl,
                             pageError = pageError,
+                            portalEnabled = uiState.portalEnabled,
+                            offlineAirplaneMode = uiState.offlineAirplaneMode,
+                            onPortalEnabledChange = viewModel::setPortalEnabled,
                         )
                     }
-                    if (isLoading) {
+                    if (isLoading && portalAvailable) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                     Box(
@@ -194,7 +244,8 @@ fun NousPortalScreen(
                             tonalElevation = 2.dp,
                         ) {
                             Box(modifier = Modifier.fillMaxSize()) {
-                                AndroidView(
+                                if (portalAvailable) {
+                                    AndroidView(
                                     modifier = Modifier.fillMaxSize(),
                                     factory = { androidContext ->
                                         WebView(androidContext).apply {
@@ -266,8 +317,20 @@ fun NousPortalScreen(
                                             webView.loadUrl(uiState.portalUrl)
                                         }
                                     },
-                                )
-                                Row(
+                                    )
+                                } else {
+                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Text(
+                                            if (uiState.offlineAirplaneMode) {
+                                                "Portal network access is blocked by offline airplane mode."
+                                            } else {
+                                                "Portal is disabled."
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                    }
+                                }
+                                if (portalAvailable) Row(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .padding(12.dp),
@@ -300,6 +363,9 @@ private fun PortalGuidanceCard(
     status: String,
     inferenceUrl: String,
     pageError: String?,
+    portalEnabled: Boolean,
+    offlineAirplaneMode: Boolean,
+    onPortalEnabledChange: (Boolean) -> Unit,
 ) {
     val strings = LocalHermesStrings.current
     Surface(
@@ -315,6 +381,18 @@ private fun PortalGuidanceCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(strings.portalTitle.ifBlank { "Nous Portal" }, style = MaterialTheme.typography.titleMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Portal enabled", style = MaterialTheme.typography.titleSmall)
+                Switch(
+                    checked = portalEnabled,
+                    onCheckedChange = onPortalEnabledChange,
+                    enabled = !offlineAirplaneMode,
+                )
+            }
             Text(status, style = MaterialTheme.typography.bodySmall)
             Text(
                 strings.portalEmbeddedDescription.ifBlank {

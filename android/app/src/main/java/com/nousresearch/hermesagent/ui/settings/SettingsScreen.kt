@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -17,6 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -84,8 +86,13 @@ fun SettingsScreen(
                         summary = uiState.onDeviceSummary,
                         strings = strings,
                     )
+                    OfflineAirplaneCard(
+                        enabled = uiState.offlineAirplaneMode,
+                        onChange = viewModel::updateOfflineAirplaneMode,
+                    )
                     LocalModelDownloadsSection(
                         dataSaverMode = uiState.dataSaverMode,
+                        offlineAirplaneMode = uiState.offlineAirplaneMode,
                         onDataSaverModeChange = viewModel::updateDataSaverMode,
                         selectedBackend = uiState.onDeviceBackend,
                         onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor,
@@ -117,6 +124,44 @@ fun SettingsScreen(
                         Text(uiState.status)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineAirplaneCard(
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Offline airplane mode", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Blocks Hermes internet features while keeping local files, localhost model runtimes, and on-device automation available.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = onChange)
+            }
+            Button(onClick = { onChange(!enabled) }) {
+                Text(if (enabled) "Turn app internet back on" else "Cut app internet")
             }
         }
     }

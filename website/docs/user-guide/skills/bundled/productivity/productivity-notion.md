@@ -19,6 +19,7 @@ Notion API via curl: pages, databases, blocks, search.
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Notion`, `Productivity`, `Notes`, `Database`, `API` |
 
 ## Reference: full SKILL.md

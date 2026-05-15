@@ -29,7 +29,40 @@ import uuid
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
-import fal_client
+# fal_client is imported lazily — see _load_fal_client(). Pulling it
+# eagerly added ~64 ms to every CLI cold start because
+# discover_builtin_tools() imports this module unconditionally during
+# the registry walk, even when image generation is never used.
+#
+# Tests that monkeypatch this attribute (e.g.
+# ``monkeypatch.setattr(image_tool, "fal_client", fake_fal_client)``)
+# still work: _load_fal_client() short-circuits when the attribute is
+# anything truthy, so a test-installed mock is not overwritten by a
+# subsequent real import.
+fal_client: Any = None
+
+
+def _load_fal_client() -> Any:
+    """Lazily import fal_client and rebind the module global on first use.
+
+    Idempotent. Returns the (now-loaded) ``fal_client`` module reference.
+    Skips the import if the global is already truthy — this preserves the
+    test pattern of monkeypatching the module global to install a mock.
+    """
+    global fal_client
+    if fal_client is not None:
+        return fal_client
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("image.fal", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
+    import fal_client as _fal_client  # noqa: F811 — module-global rebind
+    fal_client = _fal_client
+    return fal_client
+
 
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
@@ -338,6 +371,9 @@ class _ManagedFalSyncClient:
     """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
 
     def __init__(self, *, key: str, queue_run_origin: str):
+        # Trigger the lazy import on first construction. Idempotent — the
+        # placeholder is overwritten with the real module on first call.
+        _load_fal_client()
         sync_client_class = getattr(fal_client, "SyncClient", None)
         if sync_client_class is None:
             raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
@@ -435,6 +471,8 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
+    # Trigger the lazy import on first call. Idempotent.
+    _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
@@ -544,7 +582,7 @@ def _build_fal_payload(
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
-    if size_style in ("image_size_preset", "gpt_literal"):
+    if size_style in {"image_size_preset", "gpt_literal"}:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio":
         payload["aspect_ratio"] = sizes[aspect]
@@ -660,10 +698,7 @@ def image_generate_tool(
             raise ValueError("Prompt is required and must be a non-empty string")
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
+            raise ValueError(_build_no_backend_setup_message())
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
@@ -773,6 +808,42 @@ def check_fal_api_key() -> bool:
     return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
 
 
+def _build_no_backend_setup_message() -> str:
+    """Build an actionable error string when no FAL backend is reachable.
+
+    Used by the in-tree FAL path. Mentions:
+      - FAL_KEY signup link
+      - managed-gateway status (if Nous tools are enabled)
+      - plugin alternative pointer (so users on a stale ``image_gen.provider``
+        know the registry exists and how to inspect it)
+    """
+    lines = ["Image generation is unavailable in this environment.", ""]
+    lines.append("Missing requirements:")
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  - FAL_KEY is not set and the managed FAL gateway is unreachable"
+        )
+    else:
+        lines.append("  - FAL_KEY environment variable is not set")
+    lines.append("")
+    lines.append("To enable image generation, do one of:")
+    lines.append(
+        "  1. Get a free API key at https://fal.ai and set "
+        "FAL_KEY=<your-key> (then restart the session)"
+    )
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  2. Sign in to a Nous account that has the managed FAL "
+            "gateway enabled (`hermes setup`)"
+        )
+    lines.append(
+        "  3. Configure a different image_gen provider via `hermes tools` "
+        "→ Image Generation (run `hermes plugins list` to see installed "
+        "backends)"
+    )
+    return "\n".join(lines)
+
+
 def check_image_generation_requirements() -> bool:
     """True if any image gen backend is available.
 
@@ -788,7 +859,11 @@ def check_image_generation_requirements() -> bool:
     """
     try:
         if check_fal_api_key():
-            fal_client  # noqa: F401 — SDK presence check
+            # Trigger the lazy fal_client import here as the SDK presence
+            # check. Raises ImportError if the optional ``fal-client``
+            # package isn't installed; the caller's except ImportError
+            # below catches that and continues to plugin probing.
+            _load_fal_client()
             return True
     except ImportError:
         pass

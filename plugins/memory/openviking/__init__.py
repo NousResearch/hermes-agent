@@ -100,18 +100,19 @@ class _VikingClient:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        # Only send tenant headers when the user actually configured them.
-        # Legacy installs had account/user defaulted to the literal string
-        # "default" — treat that as unset so authenticated remote servers
-        # that derive tenancy from the Bearer key aren't overridden by a
-        # bogus tenant value.
+        # Always send tenant headers when account/user are configured.
+        # OpenViking 0.3.x requires X-OpenViking-Account and X-OpenViking-User
+        # for ROOT API key requests to tenant-scoped APIs — omitting them
+        # causes INVALID_ARGUMENT errors even when account="default".
+        # User-level keys can omit them (server derives tenancy from the key),
+        # but ROOT keys must always include them explicitly.
         h = {
             "Content-Type": "application/json",
             "X-OpenViking-Agent": self._agent,
         }
-        if self._account and self._account != "default":
+        if self._account:
             h["X-OpenViking-Account"] = self._account
-        if self._user and self._user != "default":
+        if self._user:
             h["X-OpenViking-User"] = self._user
         if self._api_key:
             h["X-API-Key"] = self._api_key
@@ -335,10 +336,17 @@ ADD_RESOURCE_SCHEMA = {
 
 def _zip_directory(dir_path: Path) -> Path:
     """Create a temporary zip file containing a directory tree."""
+    root = dir_path.resolve()
     zip_path = Path(tempfile.gettempdir()) / f"openviking_upload_{uuid.uuid4().hex}.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file_path in dir_path.rglob("*"):
+            if file_path.is_symlink():
+                continue
             if file_path.is_file():
+                try:
+                    file_path.resolve().relative_to(root)
+                except ValueError:
+                    continue
                 arcname = str(file_path.relative_to(dir_path)).replace("\\", "/")
                 zipf.write(file_path, arcname=arcname)
     return zip_path

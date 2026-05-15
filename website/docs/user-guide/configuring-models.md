@@ -188,9 +188,12 @@ Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short n
 ### `hermes model` subcommand
 
 ```bash
-hermes model list                   # list authenticated providers + models
-hermes model set anthropic/claude-opus-4.7 --provider openrouter
+hermes model            # Interactive provider + model picker (the canonical way to switch defaults)
 ```
+
+`hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.model` in `~/.hermes/config.yaml`.
+
+To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model` and `hermes status`.
 
 ### Direct config edit
 

@@ -96,10 +96,10 @@ def _global_allow_private_urls() -> bool:
 
     # 1. Env var override (highest priority)
     env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in ("true", "1", "yes"):
+    if env_val in {"true", "1", "yes"}:
         _cached_allow_private = True
         return _cached_allow_private
-    if env_val in ("false", "0", "no"):
+    if env_val in {"false", "0", "no"}:
         # Explicit false — don't fall through to config
         return _cached_allow_private
 
@@ -263,6 +263,9 @@ def is_safe_url(url: str) -> bool:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            return False
         if not hostname:
             return False
 

@@ -10,8 +10,11 @@ import pytest
 
 
 def _cli_import_stubs():
+    wcwidth_stub = MagicMock()
+    wcwidth_stub.wcswidth.side_effect = lambda text: len(str(text))
     return {
         "fire": MagicMock(),
+        "wcwidth": wcwidth_stub,
         "prompt_toolkit": MagicMock(),
         "prompt_toolkit.history": MagicMock(),
         "prompt_toolkit.styles": MagicMock(),

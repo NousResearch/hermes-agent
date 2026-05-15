@@ -793,30 +793,108 @@ function Install-Dependencies {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
-    
-    # Install main package.  Tiered fallback so a single flaky git+https dep
-    # (atroposlib / tinker in the [rl] extra) doesn't silently drop
-    # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
+
+    # Hash-verified install (Tier 0) — when uv.lock is present, prefer
+    # `uv sync --locked`. The lockfile records SHA256 hashes for every
+    # transitive dependency, so a compromised transitive (different hash
+    # than what we shipped) is REJECTED by the resolver. This is the
+    # *only* path that protects against the "direct dep is fine, but the
+    # dep's dep got worm-poisoned overnight" failure mode. The
+    # `uv pip install` tiers below re-resolve transitives fresh from PyPI
+    # without any hash verification — they exist to keep installs working
+    # when the lockfile is stale, missing, or out-of-sync with the
+    # current extras spec, NOT because they're equivalent in posture.
+    if (Test-Path "uv.lock") {
+        Write-Info "Trying tier: hash-verified (uv.lock) ..."
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key,
+        #                  bypassing the curated [all] extra. On Windows
+        #                  that means [matrix] -> python-olm (no wheel,
+        #                  needs `make` to build from sdist) and the
+        #                  install fails.
+        #   --extra all  = just the [all] extra's contents (curated).
+        #
+        # UV_PROJECT_ENVIRONMENT pins the sync target to our venv\.
+        # Without it, modern uv (>=0.5) ignores VIRTUAL_ENV for `sync`
+        # and creates a sibling .venv\ inside the repo — leaving venv\
+        # empty and producing the broken state where `hermes.exe` exists
+        # in the wrong directory and imports fail with ModuleNotFoundError.
+        # (Mirrors the same flag in scripts/install.sh::install_deps.)
+        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+        & $UvCmd sync --extra all --locked
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Main package installed (hash-verified via uv.lock)"
+            $script:InstalledTier = "hash-verified (uv.lock)"
+            # Skip the rest of the tiered cascade — we already have a
+            # complete, hash-verified install.
+            $skipPipFallback = $true
+        } else {
+            Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
+            $skipPipFallback = $false
+        }
+    } else {
+        Write-Info "uv.lock not found — falling back to PyPI resolve (no hash verification)"
+        $skipPipFallback = $false
+    }
+
+    # Install main package.  Tiered fallback so a single flaky transitive
+    # doesn't silently drop everything.  Each tier's stdout/stderr is
     # preserved — no Out-Null swallowing — so the user can see what failed.
     #
-    # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [core-extras] synthesised locally — all PyPI-only extras we
-    #         ship (web, mcp, cron, cli, voice, messaging, slack, dev, acp,
-    #         pty, homeassistant, sms, tts-premium, honcho, google, mistral,
-    #         bedrock, dingtalk, feishu, modal, daytona, vercel).  Drops [rl]
-    #         and [matrix] (linux-only) which are the usual failure culprits.
-    # Tier 3: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
-    #         believe a user expects `hermes dashboard` / slash commands /
-    #         cron / messaging platforms to work out of the box.
-    # Tier 4: bare `.` — last-resort so at least the core CLI launches.
+    # Tier 1: [all] — the curated extra in pyproject.toml.
+    # Tier 2: [all] minus the currently-broken extras list ($brokenExtras).
+    #         Edit $brokenExtras below when something on PyPI breaks; this
+    #         lets users keep the rest of [all] when one transitive is
+    #         unavailable. The list of [all]'s contents is parsed from
+    #         pyproject.toml at runtime — there is NO hand-mirrored copy
+    #         to drift out of sync.
+    # Tier 3: bare `.` — last-resort so at least the core CLI launches.
+
+    # Currently-broken extras. Edit this list when an upstream package
+    # gets quarantined / yanked / breaks resolution. Empty means everything
+    # in [all] should be installable; populate with the names of extras
+    # whose deps are temporarily unavailable.
+    $brokenExtras = @()
+
+    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
+    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $allExtras = @()
+    if (Test-Path $pythonExeForParse) {
+        $parsed = & $pythonExeForParse -c @"
+import re, sys, tomllib
+try:
+    with open('pyproject.toml', 'rb') as fh:
+        data = tomllib.load(fh)
+    specs = data['project']['optional-dependencies']['all']
+    out = []
+    for s in specs:
+        m = re.search(r'hermes-agent\[([\w-]+)\]', s)
+        if m: out.append(m.group(1))
+    print(','.join(out))
+except Exception:
+    sys.exit(1)
+"@ 2>$null
+        if ($LASTEXITCODE -eq 0 -and $parsed) {
+            $allExtras = $parsed.Trim().Split(',')
+        }
+    }
+    if (-not $allExtras -or $allExtras.Count -eq 0) {
+        Write-Warn "Could not parse [all] from pyproject.toml; Tier 2 will be a no-op."
+        $safeAll = "all"
+    } else {
+        $safeAll = ($allExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    }
+    $brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
+
     $installTiers = @(
-        @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
-        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[web,mcp,cron,cli,voice,messaging,slack,dev,acp,pty,homeassistant,sms,tts-premium,honcho,google,mistral,bedrock,dingtalk,feishu,modal,daytona,vercel]" },
-        @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
+        @{ Name = "all"; Spec = ".[all]" },
+        @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
         @{ Name = "core only (no extras)"; Spec = "." }
     )
-    $installed = $false
-    foreach ($tier in $installTiers) {
+    $installed = $skipPipFallback
+    if (-not $skipPipFallback) {
+        foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
         & $UvCmd pip install -e $tier.Spec
         if ($LASTEXITCODE -eq 0) {
@@ -826,9 +904,35 @@ function Install-Dependencies {
             break
         }
         Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+        }
     }
     if (-not $installed) {
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
+    }
+
+    # Baseline-import gate. Even if a tier reported success above, the
+    # actual deps may have landed somewhere other than $InstallDir\venv\
+    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
+    # isn't set, leaving venv\ empty and hermes.exe broken with
+    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
+    # We probe via the venv's own python so a misdirected sync is caught
+    # here, not 30 seconds later when the user runs `hermes`.
+    if (-not $NoVenv) {
+        $venvPython = "$InstallDir\venv\Scripts\python.exe"
+        if (-not (Test-Path $venvPython)) {
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        }
+        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            $sibling = "$InstallDir\.venv"
+            $hint = if (Test-Path $sibling) {
+                "Detected sibling .venv\ at $sibling — uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+            } else {
+                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            }
+            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+        }
+        Write-Success "Baseline imports verified in venv"
     }
 
     # Verify the dashboard deps specifically — they're the most common thing
@@ -852,20 +956,6 @@ function Install-Dependencies {
                 Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
             }
         }
-    }
-    
-    # tinker-atropos (RL training) is optional and OFF by default.  Matches the
-    # Linux/macOS install.sh behavior.  Reasons not to auto-install:
-    #   - tinker-atropos/pyproject.toml pulls atroposlib + tinker from git+https
-    #     (NousResearch/atropos + thinking-machines-lab/tinker) which can fail on
-    #     locked-down networks, flaky DNS, or rate-limited github.com and would
-    #     previously kill the whole install mid-flight on Windows.
-    #   - It's an RL training submodule, not part of the default agent surface.
-    #     Users who don't do RL training never need it.
-    # Users who do want it can run the one-liner we print below.
-    if (Test-Path "tinker-atropos\pyproject.toml") {
-        Write-Info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        Write-Info "  To install later: $UvCmd pip install -e `".\tinker-atropos`""
     }
     
     Pop-Location

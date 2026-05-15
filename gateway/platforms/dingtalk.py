@@ -111,9 +111,33 @@ DINGTALK_TYPE_MAPPING = {
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+    """Check if DingTalk dependencies are available and configured.
+
+    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
+    on first call if not present.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.dingtalk", prompt=False)
+        except Exception:
+            return False
+        try:
+            import dingtalk_stream as _ds
+            from dingtalk_stream import ChatbotMessage as _CM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            import httpx as _httpx
+        except ImportError:
+            return False
+        dingtalk_stream = _ds
+        ChatbotMessage = _CM
+        CallbackMessage = _CBM
+        AckMessage = _AM
+        httpx = _httpx
+        DINGTALK_STREAM_AVAILABLE = True
+        HTTPX_AVAILABLE = True
     if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
@@ -353,9 +377,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _dingtalk_free_response_chats(self) -> Set[str]:
         raw = self.config.extra.get("free_response_chats")
@@ -885,6 +909,67 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
         pass
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image via DingTalk markdown.
+
+        DingTalk's session webhook only supports text/markdown payloads, not
+        native image/file attachments. For remote image URLs, render the image
+        inline with markdown so the user still sees the image. Local files need
+        OpenAPI media upload and are handled separately.
+        """
+        image_block = f"![image]({image_url})"
+        content = f"{caption}\n\n{image_block}" if caption else image_block
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local image files directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local image uploads. "
+                "Only markdown/text replies are supported without OpenAPI media upload."
+            ),
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local file attachments directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local file attachments. "
+                "Only markdown/text replies are supported without OpenAPI message send."
+            ),
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""

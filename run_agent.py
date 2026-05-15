@@ -4967,6 +4967,45 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
+    def _decorate_xai_entitlement_error(detail: str) -> str:
+        """Append a friendly hint when xAI's OAuth surface returns an
+        entitlement-shaped error.
+
+        xAI's ``/v1/responses`` endpoint replies to OAuth tokens that lack a
+        SuperGrok / X Premium subscription with HTTP 403 carrying a body like::
+
+            {"code": "The caller does not have permission to execute the
+             specified operation", "error": "You have either run out of
+             available resources or do not have an active Grok subscription.
+             Manage subscriptions at https://grok.com/..."}
+
+        The raw text is useful but the action the user needs to take (subscribe
+        on grok.com, or switch providers with ``/model``) isn't obvious from
+        the wire format.  Detect the entitlement shape and append a hint.
+
+        Matched once per detail string — won't double-decorate if the upstream
+        already concatenated the same text.
+        """
+        if not detail:
+            return detail
+        lower = detail.lower()
+        is_entitlement = (
+            "do not have an active grok subscription" in lower
+            or ("out of available resources" in lower and "grok" in lower)
+            or ("does not have permission" in lower and "grok" in lower)
+        )
+        if not is_entitlement:
+            return detail
+        hint = (
+            " — xAI OAuth account lacks SuperGrok / X Premium entitlement for "
+            "this model. Subscribe at https://grok.com or run `/model` to "
+            "switch providers."
+        )
+        if hint.strip() in detail:
+            return detail
+        return f"{detail}{hint}"
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -4999,12 +5038,12 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return f"{prefix}{raw[:500]}"
+        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
@@ -7056,18 +7095,48 @@ class AIAgent:
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
-                if missing_completed and attempt < max_stream_retries:
+                # The OpenAI SDK's Responses streaming state machine raises
+                # ``RuntimeError("Expected to have received `response.created`
+                # before `<event-type>`")`` when the first SSE event from the
+                # server is anything other than ``response.created`` — and it
+                # discards the event's payload before we can read it.  Three
+                # real-world backends emit a different first frame:
+                #
+                #   * xAI on grok-4.x OAuth — sends ``error`` (issues
+                #     reported around the May 2026 SuperGrok rollout when
+                #     multi-turn conversations replay encrypted reasoning
+                #     content the OAuth tier rejects)
+                #   * codex-lb relays — send ``codex.rate_limits`` (#14634)
+                #   * custom Responses relays — send ``response.in_progress``
+                #     (#8133)
+                #
+                # In all three cases the underlying byte stream is still
+                # readable: a non-stream ``responses.create(stream=True)``
+                # fallback succeeds and surfaces the real provider error as
+                # a normal exception with body+status_code attached, which
+                # ``_summarize_api_error`` can then translate into a useful
+                # user-facing line.  Treat ``response.created`` prelude
+                # errors the same way we already treat ``response.completed``
+                # postlude errors.
+                prelude_error = (
+                    "Expected to have received `response.created`" in err_text
+                    or "Expected to have received \"response.created\"" in err_text
+                )
+                if (missing_completed or prelude_error) and attempt < max_stream_retries:
                     logger.debug(
-                        "Responses stream closed before completion (attempt %s/%s); retrying. %s",
+                        "Responses stream %s (attempt %s/%s); retrying. %s",
+                        "prelude rejected" if prelude_error else "closed before completion",
                         attempt + 1,
                         max_stream_retries + 1,
                         self._client_log_context(),
                     )
                     continue
-                if missing_completed:
+                if missing_completed or prelude_error:
                     logger.debug(
-                        "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
+                        "Responses stream %s; falling back to create(stream=True). %s err=%s",
+                        "rejected before response.created" if prelude_error else "did not emit response.completed",
                         self._client_log_context(),
+                        err_text,
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise

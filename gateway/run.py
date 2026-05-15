@@ -6506,6 +6506,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "limits":
+            return await self._handle_limits_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -11711,6 +11714,68 @@ class GatewayRunner:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    async def _handle_limits_command(self, event: MessageEvent) -> str:
+        """Handle /limits command -- show Codex subscription rate limits."""
+        try:
+            from agent.codex_limits import format_pretty, get_codex_limits
+        except ImportError as exc:
+            return f"Codex limits module unavailable: {exc}"
+
+        try:
+            tokens = shlex.split(event.get_command_args().strip())
+        except ValueError as exc:
+            return f"Invalid /limits arguments: {exc}"
+
+        provider = "auto"
+        as_json = False
+        timeout = 20
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--json":
+                as_json = True
+                i += 1
+                continue
+            if token == "--provider" and i + 1 < len(tokens):
+                provider = tokens[i + 1]
+                i += 2
+                continue
+            if token.startswith("--provider="):
+                provider = token.split("=", 1)[1]
+                i += 1
+                continue
+            if token == "--timeout" and i + 1 < len(tokens):
+                try:
+                    timeout = int(tokens[i + 1])
+                except ValueError:
+                    return "--timeout must be an integer number of seconds"
+                i += 2
+                continue
+            if token.startswith("--timeout="):
+                try:
+                    timeout = int(token.split("=", 1)[1])
+                except ValueError:
+                    return "--timeout must be an integer number of seconds"
+                i += 1
+                continue
+            return "Usage: /limits [--provider auto|app-server|wham] [--timeout seconds] [--json]"
+
+        if provider not in {"auto", "app-server", "wham"}:
+            return "--provider must be one of: auto, app-server, wham"
+
+        try:
+            state = await asyncio.to_thread(get_codex_limits, provider=provider, timeout=timeout)
+        except Exception as exc:
+            return (
+                f"Codex limit lookup failed: {exc}\n"
+                "Run `hermes auth add openai-codex` or `hermes login --provider openai-codex` to sign in."
+            )
+
+        if as_json:
+            return "```json\n" + json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n```"
+        return format_pretty(state)
+
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.

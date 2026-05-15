@@ -6952,6 +6952,80 @@ class HermesCLI:
             return "\n".join(p for p in parts if p)
         return str(value)
 
+    def _handle_limits_command(self, cmd_original: str) -> None:
+        """Show Codex subscription rate limits for the current OAuth account."""
+        import shlex
+
+        try:
+            from agent.codex_limits import format_pretty, get_codex_limits
+        except ImportError as exc:
+            self._console_print(f"  [red]Codex limits module unavailable: {exc}[/]")
+            return
+
+        try:
+            tokens = shlex.split(cmd_original)
+        except ValueError as exc:
+            self._console_print(f"  [red]Invalid /limits arguments:[/] {exc}")
+            return
+
+        provider = "auto"
+        as_json = False
+        timeout = 20
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--json":
+                as_json = True
+                i += 1
+                continue
+            if token == "--provider" and i + 1 < len(tokens):
+                provider = tokens[i + 1]
+                i += 2
+                continue
+            if token.startswith("--provider="):
+                provider = token.split("=", 1)[1]
+                i += 1
+                continue
+            if token == "--timeout" and i + 1 < len(tokens):
+                try:
+                    timeout = int(tokens[i + 1])
+                except ValueError:
+                    self._console_print("  [red]--timeout must be an integer number of seconds[/]")
+                    return
+                i += 2
+                continue
+            if token.startswith("--timeout="):
+                try:
+                    timeout = int(token.split("=", 1)[1])
+                except ValueError:
+                    self._console_print("  [red]--timeout must be an integer number of seconds[/]")
+                    return
+                i += 1
+                continue
+            self._console_print(
+                "  [yellow]Usage:[/] /limits [--provider auto|app-server|wham] [--timeout seconds] [--json]"
+            )
+            return
+
+        if provider not in {"auto", "app-server", "wham"}:
+            self._console_print("  [red]--provider must be one of: auto, app-server, wham[/]")
+            return
+
+        try:
+            state = get_codex_limits(provider=provider, timeout=timeout)
+        except Exception as exc:
+            self._console_print(f"  [red]Codex limit lookup failed:[/] {exc}")
+            self._console_print("  Run [bold]hermes auth add openai-codex[/] or [bold]hermes login --provider openai-codex[/] to sign in.")
+            return
+
+        if as_json:
+            self._console_print(json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True))
+        else:
+            self._console_print()
+            for line in format_pretty(state).splitlines():
+                self._console_print(f"  {line}")
+            self._console_print()
+
     def _handle_gquota_command(self, cmd_original: str) -> None:
         """Show Google Gemini Code Assist quota usage for the current OAuth account."""
         try:
@@ -7578,6 +7652,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
+        elif canonical == "limits":
+            self._handle_limits_command(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 

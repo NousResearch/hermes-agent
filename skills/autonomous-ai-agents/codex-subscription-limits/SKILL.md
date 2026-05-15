@@ -26,7 +26,7 @@ The recommended implementation is:
 3. Convert used percentages to remaining percentages: `remaining_percent = 100 - used_percent`.
 4. Print only normalized quota data; never print tokens, raw auth JSON, account IDs, or bearer tokens.
 
-A reusable helper is included at `scripts/codex_limits.py`.
+A reusable helper is included at `scripts/codex_limits.py`. In Hermes Agent source builds, the reusable implementation lives in `agent/codex_limits.py` and the built-in `/limits` slash command calls it.
 
 ## When to Use
 
@@ -72,7 +72,17 @@ This is the best public implementation reference because it uses the local Codex
 
 ## Quick Check from Hermes
 
-Use the bundled script directly. It is safe to run: it prints normalized quota only and never prints raw credentials.
+In an interactive Hermes session, use the built-in slash command:
+
+```text
+/limits
+/limits --provider wham
+/limits --json
+```
+
+The command is available in CLI/TUI and gateway sessions. It is safe to run: it prints normalized quota only and never prints raw credentials.
+
+You can also use the bundled script directly:
 
 ```python
 terminal(

@@ -126,6 +126,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Configuration", args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
+    CommandDef("limits", "Show Codex subscription rate limits", "Info",
+               aliases=("codex-limits", "climits"),
+               args_hint="[--provider auto|app-server|wham] [--json]"),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

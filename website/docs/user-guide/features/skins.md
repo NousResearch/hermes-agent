@@ -41,6 +41,7 @@ display:
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
+| `bunnny` | Barbie-pink coquette theme — sparkles, bows, and bubblegum | `Hermes Agent` | Hot pink (`#E91E63`) borders with Barbie-pink (`#FF69B4`) accents and lavender-blush text. Coquette spinner verbs ("sparkling", "twirling", "tying a little bow"). Heart (♡) prompt symbol, sparkle-kaomoji greeting, twin-bunny hero art. |
 
 ## Complete list of configurable keys
 

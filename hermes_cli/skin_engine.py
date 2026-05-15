@@ -104,6 +104,10 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``poseidon`` — Ocean-god theme (deep blue and seafoam)
+- ``sisyphus`` — Austere grayscale with boulder motif
+- ``charizard`` — Volcanic burnt-orange and ember
+- ``bunnny``   — Barbie-pink coquette theme (sparkles, hearts, bunnies)
 
 USER SKINS
 ==========
@@ -636,6 +640,83 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
+    "bunnny": {
+        "name": "bunnny",
+        "description": "Barbie-pink coquette theme — sparkles, bows, and bubblegum",
+        "colors": {
+            "banner_border": "#E91E63",
+            "banner_title": "#FF3366",
+            "banner_accent": "#FF69B4",
+            "banner_dim": "#C2185B",
+            "banner_text": "#FFF0F5",
+            "ui_accent": "#FF3366",
+            "ui_label": "#FF69B4",
+            "ui_ok": "#FFB6C1",
+            "ui_error": "#FF1744",
+            "ui_warn": "#FFAB91",
+            "prompt": "#FFF0F5",
+            "input_rule": "#E91E63",
+            "response_border": "#FF69B4",
+            "status_bar_bg": "#2A0E1E",
+            "status_bar_text": "#FFE4EC",
+            "status_bar_strong": "#FF3366",
+            "status_bar_dim": "#8E4B6B",
+            "status_bar_good": "#FFB6C1",
+            "status_bar_warn": "#FF69B4",
+            "status_bar_bad": "#FF3366",
+            "status_bar_critical": "#FF1744",
+            "session_label": "#FF69B4",
+            "session_border": "#8E4B6B",
+            "voice_status_bg": "#2A0E1E",
+            "completion_menu_bg": "#2A0E1E",
+            "completion_menu_current_bg": "#5A1D3A",
+            "completion_menu_meta_bg": "#2A0E1E",
+            "completion_menu_meta_current_bg": "#5A1D3A",
+        },
+        "spinner": {
+            "waiting_faces": ["(♡)", "(✿)", "(✧)", "(❀)", "(ෆ)", "(˘ᵕ˘)", "(⑅)"],
+            "thinking_faces": ["(♡)", "(✧)", "(❀)", "(✿)", "(ෆ)", "(˘ᵕ˘)"],
+            "thinking_verbs": [
+                "sparkling", "twirling", "glittering", "frosting",
+                "bedazzling", "bowtying", "sprinkling sugar", "picking ribbons",
+                "glossing up", "curating the vibe", "dusting pink",
+                "tying a little bow", "making it cute",
+            ],
+            "wings": [
+                ["⟪♡", "♡⟫"],
+                ["⟪✧", "✧⟫"],
+                ["⟪✿", "✿⟫"],
+                ["⟪❀", "❀⟫"],
+                ["⟪ෆ", "ෆ⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "hi bestie ♡ welcome to Hermes Agent! type your message or /help for commands (ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+            "goodbye": "bye bestie ♡ ✧",
+            "response_label": " ♡ Hermes ",
+            "prompt_symbol": "♡",
+            "help_header": "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧ Commands",
+        },
+        "tool_prefix": "♡",
+        "banner_logo": """[bold #FFB6C1]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗  ██╗  ██╗ [/]
+[bold #FF69B4]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝ ████████╗[/]
+[#FF3C7F]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗ ╚██████╔╝[/]
+[#FF3366]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║  ╚████╔╝ [/]
+[#E91E63]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║   ╚██╔╝  [/]
+[#C2185B]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝    ╚═╝   [/]""",
+        "banner_hero": """[#FF69B4]⠀⠀✧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀✧⠀⠀[/]
+[#FFB6C1]⠀⠀⠀⠀⠀⠀♡⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠀⠀⠀⠀⠀⢀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀♡⠀⠀⠀⠀[/]
+[#FF69B4]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣯⢬⣷⡀⠀⠀⣴⡯⢌⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#FF3366]⠀✿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿♡⠹⣷⠀⢸⡝♡⢸⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀✿⠀[/]
+[#FF3C7F]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⣧⣀⣿⣦⣼⡁⣠⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#FF3366]⠀⠀⠀⠀✧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡾⠋⠀⠀⠀⠈⣙⣯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀✧[/]
+[#FF3366]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⠀⠀⠀⠀⠀⠀⠀⠸⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#E91E63]⠀⠀⠀⠀⠀⠀⠀♡⠀⠀⠀⠀⠀⠀⠀⠀⢰⡧⢄⢰⡆⠀⢰⡆⡠⢄⣧⠀⠀⠀⠀⠀⠀⠀⠀♡⠀⠀⠀⠀⠀[/]
+[#C2185B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠳⣼⣤⣤⣤⣤⣤⣧⠾⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#FF69B4]⠀⠀⠀⠀⠀✿⠀⠀⠀⠀⠀⠀❀⠀⠀⠀⠀⠀❀⠀⠀❀⠀⠀⠀⠀⠀❀⠀⠀⠀⠀⠀⠀✿⠀⠀⠀⠀⠀[/]
+[dim #C2185B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀xoxo⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
     },
 }
 

@@ -1077,6 +1077,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(feishu_cfg, dict):
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
+                if "streaming" in feishu_cfg and not os.getenv("FEISHU_STREAMING"):
+                    os.environ["FEISHU_STREAMING"] = str(feishu_cfg["streaming"]).lower()
 
     except Exception as e:
         logger.warning(

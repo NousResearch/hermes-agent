@@ -474,6 +474,94 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
     assert "model.provider 'custom' is not a recognised provider" not in out
 
 
+def _run_doctor_with_openrouter_config(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("TERMINAL_ENV=local\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4.6\n",
+        encoding="utf-8",
+    )
+
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    doctor_mod._APIKEY_PROVIDERS_CACHE = []
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.bedrock_adapter",
+        types.SimpleNamespace(
+            has_aws_credentials=lambda: False,
+            resolve_aws_auth_env_var=lambda: "",
+            resolve_bedrock_region=lambda: "",
+        ),
+    )
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: SimpleNamespace(entries=lambda: []))
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+def test_run_doctor_flags_active_openrouter_without_credentials(monkeypatch, tmp_path):
+    for key in tuple(doctor_mod._PROVIDER_ENV_HINTS) + (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    out = _run_doctor_with_openrouter_config(monkeypatch, tmp_path)
+
+    assert "model.provider 'openrouter' is set but no API key is configured" in out
+    assert "No credentials found for provider 'openrouter'" in out
+    assert "Set OPENROUTER_API_KEY or OPENAI_API_KEY" in out
+
+
+def test_run_doctor_accepts_active_openrouter_with_openai_fallback_key(monkeypatch, tmp_path):
+    for key in tuple(doctor_mod._PROVIDER_ENV_HINTS) + (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai-fallback")
+
+    try:
+        import httpx
+
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: SimpleNamespace(status_code=200))
+    except Exception:
+        pass
+
+    out = _run_doctor_with_openrouter_config(monkeypatch, tmp_path)
+
+    assert "model.provider 'openrouter' is set but no API key is configured" not in out
+    assert "No credentials found for provider 'openrouter'" not in out
+
+
 @pytest.mark.parametrize(
     ("provider", "default_model"),
     [

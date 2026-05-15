@@ -105,6 +105,28 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_openrouter_credentials() -> bool:
+    """Return True when OpenRouter can resolve an API credential."""
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except Exception:  # pragma: no cover - import failure fallback
+        def has_usable_secret(value: object) -> bool:
+            return bool(str(value or "").strip())
+
+    if any(
+        has_usable_secret(os.getenv(key, ""))
+        for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+    ):
+        return True
+
+    try:
+        from agent.credential_pool import load_pool
+
+        return bool(load_pool("openrouter").entries())
+    except Exception:
+        return False
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -625,7 +647,18 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
+            if runtime_provider == "openrouter":
+                if not _has_openrouter_credentials():
+                    check_fail(
+                        "model.provider 'openrouter' is set but no API key is configured",
+                        "(set OPENROUTER_API_KEY or OPENAI_API_KEY)",
+                    )
+                    issues.append(
+                        "No credentials found for provider 'openrouter'. "
+                        f"Set OPENROUTER_API_KEY or OPENAI_API_KEY in {_DHH}/.env, "
+                        "or switch providers with 'hermes config set model.provider <name>'"
+                    )
+            elif runtime_provider and runtime_provider not in {"auto", "custom"}:
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
                     pconfig = PROVIDER_REGISTRY.get(runtime_provider)
@@ -1282,7 +1315,11 @@ def run_doctor(args):
     _probes: list = []  # list of (label, callable) submitted in display order
 
     def _probe_openrouter() -> _ConnectivityResult:
-        key = os.getenv("OPENROUTER_API_KEY")
+        key_name = "OPENROUTER_API_KEY"
+        key = os.getenv(key_name)
+        if not key:
+            key_name = "OPENAI_API_KEY"
+            key = os.getenv(key_name)
         if not key:
             return _ConnectivityResult(
                 "OpenRouter API",
@@ -1308,7 +1345,7 @@ def run_doctor(args):
                     "OpenRouter API",
                     [(color("✗", Colors.RED), "OpenRouter API",
                       color("(invalid API key)", Colors.DIM))],
-                    ["Check OPENROUTER_API_KEY in .env"],
+                    [f"Check {key_name} in .env"],
                 )
             if r.status_code == 402:
                 return _ConnectivityResult(

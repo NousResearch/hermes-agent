@@ -94,6 +94,64 @@ python -m pytest tests\run_agent\test_run_agent.py::TestConcurrentToolExecution 
 
 Result: `40 passed`.
 
+## Full Suite Attempt
+
+The full repository suite was also run locally on this Windows thread with a
+hermetic environment matching the repo wrapper as closely as possible.
+
+Command:
+
+```powershell
+python -m pytest tests/ -o addopts= -n 4 --ignore=tests/integration --ignore=tests/e2e -m "not integration" --tb=short -q
+```
+
+Environment mirrors used for the run:
+
+- Cleared credential-shaped environment variables.
+- Cleared `HERMES_*` behavioral overrides used by interactive/runtime flows.
+- Set `TZ=UTC`, `LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, and `PYTHONHASHSEED=0`.
+- Ran on Windows with Python `3.14` because this local thread does not have the
+  repo's CI-style Python `3.11` + `.venv` setup available.
+
+Result:
+
+- `18852 passed`
+- `393 skipped`
+- `745 failed`
+- `76 errors`
+- total time `21m15s`
+
+Log capture:
+
+- `C:\Users\wesley.simplicio\AppData\Local\Temp\hermes-full-suite-20260515-035956\stdout.log`
+
+Primary error classes observed:
+
+- Missing optional or dev dependencies in this local Python environment:
+  `acp`, `prompt_toolkit`, `rich`, `yaml`, `fastapi`, `mcp`, `cryptography`,
+  `numpy`, `botocore`.
+- POSIX-only module expectations on Windows:
+  `pwd`, `fcntl`, bash-driven cron and shell-init behaviors.
+- Windows filesystem or privilege differences:
+  symlink privilege failures, hidden-dir discovery assumptions, permission-mode
+  assertions, and temp-file behavior differences.
+- Live shell tests that assume POSIX command availability or output shape:
+  `cat`, `sed`, `wc`, `find`, `printf`, shell pipes, and shell init probing.
+- Some higher-level failures in `hermes_cli`, `voice`, `timezone`, `cron`, and
+  `run_agent` areas that need a CI-like Linux/Python 3.11 environment before
+  attributing them to this performance branch.
+
+Interpretation:
+
+- This full-suite run proves the branch can be exercised across the repository
+  at scale and that the focused performance-path regressions are not hiding a
+  trivial crash-on-import in the touched code.
+- This run does **not** constitute a green full-suite validation for merge,
+  because the local environment diverges materially from Hermes CI in both OS
+  and Python/runtime dependencies.
+- The focused regressions remain the most trustworthy signal for the specific
+  performance changes in this branch.
+
 ## Latest Local Benchmarks
 
 Command:
@@ -132,8 +190,11 @@ python scripts\benchmark_startup_perf.py -n 3
 
 ## Known Limits
 
-- The entire repository suite was not run in this pass; the focused regression
-  suite covers the changed performance paths.
+- The focused regression suite remains the highest-signal validation for the
+  changed performance paths.
+- A full local suite run was completed on Windows/Python 3.14, but it is not a
+  CI-equivalent result because the repo's normal test wrapper expects a POSIX
+  `.venv` flow and Hermes CI runs on Ubuntu with Python 3.11.
 - Startup subprocess timings vary on Windows with filesystem cache and
   antivirus activity. Treat benchmark medians as local measurements.
 - The 10x claim is scoped to dead local/custom endpoint initialization and

@@ -24,6 +24,25 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _close_test_session_db(db, agent=None):
+    """Close test-owned SessionDB handles before TemporaryDirectory cleanup."""
+    candidates = []
+    if agent is not None:
+        candidates.append(getattr(agent, "_session_db", None))
+    candidates.append(db)
+    seen = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        close = getattr(candidate, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Part 1: Agent-side — _flush_messages_to_session_db after compression
 # ---------------------------------------------------------------------------
@@ -61,45 +80,48 @@ class TestFlushAfterCompression:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
+            agent = None
+            try:
+                agent = self._make_agent(db)
 
-            agent = self._make_agent(db)
+                # Simulate the original long history (200 messages)
+                original_history = [
+                    {"role": "user" if i % 2 == 0 else "assistant",
+                     "content": f"message {i}"}
+                    for i in range(200)
+                ]
 
-            # Simulate the original long history (200 messages)
-            original_history = [
-                {"role": "user" if i % 2 == 0 else "assistant",
-                 "content": f"message {i}"}
-                for i in range(200)
-            ]
+                # First, flush original messages to the original session
+                agent._flush_messages_to_session_db(original_history, [])
+                original_rows = db.get_messages("original-session")
+                assert len(original_rows) == 200
 
-            # First, flush original messages to the original session
-            agent._flush_messages_to_session_db(original_history, [])
-            original_rows = db.get_messages("original-session")
-            assert len(original_rows) == 200
+                # Now simulate compression: new session, reset idx, shorter messages
+                agent.session_id = "compressed-session"
+                db.create_session(session_id="compressed-session", source="test")
+                agent._last_flushed_db_idx = 0
 
-            # Now simulate compression: new session, reset idx, shorter messages
-            agent.session_id = "compressed-session"
-            db.create_session(session_id="compressed-session", source="test")
-            agent._last_flushed_db_idx = 0
+                # The compressed messages (summary + tail + new turn)
+                compressed_messages = [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] Summary of work..."},
+                    {"role": "user", "content": "What should we do next?"},
+                    {"role": "assistant", "content": "Let me check..."},
+                    {"role": "user", "content": "new question"},
+                    {"role": "assistant", "content": "new answer"},
+                ]
 
-            # The compressed messages (summary + tail + new turn)
-            compressed_messages = [
-                {"role": "user", "content": "[CONTEXT COMPACTION] Summary of work..."},
-                {"role": "user", "content": "What should we do next?"},
-                {"role": "assistant", "content": "Let me check..."},
-                {"role": "user", "content": "new question"},
-                {"role": "assistant", "content": "new answer"},
-            ]
+                # THE BUG: passing the original history as conversation_history
+                # causes flush_from = max(200, 0) = 200, skipping everything.
+                # After the fix, conversation_history should be None.
+                agent._flush_messages_to_session_db(compressed_messages, None)
 
-            # THE BUG: passing the original history as conversation_history
-            # causes flush_from = max(200, 0) = 200, skipping everything.
-            # After the fix, conversation_history should be None.
-            agent._flush_messages_to_session_db(compressed_messages, None)
-
-            new_rows = db.get_messages("compressed-session")
-            assert len(new_rows) == 5, (
-                f"Expected 5 compressed messages in new session, got {len(new_rows)}. "
-                f"Compression persistence bug: messages not written to SQLite."
-            )
+                new_rows = db.get_messages("compressed-session")
+                assert len(new_rows) == 5, (
+                    f"Expected 5 compressed messages in new session, got {len(new_rows)}. "
+                    f"Compression persistence bug: messages not written to SQLite."
+                )
+            finally:
+                _close_test_session_db(db, agent)
 
     def test_flush_with_stale_history_loses_messages(self):
         """Demonstrates the bug condition: stale conversation_history causes data loss."""
@@ -108,30 +130,33 @@ class TestFlushAfterCompression:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             db = SessionDB(db_path=db_path)
+            agent = None
+            try:
+                agent = self._make_agent(db)
 
-            agent = self._make_agent(db)
+                # Simulate compression reset
+                agent.session_id = "new-session"
+                db.create_session(session_id="new-session", source="test")
+                agent._last_flushed_db_idx = 0
 
-            # Simulate compression reset
-            agent.session_id = "new-session"
-            db.create_session(session_id="new-session", source="test")
-            agent._last_flushed_db_idx = 0
+                compressed = [
+                    {"role": "user", "content": "summary"},
+                    {"role": "assistant", "content": "continuing..."},
+                ]
 
-            compressed = [
-                {"role": "user", "content": "summary"},
-                {"role": "assistant", "content": "continuing..."},
-            ]
+                # Bug: passing a conversation_history longer than compressed messages
+                stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
+                agent._flush_messages_to_session_db(compressed, stale_history)
 
-            # Bug: passing a conversation_history longer than compressed messages
-            stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
-            agent._flush_messages_to_session_db(compressed, stale_history)
-
-            rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
-            assert len(rows) == 0, (
-                "Expected 0 messages with stale conversation_history "
-                "(this test verifies the bug condition exists)"
-            )
+                rows = db.get_messages("new-session")
+                # With the stale history, flush_from = max(100, 0) = 100
+                # But compressed only has 2 entries → messages[100:] = empty
+                assert len(rows) == 0, (
+                    "Expected 0 messages with stale conversation_history "
+                    "(this test verifies the bug condition exists)"
+                )
+            finally:
+                _close_test_session_db(db, agent)
 
 
 # ---------------------------------------------------------------------------

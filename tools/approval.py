@@ -255,6 +255,33 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+# =========================================================================
+# Crontab guard — block all system crontab commands unconditionally
+# =========================================================================
+# Agents should use Hermes's internal cron scheduler (/cron) instead of
+# touching the OS crontab.  Crontab commands can wipe the user's actual
+# OS crontab (crontab -r), replace it from stdin (crontab -), or open an
+# interactive editor (crontab -e).  Even crontab -l (list) is blocked
+# because agents have no legitimate reason to inspect the OS crontab.
+# This guard fires BEFORE the yolo/mode-off check so no session-level
+# setting can bypass it.  (#25271)
+_CRONTAB_RE = re.compile(r'\bcrontab\b', re.IGNORECASE)
+
+
+def _check_crontab_guard(command: str) -> tuple:
+    """Block all crontab commands unconditionally.
+
+    Returns:
+        (is_blocked: bool, description: str | None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    if _CRONTAB_RE.search(normalized):
+        return (True, "modify system crontab (use hermes /cron instead)")
+    return (False, None)
+
+    return (False, None)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
@@ -1049,6 +1076,15 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # == Crontab guard ==
+    # Unconditional block: agents must use Hermes /cron, never the OS crontab.
+    # Fires BEFORE yolo check so no session-level setting can bypass it.  (#25271)
+    is_crontab, crontab_desc = _check_crontab_guard(command)
+    if is_crontab:
+        logger.warning("Crontab guard block: %s (command: %s)",
+                       crontab_desc, command[:200])
+        return _hardline_block_result(crontab_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

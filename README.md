@@ -46,62 +46,43 @@ Full PR documentation:
 - [Reapply playbook for future Hermes updates](docs/hermes-100x-fast-reapply-playbook.md)
 - [Runtime performance investigation](docs/runtime-performance-investigation-2026-05-15.md)
 
-![Hermes Agent 100X Fast performance dashboard](docs/assets/100x-fast/perf-summary-dashboard.svg)
+### 100X Visual Summary
 
-![Hermes Agent 100X Fast macro original vs branch comparison](docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png)
+These are the latest GPT-image-2 visuals for the 100X pass. They are the
+canonical README images for this branch.
 
-### 90-Second Launch Video
+![GPT-image-2 Hermes Agent 100X Fast before/after hero](docs/assets/100x-fast/generated/gpt-image-100x-hero-before-after.png)
+
+![GPT-image-2 Hermes Agent 100X Fast runtime stack](docs/assets/100x-fast/generated/gpt-image-100x-runtime-stack.png)
+
+![GPT-image-2 Hermes Agent 100X Fast video cover](docs/assets/100x-fast/generated/gpt-image-100x-video-cover.png)
+
+### Launch Video
 
 <video src="docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4" controls poster="docs/assets/100x-fast/video/hermes-100x-fast-poster.png" width="100%"></video>
 
-[Watch the rendered MP4](docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4) ·
-[Open the poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png) ·
-[Edit the Remotion source](docs/remotion/100x-fast/src/Hermes100xVideo.tsx) ·
+[Watch the rendered MP4](docs/assets/100x-fast/video/hermes-100x-fast-launch.mp4) -
+[Open the poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png) -
+[Edit the Remotion source](docs/remotion/100x-fast/src/Hermes100xVideo.tsx) -
 [Storyboard](docs/remotion/100x-fast/STORYBOARD.md)
 
-![Hermes Agent 100X Fast video poster](docs/assets/100x-fast/video/hermes-100x-fast-poster.png)
+### What Changed
 
-### Visual Before/After Gallery
+The current benchmark story is centered on the paths users feel while sending
+messages, launching tasks, delegating work, and waiting on resource-heavy
+runtime checks:
 
-![GPT-image generated Hermes Agent 100X Fast before/after hero](docs/assets/100x-fast/generated/gpt-image-100x-hero-before-after.png)
+- Metadata cache: `0.4211s` for 100 lookup resets over 500 models in the local benchmark.
+- Session writes: `37.74x` faster by batching SQLite persistence work.
+- Endpoint startup: `9.25x` faster for dead numeric loopback probe fast-fail.
+- Parallel tools: `5.20x` faster for independent I/O-bound tool batches.
+- Startup discovery: `2x-3x` class improvements from fingerprinted caches and reduced repeated work.
 
-![GPT-image generated Hermes 100X Fast runtime stack](docs/assets/100x-fast/generated/gpt-image-100x-runtime-stack.png)
-
-![GPT-image generated Hermes Agent 100X Fast video cover](docs/assets/100x-fast/generated/gpt-image-100x-video-cover.png)
-
-![Hermes Agent 100X Fast macro comparison](docs/assets/100x-fast/generated/macro-original-vs-100x-fast.png)
-
-![Hermes Agent 100X Fast performance dashboard](docs/assets/100x-fast/perf-summary-dashboard.svg)
-
-### Startup And Tool Schema
-
-![model_tools startup comparison](docs/assets/100x-fast/perf-startup-model-tools.svg)
-
-![tool definitions startup comparison](docs/assets/100x-fast/perf-tool-definitions-startup.svg)
-
-![plugin discovery comparison](docs/assets/100x-fast/perf-plugin-discovery.svg)
-
-### Runtime Hot Paths
-
-![runtime local endpoint fast path comparison](docs/assets/100x-fast/runtime-local-endpoint-fast-path.svg)
-
-![OpenRouter metadata disk cache comparison](docs/assets/100x-fast/runtime-openrouter-metadata-cache.svg)
-
-![runtime benchmark suite](docs/assets/100x-fast/runtime-benchmark-suite.svg)
-
-![delegate task and parallel guard comparison](docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg)
-
-![SQLite session batch write comparison](docs/assets/100x-fast/perf-session-batch-writes.svg)
-
-![toolset cache comparison](docs/assets/100x-fast/perf-toolset-cache.svg)
-
-![TUI MCP reload avoidance comparison](docs/assets/100x-fast/perf-mcp-reload-avoidance.svg)
-
-![adaptive parallel tool scan comparison](docs/assets/100x-fast/perf-adaptive-parallel-scan.svg)
+Detailed comparison assets are still kept in
+[docs/assets/100x-fast](docs/assets/100x-fast/) for PR review, but the README
+now highlights only the newest 100X GPT-image-2 campaign visuals.
 
 ### Research To Code
-
-![research principles mapped to Hermes optimizations](docs/assets/100x-fast/research-principles-map.svg)
 
 This runtime pass cross-checked the official Hermes docs for the
 [agent loop](https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop/),
@@ -115,20 +96,6 @@ The research logic comes from efficient LLM systems work such as
 [RouteLLM](https://arxiv.org/abs/2406.18665): route cheap first, compress or
 cache stable work, batch tiny writes, and avoid probes that cannot produce
 signal.
-
-### Architecture Diagrams
-
-![tool discovery cache architecture](docs/assets/100x-fast/phase-2-tool-discovery-cache.svg)
-
-![toolset memoization architecture](docs/assets/100x-fast/phase-3-toolset-cache.svg)
-
-![SQLite batch write architecture](docs/assets/100x-fast/phase-4-sqlite-batch-writes.svg)
-
-![TUI MCP fingerprint architecture](docs/assets/100x-fast/phase-5-tui-mcp-fingerprint.svg)
-
-![adaptive parallel scan architecture](docs/assets/100x-fast/phase-6-adaptive-parallel-scan.svg)
-
-![delegate task config and parallel guard architecture](docs/assets/100x-fast/phase-7-delegate-parallel-guard.svg)
 
 ---
 

@@ -13471,8 +13471,9 @@ class GatewayRunner:
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
+                        "[The user sent a voice message. It was auto-transcribed, "
+                        "so punctuation, wording, names, or small details may be "
+                        f"inaccurate. Transcript: \"{transcript}\"]"
                     )
                 else:
                     error = result.get("error", "unknown error")

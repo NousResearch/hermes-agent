@@ -2887,7 +2887,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
         pass
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-code-fast-1"))
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)

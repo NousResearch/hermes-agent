@@ -127,6 +127,27 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return p.resolve()
 
 
+def _verify_file_written(filepath: str, task_id: str = "default") -> str | None:
+    """Verify a file exists at the resolved absolute path after writing.
+
+    Uses the task's live terminal CWD to resolve *filepath*, then checks
+    whether the resulting path exists on the filesystem.  Returns the
+    resolved path on failure (write targeted a different CWD than expected)
+    or ``None`` on success.
+
+    This detects CWD drift (from ``cd`` commands or environment cleanup +
+    recreation) that causes ``write_file`` to silently place files in an
+    unexpected directory.
+    """
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        return filepath
+    if os.path.exists(resolved):
+        return None
+    return resolved
+
+
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -817,6 +838,18 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             _update_read_timestamp(path, task_id)
+            # Post-write verification: ensure the file exists at the expected
+            # absolute path.  The write may have targeted a different CWD than
+            # the user expects (e.g. after environment cleanup + recreation or
+            # CWD drift from cd commands in long conversations).
+            if not result_dict.get("error"):
+                _verify_path = _verify_file_written(path, task_id)
+                if _verify_path:
+                    result_dict["_warning"] = (
+                        f"File was written but could not be verified at the expected "
+                        f"location. It may exist at a different path. "
+                        f"Use an absolute path to avoid CWD-dependent writes."
+                    )
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -838,6 +871,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
+                # Post-write verification: check the resolved path exists.
+                _verify_path = _verify_file_written(path, task_id)
+                if _verify_path:
+                    result_dict["_warning"] = (
+                        f"File was written but could not be verified at the expected "
+                        f"location ({_resolved}). It may exist at a different path. "
+                        f"Use an absolute path to avoid CWD-dependent writes."
+                    )
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):

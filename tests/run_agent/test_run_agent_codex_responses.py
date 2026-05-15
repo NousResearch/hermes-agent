@@ -581,7 +581,7 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
 def _build_xai_oauth_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
-        model="grok-code-fast-1",
+        model="grok-4.3",
         provider="xai-oauth",
         api_mode="codex_responses",
         base_url="https://api.x.ai/v1",
@@ -619,7 +619,7 @@ def test_build_api_kwargs_xai_oauth_sends_cache_key_via_extra_body(monkeypatch):
         ]
     )
 
-    assert kwargs.get("model") == "grok-code-fast-1"
+    assert kwargs.get("model") == "grok-4.3"
     # Top-level kwarg must NOT be set — that's the openai SDK
     # incompatibility this whole indirection exists to dodge.
     assert "prompt_cache_key" not in kwargs

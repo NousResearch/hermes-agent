@@ -345,6 +345,30 @@ class TestBuildToolComplete:
         assert "hello" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_marks_success_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "skill_manage", '{"success": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_ok_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "some_tool", '{"ok": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_exit_code_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "terminal", '{"output": "bad", "exit_code": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_returncode_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_keeps_plain_error_text_completed(self):
+        result = build_tool_complete("tc-ok", "terminal", "tests failed: 1 assertion error")
+        assert result.status == "completed"
+
+    def test_build_tool_complete_keeps_json_error_without_failure_flag_completed(self):
+        result = build_tool_complete("tc-ok", "some_tool", '{"error": "timeout while reading optional source"}')
+        assert result.status == "completed"
+
     def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
         result = build_tool_complete(
             "tc-skill-manage",

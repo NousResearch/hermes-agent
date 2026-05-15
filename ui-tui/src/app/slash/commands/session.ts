@@ -72,10 +72,25 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
+      const switchModel = (confirmExpensiveModel = false) => ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { confirm_expensive_model: confirmExpensiveModel, key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
+            if (r.confirm_required) {
+              patchOverlayState({
+                confirm: {
+                  cancelLabel: 'Cancel',
+                  confirmLabel: 'Switch anyway',
+                  danger: true,
+                  detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
+                  onConfirm: () => switchModel(true),
+                  title: 'Expensive model selection'
+                }
+              })
+
+              return
+            }
+
             if (!r.value) {
               return ctx.transcript.sys('error: invalid response: model switch')
             }
@@ -89,6 +104,8 @@ export const sessionCommands: SlashCommand[] = [
             }))
           })
         )
+
+      switchModel()
     }
   },
 

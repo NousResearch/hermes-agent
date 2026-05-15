@@ -3269,6 +3269,7 @@ def _aux_flow_provider_model(
             model_list,
             current_model=current_model,
             pricing=pricing,
+            confirm_provider=provider_slug,
         )
         if selected is None:
             print("No change.")

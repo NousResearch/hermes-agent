@@ -533,6 +533,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
         expected = prop_schema.get("type")
 
+        # Derive expected types from anyOf/oneOf union schemas when no
+        # direct "type" key is present.
+        if not expected:
+            expected = _union_schema_types(prop_schema)
+
         # Wrap bare non-list values when the schema declares ``array``.
         # Strings still go through _coerce_value first so JSON-encoded
         # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
@@ -609,6 +614,34 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if expected_type == "null" and value.strip().lower() == "null":
         return None
     return value
+
+
+def _union_schema_types(schema: dict) -> list | str | None:
+    """Extract expected type(s) from a JSON Schema union (anyOf/oneOf).
+
+    When a property schema uses ``anyOf`` or ``oneOf`` instead of a direct
+    ``"type"`` key, this function collects the types from each variant
+    so the coercion logic can try them in order.
+
+    Returns a single type string for a one-element union, a list of type
+    strings for multi-type unions, or ``None`` if no types could be derived.
+    """
+    types: list[str] = []
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            t = variant.get("type")
+            if t and t not in types:
+                types.append(t)
+    if len(types) == 1:
+        return types[0]
+    if len(types) > 1:
+        return types
+    return None
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

@@ -409,3 +409,86 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    # ── Union schema (anyOf/oneOf) coercion ────────────────────────────────
+
+    def test_coerces_integer_arg_with_anyof_union_schema(self):
+        """String arg coerced to integer when property uses anyOf with integer variant."""
+        schema = self._mock_schema({
+            "limit": {
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        args = {"limit": "42"}
+        result = coerce_tool_args("test_tool", args)
+        assert result["limit"] == 42
+        assert isinstance(result["limit"], int)
+
+    def test_coerces_string_arg_with_oneof_union_schema(self):
+        """String arg passes through when property uses oneOf with string variant."""
+        schema = self._mock_schema({
+            "name": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        args = {"name": "hello"}
+        result = coerce_tool_args("test_tool", args)
+        assert result["name"] == "hello"
+
+    def test_coerces_array_arg_with_anyof_union_schema(self):
+        """String arg coerced to array when property uses anyOf with array variant."""
+        schema = self._mock_schema({
+            "tags": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+        })
+        args = {"tags": '["a", "b"]'}
+        result = coerce_tool_args("test_tool", args)
+        assert result["tags"] == ["a", "b"]
+
+    def test_multitype_union_returns_list_of_types(self):
+        """Multi-type union returns a list of types for coercion."""
+        from model_tools import _union_schema_types
+        schema = {
+            "anyOf": [
+                {"type": "integer"},
+                {"type": "string"},
+            ],
+        }
+        result = _union_schema_types(schema)
+        assert isinstance(result, list)
+        assert "integer" in result
+        assert "string" in result
+
+    def test_single_type_union_returns_string(self):
+        """Single-type union returns a plain string."""
+        from model_tools import _union_schema_types
+        schema = {
+            "anyOf": [
+                {"type": "integer"},
+                {"type": "null"},
+            ],
+        }
+        result = _union_schema_types(schema)
+        assert result == "integer"
+
+    def test_empty_union_returns_none(self):
+        """Union with no type info returns None."""
+        from model_tools import _union_schema_types
+        schema = {
+            "anyOf": [
+                {"minimum": 0},
+                {"maximum": 100},
+            ],
+        }
+        result = _union_schema_types(schema)
+        assert result is None

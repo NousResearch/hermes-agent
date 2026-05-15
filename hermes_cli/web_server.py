@@ -657,21 +657,6 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class ModelAssignment(BaseModel):
-    """Payload for POST /api/model/set — assign a provider/model to a slot.
-
-    scope="main"        → writes model.provider + model.default
-    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
-    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
-    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
-    """
-
-    scope: str
-    provider: str
-    model: str
-    task: str = ""
-
-
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
@@ -713,6 +698,7 @@ class ModelAssignment(BaseModel):
     # reads model.base_url from config (it ignores OPENAI_BASE_URL), so this is
     # the path that actually wires a local endpoint into resolution.
     base_url: str = ""
+    confirm_expensive_model: bool = False
 
 
 def _apply_main_model_assignment(
@@ -2469,6 +2455,27 @@ async def set_model_assignment(body: ModelAssignment):
 
     try:
         cfg = load_config()
+
+        if model and not body.confirm_expensive_model:
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                warning = expensive_model_warning(
+                    model,
+                    provider=provider,
+                    base_url=base_url,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                return {
+                    "ok": False,
+                    "scope": scope,
+                    "provider": provider,
+                    "model": model,
+                    "confirm_required": True,
+                    "confirm_message": warning.message,
+                }
 
         if scope == "main":
             if not provider or not model:

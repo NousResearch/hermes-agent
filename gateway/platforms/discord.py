@@ -3587,6 +3587,126 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_restore_thread_history(self) -> bool:
+        """Return whether Hermes should fetch and restore Discord thread history
+        on the first message of a fresh session in an existing thread.
+
+        When ``True`` (default), the first time Hermes sees a message in an
+        existing thread it has no prior Hermes session for, it fetches up to
+        ``_discord_restore_thread_history_limit()`` recent messages from that
+        thread via the Discord API and injects them into the session context as
+        a read-only history block.  Subsequent messages in the same session do
+        NOT re-fetch (the Hermes transcript already has the history).
+
+        Set to ``False`` to disable and always start with a blank context.
+        """
+        configured = self.config.extra.get("restore_thread_history")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_RESTORE_THREAD_HISTORY", "true").lower() not in (
+            "false", "0", "no", "off"
+        )
+
+    def _discord_restore_thread_history_limit(self) -> int:
+        """Return the max number of messages to fetch for thread history restore."""
+        configured = self.config.extra.get("restore_thread_history_limit")
+        if configured is not None:
+            try:
+                return max(1, int(configured))
+            except (TypeError, ValueError):
+                pass
+        raw = os.getenv("DISCORD_RESTORE_THREAD_HISTORY_LIMIT", "50")
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return 50
+
+    def _is_fresh_hermes_session(self, source: Any) -> bool:
+        """Return True when this source has no existing Hermes session transcript.
+
+        Used to decide whether to inject thread history on first contact in a
+        pre-existing Discord thread.  We check the session store for an entry
+        with actual conversation messages -- a brand-new session (no prior
+        turns) qualifies; a continuing session does not.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if session_store is None:
+            return True
+        try:
+            from gateway.session import build_session_key
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+            # Peek at existing entries without creating a new one.
+            with session_store._lock:
+                session_store._ensure_loaded_locked()
+                entry = session_store._entries.get(session_key)
+            if entry is None:
+                return True
+            # An entry with non-zero total_tokens has had at least one real turn.
+            if getattr(entry, "total_tokens", 0) > 0:
+                return False
+            # Double-check via transcript (accounts for sessions that somehow
+            # have zero tokens but an existing transcript on disk).
+            transcript = session_store.load_transcript(entry.session_id)
+            return len(transcript) == 0
+        except Exception:
+            logger.debug("[%s] Could not determine session freshness; assuming fresh", self.name, exc_info=True)
+            return True
+
+    async def _fetch_thread_history_context(self, channel: Any, limit: int) -> str:
+        """Fetch recent messages from a Discord thread and format them as a
+        read-only context block to inject into the first Hermes turn.
+
+        Returns an empty string on any failure so callers can safely concatenate.
+        """
+        try:
+            messages = []
+            async for msg in channel.history(limit=limit, oldest_first=True):
+                # Skip system messages (thread creates, pins, etc.)
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    continue
+                author_name = getattr(msg.author, "display_name", None) or getattr(msg.author, "name", "unknown")
+                is_bot_self = (
+                    self._client is not None
+                    and self._client.user is not None
+                    and msg.author == self._client.user
+                )
+                role = "assistant" if is_bot_self else "user"
+                content = (msg.content or "").strip()
+                # Strip @mention of self from older messages for cleaner context.
+                if self._client and self._client.user:
+                    content = content.replace(f"<@{self._client.user.id}>", "").strip()
+                    content = content.replace(f"<@!{self._client.user.id}>", "").strip()
+                if not content and not msg.attachments:
+                    continue
+                ts = msg.created_at.strftime("%Y-%m-%d %H:%M UTC")
+                attachment_note = ""
+                if msg.attachments:
+                    names = [a.filename for a in msg.attachments if a.filename]
+                    if names:
+                        attachment_note = f" [attachments: {', '.join(names)}]"
+                label = "You" if is_bot_self else author_name
+                messages.append(f"[{ts}] {label}: {content}{attachment_note}")
+
+            if not messages:
+                return ""
+
+            thread_name = getattr(channel, "name", str(channel.id))
+            header = (
+                f"[Thread history restored -- \"{thread_name}\" ({len(messages)} messages). "
+                f"This is read-only context from before this Hermes session started.]"
+            )
+            body = "\n".join(messages)
+            return f"{header}\n{body}"
+        except Exception as e:
+            logger.warning("[%s] Failed to fetch thread history for context: %s", self.name, e)
+            return ""
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4693,6 +4813,32 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+
+        # Thread history restore: when the bot receives its first message in an
+        # existing Discord thread that it has no Hermes session for yet, fetch
+        # the prior conversation from the Discord API and prepend it to the
+        # channel_prompt so the agent has full context without the user needing
+        # to repeat or summarize what was already discussed.
+        #
+        # Guard conditions:
+        #   1. Feature is enabled (DISCORD_RESTORE_THREAD_HISTORY, default True)
+        #   2. The message is inside a Discord thread (is_thread)
+        #   3. This is the first Hermes turn for this thread (no existing transcript)
+        if is_thread and thread_id and self._discord_restore_thread_history():
+            if self._is_fresh_hermes_session(source):
+                _history_limit = self._discord_restore_thread_history_limit()
+                _thread_history_ctx = await self._fetch_thread_history_context(
+                    message.channel, limit=_history_limit
+                )
+                if _thread_history_ctx:
+                    if _channel_prompt:
+                        _channel_prompt = f"{_thread_history_ctx}\n\n{_channel_prompt}"
+                    else:
+                        _channel_prompt = _thread_history_ctx
+                    logger.info(
+                        "[%s] Injected thread history context for fresh session in thread %s",
+                        self.name, thread_id,
+                    )
 
         reply_to_id = None
         reply_to_text = None

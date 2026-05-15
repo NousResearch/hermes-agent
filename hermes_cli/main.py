@@ -5503,6 +5503,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_runtime_events(args):
+    """Show recent runtime events."""
+    from hermes_cli.runtime_events import run_runtime_events
+
+    run_runtime_events(args)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -10480,6 +10487,20 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # runtime-events command
+    # =========================================================================
+    runtime_events_parser = subparsers.add_parser(
+        "runtime-events",
+        help="Show recent runtime tool/job/provider events",
+        description="Inspect recent runtime events such as failed tool calls and cron jobs",
+    )
+    runtime_events_parser.add_argument("--limit", type=int, default=50, help="Maximum events to show")
+    runtime_events_parser.add_argument("--kind", choices=["tool", "job", "provider", "gateway"], help="Filter by event kind")
+    runtime_events_parser.add_argument("--status", help="Filter by status, e.g. fail, error, warn, timeout")
+    runtime_events_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    runtime_events_parser.set_defaults(func=cmd_runtime_events)
 
     # =========================================================================
     # dump command

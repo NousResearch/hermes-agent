@@ -1589,11 +1589,34 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        try:
+            from hermes_cli.runtime_events import append_runtime_event
+
+            append_runtime_event(
+                kind="job",
+                status="pass",
+                name=job_name,
+                detail=f"job_id={job_id}",
+            )
+        except Exception:
+            pass
         return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        try:
+            from hermes_cli.runtime_events import append_runtime_event
+
+            append_runtime_event(
+                kind="job",
+                status="fail",
+                name=job_name,
+                detail=error_msg,
+                payload={"job_id": job_id},
+            )
+        except Exception:
+            pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

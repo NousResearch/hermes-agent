@@ -685,6 +685,36 @@ def _coerce_boolean(value: str):
     return value
 
 
+def _record_tool_runtime_event(
+    function_name: str,
+    status: str,
+    detail: str,
+    *,
+    duration_ms: int | None = None,
+    session_id: str | None = None,
+    tool_call_id: str | None = None,
+) -> None:
+    try:
+        from hermes_cli.runtime_events import append_runtime_event
+
+        payload = {}
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        if session_id:
+            payload["session_id"] = session_id
+        if tool_call_id:
+            payload["tool_call_id"] = tool_call_id
+        append_runtime_event(
+            kind="tool",
+            status=status,
+            name=function_name,
+            detail=detail,
+            payload=payload or None,
+        )
+    except Exception:
+        pass
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -819,11 +849,32 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        try:
+            parsed_result = json.loads(result) if isinstance(result, str) else {}
+            if isinstance(parsed_result, dict) and parsed_result.get("error"):
+                _record_tool_runtime_event(
+                    function_name,
+                    "fail",
+                    str(parsed_result.get("error")),
+                    duration_ms=duration_ms,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                )
+        except Exception:
+            pass
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
+        _record_tool_runtime_event(
+            function_name,
+            "error",
+            error_msg,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 

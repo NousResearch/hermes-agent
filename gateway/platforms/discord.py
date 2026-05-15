@@ -4476,7 +4476,18 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            # free_response_auto_thread: when true, free-response channels DO
+            # auto-create threads (opt-in). Default false preserves the documented
+            # behavior where free-response channels reply inline (lightweight chat
+            # mode). Voice-linked channels always skip auto-thread regardless of
+            # this flag — they have their own interaction model.
+            free_response_auto_thread = os.getenv(
+                "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false"
+            ).lower() in {"true", "1", "yes"}
+            free_skips_thread = is_free_channel and not (
+                free_response_auto_thread and not is_voice_linked_channel
+            )
+            skip_thread = bool(channel_ids & no_thread_channels) or free_skips_thread
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

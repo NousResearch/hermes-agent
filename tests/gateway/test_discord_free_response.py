@@ -548,6 +548,114 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     assert event.source.chat_type == "group"
 
 
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_opt_in(adapter, monkeypatch):
+    """When DISCORD_FREE_RESPONSE_AUTO_THREAD=true, free channels auto-thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    fake_thread = FakeThread(channel_id=8888, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat should spawn a thread",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "8888"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_disabled_by_default(adapter, monkeypatch):
+    """Default behavior unchanged: free channel skips auto-thread when flag unset."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat message",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_ignores_voice_linked(adapter, monkeypatch):
+    """Voice-linked channels must NOT auto-thread even with free_response_auto_thread=true."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    # Bind the channel as voice-linked (makes it free-response-by-voice).
+    adapter._voice_text_channels[111] = 789
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="voice follow-up",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_respects_global_disable(adapter, monkeypatch):
+    """If DISCORD_AUTO_THREAD=false globally, the free-response opt-in has no effect."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="no threads anywhere",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_respects_no_thread_channels(adapter, monkeypatch):
+    """DISCORD_NO_THREAD_CHANNELS still wins over the free-response opt-in."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat but explicitly inline",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -882,5 +990,3 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
-
-

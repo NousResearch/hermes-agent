@@ -957,6 +957,312 @@ class TestNewEndpoints:
         assert resp.status_code == 400
         assert "Invalid profile name" in resp.json()["detail"]
 
+    # --- Per-profile cron ---
+
+    def test_profiles_list_reports_gateway_running(self, monkeypatch):
+        """``GET /api/profiles`` should surface ``gateway_running`` for every
+        profile. A freshly-created sub-profile has no live gateway, so it
+        should report ``gateway_running=False`` regardless of whether the
+        running daemon's own profile reports True."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "gw-flag-prof"})
+        try:
+            data = self.client.get("/api/profiles").json()
+        finally:
+            self.client.delete("/api/profiles/gw-flag-prof")
+        by_name = {p["name"]: p for p in data["profiles"]}
+        # The field is present on every row, even if False.
+        for p in data["profiles"]:
+            assert "gateway_running" in p
+            assert isinstance(p["gateway_running"], bool)
+        if "gw-flag-prof" in by_name:
+            assert by_name["gw-flag-prof"]["gateway_running"] is False
+
+    def test_profile_cron_jobs_list_empty_for_new_profile(self, monkeypatch):
+        """A freshly-created profile with no cron/jobs.json yet should return
+        an empty list with 200 — not 404 and not 500."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "empty-cron-prof"})
+        try:
+            resp = self.client.get("/api/profiles/empty-cron-prof/cron/jobs")
+            assert resp.status_code == 200
+            assert resp.json() == []
+        finally:
+            self.client.delete("/api/profiles/empty-cron-prof")
+
+    def test_profile_cron_jobs_create_list_get(self, monkeypatch):
+        """POST a job to a sub-profile, then GET against the same profile
+        returns the job and GET against the default profile does not."""
+        from pathlib import Path
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "cron-create-prof"})
+        try:
+            created = self.client.post(
+                "/api/profiles/cron-create-prof/cron/jobs",
+                json={"prompt": "hello world", "schedule": "every 30m", "name": "tick"},
+            )
+            assert created.status_code == 200, created.text
+            body = created.json()
+            assert body["name"] == "tick"
+            assert body["prompt"] == "hello world"
+            job_id = body["id"]
+
+            # Read it back via the per-profile list and single-get routes.
+            listed = self.client.get("/api/profiles/cron-create-prof/cron/jobs")
+            assert listed.status_code == 200
+            assert any(j["id"] == job_id for j in listed.json())
+
+            single = self.client.get(
+                f"/api/profiles/cron-create-prof/cron/jobs/{job_id}"
+            )
+            assert single.status_code == 200
+            assert single.json()["id"] == job_id
+
+            # The job is written to the profile's own jobs.json.
+            profile_dir = Path(profiles_mod.get_profile_dir("cron-create-prof"))
+            assert (profile_dir / "cron" / "jobs.json").exists()
+
+            # The default profile's cron list does not see the sub-profile's
+            # job (cross-profile isolation).
+            default_list = self.client.get("/api/cron/jobs").json()
+            assert all(j["id"] != job_id for j in default_list)
+        finally:
+            self.client.delete("/api/profiles/cron-create-prof")
+
+    def test_profile_cron_jobs_pause_resume_trigger_delete(self, monkeypatch):
+        """Pause → resume toggles the enabled flag in jobs.json; trigger
+        succeeds when the gateway is reported running and 409s when it
+        isn't; delete removes the job and a subsequent GET returns 404."""
+        import hermes_cli.profiles as profiles_mod
+        import hermes_cli.web_server as web_server_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "cron-lifecycle-prof"})
+        try:
+            created = self.client.post(
+                "/api/profiles/cron-lifecycle-prof/cron/jobs",
+                json={"prompt": "pause me", "schedule": "every 1h"},
+            )
+            job_id = created.json()["id"]
+
+            paused = self.client.post(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}/pause"
+            )
+            assert paused.status_code == 200
+            assert paused.json()["enabled"] is False
+            assert paused.json()["state"] == "paused"
+
+            resumed = self.client.post(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}/resume"
+            )
+            assert resumed.status_code == 200
+            assert resumed.json()["enabled"] is True
+            assert resumed.json()["state"] == "scheduled"
+
+            # Trigger with the gateway running → 200.
+            monkeypatch.setattr(
+                "hermes_cli.profiles._check_gateway_running",
+                lambda profile_dir: True,
+            )
+            triggered = self.client.post(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}/trigger"
+            )
+            assert triggered.status_code == 200, triggered.text
+
+            # Trigger when the gateway is reported down → 409.
+            monkeypatch.setattr(
+                "hermes_cli.profiles._check_gateway_running",
+                lambda profile_dir: False,
+            )
+            blocked = self.client.post(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}/trigger"
+            )
+            assert blocked.status_code == 409
+            assert "Gateway not running" in blocked.json()["detail"]
+
+            # Delete it; subsequent GET 404s.
+            deleted = self.client.delete(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}"
+            )
+            assert deleted.status_code == 200
+            assert deleted.json() == {"ok": True}
+
+            missing = self.client.get(
+                f"/api/profiles/cron-lifecycle-prof/cron/jobs/{job_id}"
+            )
+            assert missing.status_code == 404
+        finally:
+            self.client.delete("/api/profiles/cron-lifecycle-prof")
+
+    def test_profile_cron_job_update_persists(self, monkeypatch):
+        """PUT applies arbitrary updates dict and the changes round-trip."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "cron-edit-prof"})
+        try:
+            created = self.client.post(
+                "/api/profiles/cron-edit-prof/cron/jobs",
+                json={"prompt": "old prompt", "schedule": "every 10m", "name": "old"},
+            )
+            job_id = created.json()["id"]
+
+            updated = self.client.put(
+                f"/api/profiles/cron-edit-prof/cron/jobs/{job_id}",
+                json={"updates": {"name": "new", "prompt": "new prompt"}},
+            )
+            assert updated.status_code == 200
+            assert updated.json()["name"] == "new"
+            assert updated.json()["prompt"] == "new prompt"
+
+            single = self.client.get(
+                f"/api/profiles/cron-edit-prof/cron/jobs/{job_id}"
+            ).json()
+            assert single["name"] == "new"
+            assert single["prompt"] == "new prompt"
+        finally:
+            self.client.delete("/api/profiles/cron-edit-prof")
+
+    def test_profile_cron_job_multiline_prompt_roundtrip(self, monkeypatch):
+        """A prompt containing newlines, embedded quotes, and backslashes
+        survives create → list → get verbatim. Closes the
+        ``hermes cron edit --prompt`` multiline foot-gun for the dashboard
+        write path."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        gnarly = 'line 1\nline 2 with "quotes"\nline 3 with \\backslash\\\nfinal'
+        self.client.post("/api/profiles", json={"name": "cron-multi-prof"})
+        try:
+            created = self.client.post(
+                "/api/profiles/cron-multi-prof/cron/jobs",
+                json={"prompt": gnarly, "schedule": "every 1d"},
+            )
+            assert created.status_code == 200, created.text
+            assert created.json()["prompt"] == gnarly
+            job_id = created.json()["id"]
+
+            single = self.client.get(
+                f"/api/profiles/cron-multi-prof/cron/jobs/{job_id}"
+            ).json()
+            assert single["prompt"] == gnarly
+        finally:
+            self.client.delete("/api/profiles/cron-multi-prof")
+
+    def test_profile_cron_job_recurring_vs_oneshot_schedule(self, monkeypatch):
+        """'every 4320m' parses as recurring (kind=interval); '4320m' parses
+        as one-shot (kind=once). Closes the schedule-prefix foot-gun at
+        the API boundary."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "cron-schedkind-prof"})
+        try:
+            recurring = self.client.post(
+                "/api/profiles/cron-schedkind-prof/cron/jobs",
+                json={"prompt": "loop", "schedule": "every 4320m"},
+            )
+            assert recurring.status_code == 200, recurring.text
+            assert recurring.json()["schedule"]["kind"] == "interval"
+
+            once = self.client.post(
+                "/api/profiles/cron-schedkind-prof/cron/jobs",
+                json={"prompt": "single", "schedule": "4320m"},
+            )
+            assert once.status_code == 200, once.text
+            assert once.json()["schedule"]["kind"] == "once"
+        finally:
+            self.client.delete("/api/profiles/cron-schedkind-prof")
+
+    def test_profile_cron_unknown_profile_404(self):
+        """Any per-profile cron route called against a missing profile
+        returns 404 with the same ``detail`` shape the skills routes use."""
+        resp = self.client.get("/api/profiles/nonexistent/cron/jobs")
+        assert resp.status_code == 404
+        resp2 = self.client.post(
+            "/api/profiles/nonexistent/cron/jobs",
+            json={"prompt": "x", "schedule": "every 5m"},
+        )
+        assert resp2.status_code == 404
+        resp3 = self.client.post(
+            "/api/profiles/nonexistent/cron/jobs/anything/pause"
+        )
+        assert resp3.status_code == 404
+
+    def test_profile_cron_invalid_name_400(self):
+        resp = self.client.get("/api/profiles/Bad@Name/cron/jobs")
+        assert resp.status_code == 400
+        assert "Invalid profile name" in resp.json()["detail"]
+
+    def test_profile_cron_job_id_not_found_404(self, monkeypatch):
+        """Operating on a bogus job_id against a real profile returns 404."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+        # Pretend the gateway is up so trigger reaches the job-id lookup
+        # rather than short-circuiting on the gateway-not-running gate.
+        monkeypatch.setattr(
+            "hermes_cli.profiles._check_gateway_running",
+            lambda profile_dir: True,
+        )
+
+        self.client.post("/api/profiles", json={"name": "cron-bogus-id-prof"})
+        try:
+            for route in (
+                ("GET", "/api/profiles/cron-bogus-id-prof/cron/jobs/bogus"),
+                ("POST", "/api/profiles/cron-bogus-id-prof/cron/jobs/bogus/pause"),
+                ("POST", "/api/profiles/cron-bogus-id-prof/cron/jobs/bogus/resume"),
+                ("POST", "/api/profiles/cron-bogus-id-prof/cron/jobs/bogus/trigger"),
+                ("DELETE", "/api/profiles/cron-bogus-id-prof/cron/jobs/bogus"),
+            ):
+                method, path = route
+                resp = self.client.request(method, path)
+                assert resp.status_code == 404, f"{method} {path} → {resp.status_code} {resp.text}"
+        finally:
+            self.client.delete("/api/profiles/cron-bogus-id-prof")
+
+    def test_profile_cron_gateway_running_consistent_with_profiles_list(
+        self, monkeypatch
+    ):
+        """The same ``_check_gateway_running`` helper backs both
+        ``GET /api/profiles`` (``gateway_running`` field) and the trigger
+        route's 409 gate. Verifies there's no skew: when one says the
+        gateway is down, the other agrees."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        # Force every gateway check to report False for the duration of
+        # this test, then create a job and try to trigger it.
+        monkeypatch.setattr(
+            "hermes_cli.profiles._check_gateway_running",
+            lambda profile_dir: False,
+        )
+
+        self.client.post("/api/profiles", json={"name": "cron-consist-prof"})
+        try:
+            data = self.client.get("/api/profiles").json()
+            by_name = {p["name"]: p for p in data["profiles"]}
+            # Both the new profile and the default profile should report
+            # gateway_running=False under the monkeypatch.
+            assert by_name["cron-consist-prof"]["gateway_running"] is False
+
+            created = self.client.post(
+                "/api/profiles/cron-consist-prof/cron/jobs",
+                json={"prompt": "x", "schedule": "every 5m"},
+            )
+            job_id = created.json()["id"]
+            resp = self.client.post(
+                f"/api/profiles/cron-consist-prof/cron/jobs/{job_id}/trigger"
+            )
+            assert resp.status_code == 409
+        finally:
+            self.client.delete("/api/profiles/cron-consist-prof")
+
     def test_toolsets_list(self):
         resp = self.client.get("/api/tools/toolsets")
         assert resp.status_code == 200

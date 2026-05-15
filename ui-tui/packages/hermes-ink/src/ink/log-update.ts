@@ -175,7 +175,10 @@ export class LogUpdate {
     if (altScreen && next.scrollHint && decstbmSafe) {
       const { top, bottom, delta } = next.scrollHint
 
-      if (top >= 0 && bottom < prev.screen.height && bottom < next.screen.height) {
+      // Keep the last screen row out of DECSTBM regions. Anchored HUD/footer
+      // rows live there in the TUI, and scrolling through them duplicates the
+      // fixed status bar instead of treating it as out-of-band chrome.
+      if (top >= 0 && bottom < prev.screen.height - 1 && bottom < next.screen.height - 1) {
         shiftRows(prev.screen, top, bottom, delta)
         scrollPatch = [
           {

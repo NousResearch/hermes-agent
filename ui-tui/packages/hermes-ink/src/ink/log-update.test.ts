@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Frame } from './frame.js'
 import { LogUpdate } from './log-update.js'
 import { CellWidth, CharPool, createScreen, HyperlinkPool, type Screen, setCellAt, StylePool } from './screen.js'
+import { setScrollRegion } from './termio/csi.js'
 
 /**
  * Contract tests for LogUpdate.render() — the diff-to-ANSI path that owns
@@ -153,5 +154,66 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('timer2s')
+  })
+
+  it('skips DECSTBM when the scroll region would include the last row', () => {
+    const w = 20
+    const h = 3
+    const prev = mkScreen(w, h)
+    paint(prev, 0, 'row 0')
+    paint(prev, 1, 'row 1')
+    paint(prev, 2, 'status')
+
+    const next = mkScreen(w, h)
+    paint(next, 0, 'row 1')
+    paint(next, 1, 'row 2')
+    paint(next, 2, 'status')
+    next.damage = { x: 0, y: 0, width: w, height: h }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+
+    const diff = log.render(
+      mkFrame(prev, w, h, h),
+      {
+        ...mkFrame(next, w, h, h),
+        scrollHint: { top: 0, bottom: h - 1, delta: 1 }
+      },
+      true,
+      true
+    )
+
+    expect(stdoutOnly(diff)).not.toContain(setScrollRegion(1, h))
+    expect(stdoutOnly(diff)).toContain('row2')
+  })
+
+  it('keeps DECSTBM when the last row stays outside the scroll region', () => {
+    const w = 20
+    const h = 4
+    const prev = mkScreen(w, h)
+    paint(prev, 0, 'row 0')
+    paint(prev, 1, 'row 1')
+    paint(prev, 2, 'row 2')
+    paint(prev, 3, 'status')
+
+    const next = mkScreen(w, h)
+    paint(next, 0, 'row 1')
+    paint(next, 1, 'row 2')
+    paint(next, 2, 'row 3')
+    paint(next, 3, 'status')
+    next.damage = { x: 0, y: 0, width: w, height: h }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+
+    const diff = log.render(
+      mkFrame(prev, w, h, h),
+      {
+        ...mkFrame(next, w, h, h),
+        scrollHint: { top: 0, bottom: h - 2, delta: 1 }
+      },
+      true,
+      true
+    )
+
+    expect(stdoutOnly(diff)).toContain(setScrollRegion(1, h - 1))
   })
 })

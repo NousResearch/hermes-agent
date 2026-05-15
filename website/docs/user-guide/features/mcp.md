@@ -126,6 +126,24 @@ mcp_servers:
       Authorization: "Bearer ***"
 ```
 
+### HTTP server with multiple headers
+
+`headers` is a free-form map. Some hosted MCP providers require additional
+vendor-specific headers beyond `Authorization`; include each required header in
+the same block and check the provider's MCP docs for the exact names.
+
+For example, Plane Cloud's hosted MCP endpoint requires both the API token and
+workspace slug:
+
+```yaml
+mcp_servers:
+  plane:
+    url: "https://mcp.plane.so/http/api-key/mcp"
+    headers:
+      Authorization: "Bearer <plane-api-token>"
+      X-Workspace-slug: "<workspace-slug>"
+```
+
 ## How Hermes registers MCP tools
 
 Hermes prefixes MCP tools so they do not collide with built-in names:

@@ -43,7 +43,7 @@ mcp_servers:
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |
-| `headers` | mapping | HTTP | Headers for remote server requests |
+| `headers` | mapping | HTTP | Free-form headers for remote server requests. Include all vendor-required headers. |
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
 | `connect_timeout` | number | both | Initial connection timeout |
@@ -176,6 +176,20 @@ mcp_servers:
     tools:
       exclude: [delete_customer, refund_payment]
 ```
+
+### HTTP server with vendor-specific headers
+
+```yaml
+mcp_servers:
+  plane:
+    url: "https://mcp.plane.so/http/api-key/mcp"
+    headers:
+      Authorization: "Bearer <plane-api-token>"
+      X-Workspace-slug: "<workspace-slug>"
+```
+
+Some hosted MCP providers require more than a bearer token. `headers` accepts
+any HTTP header names the provider documents.
 
 ### Resource-only docs server
 

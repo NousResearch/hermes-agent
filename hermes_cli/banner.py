@@ -175,6 +175,49 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""
+    parts = []
+    for segment in v.split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
+    """Fetch the latest version of a package from PyPI. Returns None on failure."""
+    try:
+        import urllib.request
+        import json as _json
+        url = f"https://pypi.org/pypi/{package}/json"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+            return data.get("info", {}).get("version")
+    except Exception:
+        return None
+
+
+def _check_via_pypi() -> Optional[int]:
+    """Compare installed version against PyPI latest.
+
+    Returns 0 if up-to-date, 1 if behind, None on failure.
+    """
+    latest = _fetch_pypi_latest()
+    if latest is None:
+        return None
+    if latest == VERSION:
+        return 0
+    try:
+        if _version_tuple(latest) > _version_tuple(VERSION):
+            return 1
+        return 0
+    except Exception:
+        return 1 if latest != VERSION else 0
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -213,8 +256,9 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
-            return None
-        behind = _check_via_local_git(repo_dir)
+            behind = _check_via_pypi()
+        else:
+            behind = _check_via_local_git(repo_dir)
 
     try:
         cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))

@@ -38,6 +38,8 @@ from agent.task_registry import (
 )
 
 __all__ = [
+    "ARTIFACT_DISCARDED",
+    "ARTIFACT_IMPORT_REQUESTED",
     "ARTIFACT_PENDING_IMPORT",
     "JOB_CANCELLED",
     "JOB_FAILED",
@@ -73,10 +75,21 @@ JOB_STATES = frozenset(
 TERMINAL_JOB_STATES = frozenset({JOB_SUCCEEDED, JOB_FAILED, JOB_CANCELLED})
 
 ARTIFACT_PENDING_IMPORT = "pending"
+ARTIFACT_IMPORT_REQUESTED = "import_requested"
+ARTIFACT_DISCARDED = "discarded"
 
 REVIEW_REJECTED = "rejected"
 REVIEW_UNSAFE = "unsafe"
 _REJECTED_REVIEW_STATUSES = frozenset({REVIEW_REJECTED, "reject", REVIEW_UNSAFE})
+_DISCARDABLE_TASK_STATES = frozenset(
+    {
+        FRONTDESK_REVIEW_PASSED,
+        FRONTDESK_REVIEW_FAILED_NEEDS_ITERATION,
+        FRONTDESK_BLOCKED_USER_INPUT,
+        FRONTDESK_DONE_PRESENTED,
+        FRONTDESK_ERROR,
+    }
+)
 
 
 def _new_id(prefix: str) -> str:
@@ -609,6 +622,44 @@ class FrontdeskStore:
             ).fetchall()
         return [FrontdeskArtifactRecord.from_row(row) for row in rows]
 
+    def _selected_task_artifacts(
+        self,
+        task_id: str,
+        artifact_ids: Iterable[str] | None,
+    ) -> list[FrontdeskArtifactRecord]:
+        self._task(task_id)
+        if artifact_ids is None:
+            return self.list_artifacts(task_id=task_id)
+        ids = [str(artifact_id) for artifact_id in artifact_ids]
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT * FROM frontdesk_artifacts
+            WHERE task_id = ? AND id IN ({placeholders})
+            ORDER BY created_at, id
+            """,
+            [task_id, *ids],
+        ).fetchall()
+        artifacts = [FrontdeskArtifactRecord.from_row(row) for row in rows]
+        found = {artifact.id for artifact in artifacts}
+        missing = [artifact_id for artifact_id in ids if artifact_id not in found]
+        if missing:
+            raise KeyError(f"unknown frontdesk artifact id for task {task_id!r}: {missing[0]!r}")
+        return artifacts
+
+    def _task_has_event(self, task_id: str, event_type: str) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM frontdesk_events
+            WHERE task_id = ? AND event_type = ?
+            LIMIT 1
+            """,
+            (task_id, event_type),
+        ).fetchone()
+        return row is not None
+
     # -- worker/reviewer queue operations --------------------------------
     def claim_job(
         self,
@@ -964,16 +1015,24 @@ class FrontdeskStore:
             return FRONTDESK_ERROR
         raise ValueError(f"unknown review status {review_status!r}")
 
-    def mark_done_presented(self, task_id: str, *, now: float | None = None) -> FrontdeskTaskRecord:
-        """Mark a review-passed task as presented to the user.
+    def mark_done_presented_with_status(
+        self,
+        task_id: str,
+        *,
+        now: float | None = None,
+    ) -> tuple[FrontdeskTaskRecord, bool]:
+        """Mark a review-passed task as presented and report idempotence.
 
-        Worker completion cannot call this path.  The state must already be
-        ``review_passed`` so a successful worker alone can never become
-        user-facing completion.
+        Returns ``(task, already_presented)``.  The review gate and the
+        already-presented no-op are evaluated inside one transaction so concurrent
+        callers cannot turn an idempotent presentation retry into a spurious
+        ``before review passes`` failure.
         """
         marked_at = _now() if now is None else float(now)
         with self._transaction():
             task = self._task(task_id)
+            if task.state == FRONTDESK_DONE_PRESENTED:
+                return task, True
             if task.state != FRONTDESK_REVIEW_PASSED:
                 raise ValueError("task cannot be presented before review passes")
             self._conn.execute(
@@ -981,7 +1040,105 @@ class FrontdeskStore:
                 (FRONTDESK_DONE_PRESENTED, marked_at, task_id),
             )
             self._insert_event("task_done_presented", task_id=task_id, now=marked_at)
-            return self._task(task_id)
+            return self._task(task_id), False
+
+    def mark_done_presented(self, task_id: str, *, now: float | None = None) -> FrontdeskTaskRecord:
+        """Mark a review-passed task as presented to the user.
+
+        Worker completion cannot call this path.  The state must already be
+        ``review_passed`` so a successful worker alone can never become
+        user-facing completion.  Repeated calls after presentation are idempotent.
+        """
+        task, _already_presented = self.mark_done_presented_with_status(task_id, now=now)
+        return task
+
+    def record_import_decision(
+        self,
+        task_id: str,
+        *,
+        artifact_ids: Iterable[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        now: float | None = None,
+    ) -> list[FrontdeskArtifactRecord]:
+        """Record that reviewed artifact pointers were selected for import.
+
+        This is deliberately a metadata/status transition only.  It never reads,
+        copies, executes, shells out with, or deletes the artifact paths stored in
+        the database.  Import is allowed only after review has passed; a worker
+        success that is still pending review is not a final importable result.
+        """
+        decided_at = _now() if now is None else float(now)
+        event_metadata = _json_safe(metadata or {}, label="import decision metadata")
+        with self._transaction():
+            task = self._task(task_id)
+            if task.state not in {FRONTDESK_REVIEW_PASSED, FRONTDESK_DONE_PRESENTED}:
+                raise ValueError("task cannot be imported before review passes")
+            artifacts = self._selected_task_artifacts(task_id, artifact_ids)
+            changed = [artifact for artifact in artifacts if artifact.import_status != ARTIFACT_IMPORT_REQUESTED]
+            event_type = "task_import_decision_recorded"
+            should_record_event = bool(changed) or not self._task_has_event(task_id, event_type)
+            if changed:
+                self._conn.executemany(
+                    "UPDATE frontdesk_artifacts SET import_status = ? WHERE id = ?",
+                    [(ARTIFACT_IMPORT_REQUESTED, artifact.id) for artifact in changed],
+                )
+            if should_record_event:
+                self._insert_event(
+                    event_type,
+                    task_id=task_id,
+                    payload={
+                        "artifact_ids": [artifact.id for artifact in artifacts],
+                        "changed_artifact_ids": [artifact.id for artifact in changed],
+                        "import_status": ARTIFACT_IMPORT_REQUESTED,
+                        "applied": False,
+                        "metadata": event_metadata,
+                    },
+                    now=decided_at,
+                )
+            return self._selected_task_artifacts(task_id, [artifact.id for artifact in artifacts])
+
+    def record_discard_decision(
+        self,
+        task_id: str,
+        *,
+        artifact_ids: Iterable[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        now: float | None = None,
+    ) -> list[FrontdeskArtifactRecord]:
+        """Record a non-destructive decision to discard artifact pointers.
+
+        Discarding only updates durable metadata and records an event.  Artifact
+        files are not opened, copied, modified, or deleted.
+        """
+        decided_at = _now() if now is None else float(now)
+        event_metadata = _json_safe(metadata or {}, label="discard decision metadata")
+        with self._transaction():
+            task = self._task(task_id)
+            if task.state not in _DISCARDABLE_TASK_STATES:
+                raise ValueError("task cannot be discarded before review completes")
+            artifacts = self._selected_task_artifacts(task_id, artifact_ids)
+            changed = [artifact for artifact in artifacts if artifact.import_status != ARTIFACT_DISCARDED]
+            event_type = "task_discard_decision_recorded"
+            should_record_event = bool(changed) or not self._task_has_event(task_id, event_type)
+            if changed:
+                self._conn.executemany(
+                    "UPDATE frontdesk_artifacts SET import_status = ? WHERE id = ?",
+                    [(ARTIFACT_DISCARDED, artifact.id) for artifact in changed],
+                )
+            if should_record_event:
+                self._insert_event(
+                    event_type,
+                    task_id=task_id,
+                    payload={
+                        "artifact_ids": [artifact.id for artifact in artifacts],
+                        "changed_artifact_ids": [artifact.id for artifact in changed],
+                        "import_status": ARTIFACT_DISCARDED,
+                        "deleted": False,
+                        "metadata": event_metadata,
+                    },
+                    now=decided_at,
+                )
+            return self._selected_task_artifacts(task_id, [artifact.id for artifact in artifacts])
 
     def request_cancel(self, task_id: str, *, reason: str | None = None) -> FrontdeskTaskRecord:
         """Idempotently request cancellation for a task and its live jobs."""

@@ -6211,7 +6211,7 @@ class GatewayRunner:
             # running-agent guard. Reject gracefully rather than falling
             # through to interrupt + discard. Without this, commands
             # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage,
+            # /resume, /retry, /undo, /compress, /costs,
             # /reload-mcp, /sethome, /reset (all registered as Discord
             # slash commands) would interrupt the agent AND get
             # silently discarded by the slash-command safety net,
@@ -6503,7 +6503,7 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
-        if canonical == "usage":
+        if canonical == "costs":
             return await self._handle_usage_command(event)
 
         if canonical == "insights":

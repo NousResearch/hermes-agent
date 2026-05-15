@@ -7903,7 +7903,7 @@ class HermesCLI:
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
-        elif canonical == "usage":
+        elif canonical == "costs":
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)

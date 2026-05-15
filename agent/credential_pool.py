@@ -29,6 +29,7 @@ from hermes_cli.auth import (
     _resolve_zai_base_url,
     _save_auth_store,
     _save_provider_state,
+    detect_zai_endpoint,
     read_credential_pool,
     write_credential_pool,
 )
@@ -594,6 +595,55 @@ class CredentialPool:
             logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
         return entry
 
+    def _sync_zai_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a Z.AI pool entry from auth.json if the detected endpoint changed.
+
+        Z.AI has two API surfaces (regular /api/paas/v4 and coding /api/coding/paas/v4)
+        and an account may only have quota on one.  When ``detect_zai_endpoint`` probes
+        during runtime resolution it caches the working endpoint in
+        ``provider_state.zai.detected_endpoint``.  If the pool entry was seeded earlier
+        with a different endpoint, or the account's available quota shifted, the pool
+        entry's ``base_url`` becomes stale.  This method detects that and adopts the
+        newer endpoint, clearing exhaustion so the entry can be retried immediately.
+        """
+        if self.provider != "zai":
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "zai")
+            if not isinstance(state, dict):
+                return entry
+            detected = state.get("detected_endpoint")
+            if not isinstance(detected, dict):
+                return entry
+            detected_url = detected.get("base_url", "").rstrip("/")
+            entry_url = (entry.base_url or "").rstrip("/")
+            if detected_url and detected_url != entry_url:
+                logger.debug(
+                    "Pool entry %s: syncing Z.AI endpoint from auth.json "
+                    "%s -> %s",
+                    entry.id,
+                    entry_url,
+                    detected_url,
+                )
+                updated = replace(
+                    entry,
+                    base_url=detected_url,
+                    last_status=None,
+                    last_status_at=None,
+                    last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
+                )
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync Z.AI entry from auth.json: %s", exc)
+        return entry
+
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json providers.
 
@@ -883,11 +933,24 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            # For zai entries, sync the detected endpoint from auth.json.
+            # Z.AI has regular and coding endpoints; the account may only
+            # have quota on one.  If runtime resolution detected a different
+            # working endpoint, adopt it and clear exhaustion immediately.
+            if (self.provider == "zai"
+                    and entry.last_status == STATUS_EXHAUSTED):
+                synced = self._sync_zai_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
                     continue
                 if clear_expired:
+                    previous_error_code = entry.last_error_code
+                    previous_error_reason = entry.last_error_reason
+                    previous_error_message = entry.last_error_message
                     cleared = replace(
                         entry,
                         last_status=STATUS_OK,
@@ -900,6 +963,60 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+                    # For zai, re-probe endpoints after cooldown clears to
+                    # ensure the cached base_url is still valid.  Quota may
+                    # have shifted between regular and coding endpoints.
+                    if self.provider == "zai":
+                        api_key = entry.access_token or ""
+                        if api_key:
+                            try:
+                                detected = detect_zai_endpoint(api_key, timeout=8.0)
+                                if detected and detected.get("base_url"):
+                                    new_url = detected["base_url"].rstrip("/")
+                                    old_url = (entry.base_url or "").rstrip("/")
+                                    if new_url != old_url:
+                                        logger.debug(
+                                            "Pool entry %s: re-probed Z.AI endpoint %s -> %s",
+                                            entry.id, old_url, new_url,
+                                        )
+                                        entry = replace(entry, base_url=new_url)
+                                        self._replace_entry(cleared, entry)
+                                        cleared_any = True
+                                else:
+                                    # Probe failed — no endpoint works, keep exhausted
+                                    logger.debug(
+                                        "Pool entry %s: Z.AI re-probe failed, keeping exhausted",
+                                        entry.id,
+                                    )
+                                    entry = replace(
+                                        entry,
+                                        last_status=STATUS_EXHAUSTED,
+                                        last_status_at=now,
+                                        last_error_code=previous_error_code,
+                                        last_error_reason=previous_error_reason,
+                                        last_error_message=previous_error_message,
+                                        last_error_reset_at=None,
+                                    )
+                                    self._replace_entry(cleared, entry)
+                                    cleared_any = True
+                                    continue
+                            except Exception as exc:
+                                logger.debug(
+                                    "Pool entry %s: Z.AI re-probe error: %s",
+                                    entry.id, exc,
+                                )
+                                entry = replace(
+                                    entry,
+                                    last_status=STATUS_EXHAUSTED,
+                                    last_status_at=now,
+                                    last_error_code=previous_error_code,
+                                    last_error_reason=previous_error_reason,
+                                    last_error_message=previous_error_message,
+                                    last_error_reset_at=None,
+                                )
+                                self._replace_entry(cleared, entry)
+                                cleared_any = True
+                                continue
             if refresh and self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:

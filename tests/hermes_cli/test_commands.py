@@ -108,6 +108,17 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("usage").name == "costs"
+        assert resolve_command("credits").name == "costs"
+
+    def test_costs_is_canonical_gateway_usage_command(self):
+        costs = resolve_command("costs")
+        assert costs is not None
+        assert costs.name == "costs"
+        assert resolve_command("/costs").name == "costs"
+        assert "costs" in GATEWAY_KNOWN_COMMANDS
+        assert "usage" in GATEWAY_KNOWN_COMMANDS
+        assert "credits" in GATEWAY_KNOWN_COMMANDS
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")
@@ -250,6 +261,12 @@ class TestTelegramBotCommands:
         assert "background" in names
         assert "queue" in names
         assert "steer" in names
+
+    def test_costs_is_telegram_menu_command(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "costs" in names
+        assert "usage" not in names  # aliases are accepted but not menu entries
+        assert "credits" not in names
 
 
 class TestSlackSubcommandMap:

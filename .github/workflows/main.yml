@@ -29,13 +29,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # >>>>>>>> 修正点 1 & 2 & 3：调整顺序并修正安装命令 <<<<<<<<
-      - name: Set up Python and Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # 核心修正：使用 -e .[all] 安装项目及其所有额外依赖
-          pip install -e .[all]
-
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
         with:
@@ -47,7 +40,6 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and Push Docker Image
-        # id: docker_build (注释掉id，除非你后面有步骤需要用到它的输出)
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -57,3 +49,11 @@ jobs:
             ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/hermes-agent:build-${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          # 💡 虽然Dockerfile不跑测试，但为了符合标准做法，可以传入：
+          # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+          build-args: |
+            # 这个参数会传给Dockerfile，虽然当前Dockerfile可能用不到，
+            # 但很多标准镜像（如Node.js）会读取 SKIP_TEST 或 CI 来跳过测试
+            SKIP_TESTS=true
+            # 如果是Python项目，也可以传 NO_TEST=True

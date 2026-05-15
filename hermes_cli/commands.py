@@ -1453,6 +1453,20 @@ class SlashCommandCompleter(Completer):
         return f"{cmd_name} "
 
     @staticmethod
+    def _span_names_real_location(span: str) -> bool:
+        """True when *span* plausibly names something on disk.
+
+        Used only to arbitrate a space-crossing path span, so the parent
+        directory existing is enough — the leaf is still being typed.
+        """
+        try:
+            expanded = os.path.expanduser(span)
+            parent = expanded if expanded.endswith("/") else os.path.dirname(expanded)
+            return os.path.isdir(parent or ".")
+        except OSError:
+            return False
+
+    @staticmethod
     def _extract_path_word(text: str) -> str | None:
         """Extract the current word if it looks like a file path.
 
@@ -1461,29 +1475,53 @@ class SlashCommandCompleter(Completer):
         it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
         ``/`` separator (e.g. ``src/main.py``).
 
+        Paths with an anchored prefix (``./``, ``../``, ``~/``, ``/``) may
+        legitimately contain spaces — e.g. ``./My Documents/``. To capture
+        those, find the rightmost anchor that sits at the start of the line
+        or directly after a space and treat everything from there to the
+        cursor as the path.
+
+        A span that crosses a space is genuinely ambiguous: ``./My Documents/``
+        is one path, but in ``compare ./old dir/ with new/`` the same shape is
+        an earlier anchor followed by an independent later token — no amount of
+        string analysis separates them, since a directory really can be named
+        ``old dir/ with new``. So a space-crossing span is only trusted when it
+        names a real location on disk; otherwise the last space-delimited token
+        wins. The probe runs only for space-crossing spans, so the common
+        no-space path stays allocation-cheap with no filesystem hit.
+
         Tokens containing a ``://`` scheme separator (e.g. URLs like
         ``https://example.com/x``) are excluded even though they contain a
-        ``/`` — they are never useful local-path completions.
+        ``/`` — they are never useful local-path completions, and treating
+        them as paths fires an os.listdir on every keystroke while typing or
+        pasting a link (pure latency, never a useful completion).
         """
         if not text:
             return None
-        # Walk backwards to find the start of the current "word".
-        # Words are delimited by spaces, but paths can contain almost anything.
-        i = len(text) - 1
-        while i >= 0 and text[i] != " ":
-            i -= 1
-        word = text[i + 1:]
-        if not word:
-            return None
-        # URLs contain "/" but are not local paths. Treating them as paths fires
-        # os.listdir on every keystroke while typing/pasting a link (e.g. an
-        # https:// URL becomes a listdir of "https:") — pure latency, never a
-        # useful completion. Skip any token with a scheme separator.
-        if "://" in word:
-            return None
-        # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
-            return word
+
+        last = text.rsplit(" ", 1)[-1]
+
+        _ANCHORS = ("./", "../", "~/", "/")
+        # Rightmost anchor preceded by start-of-string or a space.
+        anchor_pos = -1
+        for anchor in _ANCHORS:
+            idx = text.rfind(anchor)
+            while idx != -1:
+                if idx == 0 or text[idx - 1] == " ":
+                    if idx > anchor_pos:
+                        anchor_pos = idx
+                    break
+                idx = text.rfind(anchor, 0, idx)
+
+        if anchor_pos != -1:
+            span = text[anchor_pos:]
+            if "://" in span:
+                return None
+            if " " not in span or SlashCommandCompleter._span_names_real_location(span):
+                return span
+
+        if last and "/" in last:
+            return None if "://" in last else last
         return None
 
     @staticmethod

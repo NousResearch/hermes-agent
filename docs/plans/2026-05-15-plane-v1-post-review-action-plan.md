@@ -243,6 +243,8 @@ Ne pas glisser dans la V1.1, à reporter explicitement :
 - Garder Plane comme interface visuelle, pas de dérive.
 - À chaque fois qu'on découvre une nouvelle limite non triviale, la consigner ici, pas dans un rapport oral.
 - Les fichiers `2026-05-14-plane-v1-integration.md` et `2026-05-15-plane-v1-phase-2-action-plan.md` restent valides comme historique mais ne reflètent plus le vrai statut. Ce doc fait foi.
+- **Finding 2026-05-15 (Nova) : assignees Plane attendent des UUID utilisateur, pas un display name.** Aujourd'hui le payload `assignees` n'est pas résolu côté Hermes, ce qui rend l'usage par display name silencieusement non fonctionnel. Embarqué dans le backlog V1.2 (voir section 12).
+- **Branche de préservation `wip/plane-v1-preserve-20260515` et `stash@{0}`** : conserver jusqu'à merge V1.1 sur la branche de référence et début effectif de V1.2. À nettoyer ensuite via decision explicite.
 
 ## 10. Lot statique livré (Claude, 2026-05-15)
 
@@ -285,3 +287,19 @@ Tout ce qui suit demandait un accès à l'API Plane live ou des décisions produ
 | **C5 — `state_id` + `state` dupliqués** | **TRAITÉ 2026-05-15** | Workaround confirmé en live, commenté et couvert par test. |
 
 Synthèse Nova : V1.1 retient **L2 + C3 + C5**. **L1 + L3 + T4** sont explicitement reportés en V1.2.
+
+## 12. Backlog V1.2
+
+Quatre items reportés. Ordre d'attaque recommandé, à valider avant démarrage effectif.
+
+| Ordre | Item | Raison de l'ordre |
+| --- | --- | --- |
+| 1 | **L1 — Markdown riche** (`mistune` + allowlist minimale) | Brique fondamentale réutilisée par L3 et par tout futur outil qui écrit du contenu sur Plane. À sécuriser en premier. |
+| 2 | **Assignees UUID** (résolution display name → UUID) | Bug fonctionnel silencieux remonté par Nova en fin de V1.1. Petit chantier isolé, bénéfice immédiat sur `plane_create_work_item` et `plane_update_work_item`. |
+| 3 | **L3 — Traçabilité auto `[hermes]`** | Dépend de L1 (le commentaire de traçabilité doit pouvoir être stylé proprement). Demande une décision produit sur le périmètre par défaut (par outil) et le mécanisme d'override. |
+| 4 | **T4 — Erreurs réseau** (timeout, 5xx, retry) | Hygiène prod, indépendant des autres items. Peut être traité en parallèle ou en dernier. À concevoir au niveau client `PlaneClient`, pas au niveau handler. |
+
+Critères d'entrée V1.2 :
+- V1.1 mergée sur la branche de référence.
+- Branche `wip/plane-v1-preserve-20260515` et `stash@{0}` arbitrés (conservés ou supprimés).
+- Nouveau doc `docs/plans/AAAA-MM-JJ-plane-v1.2-action-plan.md` créé pour piloter V1.2 (ce doc-ci reste l'historique V1 / V1.1).

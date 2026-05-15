@@ -8332,8 +8332,11 @@ class AIAgent:
                             )
                             _is_sse_conn_err_preview = False
                             if not _is_timeout and not _is_conn_err:
-                                from openai import APIError as _APIError
-                                if isinstance(e, _APIError) and not getattr(e, "status_code", None):
+                                try:
+                                    from openai import APIError as _APIError
+                                except ImportError:
+                                    _APIError = None
+                                if _APIError is not None and isinstance(e, _APIError) and not getattr(e, "status_code", None):
                                     _err_lower_preview = str(e).lower()
                                     _SSE_PREVIEW_PHRASES = (
                                         "connection lost",
@@ -8430,8 +8433,11 @@ class AIAgent:
                         # APIStatusError (4xx/5xx) always has one.
                         _is_sse_conn_err = False
                         if not _is_timeout and not _is_conn_err:
-                            from openai import APIError as _APIError
-                            if isinstance(e, _APIError) and not getattr(e, "status_code", None):
+                            try:
+                                from openai import APIError as _APIError
+                            except ImportError:
+                                _APIError = None
+                            if _APIError is not None and isinstance(e, _APIError) and not getattr(e, "status_code", None):
                                 _err_lower_sse = str(e).lower()
                                 _SSE_CONN_PHRASES = (
                                     "connection lost",

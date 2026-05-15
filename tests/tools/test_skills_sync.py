@@ -200,6 +200,29 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
 
+    def test_no_bundled_skills_marker_skips_global_sync(self, tmp_path):
+        """Profiles created with --no-skills must stay empty on normal CLI startup.
+
+        The CLI calls sync_skills() directly on launch, not only the profile
+        helper.  This marker check keeps opted-out role profiles from being
+        re-seeded the first time they run `hermes --profile <name> chat ...`.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        profile_home = tmp_path / "profile_home"
+        skills_dir = profile_home / "skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        profile_home.mkdir()
+        (profile_home / ".no-bundled-skills").write_text("opted out\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped_opt_out"] is True
+        assert result["copied"] == []
+        assert not manifest_file.exists()
+        assert not (skills_dir / "category" / "new-skill").exists()
+        assert not (skills_dir / "old-skill").exists()
+
     def test_fresh_install_copies_all(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
+NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 
 def _get_bundled_dir() -> Path:
@@ -182,6 +183,22 @@ def sync_skills(quiet: bool = False) -> dict:
         dict with keys: copied (list), updated (list), skipped (int),
                         user_modified (list), cleaned (list), total_bundled (int)
     """
+    # `hermes profile create --no-skills` writes this marker to the profile
+    # home, not to skills/.  The CLI launch path calls sync_skills() directly,
+    # so the guard must live here as well as in profile creation helpers.
+    # Without this check, an opted-out role profile gets silently re-seeded on
+    # its first normal command (`hermes --profile <name> chat ...`).
+    if (SKILLS_DIR.parent / NO_BUNDLED_SKILLS_MARKER).exists():
+        return {
+            "copied": [],
+            "updated": [],
+            "skipped": 0,
+            "user_modified": [],
+            "cleaned": [],
+            "total_bundled": 0,
+            "skipped_opt_out": True,
+        }
+
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {

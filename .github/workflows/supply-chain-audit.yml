@@ -11,6 +11,8 @@ on:
       - '**/sitecustomize.py'
       - '**/usercustomize.py'
       - '**/__init__.pth'
+      - 'pyproject.toml'
+      - 'uv.lock'
 
 permissions:
   pull-requests: write
@@ -49,6 +51,48 @@ jobs:
           DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
 
           FINDINGS=""
+
+          # --- Known-bad exact upstream releases ---
+          MISTRALAI_246_HITS=$(python - "$BASE" "$HEAD" <<'PY'
+          import subprocess
+          import sys
+
+          base, head = sys.argv[1:3]
+          diff = subprocess.check_output(
+              ["git", "diff", f"{base}..{head}", "--", "pyproject.toml", "uv.lock"],
+              text=True,
+          )
+          lines = diff.splitlines()
+          hits = []
+          for index, line in enumerate(lines, start=1):
+              if not line.startswith("+") or line.startswith("+++"):
+                  continue
+              added = line[1:]
+              normalized = added.lower()
+              if "mistralai" in normalized and "2.4.6" in normalized:
+                  hits.append(f"{index}:{added}")
+                  continue
+              if normalized.strip() == 'version = "2.4.6"':
+                  context = "\n".join(
+                      item[1:] if item[:1] in "+- " else item
+                      for item in lines[max(0, index - 5):index]
+                  ).lower()
+                  if 'name = "mistralai"' in context:
+                      hits.append(f"{index}:{added}")
+          print("\n".join(hits[:10]))
+          PY
+          )
+          if [ -n "$MISTRALAI_246_HITS" ]; then
+            FINDINGS="${FINDINGS}
+          ### 🚨 CRITICAL: known-bad mistralai release referenced
+          \`mistralai==2.4.6\` (including lockfile filenames like \`mistralai-2.4.6\`) was reported as a compromised upstream release. Do not allow project metadata, lockfiles, or CI installs to reference it.
+
+          **Matches:**
+          \`\`\`
+          ${MISTRALAI_246_HITS}
+          \`\`\`
+          "
+          fi
 
           # --- .pth files (auto-execute on Python startup) ---
           # The exact mechanism used in the litellm supply chain attack:

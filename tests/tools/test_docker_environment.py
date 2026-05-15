@@ -1,5 +1,6 @@
 import logging
 from io import StringIO
+import os
 import subprocess
 import sys
 import types
@@ -208,9 +209,33 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
     calls = _mock_subprocess_run(monkeypatch)
 
     popen_cmds = []
+    class _CleanupPopen:
+        """Tiny Popen double with a real fileno-backed stdout.
+
+        DockerEnvironment initialization runs a shell bootstrap path that drains
+        proc.stdout via fileno()/select().  A plain iterator makes that helper
+        throw in a background thread, so this fake uses /dev/null like an empty
+        subprocess pipe.
+        """
+
+        def __init__(self, cmd, **kwargs):
+            self.cmd = cmd
+            self.kwargs = kwargs
+            self.stdout = open(os.devnull, "rb")
+            self.stdin = None
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, **kwargs):
+            self.stdout.close()
+            return self.returncode
+
     monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
+        docker_env.subprocess,
+        "Popen",
+        lambda cmd, **kw: (popen_cmds.append(cmd), _CleanupPopen(cmd, **kw))[1],
     )
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")

@@ -22,6 +22,23 @@
 #     this on an internet-facing host.
 #
 services:
+  # Safe one-shot validation path:
+  #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose --profile smoke run --rm smoke
+  #
+  # This intentionally avoids ~/.hermes, host networking, restart loops, and
+  # gateway startup. It is for first-pass image/runtime validation only.
+  smoke:
+    profiles: ["smoke"]
+    build: .
+    image: hermes-agent
+    restart: "no"
+    volumes:
+      - ./runtime/docker-smoke:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command: ["doctor"]
+
   gateway:
     build: .
     image: hermes-agent

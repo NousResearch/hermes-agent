@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -138,6 +139,188 @@ def recover_durable_frontdesk_store(
             "path": str(db_path),
             "recovered_jobs": [_record_dict(job) for job in recovered],
             "tasks": [_record_dict(task) for task in tasks if task is not None],
+        }
+    finally:
+        store.close()
+
+
+def _artifact_pointer_dict(record: Any) -> dict[str, Any]:
+    pointer = {
+        "id": record.id,
+        "job_id": record.job_id,
+        "path": record.path,
+        "type": record.artifact_type,
+        "import_status": record.import_status,
+    }
+    if record.checksum is not None:
+        pointer["checksum"] = record.checksum
+    if record.size is not None:
+        pointer["size"] = record.size
+    return pointer
+
+
+def _review_status_from_adapter_result(raw: Any) -> tuple[str, dict[str, Any]]:
+    from agent.frontdesk_store import REVIEW_REJECTED, REVIEW_UNSAFE
+    from agent.task_registry import REVIEW_BLOCKED, REVIEW_FAILED, REVIEW_NEEDS_ITERATION, REVIEW_PASSED
+
+    valid = {
+        REVIEW_PASSED,
+        REVIEW_FAILED,
+        REVIEW_NEEDS_ITERATION,
+        REVIEW_BLOCKED,
+        REVIEW_REJECTED,
+        REVIEW_UNSAFE,
+    }
+    if isinstance(raw, str):
+        payload = {"review_status": raw}
+    elif isinstance(raw, dict):
+        payload = dict(raw)
+    else:
+        raise TypeError("review adapter must return a verdict string or dictionary")
+    status = payload.get("review_status") or payload.get("verdict")
+    if status == "reject":
+        status = REVIEW_REJECTED
+    if status not in valid:
+        raise ValueError(f"unknown durable frontdesk review verdict {status!r}")
+    payload["review_status"] = status
+    payload["verdict"] = status
+    return status, payload
+
+
+def _json_safe_or_string(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _default_durable_frontdesk_review(context: dict[str, Any]) -> dict[str, Any]:
+    from agent.frontdesk_store import JOB_SUCCEEDED, REVIEW_REJECTED
+    from agent.task_registry import REVIEW_BLOCKED, REVIEW_PASSED
+
+    worker = context.get("worker_job") or {}
+    worker_result = worker.get("result") if isinstance(worker, dict) else None
+    if worker.get("state") != JOB_SUCCEEDED:
+        return {
+            "review_status": REVIEW_BLOCKED,
+            "summary": "worker result is not a successful terminal result",
+        }
+    if isinstance(worker_result, dict):
+        forced = worker_result.get("durable_review_verdict")
+        if forced in {"passed", "failed", "needs_iteration", "blocked", "rejected", "reject", "unsafe"}:
+            status = REVIEW_REJECTED if forced == "reject" else forced
+            return {
+                "review_status": status,
+                "summary": str(worker_result.get("durable_review_summary") or f"review verdict: {status}"),
+            }
+    return {
+        "review_status": REVIEW_PASSED,
+        "summary": "worker result and artifact metadata are present for later presentation/import",
+    }
+
+
+def run_one_durable_frontdesk_review(
+    *,
+    path: str | os.PathLike[str] | None = None,
+    lease_owner: str | None = None,
+    lease_seconds: float = _DEFAULT_DURABLE_LEASE_SECONDS,
+    now: float | None = None,
+    review_adapter: Callable[[dict[str, Any]], dict[str, Any] | str] | None = None,
+) -> dict[str, Any] | None:
+    """Claim and complete one queued durable frontdesk reviewer job.
+
+    This helper is deliberately explicit/default-off.  It does not start the
+    live gateway, import artifacts, apply changes, or mark final output as
+    presented.  Callers that want a different deterministic policy can pass a
+    small ``review_adapter`` returning one of: ``passed``, ``needs_iteration``,
+    ``blocked``, ``rejected``, or ``unsafe``.
+    """
+    from agent.frontdesk_store import FrontdeskStore, JOB_REVIEWER, JOB_SUCCEEDED, JOB_WORKER
+    from agent.task_registry import REVIEW_FAILED, REVIEW_PASSED
+
+    db_path = Path(path) if path is not None else frontdesk_durable_store_path()
+    owner = lease_owner or f"frontdesk-reviewer:{os.getpid()}:{uuid.uuid4().hex}"
+    store = FrontdeskStore(db_path)
+    try:
+        claimed = store.claim_job(
+            kind=JOB_REVIEWER,
+            lease_owner=owner,
+            lease_seconds=lease_seconds,
+            now=now,
+        )
+        if claimed is None:
+            return None
+        task = store.get_task(claimed.task_id)
+        if task is None:
+            raise RuntimeError(f"reviewer job {claimed.id} references missing task {claimed.task_id}")
+        worker_jobs = store.list_jobs(task_id=task.id, kind=JOB_WORKER)
+        worker_job = next((job for job in worker_jobs if job.state == JOB_SUCCEEDED), None)
+        if worker_job is None and worker_jobs:
+            worker_job = worker_jobs[-1]
+        if worker_job is None:
+            raise RuntimeError(f"reviewer job {claimed.id} has no linked worker job")
+        artifacts = store.list_artifacts(task_id=task.id)
+        worker_artifacts = [
+            _artifact_pointer_dict(artifact)
+            for artifact in artifacts
+            if artifact.job_id == worker_job.id
+        ]
+        context = {
+            "task": _record_dict(task),
+            "reviewer_job": _record_dict(claimed),
+            "worker_job": _record_dict(worker_job),
+            "artifacts": worker_artifacts,
+        }
+        adapter = review_adapter or _default_durable_frontdesk_review
+        try:
+            review_status, adapter_payload = _review_status_from_adapter_result(adapter(context))
+            summary = str(adapter_payload.get("summary") or f"review verdict: {review_status}")
+            result = {
+                "review_status": review_status,
+                "verdict": review_status,
+                "summary": summary,
+                "task_id": task.id,
+                "reviewer_job_id": claimed.id,
+                "worker_job_id": worker_job.id,
+                "worker_result": worker_job.result or {},
+                "artifact_pointers": worker_artifacts,
+                "imported": False,
+                "presented": False,
+            }
+            for key in ("risks", "tests_run", "changed_files", "recommended_next_action"):
+                if key in adapter_payload:
+                    result[key] = _json_safe_or_string(adapter_payload[key])
+        except Exception as exc:
+            review_status = REVIEW_FAILED
+            result = {
+                "review_status": review_status,
+                "verdict": review_status,
+                "summary": "review adapter failed; task remains non-presentable pending iteration",
+                "error": str(exc) or type(exc).__name__,
+                "error_type": type(exc).__name__,
+                "task_id": task.id,
+                "reviewer_job_id": claimed.id,
+                "worker_job_id": worker_job.id,
+                "worker_result": worker_job.result or {},
+                "artifact_pointers": worker_artifacts,
+                "imported": False,
+                "presented": False,
+            }
+        completed = store.complete_reviewer_job(
+            claimed.id,
+            review_status=review_status,
+            lease_owner=owner,
+            attempt=claimed.attempt,
+            exit_status="pass" if review_status == REVIEW_PASSED else review_status,
+            result=result,
+        )
+        completed_task = store.get_task(task.id)
+        return {
+            "path": str(db_path),
+            "task": _record_dict(completed_task) if completed_task is not None else None,
+            "reviewer_job": _record_dict(completed),
+            "worker_job": _record_dict(worker_job),
+            "review_result": completed.result or result,
         }
     finally:
         store.close()

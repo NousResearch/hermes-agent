@@ -3658,6 +3658,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
+        # Not all channel-like objects expose ``history``. Forum parents,
+        # voice channels, and custom proxies in tests can lack it.
+        if not hasattr(channel, "history"):
+            return ""
+
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
         include_other_bots = allow_bots_raw != "none"

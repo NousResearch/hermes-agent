@@ -802,6 +802,22 @@ async def test_fetch_channel_context_ignores_stale_cache(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_channel_context_returns_empty_when_channel_lacks_history(adapter, monkeypatch):
+    """Channel-like objects without ``.history`` should not break backfill."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    channel = SimpleNamespace(id=123, name="general")
+
+    result = await adapter._fetch_channel_context(
+        channel,
+        before=SimpleNamespace(id=42),
+    )
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
 async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)

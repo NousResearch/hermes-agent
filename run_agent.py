@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
+import math
 import os
 import random
 import re
@@ -3960,11 +3961,26 @@ class AIAgent:
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
         if isinstance(body, dict):
-            msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
+            err = body.get("error") if isinstance(body.get("error"), dict) else None
+            msg = err.get("message") if err else body.get("message")
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+                # Append reset time when the provider's body indicates a
+                # scheduled usage-limit (e.g. ChatGPT subscription quota via
+                # openai-codex).  resets_in_seconds is a separate field next
+                # to message, so plain message extraction loses it.
+                suffix = ""
+                if err and err.get("type") == "usage_limit_reached":
+                    resets_in = err.get("resets_in_seconds")
+                    if isinstance(resets_in, (int, float)) and resets_in > 0:
+                        if resets_in >= 86400:
+                            suffix = f" (resets in ~{round(resets_in / 86400, 1)}d)"
+                        elif resets_in >= 3600:
+                            suffix = f" (resets in ~{math.ceil(resets_in / 3600)}h)"
+                        else:
+                            suffix = f" (resets in ~{max(1, math.ceil(resets_in / 60))}m)"
+                return f"{prefix}{msg[:300]}{suffix}"
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)

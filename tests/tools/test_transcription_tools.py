@@ -420,7 +420,7 @@ class TestTranscribeLocalCommand:
             if isinstance(cmd, list) and cmd and cmd[0].endswith("whisper")
         ]
         assert whisper_calls
-        assert all(kwargs.get("shell", False) is False for _, kwargs in whisper_calls)
+        assert all(not kwargs.get("shell") for _, kwargs in whisper_calls)
 
     def test_command_template_expands_env_prefix(self, monkeypatch, sample_ogg, tmp_path):
         out_dir = tmp_path / "local-out-expanded"

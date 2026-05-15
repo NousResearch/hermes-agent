@@ -53,6 +53,7 @@ AUTHOR_MAP = {
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "oleksii.lisikh@gmail.com": "olisikh",
+    "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
     "buraysandro9@gmail.com": "ygd58",

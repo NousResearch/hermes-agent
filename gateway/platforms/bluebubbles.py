@@ -90,6 +90,12 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 
@@ -124,6 +130,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        # Whether kind="status" messages are delivered into BlueBubbles / iMessage
+        # group chats. Default False because every iMessage send is a permanent,
+        # un-editable bubble visible to every member. DMs still receive status.
+        self.show_status_in_groups = _truthy(
+            os.getenv("BLUEBUBBLES_SHOW_STATUS_IN_GROUPS"),
+            bool(extra.get("show_status_in_groups", False)),
+        )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -669,9 +682,32 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 info["name"] = display_name
                 if participants:
                     info["participants"] = participants
+                    if len(participants) > 1:
+                        info["type"] = "group"
         except Exception:
             pass
         return info
+
+    async def _should_suppress_status(
+        self,
+        chat_id: str,
+        *,
+        kind: str = "status",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Drop kind="status" messages in BlueBubbles/iMessage groups by default."""
+        del kind, metadata
+        if self.show_status_in_groups:
+            return False
+        try:
+            info = await self.get_chat_info(str(chat_id or ""))
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] get_chat_info failed during status policy check; dropping kind=status: %s",
+                exc,
+            )
+            return True
+        return (info or {}).get("type") == "group"
 
     def format_message(self, content: str) -> str:
         return strip_markdown(content)

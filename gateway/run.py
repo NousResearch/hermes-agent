@@ -2537,6 +2537,7 @@ class GatewayRunner:
                     else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
                 ),
                 metadata=thread_meta,
+                kind="status",
             )
             return True
 
@@ -2686,6 +2687,7 @@ class GatewayRunner:
                     else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
                 ),
                 metadata=thread_meta,
+                kind="status",
             )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
@@ -2807,7 +2809,12 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter._send_with_retry(
+                    chat_id=chat_id,
+                    content=msg,
+                    metadata=metadata,
+                    kind="status",
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -2853,9 +2860,18 @@ class GatewayRunner:
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter._send_with_retry(
+                        chat_id=str(home.chat_id),
+                        content=msg,
+                        metadata=metadata,
+                        kind="status",
+                    )
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter._send_with_retry(
+                        chat_id=str(home.chat_id),
+                        content=msg,
+                        kind="status",
+                    )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -14854,10 +14870,11 @@ class GatewayRunner:
                 return
             try:
                 _fut = asyncio.run_coroutine_threadsafe(
-                    _status_adapter.send(
-                        _status_chat_id,
-                        message,
+                    _status_adapter._send_with_retry(
+                        chat_id=_status_chat_id,
+                        content=message,
                         metadata=_status_thread_metadata,
+                        kind="status",
                     ),
                     _loop_for_step,
                 )

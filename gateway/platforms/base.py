@@ -1041,6 +1041,11 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # True when the adapter deliberately did not deliver the message because
+    # an adapter-level policy suppressed it (e.g. kind="status" in a group
+    # chat on a non-editing platform like iMessage).  The send is reported
+    # successful so callers don't retry, but no platform message was sent.
+    suppressed: bool = False
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -2464,6 +2469,34 @@ class BasePlatformAdapter(ABC):
             return response.text, int(ttl or 0)
         return response, 0
 
+    async def _should_suppress_status(
+        self,
+        chat_id: str,
+        *,
+        kind: str = "status",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Policy hook: should a ``kind="status"`` message be dropped here?
+
+        Receives the target ``chat_id``, the declared ``kind`` (always
+        ``"status"`` from the current call site, kept as a kwarg so future
+        kinds can route through the same hook without breaking overrides),
+        and any caller-supplied ``metadata`` (thread/topic info, chat_type
+        hint, etc.).  Default returns ``False`` — every adapter delivers
+        status messages like a normal reply.  Adapters that target chat
+        surfaces where status bubbles are intrusive (e.g. iMessage groups,
+        where every message is a permanent, un-editable bubble visible to
+        everyone) override this to return ``True`` for the affected chats.
+
+        Called from :meth:`_send_with_retry` *before* the actual provider
+        send when ``kind="status"``.  Returning ``True`` causes the call to
+        return ``SendResult(success=True, suppressed=True)`` with no
+        platform delivery and a local audit log line.  DMs and
+        editing-capable platforms should keep status messages visible —
+        they are useful progress signal there.
+        """
+        return False
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -2472,6 +2505,8 @@ class BasePlatformAdapter(ABC):
         metadata: Any = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
+        *,
+        kind: str = "reply",
     ) -> "SendResult":
         """
         Send a message with automatic retry for transient network errors.
@@ -2480,7 +2515,33 @@ class BasePlatformAdapter(ABC):
         to a plain-text version before giving up. If all attempts fail due to
         network errors, sends the user a brief delivery-failure notice so they
         know to retry rather than waiting indefinitely.
+
+        ``kind`` declares the message category so the adapter can apply a
+        per-platform policy.  Default ``"reply"`` is the normal user-facing
+        agent response.  ``"status"`` marks lifecycle / interrupt-ack /
+        queue-ack / steer-ack / provider-stall / warn messages that may be
+        suppressed on platforms where they would otherwise pollute a shared
+        chat (e.g. iMessage groups).  Other values are passed through
+        unchanged so future kinds can be added without breaking adapters.
         """
+
+        # Adapter-level policy hook: a status message may be deliberately
+        # dropped (e.g. iMessage group chat) so callers don't have to know
+        # the per-platform rules.  Suppression is reported as success with
+        # ``suppressed=True`` so retry/fallback logic doesn't trigger.
+        if kind == "status":
+            try:
+                if await self._should_suppress_status(chat_id, kind=kind, metadata=metadata):
+                    logger.info(
+                        "[%s] kind=status suppressed for chat_id=%s (adapter policy)",
+                        self.name, chat_id,
+                    )
+                    return SendResult(success=True, suppressed=True)
+            except Exception as _policy_err:
+                logger.debug(
+                    "[%s] _should_suppress_status raised, falling through to send: %s",
+                    self.name, _policy_err,
+                )
 
         result = await self.send(
             chat_id=chat_id,

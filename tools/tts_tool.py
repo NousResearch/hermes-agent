@@ -1948,7 +1948,12 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
-        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        message = (
+            "No OpenAI-compatible TTS credentials found. Set "
+            "VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY in the environment, "
+            "or configure tts.openai.api_key (with tts.openai.base_url for "
+            "third-party endpoints like OpenRouter)"
+        )
         if managed_nous_tools_enabled():
             message += ", and the managed OpenAI audio gateway is unavailable"
         raise ValueError(message)

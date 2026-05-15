@@ -1018,6 +1018,12 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+            # Optional: point at any OpenAI-compatible /audio/speech endpoint
+            # (OpenRouter, Vercel AI Gateway, …) by setting base_url+api_key.
+            # When unset, the SDK uses https://api.openai.com/v1 with the
+            # VOICE_TOOLS_OPENAI_KEY / OPENAI_API_KEY env var.
+            "base_url": "",
+            "api_key": "",
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
@@ -1570,7 +1576,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================

@@ -481,9 +481,18 @@ def _print_setup_summary(config: dict, hermes_home):
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
     elif tts_provider == "openai" and (
-        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+        get_env_value("VOICE_TOOLS_OPENAI_KEY")
+        or get_env_value("OPENAI_API_KEY")
+        or cfg_get(config, "tts", "openai", "api_key", default="")
     ):
-        tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+        # Detect a custom OpenAI-compatible endpoint (OpenRouter, Vercel AI
+        # Gateway, …) so the status line matches what was configured.
+        tts_base_url = cfg_get(config, "tts", "openai", "base_url", default="") or ""
+        if tts_base_url and "openai.com" not in tts_base_url:
+            label = f"Text-to-Speech (OpenAI-compatible — {base_url_hostname(tts_base_url)})"
+        else:
+            label = "Text-to-Speech (OpenAI)"
+        tool_status.append((label, True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
     elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
@@ -1101,6 +1110,7 @@ def _setup_tts_provider(config: dict):
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
+        "openai-compatible": "OpenAI-compatible (OpenRouter, Vercel AI Gateway, …)",
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
@@ -1125,6 +1135,7 @@ def _setup_tts_provider(config: dict):
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
+            "OpenAI-compatible endpoint (OpenRouter, Vercel AI Gateway, custom — Gemini TTS et al.)",
             "xAI TTS (Grok voices, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
@@ -1133,7 +1144,20 @@ def _setup_tts_provider(config: dict):
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(
+        [
+            "edge",
+            "elevenlabs",
+            "openai",
+            "openai-compatible",
+            "xai",
+            "minimax",
+            "mistral",
+            "gemini",
+            "neutts",
+            "kittentts",
+        ]
+    )
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1258,6 +1282,83 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
+
+    elif selected == "openai-compatible":
+        # OpenAI-compatible endpoint (OpenRouter, Vercel AI Gateway, custom).
+        # Stores config in tts.openai.{base_url, model, voice, api_key} and
+        # sets provider=openai (the same OpenAI SDK code path drives them all).
+        endpoint_presets = {
+            "1": (
+                "OpenRouter",
+                "https://openrouter.ai/api/v1",
+                "google/gemini-3.1-flash-tts-preview",
+                "Kore",
+            ),
+            "2": (
+                "Vercel AI Gateway",
+                "https://ai-gateway.vercel.sh/v1",
+                "openai/tts-1",
+                "alloy",
+            ),
+            "3": ("Custom", "", "", ""),
+        }
+        print()
+        print_info("Choose an OpenAI-compatible TTS endpoint:")
+        for k, (name, url, _, _) in endpoint_presets.items():
+            print(f"  {k}. {name}" + (f"  ({url})" if url else ""))
+        choice = prompt("Endpoint [1]", default="1") or "1"
+        choice = choice.strip()
+        if choice not in endpoint_presets:
+            choice = "1"
+        preset_name, preset_url, preset_model, preset_voice = endpoint_presets[choice]
+
+        if preset_url:
+            base_url = preset_url
+            print_success(f"Base URL: {base_url}")
+        else:
+            base_url = prompt("Base URL (e.g. https://example.com/v1)").strip()
+            if not base_url:
+                print_warning("No base URL provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+        if selected != "edge":
+            model_prompt = (
+                f"Model [{preset_model}]" if preset_model else "Model (e.g. google/gemini-3.1-flash-tts-preview)"
+            )
+            model = prompt(model_prompt, default=preset_model).strip() or preset_model
+            if not model:
+                print_warning("No model provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+        if selected != "edge":
+            voice_prompt = f"Voice [{preset_voice}]" if preset_voice else "Voice (e.g. Kore, alloy)"
+            voice = prompt(voice_prompt, default=preset_voice).strip() or preset_voice or "alloy"
+
+        if selected != "edge":
+            print()
+            print_info(
+                f"Provide the API key for {preset_name}. It will be stored in "
+                "config.yaml under tts.openai.api_key (so it does not collide "
+                "with your main LLM credentials)."
+            )
+            api_key = prompt(f"{preset_name} API key", password=True)
+            if not api_key:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+        if selected != "edge":
+            tts_section = config.setdefault("tts", {})
+            openai_section = tts_section.setdefault("openai", {})
+            openai_section["base_url"] = base_url
+            openai_section["model"] = model
+            openai_section["voice"] = voice
+            openai_section["api_key"] = api_key
+            # Persist as provider=openai — the same code path drives any
+            # OpenAI-compatible endpoint via the SDK's base_url override.
+            selected = "openai"
+            print_success(
+                f"OpenAI-compatible TTS configured (endpoint={preset_name}, model={model}, voice={voice})"
+            )
 
     elif selected == "kittentts":
         # Check if already installed

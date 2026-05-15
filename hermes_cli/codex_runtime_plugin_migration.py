@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -242,6 +244,54 @@ def _quote_key(key: str) -> str:
         return key
     escaped = key.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+_PLUGIN_TABLE_HEADER_RE = re.compile(
+    r"^\[plugins\."
+    r"(?P<key>\"(?:\\.|[^\"\\])*\"|'[^']*'|[A-Za-z0-9_-]+)"
+    r"\]\s*(?:#.*)?$"
+)
+
+
+def _decode_toml_key(raw_key: str) -> Optional[str]:
+    """Decode one TOML table key segment, returning None on invalid syntax."""
+    if raw_key.startswith(("'", '"')):
+        try:
+            decoded = tomllib.loads(f"key = {raw_key}\n")["key"]
+        except tomllib.TOMLDecodeError:
+            return None
+        return str(decoded)
+    return raw_key
+
+
+def _existing_plugin_table_keys(toml_text: str) -> set[str]:
+    """Return plugin table keys already present outside Hermes' block.
+
+    Codex may keep native plugin entries in ~/.codex/config.toml itself.
+    If Hermes writes the same [plugins."name@marketplace"] table into its
+    managed block, the resulting TOML has a duplicate table and codex refuses
+    to start. This scanner runs after the Hermes block has been stripped, so
+    every match belongs to user/Codex-owned config that must be preserved.
+    """
+    keys: set[str] = set()
+    for line in toml_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("[["):
+            continue
+        match = _PLUGIN_TABLE_HEADER_RE.match(stripped)
+        if not match:
+            continue
+        key = _decode_toml_key(match.group("key"))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _plugin_config_key(plugin: dict) -> str:
+    """Return the Codex config table key for one plugin/list entry."""
+    name = plugin.get("name") or ""
+    marketplace = plugin.get("marketplace") or "openai-curated"
+    return f"{name}@{marketplace}"
 
 def render_codex_toml_section(
     servers: dict[str, dict],
@@ -537,8 +587,28 @@ def migrate(
         plugins, plugin_err = _query_codex_plugins(codex_home=codex_home)
         if plugin_err:
             report.plugin_query_error = plugin_err
-        for p in plugins:
-            report.migrated_plugins.append(f"{p['name']}@{p['marketplace']}")
+
+    # Read existing codex config if any, strip the prior managed block,
+    # and collect user/Codex-owned plugin tables that must not be duplicated
+    # in the regenerated managed block.
+    without_managed: Optional[str] = None
+    existing_plugin_keys: set[str] = set()
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            report.errors.append(f"could not read {target}: {exc}")
+            return report
+        without_managed = _strip_existing_managed_block(existing)
+        existing_plugin_keys = _existing_plugin_table_keys(without_managed)
+
+    if existing_plugin_keys:
+        plugins = [
+            plugin for plugin in plugins
+            if _plugin_config_key(plugin) not in existing_plugin_keys
+        ]
+    for plugin in plugins:
+        report.migrated_plugins.append(_plugin_config_key(plugin))
 
     # Track whether we wrote a default permission profile so the report
     # surfaces it to the user.
@@ -562,15 +632,8 @@ def migrate(
         default_permission_profile=default_permission_profile,
     )
 
-    # Read existing codex config if any, strip the prior managed block,
-    # append the new one.
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
-            return report
-        without_managed = _strip_existing_managed_block(existing)
+    # Append the new managed block after preserved user/Codex config.
+    if without_managed is not None:
         # Ensure exactly one blank line between user content and managed block
         if without_managed and not without_managed.endswith("\n"):
             without_managed += "\n"

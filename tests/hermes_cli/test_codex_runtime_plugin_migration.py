@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
+    MIGRATION_END_MARKER,
     MIGRATION_MARKER,
     MigrationReport,
     _format_toml_value,
@@ -360,6 +362,51 @@ class TestMigrate:
         assert "enabled = true" in text
         assert "google-calendar@openai-curated" in report.migrated_plugins
         assert "github@openai-curated" in report.migrated_plugins
+
+    def test_existing_plugin_table_is_not_duplicated_in_managed_block(
+        self, tmp_path, monkeypatch
+    ):
+        """Codex-owned plugin tables outside Hermes' block are preserved.
+
+        Re-migrating the same installed plugin should not add a second
+        [plugins."name@marketplace"] table, because TOML rejects duplicate
+        tables and codex refuses to start with that config.
+        """
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            '[plugins."github@openai-curated"]\n'
+            "enabled = false\n\n"
+            f"{MIGRATION_MARKER}\n"
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n"
+            f"{MIGRATION_END_MARKER}\n"
+        )
+
+        def fake_query(codex_home=None, timeout=8.0):
+            return [
+                {"name": "github", "marketplace": "openai-curated",
+                 "enabled": True},
+                {"name": "google-calendar", "marketplace": "openai-curated",
+                 "enabled": True},
+            ], None
+        monkeypatch.setattr(crpm, "_query_codex_plugins", fake_query)
+
+        report = migrate(
+            {},
+            codex_home=tmp_path,
+            discover_plugins=True,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+        text = target.read_text()
+
+        assert text.count('[plugins."github@openai-curated"]') == 1
+        assert "enabled = false" in text
+        assert '[plugins."google-calendar@openai-curated"]' in text
+        assert report.migrated_plugins == ["google-calendar@openai-curated"]
+        tomllib.loads(text)
 
     def test_plugin_discovery_skips_unavailable_plugins(self):
         """Plugins where codex reports availability != AVAILABLE should

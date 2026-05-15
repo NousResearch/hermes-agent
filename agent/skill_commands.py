@@ -64,7 +64,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             try:
                 normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
             except Exception:
-                normalized = raw_identifier
+                normalized = identifier_path.name
         else:
             normalized = raw_identifier.lstrip("/")
 

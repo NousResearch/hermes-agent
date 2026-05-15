@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
@@ -176,6 +177,35 @@ class TestScanSkillCommands:
 
             assert "/telegram-only" not in telegram_again
             assert "/discord-only" in telegram_again
+
+    def test_build_skill_invocation_message_loads_external_skill_from_absolute_dir(self, tmp_path):
+        import agent.skill_commands as sc_mod
+        from agent.skill_utils import _external_dirs_cache_clear
+
+        hermes_home = tmp_path / ".hermes"
+        local_skills = hermes_home / "skills"
+        external_skills = tmp_path / "external-skills"
+        local_skills.mkdir(parents=True)
+        external_skills.mkdir(parents=True)
+        _make_skill(external_skills, "daily-ops", body="Run the external checklist.")
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills}\n"
+        )
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=False),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+            patch.object(skills_tool_module, "SKILLS_DIR", local_skills),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            _external_dirs_cache_clear()
+            message = build_skill_invocation_message("/daily-ops")
+
+        assert message is not None
+        assert "[Failed to load skill: daily-ops]" not in message
+        assert "Run the external checklist." in message
+        assert f"[Skill directory: {external_skills / 'daily-ops'}]" in message
 
     def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
         """``HERMES_SESSION_PLATFORM`` from the gateway session context must

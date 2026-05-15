@@ -1160,7 +1160,19 @@ def list_authenticated_providers(
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    # OpenRouter uses the live catalog via fetch_openrouter_models() — the
+    # curated list below is only a fallback; the model picker path
+    # (_model_flow_openrouter) always calls model_ids() which fetches live.
+    # Keep the curated snapshot here for the provider-list model count.
+    from hermes_cli.models import fetch_openrouter_models as _fetch_or_models
+    try:
+        _or_live = [mid for mid, _ in _fetch_or_models()]
+        if _or_live:
+            curated["openrouter"] = _or_live
+        else:
+            curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    except Exception:
+        curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # "nous" pulls from the remote model-catalog manifest published at
     # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
     # newly added Portal models surface in the /model picker without

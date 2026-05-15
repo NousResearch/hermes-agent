@@ -1099,28 +1099,43 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def _openrouter_model_sort_key(item: tuple[str, str]) -> tuple[str, str]:
+    """Sort key for OpenRouter models: (vendor_lower, model_id_lower)."""
+    mid, _ = item
+    if "/" in mid:
+        vendor, model = mid.split("/", 1)
+    else:
+        vendor, model = "", mid
+    return (vendor.lower(), model.lower())
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    """Return ALL tool-capable OpenRouter models from the live API.
+
+    Fetches the full OpenRouter catalog (400+ models) from the live
+    ``/v1/models`` endpoint and filters out models that don't advertise
+    tool-calling support via ``supported_parameters``.  Models with zero
+    prompt+completion pricing are tagged as ``free``.
+
+    Falls back to the curated list (remote catalog manifest or in-repo
+    ``OPENROUTER_MODELS`` snapshot) when the live API is unreachable.
+    """
     global _openrouter_catalog_cache
 
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
-    # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
-    # snapshot when the manifest is unreachable. Both are curated lists that
-    # drive the picker; the OpenRouter live /v1/models filter (tool support,
-    # free pricing) is applied on top either way.
+    # Build fallback from curated model lists (used when live API fails).
     try:
         from hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
-    preferred_ids = [mid for mid, _ in fallback]
 
     try:
         req = urllib.request.Request(
@@ -1136,35 +1151,32 @@ def fetch_openrouter_models(
     if not isinstance(live_items, list):
         return list(_openrouter_catalog_cache or fallback)
 
-    live_by_id: dict[str, dict[str, Any]] = {}
+    # Process ALL live models, filtering out non-tool-capable ones.
+    result: list[tuple[str, str]] = []
     for item in live_items:
         if not isinstance(item, dict):
             continue
         mid = str(item.get("id") or "").strip()
         if not mid:
             continue
-        live_by_id[mid] = item
-
-    curated: list[tuple[str, str]] = []
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
+        if not _openrouter_model_supports_tools(item):
             continue
-        # Hide models that don't advertise tool-calling support — hermes-agent
-        # requires it and surfacing them leads to immediate runtime failures
-        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
-            continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
+        desc = "free" if _openrouter_model_is_free(item.get("pricing")) else ""
+        result.append((mid, desc))
 
-    if not curated:
+    if not result:
         return list(_openrouter_catalog_cache or fallback)
 
-    first_id, _ = curated[0]
-    curated[0] = (first_id, "recommended")
-    _openrouter_catalog_cache = curated
-    return list(curated)
+    # Sort alphabetically by (vendor, model) so related models group together.
+    result.sort(key=_openrouter_model_sort_key)
+
+    # Mark the first entry as "recommended" (unless it's a free model).
+    first_id, first_desc = result[0]
+    if first_desc == "":
+        result[0] = (first_id, "recommended")
+
+    _openrouter_catalog_cache = list(result)
+    return result
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:

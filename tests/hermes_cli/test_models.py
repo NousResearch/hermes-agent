@@ -76,10 +76,14 @@ class TestFetchOpenRouterModels:
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
+        # Models are sorted alphabetically by (vendor, model).
+        # anthropic/... is first (non-free) → "recommended".
+        # nvidia/... is free → "free".
+        # qwen/... has no special tag → "".
         assert models == [
             ("anthropic/claude-opus-4.6", "recommended"),
-            ("qwen/qwen3.6-plus", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+            ("qwen/qwen3.6-plus", ""),
         ]
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):

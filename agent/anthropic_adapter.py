@@ -1159,6 +1159,56 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_pool_token() -> Optional[str]:
+    """Return the first available Anthropic OAuth token from credential_pool.
+
+    Read-only: enumerates with ``clear_expired=False, refresh=False`` so a bare
+    token *resolve* (which runs from diagnostic/read-only call sites such as
+    ``account_usage`` and ``hermes models``) never mutates ``~/.hermes/auth.json``
+    or makes a network refresh call. Refresh-on-expiry is owned by the API call
+    path's pool recovery, not the resolver.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+    except Exception:
+        return None
+
+    try:
+        pool = load_pool("anthropic")
+    except Exception:
+        logger.debug("Failed to load Anthropic credential_pool", exc_info=True)
+        return None
+
+    available_entries = getattr(pool, "_available_entries", None)
+    if callable(available_entries):
+        try:
+            entries = available_entries(clear_expired=False, refresh=False)
+        except Exception:
+            logger.debug("Failed to enumerate Anthropic credential_pool entries", exc_info=True)
+            entries = []
+    else:
+        try:
+            selected = pool.select()
+        except Exception:
+            logger.debug("Failed to select Anthropic credential_pool entry", exc_info=True)
+            selected = None
+        entries = [selected] if selected is not None else []
+
+    for entry in entries:
+        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+            continue
+        # access_token is a declared field but a persisted entry can carry an
+        # explicit null (or a partially-written OAuth entry), so coerce before
+        # strip — a bare None.strip() here would escape the try/excepts above
+        # and crash the whole resolver, taking down the source #5 fallback too.
+        # Matches the aux-client analog (auxiliary_client.py: str(key or "")).
+        token = (getattr(entry, "access_token", None) or "").strip()
+        if token:
+            return token
+
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1167,7 +1217,8 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1194,7 +1245,12 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool OAuth entry.
+    resolved_pool_token = _resolve_anthropic_pool_token()
+    if resolved_pool_token:
+        return resolved_pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:

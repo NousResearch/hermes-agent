@@ -1288,9 +1288,15 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     OAuth access token. JWT prefixes (the part before the first dot) are
     stripped first when present so the visible suffix is always part of
     the signing region rather than a meaningless header chunk.
+
+    Returns the Entra-ID placeholder when handed a callable (Azure Foundry
+    bearer provider) — the callable is NEVER invoked here.
     """
     if not value:
         return ""
+    if callable(value) and not isinstance(value, str):
+        # Entra ID bearer provider — never reveal a minted token in the UI.
+        return "<entra-id-bearer>"
     s = str(value)
     if "." in s and s.count(".") >= 2:
         # Looks like a JWT — show the trailing piece of the signature only.

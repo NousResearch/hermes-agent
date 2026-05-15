@@ -486,7 +486,7 @@ class ContextCompressor(ContextEngine):
         model: str,
         context_length: int,
         base_url: str = "",
-        api_key: str = "",
+        api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
     ) -> None:

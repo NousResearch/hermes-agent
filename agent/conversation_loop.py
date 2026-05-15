@@ -1807,7 +1807,11 @@ def run_conversation(
                         # that survives message/tool sanitization (#6843).
                         _credential_sanitized = False
                         _raw_key = getattr(agent, "api_key", None) or ""
-                        if _raw_key:
+                        # Entra ID bearer providers are callables — their
+                        # minted JWTs are always ASCII, so no sanitization
+                        # is needed (and ``_strip_non_ascii`` would crash
+                        # on a callable input).
+                        if _raw_key and isinstance(_raw_key, str):
                             _clean_key = _strip_non_ascii(_raw_key)
                             if _clean_key != _raw_key:
                                 agent.api_key = _clean_key
@@ -2080,15 +2084,26 @@ def run_conversation(
                 ):
                     anthropic_auth_retry_attempted = True
                     from agent.anthropic_adapter import _is_oauth_token
+                    from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
                         print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
-                    auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
                     print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
-                    print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                    print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                    if is_token_provider(key):
+                        # Azure Foundry Entra ID — the bearer token is
+                        # minted per-request by an httpx event hook on a
+                        # custom http_client passed to the SDK. The 401
+                        # means Azure rejected the JWT (RBAC role missing,
+                        # az login expired, IMDS unreachable, etc.).
+                        print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
+                        print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
+                        print(f"{agent.log_prefix}   `az login` if your developer session expired.")
+                    else:
+                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
+                        print(f"{agent.log_prefix}   Auth method: {auth_method}")
+                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from hermes_constants import display_hermes_home as _dhh_fn
                     _dhh = _dhh_fn()

@@ -866,9 +866,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compressor') and agent.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # ``agent.api_key`` may be callable (Entra ID); the
+            # context-length resolver expects a string for live
+            # probes. Foundry typically resolves via config/static
+            # catalogs anyway, so coerce defensively.
+            _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
-                api_key=agent.api_key, provider=agent.provider,
+                api_key=_fb_ctx_api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
@@ -876,7 +881,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 model=agent.model,
                 context_length=fb_context_length,
                 base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),
+                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
             )
 

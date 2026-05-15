@@ -103,7 +103,15 @@ def check_compression_model_feasibility(agent: Any) -> None:
             return
 
         aux_base_url = str(getattr(client, "base_url", ""))
-        aux_api_key = str(getattr(client, "api_key", ""))
+        # ``client.api_key`` may be a callable (Azure Foundry Entra ID
+        # bearer provider). The context-length resolver chain expects a
+        # string, but it only needs a key for live catalogue probes
+        # (provider model lists). For Entra clients the model-metadata
+        # chain still resolves via models.dev + hardcoded family
+        # fallbacks, which don't require auth — pass empty string rather
+        # than minting a bearer JWT just to look up a context length.
+        _raw_aux_key = getattr(client, "api_key", "")
+        aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
 
         aux_context = get_model_context_length(
             aux_model,

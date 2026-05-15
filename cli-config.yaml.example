@@ -30,6 +30,7 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
@@ -44,6 +45,14 @@ model:
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
+
+  # Azure Foundry keyless auth example:
+  # provider: "azure-foundry"
+  # base_url: "https://<resource>.openai.azure.com/openai/v1"
+  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # default: "gpt-4o"          # Deployment/model name
+  # entra:
+  #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #

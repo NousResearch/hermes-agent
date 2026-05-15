@@ -9,6 +9,7 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
@@ -120,6 +121,20 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
+
+    def test_azure_anthropic_endpoint_detection_is_host_and_path_scoped(self):
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.com/models/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.services.ai.azure.us/anthropic"
+        ) is True
+        assert _is_azure_anthropic_endpoint(
+            "https://example.openai.azure.com/openai/v1"
+        ) is False
+        assert _is_azure_anthropic_endpoint(
+            "https://management.azure.com/anthropic"
+        ) is False
 
     def test_bedrock_client_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

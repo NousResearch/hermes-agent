@@ -1613,6 +1613,87 @@ def run_doctor(args):
                  f"bedrock:ListFoundationModels"],
             )
 
+    def _probe_azure_entra() -> _ConnectivityResult:
+        """Probe Azure Foundry Entra ID auth, parallel to ``_probe_bedrock``.
+
+        Skipped unless the active config has ``model.provider:
+        azure-foundry`` AND ``model.auth_mode: entra_id`` — we don't probe
+        the token-service / CLI chain for users on plain API-key Azure.
+
+        Bounded by a 10s timeout (via
+        :func:`agent.azure_identity_adapter.describe_active_credential`)
+        so a slow token service can't pad the doctor run.
+        """
+        label = "Azure Foundry (Entra ID)".ljust(28)
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+            if not isinstance(model_cfg, dict):
+                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            auth_mode = str(model_cfg.get("auth_mode") or "").strip().lower()
+            if cfg_provider != "azure-foundry" or auth_mode != "entra_id":
+                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+        except Exception:
+            return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+
+        try:
+            from agent.azure_identity_adapter import (
+                EntraIdentityConfig,
+                SCOPE_AI_AZURE_DEFAULT,
+                describe_active_credential,
+                has_azure_identity_installed,
+            )
+        except Exception as exc:
+            return _ConnectivityResult(
+                "Azure Foundry (Entra ID)",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(adapter import failed: {exc})", Colors.DIM))],
+                [f"Azure Foundry adapter import failed: {exc}"],
+            )
+
+        if not has_azure_identity_installed():
+            return _ConnectivityResult(
+                "Azure Foundry (Entra ID)",
+                [(color("⚠", Colors.YELLOW), label,
+                  color("(azure-identity not installed)", Colors.DIM))],
+                [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
+            )
+
+        base_url = str(model_cfg.get("base_url") or "").strip()
+        entra_cfg = model_cfg.get("entra") or {}
+        if not isinstance(entra_cfg, dict):
+            entra_cfg = {}
+        scope = (
+            str(entra_cfg.get("scope") or "").strip()
+            or SCOPE_AI_AZURE_DEFAULT
+        )
+        config = EntraIdentityConfig(
+            scope=scope,
+        )
+        info = describe_active_credential(config=config, timeout_seconds=10.0)
+        if info.get("ok"):
+            env_sources = info.get("env_sources") or []
+            tag = ", ".join(env_sources) if env_sources else "default credential chain"
+            return _ConnectivityResult(
+                "Azure Foundry (Entra ID)",
+                [(color("✓", Colors.GREEN), label,
+                  color(f"({tag}, scope={scope})", Colors.DIM))],
+                [],
+            )
+        err = info.get("error") or "credential chain exhausted"
+        hint = info.get("hint") or (
+            "Run `az login`, set AZURE_TENANT_ID/AZURE_CLIENT_ID/"
+            "AZURE_CLIENT_SECRET, or attach a managed identity to this VM."
+        )
+        return _ConnectivityResult(
+            "Azure Foundry (Entra ID)",
+            [(color("⚠", Colors.YELLOW), label,
+              color(f"({err})", Colors.DIM))],
+            [f"Azure Foundry Entra: {err}. {hint}"],
+        )
+
     # Build the probe submission list in display order
     _probes.append(("OpenRouter API", _probe_openrouter))
     _probes.append(("Anthropic API", _probe_anthropic))
@@ -1630,6 +1711,7 @@ def run_doctor(args):
                                 _probe_apikey_provider(p, e, u, b, s)))
 
     _probes.append(("AWS Bedrock", _probe_bedrock))
+    _probes.append(("Azure Foundry (Entra ID)", _probe_azure_entra))
 
     # Print a single status line so users see something happening, then
     # fan out. ``\r`` clears it once the first real result line lands.

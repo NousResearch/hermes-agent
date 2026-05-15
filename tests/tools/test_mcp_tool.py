@@ -1704,6 +1704,103 @@ class TestReconnection:
 # Configurable timeouts
 # ---------------------------------------------------------------------------
 
+class TestConfigurableKeepalive:
+    """Tests for configurable per-server MCP keepalive probes."""
+
+    def test_default_keepalive_interval(self):
+        """Server with no keepalive config keeps the historical 180s default."""
+        from tools.mcp_tool import MCPServerTask, _DEFAULT_KEEPALIVE_INTERVAL
+
+        server = MCPServerTask("test_srv")
+        assert server.keepalive_interval == _DEFAULT_KEEPALIVE_INTERVAL
+        assert server.keepalive_interval == 180
+
+    def test_custom_keepalive_interval_from_config(self):
+        """Server config keepalive_interval overrides the default."""
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio):
+                task = asyncio.ensure_future(
+                    server.run({"command": "test", "keepalive_interval": "600"})
+                )
+                await server._ready.wait()
+                assert server.keepalive_interval == 600
+                server._shutdown_event.set()
+                await task
+
+        asyncio.run(_test())
+
+    def test_keepalive_interval_zero_disables_probe(self):
+        """keepalive_interval=0 waits for lifecycle events without probing."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("test_srv")
+            server.keepalive_interval = 0
+            server.session = MagicMock()
+            server.session.list_tools = AsyncMock()
+
+            wait_task = asyncio.create_task(server._wait_for_lifecycle_event())
+            await asyncio.sleep(0.02)
+            server.session.list_tools.assert_not_awaited()
+
+            server._reconnect_event.set()
+            reason = await asyncio.wait_for(wait_task, timeout=1.0)
+            assert reason == "reconnect"
+            assert not server._reconnect_event.is_set()
+
+        asyncio.run(_test())
+
+    def test_keepalive_interval_triggers_probe(self):
+        """A positive interval sends list_tools when no lifecycle event fires."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("test_srv")
+            server.keepalive_interval = 0.01
+            server.session = MagicMock()
+
+            async def list_tools():
+                server._shutdown_event.set()
+                return SimpleNamespace(tools=[])
+
+            server.session.list_tools = AsyncMock(side_effect=list_tools)
+
+            reason = await asyncio.wait_for(
+                server._wait_for_lifecycle_event(), timeout=1.0
+            )
+            assert reason == "shutdown"
+            server.session.list_tools.assert_awaited_once()
+
+        asyncio.run(_test())
+
+    def test_invalid_keepalive_interval_uses_default(self, caplog):
+        """Invalid values fall back instead of breaking server startup."""
+        from tools.mcp_tool import (
+            _DEFAULT_KEEPALIVE_INTERVAL,
+            _coerce_keepalive_interval,
+        )
+
+        assert _coerce_keepalive_interval(-1, "test_srv") == _DEFAULT_KEEPALIVE_INTERVAL
+        assert "invalid keepalive_interval" in caplog.text
+
+
 class TestConfigurableTimeouts:
     """Tests for configurable per-server timeouts."""
 

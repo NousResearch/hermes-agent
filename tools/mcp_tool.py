@@ -255,6 +255,7 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
+_DEFAULT_KEEPALIVE_INTERVAL = 180.0  # seconds between idle connection probes
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
@@ -283,6 +284,31 @@ _CREDENTIAL_PATTERN = re.compile(
 # Supports any non-} characters in the variable name (hyphens, dots, etc.)
 # so providers like MY-VAR or my.var work correctly.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _coerce_keepalive_interval(value, server_name: str) -> float:
+    """Return a valid per-server MCP keepalive interval in seconds."""
+    if value is None:
+        return _DEFAULT_KEEPALIVE_INTERVAL
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "MCP server '%s': invalid keepalive_interval=%r; using default %.0fs",
+            server_name,
+            value,
+            _DEFAULT_KEEPALIVE_INTERVAL,
+        )
+        return _DEFAULT_KEEPALIVE_INTERVAL
+    if interval < 0:
+        logger.warning(
+            "MCP server '%s': invalid keepalive_interval=%r; using default %.0fs",
+            server_name,
+            value,
+            _DEFAULT_KEEPALIVE_INTERVAL,
+        )
+        return _DEFAULT_KEEPALIVE_INTERVAL
+    return interval
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +977,7 @@ class MCPServerTask:
 
     __slots__ = (
         "name", "session", "tool_timeout",
+        "keepalive_interval",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
@@ -962,6 +989,7 @@ class MCPServerTask:
         self.name = name
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
+        self.keepalive_interval: float = _DEFAULT_KEEPALIVE_INTERVAL
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
@@ -1136,17 +1164,21 @@ class MCPServerTask:
         prevent TCP connections from going stale during long idle
         periods (#17003).  If the keepalive fails, triggers a reconnect.
         """
-        # Keepalive interval in seconds.  Must be shorter than typical
-        # LB / NAT idle-timeout (commonly 300-600s).
-        _KEEPALIVE_INTERVAL = 180  # 3 minutes
-
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
+        keepalive_interval = self.keepalive_interval
         try:
             while True:
+                if keepalive_interval <= 0:
+                    done, _pending = await asyncio.wait(
+                        {shutdown_task, reconnect_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    break
+
                 done, _pending = await asyncio.wait(
                     {shutdown_task, reconnect_task},
-                    timeout=_KEEPALIVE_INTERVAL,
+                    timeout=keepalive_interval,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if done:
@@ -1438,6 +1470,9 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self.keepalive_interval = _coerce_keepalive_interval(
+            config.get("keepalive_interval"), self.name
+        )
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
@@ -2139,7 +2174,8 @@ def _load_mcp_config() -> Dict[str, dict]:
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
     transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
+    ``timeout``, ``connect_timeout``, ``keepalive_interval``, and ``auth``
+    overrides.
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).

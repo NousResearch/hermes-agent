@@ -1950,6 +1950,19 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        _approvals_cfg = _agent_cfg.get("approvals", {})
+        if not isinstance(_approvals_cfg, dict):
+            _approvals_cfg = {}
+        try:
+            from tools.approval import _normalize_approval_mode
+            _approval_mode = _normalize_approval_mode(
+                _approvals_cfg.get("mode", "manual")
+            )
+        except Exception:
+            _approval_mode = str(
+                _approvals_cfg.get("mode", "manual")
+            ).lower()
+        self._codex_app_server_auto_approve_requests = _approval_mode == "off"
         try:
             self._tool_guardrails = ToolCallGuardrailController(
                 ToolCallGuardrailConfig.from_mapping(
@@ -15748,7 +15761,10 @@ class AIAgent:
         Called from run_conversation() when self.api_mode == "codex_app_server".
         Returns the same dict shape as the chat_completions path.
         """
-        from agent.transports.codex_app_server_session import CodexAppServerSession
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession,
+            _ServerRequestRouting,
+        )
 
         # Lazy session: one CodexAppServerSession per AIAgent instance.
         # Spawned on first turn, reused across turns, closed at AIAgent
@@ -15763,9 +15779,36 @@ class AIAgent:
                 approval_callback = _get_approval_callback()
             except Exception:
                 approval_callback = None
+            # Gateway contexts have no UI to surface codex's approval
+            # requests through, so codex app-server exec / apply_patch
+            # requests fail closed (silently decline) by default. When the
+            # user has explicitly opted out of Hermes approvals — via
+            # `approvals.mode: off` in config, the /yolo session toggle,
+            # or HERMES_YOLO_MODE=1 — honor that and let codex's own
+            # sandbox permission profile be the policy gate instead of
+            # double-gating with a missing Hermes UI.
+            _auto_approve_requests = bool(
+                self._codex_app_server_auto_approve_requests
+            )
+            try:
+                from tools.approval import is_current_session_yolo_enabled
+                _auto_approve_requests = (
+                    _auto_approve_requests
+                    or is_current_session_yolo_enabled()
+                )
+            except Exception:
+                pass
+            _auto_approve_requests = (
+                _auto_approve_requests
+                or os.getenv("HERMES_YOLO_MODE", "").lower() in {"1", "true", "yes", "on"}
+            )
             self._codex_session = CodexAppServerSession(
                 cwd=cwd,
                 approval_callback=approval_callback,
+                request_routing=_ServerRequestRouting(
+                    auto_approve_exec=_auto_approve_requests,
+                    auto_approve_apply_patch=_auto_approve_requests,
+                ),
             )
 
         # NOTE: the user message is ALREADY appended to messages by the

@@ -232,6 +232,168 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
 
+    def test_approvals_mode_off_auto_approves_codex_server_requests(self, monkeypatch):
+        """When the user disables Hermes approvals, codex app-server approval
+        requests should not fail closed just because no interactive callback
+        is wired (typical gateway path). Codex's own sandbox permission profile
+        remains the filesystem boundary.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(final_text="ok", thread_id="th", turn_id="tu")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "off"}},
+        ):
+            agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_yaml_boolean_false_approval_mode_also_auto_approves(self, monkeypatch):
+        """YAML parses unquoted `off` as False; match the normal approval
+        subsystem's compatibility behavior for codex app-server routing too.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(
+                final_text="ok", thread_id="th", turn_id="tu"
+            ),
+        )
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": False}},
+        ):
+            agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_manual_approvals_keep_codex_server_requests_fail_closed(self, monkeypatch):
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(final_text="ok", thread_id="th", turn_id="tu")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is False
+        assert routing.auto_approve_apply_patch is False
+
+    def test_hermes_yolo_env_auto_approves_codex_server_requests(self, monkeypatch):
+        """HERMES_YOLO_MODE should flow through to codex app-server routing
+        so gateway/cron contexts do not fail closed when the user explicitly
+        enabled yolo mode outside the CLI slash-command path.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(final_text="ok", thread_id="th", turn_id="tu")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
+    def test_session_yolo_auto_approves_codex_server_requests(self, monkeypatch):
+        """The /yolo session toggle should be honored at Codex session
+        creation time, independent of the startup-time approvals config.
+        """
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(final_text="ok", thread_id="th", turn_id="tu")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th"
+        )
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"approvals": {"mode": "manual"}},
+        ):
+            agent = _make_codex_agent()
+
+        with patch(
+            "tools.approval.is_current_session_yolo_enabled",
+            return_value=True,
+        ), patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("write something")
+
+        routing = captured["request_routing"]
+        assert routing.auto_approve_exec is True
+        assert routing.auto_approve_apply_patch is True
+
 
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background

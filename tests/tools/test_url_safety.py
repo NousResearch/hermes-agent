@@ -159,25 +159,32 @@ class TestIsSafeUrl:
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
-    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+    def test_benchmark_ip_blocked_for_non_allowlisted_host(self, monkeypatch):
+        """198.18.x.x is blocked for non-trusted hostnames by default."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://example.com/file.jpg") is False
 
     def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
+        """multimedia.nt.qq.com.cn bypasses IP-level blocking via allow_private_ip."""
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
 
-    def test_qq_multimedia_hostname_exception_is_exact_match(self):
+    def test_qq_multimedia_hostname_exception_is_exact_match(self, monkeypatch):
+        """Subdomains of multimedia.nt.qq.com.cn are NOT exempted."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
 
-    def test_qq_multimedia_hostname_exception_requires_https(self):
+    def test_qq_multimedia_hostname_exception_requires_https(self, monkeypatch):
+        """HTTP variant of multimedia.nt.qq.com.cn is NOT exempted."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
@@ -593,3 +600,29 @@ class TestBenchmarkIpIntegration:
             (2, 1, 6, "", ("140.82.121.4", 0)),  # github.com real IP
         ]):
             assert is_safe_url("https://github.com/") is True
+
+    def test_allow_benchmark_does_not_bypass_private_ssrf(self, monkeypatch):
+        """allow_benchmark=true must NOT open access to private IPs (10.x, 192.168.x, etc.).
+        This was the logic bug reported in review: benchmark and private-IP toggles are
+        independent. Regression test for https://github.com/NousResearch/hermes-agent/pull/26064."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        cfg = {"security": {"allow_benchmark_ips": True, "allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            # Private IP must still be blocked even when benchmark toggle is on
+            for ip in ["10.0.0.1", "192.168.1.1", "172.16.0.1"]:
+                with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", (ip, 0))]):
+                    assert is_safe_url(f"https://{ip}/") is False, f"{ip} should still be blocked"
+
+    def test_allow_benchmark_only_affects_benchmark_range(self, monkeypatch):
+        """CGNAT (100.64.x.x) and link-local (169.254.x.x) remain blocked even with
+        allow_benchmark_ips=true — they are in _is_blocked_ip but outside _BENCHMARK_NETWORK."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        cfg = {"security": {"allow_benchmark_ips": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            # CGNAT — blocked (in _is_blocked_ip but not in _BENCHMARK_NETWORK)
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("100.64.0.1", 0))]):
+                assert is_safe_url("https://cgnat.example/") is False
+            # Link-local — blocked
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("169.254.169.254", 0))]):
+                assert is_safe_url("https://linklocal.example/") is False

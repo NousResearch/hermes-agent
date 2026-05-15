@@ -359,12 +359,18 @@ def is_safe_url(url: str) -> bool:
                 )
                 return False
 
-            if not allow_all_private and not allow_private_ip and not allow_benchmark and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
+            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+                if allow_benchmark and ip in _BENCHMARK_NETWORK:
+                    logger.debug(
+                        "Allowing benchmark-IP resolution (security.allow_benchmark_ips=true): %s",
+                        hostname,
+                    )
+                else:
+                    logger.warning(
+                        "Blocked request to private/internal address: %s -> %s",
+                        hostname, ip_str,
+                    )
+                    return False
 
         if allow_all_private:
             logger.debug(

@@ -1007,3 +1007,120 @@ class TestHermesHomeIsolation:
             expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Warn-once dedupe (issue: tirith spawn failed spamming on Windows)
+# ---------------------------------------------------------------------------
+
+class TestSpawnWarningDedup:
+    """When tirith isn't installed yet (background install in flight, or
+    install marked failed), every terminal command spammed an identical
+    ``tirith spawn failed: [WinError 2]`` warning to ``errors.log``. The
+    dedupe set in ``_warn_once`` collapses repeats by ``(exc class, errno)``
+    while still surfacing the first occurrence so users see the failure.
+    """
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_repeated_spawn_failure_logs_once(self, mock_cfg, mock_run, caplog):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        mock_run.side_effect = FileNotFoundError("[WinError 2]")
+        # Fresh dedupe state — clear any keys left by other tests.
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(15):
+                result = check_command_security("echo hi")
+                # Behavior must remain the same on every call —
+                # fail-open allow, with the exception captured in summary.
+                assert result["action"] == "allow"
+                assert "unavailable" in result["summary"]
+
+        spawn_warnings = [
+            rec for rec in caplog.records
+            if "tirith spawn failed" in rec.message
+        ]
+        assert len(spawn_warnings) == 1, (
+            f"expected exactly 1 spawn-failed warning across 15 commands, "
+            f"got {len(spawn_warnings)}: {[r.message for r in spawn_warnings]}"
+        )
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_distinct_exception_types_each_log_once(self, mock_cfg, mock_run, caplog):
+        """``FileNotFoundError`` and ``PermissionError`` are distinct
+        failure modes and each deserves its own first-occurrence log
+        line; the dedupe key includes the exception class."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            mock_run.side_effect = FileNotFoundError("[WinError 2]")
+            for _ in range(3):
+                check_command_security("a")
+            mock_run.side_effect = PermissionError("denied")
+            for _ in range(3):
+                check_command_security("b")
+
+        spawn_warnings = [
+            rec for rec in caplog.records
+            if "tirith spawn failed" in rec.message
+        ]
+        assert len(spawn_warnings) == 2, (
+            f"expected 2 distinct first-occurrence warnings, "
+            f"got {len(spawn_warnings)}"
+        )
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_repeated_timeout_logs_once(self, mock_cfg, mock_run, caplog):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="tirith", timeout=5)
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(10):
+                result = check_command_security("slow")
+                assert result["action"] == "allow"
+
+        timeout_warnings = [
+            rec for rec in caplog.records
+            if "tirith timed out" in rec.message
+        ]
+        assert len(timeout_warnings) == 1
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_path_none_logs_once(self, mock_cfg, caplog):
+        """``_resolve_tirith_path`` returning ``None`` (explicit path set
+        but resolver returned None — unusual) should not spam the log
+        either."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        _tirith_mod._reset_spawn_warning_state()
+
+        with patch(
+            "tools.tirith_security._resolve_tirith_path", return_value=None
+        ):
+            with caplog.at_level("WARNING", logger="tools.tirith_security"):
+                for _ in range(10):
+                    result = check_command_security("echo")
+                    assert result["action"] == "allow"
+                    assert "tirith path unavailable" in result["summary"]
+
+        none_warnings = [
+            rec for rec in caplog.records
+            if "tirith path resolved to None" in rec.message
+        ]
+        assert len(none_warnings) == 1

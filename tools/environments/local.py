@@ -18,11 +18,36 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+def _msys_to_windows_path(cwd: str) -> str:
+    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
+    native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
+    ``subprocess.Popen(..., cwd=...)`` can find it.
+
+    No-ops on non-Windows hosts or for paths that aren't in MSYS form.
+    Returns the input unchanged when no translation applies. This is
+    idempotent — calling it on an already-Windows path returns it as-is.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
+    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    if not m:
+        return cwd
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace('/', '\\')
+    return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
     path can't find any existing directory (effectively never on a healthy
     filesystem, but cheap belt-and-braces).
+
+    On Windows, also normalizes Git Bash / MSYS-style POSIX paths
+    (``/c/Users/x``) to native Windows form before the isdir check so a
+    perfectly valid ``pwd -P`` result from bash doesn't get rejected as
+    "missing" (see ``_msys_to_windows_path``).
 
     Used by ``_run_bash`` to recover when the configured cwd is gone — most
     commonly because a previous tool call deleted its own working directory
@@ -30,6 +55,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
     """
+    cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
     if cwd and os.path.isdir(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""
@@ -455,21 +481,27 @@ class LocalEnvironment(BaseEnvironment):
         # (issue #17558).  Popen would otherwise raise FileNotFoundError on
         # the cwd before bash starts, wedging every subsequent call until the
         # gateway restarts.
+        #
+        # On Windows, ``_resolve_safe_cwd`` also normalises Git Bash-style
+        # POSIX paths (``/c/Users/...``) to native form so a perfectly valid
+        # ``pwd -P`` result from bash isn't mistakenly treated as "missing"
+        # and spammed as a warning on every command.
         safe_cwd = _resolve_safe_cwd(self.cwd)
         if safe_cwd != self.cwd:
-            logger.warning(
-                "LocalEnvironment cwd %r is missing on disk; "
-                "falling back to %r so terminal commands keep working.",
-                self.cwd,
-                safe_cwd,
-            )
+            # MSYS → Windows translation alone shouldn't surface as a warning
+            # (it's a benign normalization, not a recovery). Only warn when
+            # the directory really doesn't exist on disk.
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if safe_cwd != normalized:
+                logger.warning(
+                    "LocalEnvironment cwd %r is missing on disk; "
+                    "falling back to %r so terminal commands keep working.",
+                    self.cwd,
+                    safe_cwd,
+                )
             self.cwd = safe_cwd
 
-        # On Windows, self.cwd may be a Git Bash-style path (/c/Users/...)
-        # from pwd output. subprocess.Popen needs a native Windows path.
         _popen_cwd = self.cwd
-        if _IS_WINDOWS and _popen_cwd and re.match(r'^/[a-zA-Z]/', _popen_cwd):
-            _popen_cwd = _popen_cwd[1].upper() + ':' + _popen_cwd[2:].replace('/', '\\')
 
         proc = subprocess.Popen(
             args,
@@ -571,10 +603,19 @@ class LocalEnvironment(BaseEnvironment):
         ``pwd -P`` on a deleted cwd can leave a stale value in the marker
         file, and propagating it would re-wedge the next ``Popen``.  The
         ``_run_bash`` recovery path will resolve a safe fallback if needed.
+
+        On Windows, the value written by Git Bash's ``pwd -P`` is in
+        MSYS form (``/c/Users/x``). Translate it to native Windows form
+        before validating with ``os.path.isdir`` and before storing on
+        ``self.cwd``; otherwise the isdir check rejects every valid
+        result and ``_run_bash`` later prints a misleading "cwd is
+        missing" warning on every command.
         """
         try:
             with open(self._cwd_file, encoding="utf-8") as f:
                 cwd_path = f.read().strip()
+            if _IS_WINDOWS:
+                cwd_path = _msys_to_windows_path(cwd_path)
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
@@ -582,6 +623,30 @@ class LocalEnvironment(BaseEnvironment):
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
+
+    def _extract_cwd_from_output(self, result: dict):
+        """Same semantics as the base class, but on Windows the value
+        emitted by ``pwd -P`` inside Git Bash is in MSYS form
+        (``/c/Users/x``). Normalize to native Windows form and validate
+        the directory exists before assigning to ``self.cwd`` — otherwise
+        ``_run_bash``'s safe-cwd recovery would warn on every subsequent
+        command.
+
+        Always defers to the base class for stripping the marker text from
+        ``result["output"]`` so output formatting is identical.
+        """
+        # Snapshot pre-existing cwd, defer to base for parsing + marker
+        # stripping, then validate / normalize whatever it assigned.
+        prev_cwd = self.cwd
+        super()._extract_cwd_from_output(result)
+        if self.cwd != prev_cwd:
+            normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
+            if normalized and os.path.isdir(normalized):
+                self.cwd = normalized
+            else:
+                # Stale / non-existent path — keep previous cwd; _run_bash
+                # will resolve a safe fallback on the next call if needed.
+                self.cwd = prev_cwd
 
     def cleanup(self):
         """Clean up temp files."""

@@ -197,6 +197,7 @@ SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
 # Optional
 SLACK_HOME_CHANNEL=C01234567890              # Default channel for cron/scheduled messages
 SLACK_HOME_CHANNEL_NAME=general              # Human-readable name for the home channel (optional)
+SLACK_ALLOW_BOTS=mentions                    # Bot-to-bot mode: none, mentions, or all
 ```
 
 Or run the interactive setup:
@@ -389,6 +390,29 @@ Set this to `true` in busy workspaces where Slack's default "the bot remembers t
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
 :::
 
+### Bot-to-Bot Messaging
+
+By default Hermes ignores messages sent by other Slack bots. Enable bot-to-bot messaging when Hermes needs to participate in multi-agent Slack threads or receive notifications from another bot.
+
+```bash
+SLACK_ALLOW_BOTS=mentions   # default: none
+```
+
+| Value | Behavior |
+|-------|----------|
+| `none` | Ignore all messages from other bots (default). |
+| `mentions` | Accept peer bot messages only when they @mention Hermes. |
+| `all` | Accept every peer bot message except Hermes' own messages. |
+
+You can also set this in `~/.hermes/config.yaml`:
+
+```yaml
+slack:
+  allow_bots: "mentions"
+```
+
+`SLACK_ALLOW_BOTS` takes precedence when both are set. Use `mentions` for the safest multi-agent setup: peer bots can wake Hermes explicitly without letting every bot message in the workspace start or continue a Hermes session.
+
 ### Unauthorized User Handling
 
 ```yaml
@@ -427,6 +451,7 @@ stt_enabled: true
 # Slack-specific settings
 slack:
   require_mention: true
+  allow_bots: "none"  # Set to "mentions" for bot-to-bot Slack threads
   unauthorized_dm_behavior: "pair"
 
 # Platform config

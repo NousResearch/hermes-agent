@@ -269,6 +269,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
+| `SLACK_ALLOW_BOTS` | Bot-to-bot message handling: `none` (default), `mentions`, or `all` |
 | `SLACK_HOME_CHANNEL` | Default Slack channel for cron delivery |
 | `SLACK_HOME_CHANNEL_NAME` | Display name for the Slack home channel |
 | `GOOGLE_CHAT_PROJECT_ID` | GCP project hosting the Pub/Sub topic (falls back to `GOOGLE_CLOUD_PROJECT`) |

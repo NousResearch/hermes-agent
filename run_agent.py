@@ -5135,7 +5135,7 @@ class AIAgent:
         if isinstance(body, dict):
             payload = body.get("error") if isinstance(body.get("error"), dict) else body
         if isinstance(payload, dict):
-            reason = payload.get("code") or payload.get("error")
+            reason = payload.get("code") or payload.get("type") or payload.get("error")
             if isinstance(reason, str) and reason.strip():
                 context["reason"] = reason.strip()
             message = payload.get("message") or payload.get("error_description")
@@ -7583,7 +7583,15 @@ class AIAgent:
             return False, has_retried_429
 
         if effective_reason == FailoverReason.rate_limit:
-            if not has_retried_429:
+            usage_limit_reached = False
+            if error_context:
+                context_reason = str(error_context.get("reason") or "").lower()
+                context_message = str(error_context.get("message") or "").lower()
+                usage_limit_reached = (
+                    "usage_limit_reached" in context_reason
+                    or "usage limit has been reached" in context_message
+                )
+            if not has_retried_429 and not usage_limit_reached:
                 return False, True
             rotate_status = status_code if status_code is not None else 429
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)

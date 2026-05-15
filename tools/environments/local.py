@@ -590,3 +590,7 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
+        try:
+            os.rmdir(self._artifact_dir)
+        except OSError:
+            pass

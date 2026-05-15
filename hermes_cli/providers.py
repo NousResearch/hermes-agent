@@ -492,7 +492,14 @@ def get_label(provider_id: str) -> str:
 
 
 def is_aggregator(provider: str) -> bool:
-    """Return True when the provider is a multi-model aggregator."""
+    """Return True when the provider is a multi-model aggregator.
+
+    Custom-named providers (``custom:<name>``) are treated as aggregators
+    because they front arbitrary upstream catalogs (LiteLLM, ZenMux, etc.)
+    that commonly expose vendor-prefixed model slugs.
+    """
+    if provider and provider.startswith("custom:"):
+        return True
     pdef = get_provider(provider)
     return pdef.is_aggregator if pdef else False
 

@@ -606,3 +606,33 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+# -- is_aggregator for custom:<name> providers (regression for #26578) -------
+
+def test_is_aggregator_recognizes_custom_prefix():
+    """`custom:<name>` providers front arbitrary upstream catalogs and must be
+    treated as aggregators so vendor-prefixed model slugs (e.g.
+    ``google/gemini-3.1-flash-lite``) resolve correctly via model_switch."""
+    from hermes_cli.providers import is_aggregator
+
+    assert is_aggregator("custom:zenmux") is True
+    assert is_aggregator("custom:ollama") is True
+    assert is_aggregator("custom:local-(127.0.0.1:4141)") is True
+
+
+def test_is_aggregator_unknown_provider_still_false():
+    """Regression guard: the custom: special-case must not turn every unknown
+    provider into an aggregator — only the ``custom:`` namespace qualifies."""
+    from hermes_cli.providers import is_aggregator
+
+    assert is_aggregator("unknown-provider") is False
+    assert is_aggregator("") is False
+
+
+def test_is_aggregator_known_non_aggregator_unchanged():
+    """Built-in non-aggregator providers must keep returning False after the
+    custom: fast-path."""
+    from hermes_cli.providers import is_aggregator
+
+    assert is_aggregator("anthropic") is False

@@ -487,6 +487,52 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
     assert "No credentials found for provider 'openrouter'." in out
 
 
+def test_run_doctor_does_not_warn_vendor_prefix_for_custom_named_provider(
+    monkeypatch, tmp_path
+):
+    """Regression for #26578: `custom:<name>` aggregators accept vendor-prefixed
+    model slugs (just like `openrouter`), so `hermes doctor` should not raise the
+    "vendor-prefixed but provider is X" warning."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: 'custom:zenmux'\n"
+        "  default: z-ai/glm-5.1\n"
+        "custom_providers:\n"
+        "  - name: zenmux\n"
+        "    base_url: https://zenmux.example.com/v1\n"
+        "    api_key: sk-zenmux-test\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "uses a vendor/model slug but provider is 'custom:zenmux'" not in out
+    assert "is vendor-prefixed but model.provider is 'custom:zenmux'" not in out
+
+
 @pytest.mark.parametrize(
     ("provider", "default_model"),
     [

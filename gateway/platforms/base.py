@@ -40,6 +40,13 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def _matrix_quote_replies_enabled() -> bool:
+    return os.getenv("MATRIX_QUOTE_REPLIES", "true").strip().lower() not in _FALSE_ENV_VALUES
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
@@ -83,6 +90,12 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
+    if (
+        platform == "matrix"
+        and getattr(source, "chat_type", None) != "dm"
+        and not _matrix_quote_replies_enabled()
+    ):
+        return None
     return getattr(event, "message_id", None)
 
 

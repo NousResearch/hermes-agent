@@ -320,6 +320,24 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_matrix_quote_replies_from_config_yaml(self, tmp_path, monkeypatch):
+        """matrix.quote_replies in config.yaml should reach the runtime env var."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "matrix:\n"
+            "  quote_replies: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("MATRIX_QUOTE_REPLIES", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("MATRIX_QUOTE_REPLIES") == "false"
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

@@ -1141,6 +1141,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+                if "quote_replies" in matrix_cfg and not os.getenv("MATRIX_QUOTE_REPLIES"):
+                    os.environ["MATRIX_QUOTE_REPLIES"] = str(matrix_cfg["quote_replies"]).lower()
 
             # Feishu settings → env vars (env vars take precedence)
             feishu_cfg = yaml_cfg.get("feishu", {})

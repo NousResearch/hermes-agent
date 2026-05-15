@@ -382,7 +382,28 @@ _AI_GATEWAY_HEADERS = {
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
-NOUS_EXTRA_BODY = {"tags": ["product=hermes-agent", "client=aux"]}
+#
+# The tags are computed from agent.portal_tags so the client= marker stays
+# in lockstep with hermes_cli.__version__ across every Portal call site
+# (main loop, aux, compression, web_extract). Do not inline a literal here;
+# see agent/portal_tags.py for the rationale.
+from agent.portal_tags import nous_portal_tags as _nous_portal_tags
+
+
+def _nous_extra_body() -> dict:
+    """Return a fresh Nous Portal ``extra_body`` dict.
+
+    Computed at call time so a hot-reloaded ``hermes_cli.__version__`` is
+    reflected without restarting long-running processes.
+    """
+    return {"tags": _nous_portal_tags()}
+
+
+# Backwards-compatible module attribute. Some callers (tests, third-party
+# plugins) read ``NOUS_EXTRA_BODY`` directly; keep it as a snapshot of the
+# current tags. Callers that need the freshest value should call
+# ``_nous_extra_body()`` or import ``nous_portal_tags`` directly.
+NOUS_EXTRA_BODY = _nous_extra_body()
 
 # Set at resolve time — True if the auxiliary client points to Nous Portal
 auxiliary_is_nous: bool = False
@@ -1386,6 +1407,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
+            _mark_provider_unhealthy("openrouter", ttl=60)
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
@@ -1394,6 +1416,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
+        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1425,6 +1448,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
                 _remaining,
             )
+            _mark_provider_unhealthy("nous", ttl=_remaining)
             return None, None
     except Exception:
         pass
@@ -1432,7 +1456,21 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
+        logger.warning(
+            "Auxiliary Nous client unavailable: no Nous authentication found "
+            "(run: hermes auth)."
+        )
+        _mark_provider_unhealthy("nous", ttl=60)
         return None, None
+    if runtime is None and nous:
+        # Runtime credential mint failed but stored Nous auth is still present.
+        # Falls back to the raw stored token below; surface a debug line so
+        # operators investigating expired/invalid sessions have a breadcrumb,
+        # without blocking the fallback path the rest of this function relies on.
+        logger.debug(
+            "Auxiliary Nous: runtime credential mint failed; falling back to "
+            "stored auth.json token."
+        )
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
@@ -3437,7 +3475,7 @@ def get_auxiliary_extra_body() -> dict:
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
     """
-    return dict(NOUS_EXTRA_BODY) if auxiliary_is_nous else {}
+    return _nous_extra_body() if auxiliary_is_nous else {}
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:
@@ -3828,7 +3866,7 @@ def _resolve_task_provider_model(
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None, resolved_api_mode
+            return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 
@@ -4026,7 +4064,7 @@ def _build_call_kwargs(
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
     if provider == "nous" or auxiliary_is_nous:
-        merged_extra.setdefault("tags", []).extend(NOUS_EXTRA_BODY["tags"])
+        merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
@@ -4411,7 +4449,7 @@ def extract_content_or_reasoning(response) -> str:
       1. ``message.content`` — strip inline think/reasoning blocks, check for
          remaining non-whitespace text.
       2. ``message.reasoning`` / ``message.reasoning_content`` — direct
-         structured reasoning fields (DeepSeek, Moonshot, Novita, etc.).
+         structured reasoning fields (DeepSeek, Moonshot, NovitaAI, etc.).
       3. ``message.reasoning_details`` — OpenRouter unified array format.
 
     Returns the best available text, or ``""`` if nothing found.

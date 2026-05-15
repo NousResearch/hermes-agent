@@ -322,6 +322,26 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    @staticmethod
+    def _is_broadcast_chat(chat_id: str) -> bool:
+        """True for WhatsApp pseudo-chats that aren't real conversations.
+
+        Covers Status updates (Stories) and Channel/Newsletter broadcasts.
+        These show up as inbound messages on Baileys but the agent should
+        never reply — answering a Story update spams the contact's status
+        feed, and Channel posts aren't addressable in the first place.
+        """
+        if not chat_id:
+            return False
+        cid = chat_id.strip().lower()
+        if cid == "status@broadcast":
+            return True
+        # @broadcast suffix covers status@broadcast plus any future
+        # broadcast-list variants. @newsletter is the Channel JID suffix.
+        if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
+            return True
+        return False
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
@@ -432,9 +452,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
+        chat_id_raw = str(data.get("chatId") or "")
+        # WhatsApp uses pseudo-chats for Status updates (Stories) and
+        # Channel/Newsletter broadcasts. These are not real conversations
+        # and the agent should never reply to them — even in self-chat mode
+        # where the bridge may surface them as "fromMe" events.
+        if self._is_broadcast_chat(chat_id_raw):
+            return False
         is_group = data.get("isGroup", False)
         if is_group:
-            chat_id = str(data.get("chatId") or "")
+            chat_id = chat_id_raw
             if not self._is_group_allowed(chat_id):
                 return False
         else:
@@ -494,12 +521,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 # plain executable path.
                 _npm_bin = shutil.which("npm") or "npm"
                 try:
+                    # Read timeout from environment variable, default to 300 seconds (5 minutes)
+                    # to accommodate slower systems like Unraid NAS
+                    npm_install_timeout = int(os.environ.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "300"))
                     install_result = subprocess.run(
                         [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
                         text=True,
-                        timeout=60,
+                        timeout=npm_install_timeout,
                     )
                     if install_result.returncode != 0:
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")

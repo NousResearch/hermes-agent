@@ -124,16 +124,44 @@ def get_process_start_time(pid: int) -> Optional[int]:
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
+    """Return the process command line as a space-separated string.
+
+    On Linux, reads /proc/<pid>/cmdline directly.  On macOS and other
+    platforms without /proc, falls back to ``ps -p <pid> -o command=``.
+    On Windows (no /proc, no ps), uses psutil.
+    """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
+        pass
+    else:
+        if raw:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Windows fallback: psutil (already used by _pid_exists)
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process(pid)
+        cmdline_parts = proc.cmdline()
+        if cmdline_parts:
+            return " ".join(cmdline_parts)
+    except Exception:
+        pass
+
+    return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -161,7 +189,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     if not isinstance(argv, list) or not argv:
         return False
 
-    cmdline = " ".join(str(part) for part in argv)
+    # Normalize Windows backslashes so patterns match cross-platform.
+    cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
     patterns = (
         "hermes_cli.main gateway",
         "hermes_cli/main.py gateway",
@@ -594,6 +623,22 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
+                # When start_time comparison is unavailable (macOS / Windows
+                # have no /proc, so both sides are None), fall back to
+                # checking the live process command line.  When cmdline is
+                # also unreadable (Windows has no ps), consult the lock
+                # record's own argv — the gateway writes it at startup and
+                # it's the only identity signal on platforms without ps.
+                # Both oracles must indicate "not a gateway" to mark stale.
+                if (
+                    not stale
+                    and existing.get("start_time") is None
+                    and current_start is None
+                    and not _looks_like_gateway_process(existing_pid)
+                ):
+                    live_cmdline = _read_process_cmdline(existing_pid)
+                    if live_cmdline is not None or not _record_looks_like_gateway(existing):
+                        stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.

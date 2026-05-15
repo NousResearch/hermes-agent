@@ -356,15 +356,34 @@ class ResponseStore:
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
-                (count - self._max_size,),
-            )
+            # Collect IDs that will be evicted
+            evict_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
+                    (count - self._max_size,),
+                ).fetchall()
+            ]
+            if evict_ids:
+                placeholders = ",".join("?" for _ in evict_ids)
+                # Clear conversation mappings pointing to evicted responses
+                self._conn.execute(
+                    f"DELETE FROM conversations WHERE response_id IN ({placeholders})",
+                    evict_ids,
+                )
+                # Delete evicted responses
+                self._conn.execute(
+                    f"DELETE FROM responses WHERE response_id IN ({placeholders})",
+                    evict_ids,
+                )
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
+        # Clear conversation mappings pointing to this response
+        self._conn.execute(
+            "DELETE FROM conversations WHERE response_id = ?", (response_id,)
+        )
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
@@ -1168,6 +1187,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
+            # Ensure SSE drain loops can terminate without relying on polling
+            # agent_task.done(), which can race with queue timeout checks.
+            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -2197,6 +2219,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
+            # Ensure SSE drain loops can terminate without relying on polling
+            # agent_task.done(), which can race with queue timeout checks.
+            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._model_name)

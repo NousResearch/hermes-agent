@@ -104,6 +104,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
+    CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
+               args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
@@ -120,6 +122,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
+               "Configuration", args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -468,20 +472,23 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
-    canonical command. Commands that require arguments are skipped because
-    selecting a Telegram BotCommand sends only ``/command`` and would execute
-    an incomplete command.
+    canonical command.
 
-    Plugin-registered slash commands are included so plugins get native
-    autocomplete in Telegram without touching core code.
+    Built-in commands that require arguments (e.g. /queue, /steer, /background)
+    are **included** because their handlers return usage text when selected
+    without a payload, making them discoverable via autocomplete.
+
+    Plugin-registered slash commands that require arguments are **excluded**
+    because plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if _requires_argument(cmd.args_hint):
-            continue
+        # Built-in arg-taking commands are included — their handlers show
+        # usage text when invoked without arguments, and hiding them from
+        # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
@@ -1359,9 +1366,9 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd,
+                    cwd=cwd, encoding="utf-8", errors="replace",
                 )
-                if proc.returncode == 0 and proc.stdout.strip():
+                if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:

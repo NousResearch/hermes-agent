@@ -1,7 +1,7 @@
 """
 Base platform adapter interface.
 
-All platform adapters (Telegram, Discord, WhatsApp) inherit from this
+All platform adapters (Telegram, Discord, WhatsApp, Weixin, and more) inherit from this
 and implement the required methods.
 """
 
@@ -955,6 +955,12 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Channel context recovered by history backfill (e.g. messages between
+    # bot turns that were missed due to require_mention).  Kept separate
+    # from ``text`` so the sender-prefix logic in run.py can operate on the
+    # trigger message alone, then prepend this context afterward.
+    channel_context: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -1742,6 +1748,63 @@ class BasePlatformAdapter(ABC):
         route the callback (e.g. Telegram's ``_approval_state`` dict).
         """
         return SendResult(success=False, error="Not supported")
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt to the user.
+
+        Two render modes:
+
+          * **Multiple choice** (``choices`` is a non-empty list) — adapters
+            that override this should render inline buttons (one per choice
+            plus a final "Other" / free-text option).  Button callbacks
+            MUST resolve via
+            ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``
+            with the chosen string.  Picking the "Other" button calls
+            ``mark_awaiting_text(clarify_id)`` so the next message in the
+            session is captured as the response.
+
+          * **Open-ended** (``choices`` is None or empty) — render the
+            question as a plain text message; the next user message in the
+            session is captured by the gateway's text-intercept and
+            resolves the clarify automatically (see
+            ``GatewayRunner._maybe_intercept_clarify_text``).
+
+        The default implementation falls back to a numbered text list,
+        which works on every platform — the user replies with a number
+        ("2") or with the literal choice text, and the gateway intercepts
+        and resolves.  For the text fallback path, the default calls
+        ``mark_awaiting_text()`` so that the gateway text-intercept
+        (:meth:`GatewayRunner._maybe_intercept_clarify_text`) catches the
+        user's reply instead of timing out.
+        Adapters with native button UIs (Telegram, Discord) SHOULD
+        override this for a richer UX.
+        """
+        if choices:
+            lines = [f"❓ {question}", ""]
+            for i, choice in enumerate(choices, start=1):
+                lines.append(f"  {i}. {choice}")
+            lines.append("")
+            lines.append("Reply with the number, the option text, or your own answer.")
+            text = "\n".join(lines)
+            # Text fallback: enable text-capture so the gateway intercept
+            # picks up the user's typed reply (e.g. "2" or choice text).
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
+        else:
+            text = f"❓ {question}"
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            metadata=metadata,
+        )
 
     async def send_private_notice(
         self,
@@ -2830,6 +2893,58 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
+
+            # Clarify text-capture bypass: if the agent is blocked on a
+            # clarify_tool call awaiting a free-form text response (open-
+            # ended clarify, or user picked "Other"), the next non-command
+            # message in this session MUST reach the runner so the
+            # clarify-intercept can resolve it and unblock the agent.
+            #
+            # Without this bypass: the message gets queued in
+            # _pending_messages AND triggers an interrupt, killing the
+            # agent run mid-clarify and discarding the user's answer.
+            # Same shape as the /approve deadlock fix (PR #4926) — both
+            # cases are "agent thread blocked on Event.wait, message must
+            # reach the resolver before being treated as a new turn."
+            if not cmd:
+                try:
+                    from tools import clarify_gateway as _clarify_mod
+                    _has_text_clarify = (
+                        _clarify_mod.get_pending_for_session(session_key) is not None
+                    )
+                except Exception:
+                    _has_text_clarify = False
+
+                if _has_text_clarify:
+                    logger.debug(
+                        "[%s] Routing message to clarify text-intercept for %s",
+                        self.name, session_key,
+                    )
+                    try:
+                        _thread_meta = _thread_metadata_for_source(
+                            event.source, _reply_anchor_for_event(event)
+                        )
+                        response = await self._message_handler(event)
+                        _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        if _text:
+                            _r = await self._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=_text,
+                                reply_to=_reply_anchor_for_event(event),
+                                metadata=_thread_meta,
+                            )
+                            if _eph_ttl > 0 and _r.success and _r.message_id:
+                                self._schedule_ephemeral_delete(
+                                    chat_id=event.source.chat_id,
+                                    message_id=_r.message_id,
+                                    ttl_seconds=_eph_ttl,
+                                )
+                    except Exception as e:
+                        logger.error(
+                            "[%s] Clarify text-intercept dispatch failed: %s",
+                            self.name, e, exc_info=True,
+                        )
+                    return
 
             if self._busy_session_handler is not None:
                 try:

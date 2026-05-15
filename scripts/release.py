@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -33,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
+# ACP Registry manifest must stay version-locked with pyproject.toml.
+# tests/acp/test_registry_manifest.py enforces this lockstep so the release
+# bump touches both files atomically.
+ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -41,24 +47,55 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
+    "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
+    "anadi.jaggia@gmail.com": "Jaggia",
+    "32201324+simpolism@users.noreply.github.com": "simpolism",
+    "simpolism@gmail.com": "simpolism",
+    "jake@nousresearch.com": "simpolism",
+    "mgongzai@gmail.com": "vKongv",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
+    "mr.aashiz@gmail.com": "aashizpoudel",
+    "nidhi2894@gmail.com": "nidhi-singh02",
+    "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
+    "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
+    "mr@shu.io": "mrshu",
+    "adam.manning@gmail.com": "am423",
     "buraysandro9@gmail.com": "ygd58",
+    "108427749+buntingszn@users.noreply.github.com": "buntingszn",
+    "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "421774554@qq.com": "wuli666",
     "harish.kukreja@gmail.com": "counterposition",
+    "korkyzer@gmail.com": "Korkyzer",
     "1046611633@qq.com": "zhengyn0001",
+    "1095245867@qq.com": "littlewwwhite",
+    "db@project-aeon.com": "db-aeon",
     "ahmed@abadr.net": "ahmedbadr3",
+    "63822243+CoinTheHat@users.noreply.github.com": "CoinTheHat",
     "cleo@edaphic.xyz": "curiouscleo",
     "hirokazu.ogawa@kwansei.ac.jp": "hrkzogw",
     "datapod.k@gmail.com": "dandacompany",
     "treydong.zh@gmail.com": "TreyDong",
+    "phil.thomas@gametime.co": "explainanalyze",
+    "kyanam.preetham@gmail.com": "pkyanam",
+    "zhizhong.xu@shopee.com": "1000Delta",
+    "30397170+1000Delta@users.noreply.github.com": "1000Delta",
+    "szymonclawd@mac.home": "szymonclawd",
+    "257759490+szymonclawd@users.noreply.github.com": "szymonclawd",
+    "zhanganzhe@tenclass.com": "luoyuctl",
+    "51604064+luoyuctl@users.noreply.github.com": "luoyuctl",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "tolle.lege+github@gmail.com": "InB4DevOps",
+    "73686890+InB4DevOps@users.noreply.github.com": "InB4DevOps",
+    "147827411+EloquentBrush@users.noreply.github.com": "AhmetArif0",
+    "97489706+purzbeats@users.noreply.github.com": "purzbeats",
     "hugosequier@gmail.com": "Hugo-SEQUIER",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
@@ -76,8 +113,10 @@ AUTHOR_MAP = {
     "62420081+kjames2001@users.noreply.github.com": "kjames2001",
     "132184373+wilsen0@users.noreply.github.com": "wilsen0",
     "ra2157218@gmail.com": "Abd0r",
+    "oswaldb22@users.noreply.github.com": "oswaldb22",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",
+    "108541149+amethystani@users.noreply.github.com": "amethystani",
     "ytchen0719@gmail.com": "liquidchen",
     "am@studio1.tailb672fe.ts.net": "subtract0",
     "mike@grossmann.at": "ReqX",
@@ -130,6 +169,7 @@ AUTHOR_MAP = {
     "sandrohub013@gmail.com": "SandroHub013",
     "maciekczech@users.noreply.github.com": "maciekczech",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
+    "cine.dreamer.one@gmail.com": "LeonSGP43",
     "zjtan1@gmail.com": "zeejaytan",
     "asslaenn5@gmail.com": "Aslaaen",
     "trae.anderson17@icloud.com": "Tkander1715",
@@ -137,6 +177,22 @@ AUTHOR_MAP = {
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "leon@agentlinker.ai": "agentlinker",
     "santoshhumagain1887@gmail.com": "npmisantosh",
+    "39641663+luarss@users.noreply.github.com": "luarss",
+    "16263913+zccyman@users.noreply.github.com": "zccyman",
+    "ahmetosrak@Ahmet-MacBook-Air.local": "Osraka",
+    "98612432+Osraka@users.noreply.github.com": "Osraka",
+    "112634774+ryptotalent@users.noreply.github.com": "ryptotalent",
+    "270097726+hookinglau@users.noreply.github.com": "hookinglau",
+    "5029547+AllynSheep@users.noreply.github.com": "AllynSheep",
+    "allyn0306@gmail.com": "AllynSheep",
+    "46887634+aqilaziz@users.noreply.github.com": "aqilaziz",
+    "gonzes7@gmail.com": "aqilaziz",
+    "6966326+laoli-no1@users.noreply.github.com": "laoli-no1",
+    "laoli_no1@163.com": "laoli-no1",
+    "39730900+NorethSea@users.noreply.github.com": "NorethSea",
+    "963979204@qq.com": "NorethSea",
+    "2283389+JamesX88@users.noreply.github.com": "JamesX88",
+    "JamesX88@users.noreply.github.com": "JamesX88",
     "novax635@gmail.com": "novax635",
     "krionex1@gmail.com": "Krionex",
     "rxdxxxx@users.noreply.github.com": "rxdxxxx",
@@ -167,6 +223,7 @@ AUTHOR_MAP = {
     "74749461+yuga-hashimoto@users.noreply.github.com": "yuga-hashimoto",
     "xiangyong@zspace.cn": "CES4751",
     "harish.kukreja@gmail.com": "counterposition",
+    "nidhi2894@gmail.com": "nidhi-singh02",
     "35294173+Fearvox@users.noreply.github.com": "Fearvox",
     "hypnus.yuan@gmail.com": "Hypnus-Yuan",
     "15558128926@qq.com": "xsfX20",
@@ -202,11 +259,13 @@ AUTHOR_MAP = {
     "hitesh@gmail.com": "htsh",
     "pty819@outlook.com": "pty819",
     "pty819@users.noreply.github.com": "pty819",
+    "14341805+pty819@users.noreply.github.com": "pty819",
     "517024110@qq.com": "chennest",
     # Curator fixes (Apr 30 2026)
     "yuxiangl490@gmail.com": "y0shua1ee",
     "manmit0x@gmail.com": "0xDevNinja",
     "stevekelly622@gmail.com": "steezkelly",
+    "brian@dralth.com": "btorresgil",
     "momowind@gmail.com": "momowind",
     "clockwork-codex@users.noreply.github.com": "misery-hl",
     "207811921+misery-hl@users.noreply.github.com": "misery-hl",
@@ -347,6 +406,7 @@ AUTHOR_MAP = {
     "Mibayy@users.noreply.github.com": "Mibayy",
     "mibayy@users.noreply.github.com": "Mibayy",
     "mibay@clawhub.io": "Mibayy",
+    "louismichalot@hotmail.com": "Mibayy",
     "135070653+sgaofen@users.noreply.github.com": "sgaofen",
     "lzy.dev@gmail.com": "zhiyanliu",
     "me@janstepanovsky.cz": "hhhonzik",
@@ -579,6 +639,7 @@ AUTHOR_MAP = {
     "iacobs@m0n5t3r.info": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
     "jonny@nousresearch.com": "jquesnelle",
+    "jake@nousresearch.com": "simpolism",
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
@@ -587,6 +648,7 @@ AUTHOR_MAP = {
     "skmishra1991@gmail.com": "bugkill3r",
     "karamusti912@gmail.com": "MustafaKara7",
     "kira@ariaki.me": "kira-ariaki",
+    "kira.ops@proton.me": "KiraKatana",
     "knopki@duck.com": "knopki",
     "limars874@gmail.com": "limars874",
     "lisicheng168@gmail.com": "lesterli",
@@ -685,6 +747,7 @@ AUTHOR_MAP = {
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "harryplusplus@gmail.com": "harryplusplus",
     "anthhub@163.com": "anthhub",
+    "vmphuongit@gmail.com": "phuongvm",
     "allard.quek@singtel.com": "AllardQuek",
     "shenuu@gmail.com": "shenuu",
     "xiayh17@gmail.com": "xiayh0107",
@@ -727,6 +790,8 @@ AUTHOR_MAP = {
     "chayton@sina.com": "ycbai",
     "longsizhuo@gmail.com": "longsizhuo",
     "chenb19870707@gmail.com": "ms-alan",
+    "agorgianitisj@hotmail.com": "johnisag",
+    "phil.thomas@gametime.co": "explainanalyze",
     "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
     "22549957+li0near@users.noreply.github.com": "li0near",
     "guoyu801@gmail.com": "li0near",
@@ -825,6 +890,8 @@ AUTHOR_MAP = {
     "dpaluy@users.noreply.github.com": "dpaluy",
     "psikonetik@gmail.com": "el-analista",
     "chenb19870707@gmail.com": "ms-alan",
+    "agorgianitisj@hotmail.com": "johnisag",
+    "phil.thomas@gametime.co": "explainanalyze",
     "hex-clawd@users.noreply.github.com": "hex-clawd",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "barteq@hacknotes.local": "barteqpl",
@@ -984,6 +1051,29 @@ AUTHOR_MAP = {
     "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
     "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
+    "anton.kuenzi@gmail.com": "ZeterMordio",  # PR #11754 salvage (zsh completion compdef + _arguments syntax)
+    "23yntong@stu.edu.cn": "iuyup",  # PR #6155 salvage (shell=True hardening)
+    "86501179+1RB@users.noreply.github.com": "1RB",  # PR #25462 salvage (discord forwarded messages)
+    "44045943+ayushere@users.noreply.github.com": "ayushere",  # PR #25342 salvage (memory teardown leak)
+    "15791290+domtriola@users.noreply.github.com": "domtriola",  # PR #25424 salvage (docs tirith link)
+    "284216128+ephron-ren@users.noreply.github.com": "ephron-ren",  # PR #25358 salvage (MiMo reasoning echo-back)
+    "96843562+freqyfreqy@users.noreply.github.com": "freqyfreqy",  # PR #25423 salvage (docs LSP worktree -> repo)
+    "54306477+fu576@users.noreply.github.com": "fu576",  # PR #25369 salvage (api_mode not inherited cross-provider)
+    "258095375+kfa-ai@users.noreply.github.com": "kfa-ai",  # PR #25398 salvage (whatsapp quoted reply metadata)
+    "99181308+magic524@users.noreply.github.com": "magic524",  # PR #25361 salvage (QQBot reconnect loop)
+    "9150277+PaTTeeL@users.noreply.github.com": "PaTTeeL",  # PR #25359 salvage (custom_providers in compression length)
+    "1700913+pearjelly@users.noreply.github.com": "pearjelly",  # PR #25388 salvage (feishu ws connect override sync)
+    "100820567+raymaylee@users.noreply.github.com": "raymaylee",  # PR #25394 salvage (context compaction status)
+    "122434621+Tianyu199509@users.noreply.github.com": "Tianyu199509",  # PR #25421 salvage (gateway PID Windows)
+    "58224596+HxT9@users.noreply.github.com": "HxT9",  # PR #25760 salvage (web sync-assets cross-platform)
+    "120411712+evgyur@users.noreply.github.com": "evgyur",  # PR #25651 salvage (docs media session context)
+    "36507055+AsoTora@users.noreply.github.com": "AsoTora",  # PR #25624 salvage (MCP auth no-retry)
+    "98992931+oxngon@users.noreply.github.com": "oxngon",  # PR #25603 salvage (forward image attachments to bg tasks)
+    "37467487+yifengingit@users.noreply.github.com": "yifengingit",  # PR #25589 salvage (AUTOINCREMENT id ordering)
+    "89525629+vanthinh6886@users.noreply.github.com": "vanthinh6886",  # PR #25562 salvage (.env 0600 perms)
+    "16034932+Arkmusn@users.noreply.github.com": "Arkmusn",  # PR #25559 salvage (approvals.timeout from config)
+    "nidhi2894@gmail.com": "nidhi-singh02",  # PR #2752 salvage (slack whitespace-only IndexError guard)
+    "38173192+nidhi-singh02@users.noreply.github.com": "nidhi-singh02",
 }
 
 
@@ -1085,19 +1175,48 @@ def update_version_files(semver: str, calver_date: str):
     )
     PYPROJECT_FILE.write_text(pyproject)
 
+    # Update ACP Registry manifest + npm launcher (must stay version-locked
+    # with pyproject — enforced by tests/acp/test_registry_manifest.py).
+    _update_acp_registry_versions(semver)
+
+
+def _update_acp_registry_versions(semver: str) -> None:
+    """Bump the ACP Registry manifest's version + uvx package pin in lockstep
+    with pyproject.
+
+    Skips silently if the manifest is missing — older release branches predate
+    the ACP Registry assets.
+    """
+    if ACP_REGISTRY_MANIFEST.exists():
+        manifest = json.loads(ACP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+        manifest["version"] = semver
+        uvx = manifest.get("distribution", {}).get("uvx", {})
+        if "package" in uvx:
+            uvx["package"] = f"hermes-agent[acp]=={semver}"
+        # Preserve trailing newline + 2-space indent the file already uses.
+        ACP_REGISTRY_MANIFEST.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
 
 def build_release_artifacts(semver: str) -> list[Path]:
     """Build sdist/wheel artifacts for the current release.
 
-    Returns the artifact paths when the local environment has ``python -m build``
-    available. If build tooling is missing or the build fails, returns an empty
-    list and lets the release proceed without attached Python artifacts.
+    Tries ``uv build`` first (matching the CI workflow), falls back to
+    ``python -m build`` if uv is unavailable.
     """
     dist_dir = REPO_ROOT / "dist"
     shutil.rmtree(dist_dir, ignore_errors=True)
 
+    # Prefer uv build (matches CI workflow), fall back to python -m build.
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        cmd = [uv_bin, "build", "--sdist", "--wheel"]
+    else:
+        cmd = [sys.executable, "-m", "build", "--sdist", "--wheel"]
+
     result = subprocess.run(
-        [sys.executable, "-m", "build", "--sdist", "--wheel"],
+        cmd,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
@@ -1110,7 +1229,7 @@ def build_release_artifacts(semver: str) -> list[Path]:
             print(f"    {stderr.splitlines()[-1]}")
         elif stdout:
             print(f"    {stdout.splitlines()[-1]}")
-        print("    Install the 'build' package to attach semver-named sdist/wheel assets.")
+        print("    Install uv or the 'build' package to attach sdist/wheel assets.")
         return []
 
     artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
@@ -1217,11 +1336,11 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject\0body
-    # Using %x00 (null) as separator between subject and body
+    # Format: hash<US>author_name<US>author_email<US>subject\0body
+    # Using %x1f (unit separator) to avoid conflict with | in author names
     log = git(
         "log", range_spec,
-        "--format=%H|%an|%ae|%s%x00%b%x00",
+        "--format=%H%x1f%an%x1f%ae%x1f%s%x00%b%x00",
         "--no-merges",
     )
 
@@ -1235,14 +1354,14 @@ def get_commits(since_tag=None):
         entry = entry.strip()
         if not entry:
             continue
-        # Split on first null to separate "hash|name|email|subject" from "body"
+        # Split on first null to separate "hash<US>name<US>email<US>subject" from "body"
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
         else:
             header = entry
             body = ""
-        parts = header.split("|", 3)
+        parts = header.split("\x1f", 3)
         if len(parts) != 4:
             continue
         sha, name, email, subject = parts
@@ -1262,7 +1381,7 @@ def get_commits(since_tag=None):
     return commits
 
 
-def get_pr_number(subject: str) -> str:
+def get_pr_number(subject: str) -> str | None:
     """Extract PR number from commit subject if present."""
     match = re.search(r"#(\d+)", subject)
     if match:
@@ -1413,6 +1532,7 @@ def main():
         print("No previous tags found. Use --first-release for the initial release.")
         print(f"Would create tag: {tag_name}")
         print(f"Would set version: {new_version}")
+        return
 
     # Get commits
     commits = get_commits(since_tag=prev_tag)
@@ -1457,7 +1577,10 @@ def main():
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
+            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            if ACP_REGISTRY_MANIFEST.exists():
+                add_files.append(str(ACP_REGISTRY_MANIFEST))
+            add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
                 return
@@ -1499,7 +1622,7 @@ def main():
 
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
-        changelog_file.write_text(changelog)
+        changelog_file.write_text(changelog, encoding="utf-8")
 
         gh_cmd = [
             "gh", "release", "create", tag_name,

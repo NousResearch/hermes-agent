@@ -1139,6 +1139,38 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _preserve_queued_followup_history_offset(
+    current_result: dict,
+    followup_result: dict,
+) -> dict:
+    """Carry the outer history offset through queued follow-up drains.
+
+    ``_process_message_background()`` persists transcript rows only once, after the
+    entire in-band queued-follow-up chain returns.  Each recursive ``_run_agent()``
+    call advances ``history_offset`` to the history it received, so without
+    correction the outermost persistence step sees only the *last* queued turn as
+    "new" and silently drops earlier turns from the same drain chain.
+
+    Preserve the earliest (outermost) history offset so the final transcript slice
+    still includes every queued turn that ran during the chain.
+    """
+    if not isinstance(followup_result, dict):
+        return followup_result
+    if not isinstance(current_result, dict):
+        return followup_result
+
+    current_offset = current_result.get("history_offset")
+    followup_offset = followup_result.get("history_offset")
+    if not isinstance(current_offset, int):
+        return followup_result
+    if isinstance(followup_offset, int) and followup_offset <= current_offset:
+        return followup_result
+
+    merged = dict(followup_result)
+    merged["history_offset"] = current_offset
+    return merged
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -5828,6 +5860,37 @@ class GatewayRunner:
                     )
                 _update_prompts.pop(_quick_key, None)
 
+        # Intercept messages that are responses to a pending clarify
+        # request that is awaiting free-form text (either an open-ended
+        # clarify with no choices, or one where the user picked the
+        # "Other" button).  The first non-empty user message in the
+        # session resolves the clarify and unblocks the agent thread —
+        # we do NOT route it to the agent as a new turn.
+        try:
+            from tools import clarify_gateway as _clarify_mod
+            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key)
+        except Exception:
+            _pending_clarify = None
+        if _pending_clarify is not None:
+            _raw_clarify_reply = (event.text or "").strip()
+            # Skip slash commands — the user clearly wanted to issue a
+            # command, not answer the clarify.  Leave the clarify pending
+            # so the user can retry; if it times out, the agent unblocks
+            # with an empty response.
+            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+                _resolved = _clarify_mod.resolve_gateway_clarify(
+                    _pending_clarify.clarify_id, _raw_clarify_reply,
+                )
+                if _resolved:
+                    logger.info(
+                        "Gateway intercepted clarify text response (session=%s, id=%s)",
+                        _quick_key, _pending_clarify.clarify_id,
+                    )
+                    # Acknowledge with empty string so adapters that emit
+                    # the agent's response don't double-post.  The agent
+                    # itself will produce the next user-facing message.
+                    return ""
+
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
         # /approve, /always, /cancel (plus short aliases).  Anything else
@@ -6065,6 +6128,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
+            # /codex-runtime must not be used while the agent is running.
+            # Switching mid-turn would split a turn across two transports.
+            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
+                return ("Agent is running — wait or /stop first, then "
+                        "change runtime.")
+
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
             # tools/approval.py — sending an interrupt won't unblock it.
@@ -6103,6 +6172,12 @@ class GatewayRunner:
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+
+            # /subgoal is safe mid-run — it only modifies the goal's
+            # subgoals list, which the judge reads at the next turn
+            # boundary. No race with the running turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
+                return await self._handle_subgoal_command(event)
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
@@ -6399,6 +6474,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "codex-runtime":
+            return await self._handle_codex_runtime_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -6481,6 +6559,9 @@ class GatewayRunner:
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
+
+        if canonical == "subgoal":
+            return await self._handle_subgoal_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -6727,6 +6808,12 @@ class GatewayRunner:
         )
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
+
+        # Prepend channel context from history backfill (if any).  This
+        # happens after sender-prefix so the prefix only applies to the
+        # trigger message, not the backfill block.
+        if getattr(event, "channel_context", None):
+            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
         if event.media_urls:
             image_paths = []
@@ -7512,6 +7599,7 @@ class GatewayRunner:
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
+                "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
@@ -7903,6 +7991,8 @@ class GatewayRunner:
                 try:
                     if _err_body is not None:
                         _err_json = _err_body.json().get("error", {})
+                        if not isinstance(_err_json, dict):
+                            _err_json = {}
                 except Exception:
                     pass
                 if _err_json.get("type") == "usage_limit_reached":
@@ -9178,6 +9268,51 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
+        """Handle /codex-runtime command in the gateway.
+
+        Same surface as the CLI handler in cli.py:
+            /codex-runtime                  — show current state
+            /codex-runtime auto             — Hermes default runtime
+            /codex-runtime codex_app_server — codex subprocess runtime
+            /codex-runtime on / off         — synonyms
+
+        On change, the cached agent for this session is evicted so the next
+        message creates a fresh AIAgent with the new api_mode wired in
+        (avoids prompt-cache invalidation mid-session)."""
+        from hermes_cli import codex_runtime_switch as crs
+
+        raw_args = event.get_command_args().strip() if event else ""
+        new_value, errors = crs.parse_args(raw_args)
+        if errors:
+            return "❌ " + "\n❌ ".join(errors)
+
+        # Load + persist via the same helpers used for /model and /yolo
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            return f"❌ Could not load config: {exc}"
+        cfg = load_config()
+
+        result = crs.apply(
+            cfg,
+            new_value,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        # On a real change, evict the cached agent so the new runtime takes
+        # effect on the next message rather than waiting for cache TTL.
+        if result.success and new_value is not None and result.requires_new_session:
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after codex-runtime change",
+                             exc_info=True)
+
+        prefix = "✓" if result.success else "✗"
+        return f"{prefix} {result.message}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from hermes_constants import display_hermes_home
@@ -9405,6 +9540,57 @@ class GatewayRunner:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
         return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+
+    async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
+        """Handle /subgoal for gateway platforms (mirror of CLI handler).
+
+        Subgoals are extra criteria appended to the active goal mid-loop.
+        They modify state read at the next turn boundary, so this is safe
+        to invoke while the agent is running.
+        """
+        args = (event.get_command_args() or "").strip()
+        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        if mgr is None:
+            return t("gateway.goal.unavailable")
+        if not mgr.has_goal():
+            return "No active goal. Set one with /goal <text>."
+
+        # No args → list current subgoals.
+        if not args:
+            return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+
+        tokens = args.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                return "Usage: /subgoal remove <n>"
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                return "/subgoal remove: <n> must be an integer (1-based index)."
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                return f"/subgoal remove: {exc}"
+            return f"✓ Removed subgoal {idx}: {removed}"
+
+        if verb == "clear":
+            try:
+                prev = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                return f"/subgoal clear: {exc}"
+            if prev:
+                return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
+            return "No subgoals to clear."
+
+        try:
+            text = mgr.add_subgoal(args)
+        except (ValueError, RuntimeError) as exc:
+            return f"/subgoal: {exc}"
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        return f"✓ Added subgoal {idx}: {text}"
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
@@ -10177,6 +10363,10 @@ class GatewayRunner:
 
         event_message_id = self._reply_anchor_for_event(event)
 
+        # Forward image/audio attachments so the background agent can see them.
+        media_urls = list(event.media_urls) if event.media_urls else []
+        media_types = list(event.media_types) if event.media_types else []
+
         # Fire-and-forget the background task
         _task = asyncio.create_task(
             self._run_background_task(
@@ -10184,6 +10374,8 @@ class GatewayRunner:
                 source,
                 task_id,
                 event_message_id=event_message_id,
+                media_urls=media_urls,
+                media_types=media_types,
             )
         )
         self._background_tasks.add(_task)
@@ -10198,9 +10390,14 @@ class GatewayRunner:
         source: "SessionSource",
         task_id: str,
         event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
+
+        media_urls = media_urls or []
+        media_types = media_types or []
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -10237,6 +10434,23 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            # Enrich the prompt with image descriptions so the background
+            # agent can see user-attached images (same as the main flow).
+            enriched_prompt = prompt
+            if media_urls:
+                image_paths = []
+                for i, path in enumerate(media_urls):
+                    mtype = media_types[i] if i < len(media_types) else ""
+                    if mtype.startswith("image/"):
+                        image_paths.append(path)
+                if image_paths:
+                    try:
+                        enriched_prompt = await self._enrich_message_with_vision(
+                            prompt, image_paths,
+                        )
+                    except Exception as e:
+                        logger.warning("Background task vision enrichment failed: %s", e)
+
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -10268,7 +10482,7 @@ class GatewayRunner:
                 )
                 try:
                     return agent.run_conversation(
-                        user_message=prompt,
+                        user_message=enriched_prompt,
                         task_id=task_id,
                     )
                 finally:
@@ -14957,6 +15171,76 @@ class GatewayRunner:
                     if _pdc is not None:
                         _pdc[session_key] = _release_bg_review_messages
 
+            # ------------------------------------------------------------------
+            # Clarify callback: present a clarify prompt and block on a response.
+            #
+            # Runs on the agent's worker thread (see clarify_tool's synchronous
+            # callback contract).  Bridges sync→async by scheduling the
+            # adapter's send_clarify on the gateway event loop, then blocks on
+            # the clarify primitive's threading.Event with a configurable
+            # timeout.  Returns the user's response string, or a sentinel
+            # explaining that no response arrived (so the agent can adapt
+            # rather than hang forever).
+            # ------------------------------------------------------------------
+            def _clarify_callback_sync(question: str, choices) -> str:
+                from tools import clarify_gateway as _clarify_mod
+                import uuid as _uuid
+
+                if not _status_adapter:
+                    return ""
+
+                clarify_id = _uuid.uuid4().hex[:10]
+                _clarify_mod.register(
+                    clarify_id=clarify_id,
+                    session_key=session_key or "",
+                    question=question,
+                    choices=list(choices) if choices else None,
+                )
+
+                # Pause typing — like approval, we don't want a "thinking..."
+                # status to obscure the prompt or block the user from typing
+                # an "Other" response on platforms that disable input while
+                # typing is active (Slack Assistant API).
+                try:
+                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                except Exception:
+                    pass
+
+                send_ok = False
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send_clarify(
+                            chat_id=_status_chat_id,
+                            question=question,
+                            choices=list(choices) if choices else None,
+                            clarify_id=clarify_id,
+                            session_key=session_key or "",
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    )
+                    result = fut.result(timeout=15)
+                    send_ok = bool(getattr(result, "success", False))
+                except Exception as exc:
+                    logger.warning("Clarify send failed: %s", exc)
+                    send_ok = False
+
+                if not send_ok:
+                    # Couldn't deliver the prompt — clean up and return
+                    # sentinel so the agent can fall back to a sensible
+                    # default rather than hanging.
+                    _clarify_mod.clear_session(session_key or "")
+                    return "[clarify prompt could not be delivered]"
+
+                timeout = _clarify_mod.get_clarify_timeout()
+                response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                if response is None or response == "":
+                    # Timeout or session-boundary cancellation
+                    return f"[user did not respond within {int(timeout / 60)}m]"
+                return response
+
+            agent.clarify_callback = _clarify_callback_sync
+
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
@@ -15228,6 +15512,14 @@ class GatewayRunner:
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                # Cancel any pending clarify entries so blocked agent
+                # threads don't hang past the end of the run (interrupt,
+                # completion, gateway shutdown).  Idempotent.
+                try:
+                    from tools.clarify_gateway import clear_session as _clear_clarify_session
+                    _clear_clarify_session(_approval_session_key)
+                except Exception:
+                    pass
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
@@ -15847,6 +16139,7 @@ class GatewayRunner:
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
+                        or (_sc and getattr(_sc, "final_content_delivered", False))
                     )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
@@ -15932,7 +16225,7 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                return await self._run_agent(
+                followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
                     history=updated_history,
@@ -15944,6 +16237,7 @@ class GatewayRunner:
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
@@ -16007,12 +16301,16 @@ class GatewayRunner:
             # response_previewed means the interim_assistant_callback already
             # sent the final text via the adapter (non-streaming path).
             _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
+            _content_delivered = bool(
+                _sc and getattr(_sc, "final_content_delivered", False)
+            )
+            if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
                     _streamed,
                     _previewed,
+                    _content_delivered,
                 )
                 response["already_sent"] = True
 

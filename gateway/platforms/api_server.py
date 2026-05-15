@@ -464,6 +464,71 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _openai_chat_usage(usage: Dict[str, int]) -> Dict[str, Any]:
+    """Build an OpenAI Chat Completions ``usage`` block from the internal
+    counter dict produced by the agent loop.
+
+    Maps ``input_tokens``/``output_tokens``/``total_tokens`` to the
+    canonical ``prompt_tokens``/``completion_tokens``/``total_tokens``
+    fields and — when the agent reported cache or reasoning tokens —
+    attaches ``prompt_tokens_details.cached_tokens`` and
+    ``completion_tokens_details.reasoning_tokens`` so OpenAI-compatible
+    clients can read those values without an out-of-band probe. The
+    nested ``*_tokens_details`` are only emitted when non-zero so we
+    don't bloat responses for providers that don't report them.
+    """
+    block: Dict[str, Any] = {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cache_read = usage.get("cache_read_tokens") or 0
+    cache_write = usage.get("cache_write_tokens") or 0
+    if cache_read or cache_write:
+        details: Dict[str, int] = {}
+        if cache_read:
+            details["cached_tokens"] = cache_read
+        if cache_write:
+            # OpenAI uses ``cache_creation_input_tokens`` in their
+            # streaming Responses API; mirror that name here so the
+            # field is recognizable by clients written against OpenAI.
+            details["cache_creation_input_tokens"] = cache_write
+        block["prompt_tokens_details"] = details
+    reasoning = usage.get("reasoning_tokens") or 0
+    if reasoning:
+        block["completion_tokens_details"] = {"reasoning_tokens": reasoning}
+    return block
+
+
+def _openai_responses_usage(usage: Dict[str, int]) -> Dict[str, Any]:
+    """Build a Responses-API-style ``usage`` block.
+
+    Same fields as Chat Completions but using the input/output naming
+    convention (``input_tokens``/``output_tokens``) — and the
+    ``input_tokens_details.cached_tokens`` nesting Responses clients
+    expect, with ``output_tokens_details.reasoning_tokens`` for
+    reasoning models.
+    """
+    block: Dict[str, Any] = {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+    cache_read = usage.get("cache_read_tokens") or 0
+    cache_write = usage.get("cache_write_tokens") or 0
+    if cache_read or cache_write:
+        details: Dict[str, int] = {}
+        if cache_read:
+            details["cached_tokens"] = cache_read
+        if cache_write:
+            details["cache_creation_input_tokens"] = cache_write
+        block["input_tokens_details"] = details
+    reasoning = usage.get("reasoning_tokens") or 0
+    if reasoning:
+        block["output_tokens_details"] = {"reasoning_tokens": reasoning}
+    return block
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -1286,11 +1351,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _openai_chat_usage(usage),
         }
         if is_partial or is_failed or not completed:
             response_data["hermes"] = {
@@ -1415,11 +1476,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {
-                    "prompt_tokens": usage.get("input_tokens", 0),
-                    "completion_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
+                "usage": _openai_chat_usage(usage),
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
@@ -2310,11 +2367,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": _openai_responses_usage(usage),
         }
 
         # Store the complete response object for future chaining / GET retrieval
@@ -2745,6 +2798,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                # The chat completions transport already tracks these on the
+                # agent (see run_agent.py session_cache_*_tokens) — surface
+                # them so the OpenAI-compatible serializers below can
+                # populate ``prompt_tokens_details`` / ``completion_tokens_details``.
+                # Without this, clients that rely on the OpenAI cache fields
+                # (prompt cache hit ratio dashboards, etc.) get zero even
+                # when the upstream provider actually reported the numbers.
+                "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
+                "reasoning_tokens": getattr(agent, "session_reasoning_tokens", 0) or 0,
             }
             # Include the effective session ID in the result so callers
             # (e.g. X-Hermes-Session-Id header) can track compression-

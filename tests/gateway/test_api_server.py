@@ -410,6 +410,12 @@ class TestAgentExecution:
         mock_agent.session_prompt_tokens = 1
         mock_agent.session_completion_tokens = 2
         mock_agent.session_total_tokens = 3
+        # New cache + reasoning counters surfaced by _run_agent so OpenAI-
+        # compatible serializers can populate ``prompt_tokens_details``
+        # and ``completion_tokens_details`` downstream.
+        mock_agent.session_cache_read_tokens = 0
+        mock_agent.session_cache_write_tokens = 0
+        mock_agent.session_reasoning_tokens = 0
 
         with patch.object(adapter, "_create_agent", return_value=mock_agent):
             result, usage = await adapter._run_agent(
@@ -424,7 +430,14 @@ class TestAgentExecution:
         # here doesn't set an explicit session_id string so the guard skips
         # the annotation — header will fall back to the provided session_id.
         assert result["final_response"] == "ok"
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        assert usage == {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "total_tokens": 3,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        }
         mock_agent.run_conversation.assert_called_once_with(
             user_message="hello",
             conversation_history=[],

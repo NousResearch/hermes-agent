@@ -169,6 +169,73 @@ class TestKeepTypingTimeoutPerTick:
         )
 
     @pytest.mark.asyncio
+    async def test_telegram_typing_refresh_stops_after_configured_cap(self, monkeypatch):
+        """Telegram typing must not be refreshed forever during long tool turns.
+
+        Telegram has no explicit stop action; the only way to make the client
+        clear a stale-looking "typing..." bubble is to stop sending refreshes.
+        A platform-specific cap lets long work continue without keeping the
+        compose area visually busy for minutes.
+        """
+        adapter = _StubAdapter()
+        calls = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            calls.append(asyncio.get_running_loop().time())
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+        adapter.telegram_typing_refresh_max_seconds = 0.45
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="telegram-chat",
+                interval=0.2,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.sleep(0.9)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert 2 <= len(calls) <= 3, (
+            "expected Telegram typing refreshes to stop after the cap; "
+            f"got {len(calls)} refreshes across a 0.9s turn"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_telegram_typing_refresh_is_not_capped(self, monkeypatch):
+        """Persistent-typing platforms keep the existing refresh behavior."""
+        adapter = _StubAdapter()
+        adapter.platform = Platform.DISCORD
+        calls = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+        adapter.telegram_typing_refresh_max_seconds = 0.45
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="discord-chat",
+                interval=0.2,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.sleep(0.9)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert len(calls) >= 4, (
+            "non-Telegram typing refresh cadence should remain uncapped; "
+            f"got {len(calls)} calls"
+        )
+
+    @pytest.mark.asyncio
     async def test_paused_chat_skips_send_typing(self, monkeypatch):
         """When a chat is in _typing_paused (e.g. awaiting approval), the
         loop must not call send_typing at all. Regression guard — existing

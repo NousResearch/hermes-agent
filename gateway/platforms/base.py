@@ -1323,6 +1323,12 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Telegram Bot API has no explicit "stop typing" action. Re-sending
+        # sendChatAction forever during long tool turns makes the client look
+        # stuck in "typing...". Keep the initial reassurance, then let the
+        # platform-side indicator expire; persistent-typing platforms keep
+        # their existing uncapped refresh behavior.
+        self.telegram_typing_refresh_max_seconds: float = 15.0
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2243,11 +2249,27 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        _started_at = None
+        _telegram_refresh_cap = 0.0
+        if self.platform == Platform.TELEGRAM:
+            try:
+                _telegram_refresh_cap = float(
+                    getattr(self, "telegram_typing_refresh_max_seconds", 15.0) or 0.0
+                )
+            except (TypeError, ValueError):
+                _telegram_refresh_cap = 15.0
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if chat_id not in self._typing_paused:
+                loop = asyncio.get_running_loop()
+                if _started_at is None:
+                    _started_at = loop.time()
+                _typing_cap_reached = (
+                    _telegram_refresh_cap > 0
+                    and loop.time() - _started_at >= _telegram_refresh_cap
+                )
+                if chat_id not in self._typing_paused and not _typing_cap_reached:
                     try:
                         await asyncio.wait_for(
                             self.send_typing(chat_id, metadata=metadata),

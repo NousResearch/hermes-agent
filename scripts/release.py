@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -32,6 +33,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
+
+# ACP Registry assets that must stay version-locked with pyproject.toml.
+# tests/acp/test_registry_manifest.py enforces this lockstep, so the release
+# bump touches all four files atomically.
+ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
+ACP_NPM_PACKAGE_JSON = REPO_ROOT / "packages" / "hermes-agent-acp" / "package.json"
+ACP_NPM_LAUNCHER = REPO_ROOT / "packages" / "hermes-agent-acp" / "bin" / "hermes-agent-acp.js"
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -56,6 +64,7 @@ AUTHOR_MAP = {
     "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
     "mr@shu.io": "mrshu",
+    "adam.manning@gmail.com": "am423",
     "buraysandro9@gmail.com": "ygd58",
     "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
@@ -1152,6 +1161,44 @@ def update_version_files(semver: str, calver_date: str):
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject)
+
+    # Update ACP Registry manifest + npm launcher (must stay version-locked
+    # with pyproject — enforced by tests/acp/test_registry_manifest.py).
+    _update_acp_registry_versions(semver)
+
+
+def _update_acp_registry_versions(semver: str) -> None:
+    """Bump the ACP Registry manifest, npm package, and launcher in lockstep.
+
+    Skips silently if any of the files are missing — the ACP Registry assets
+    landed mid-cycle and older release branches may not have them.
+    """
+    if ACP_REGISTRY_MANIFEST.exists():
+        manifest = json.loads(ACP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+        manifest["version"] = semver
+        npx = manifest.get("distribution", {}).get("npx", {})
+        if "package" in npx:
+            npx["package"] = f"@nousresearch/hermes-agent-acp@{semver}"
+        # Preserve trailing newline + 2-space indent the file already uses.
+        ACP_REGISTRY_MANIFEST.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+    if ACP_NPM_PACKAGE_JSON.exists():
+        package = json.loads(ACP_NPM_PACKAGE_JSON.read_text(encoding="utf-8"))
+        package["version"] = semver
+        ACP_NPM_PACKAGE_JSON.write_text(
+            json.dumps(package, indent=2) + "\n", encoding="utf-8"
+        )
+
+    if ACP_NPM_LAUNCHER.exists():
+        launcher = ACP_NPM_LAUNCHER.read_text(encoding="utf-8")
+        launcher = re.sub(
+            r"const HERMES_AGENT_VERSION\s*=\s*'[^']+';",
+            f"const HERMES_AGENT_VERSION = '{semver}';",
+            launcher,
+        )
+        ACP_NPM_LAUNCHER.write_text(launcher, encoding="utf-8")
 
 
 def build_release_artifacts(semver: str) -> list[Path]:

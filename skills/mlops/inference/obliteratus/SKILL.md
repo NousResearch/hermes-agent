@@ -5,6 +5,7 @@ version: 2.0.0
 author: Hermes Agent
 license: MIT
 dependencies: [obliteratus, torch, transformers, bitsandbytes, accelerate, safetensors]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Abliteration, Uncensoring, Refusal-Removal, LLM, Weight-Projection, SVD, Mechanistic-Interpretability, HuggingFace, Model-Surgery]

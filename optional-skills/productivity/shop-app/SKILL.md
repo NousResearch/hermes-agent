@@ -4,6 +4,7 @@ description: "Shop.app: product search, order tracking, returns, reorder."
 version: 0.0.28
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   commands: [curl]
 metadata:

@@ -20,6 +20,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) |
 | A **context-compression engine** | [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) |
 | An **image-generation backend** | [Image Generation Provider Plugins](/docs/developer-guide/image-gen-provider-plugin) |
+| A **video-generation backend** | [Video Generation Provider Plugins](/docs/developer-guide/video-gen-provider-plugin) |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/docs/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
 | An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/docs/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/docs/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
@@ -310,6 +311,36 @@ Output:
 Plugins (1):
   ✓ calculator v1.0.0 (2 tools, 1 hooks)
 ```
+
+### Debugging plugin discovery
+
+If your plugin doesn't show up — or shows up but isn't loading — set `HERMES_PLUGINS_DEBUG=1` to get verbose discovery logs on stderr:
+
+```bash
+HERMES_PLUGINS_DEBUG=1 hermes plugins list
+```
+
+You'll see, for every plugin source (bundled, user, project, entry-points):
+
+- which directories were scanned and how many manifests each yielded
+- per manifest: resolved key, name, kind, source, on-disk path
+- skip reasons: `disabled via config`, `not enabled in config`, `exclusive plugin`, `no plugin.yaml, depth cap reached`
+- on load: the plugin being imported, plus a one-line summary of what `register(ctx)` registered (tools, hooks, slash commands, CLI commands)
+- on parse failure: a full traceback for the exception (YAML scanner errors, etc.)
+- on `register()` failure: a full traceback pointing at the line in your `__init__.py` that raised
+
+The same logs are always written to `~/.hermes/logs/agent.log` at WARNING level (failures only) and DEBUG level (everything) when the env var is set. So if you can't run with the env var (e.g. from inside the gateway), tail the log file instead:
+
+```bash
+hermes logs --level WARNING | grep -i plugin
+```
+
+Common reasons a plugin doesn't appear:
+
+- **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
+- **Wrong directory layout** — must be `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or `~/.hermes/plugins/<category>/<plugin-name>/plugin.yaml` (one level of category nesting, max). Anything deeper is ignored.
+- **Missing `__init__.py`** — the plugin directory needs both `plugin.yaml` and `__init__.py` with a `register(ctx)` function.
+- **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
 
 ## Your plugin's final structure
 
@@ -747,6 +778,13 @@ def check_requirements():
     import os
     return bool(os.environ.get("MYPLATFORM_TOKEN"))
 
+def _env_enablement():
+    import os
+    tok = os.getenv("MYPLATFORM_TOKEN", "").strip()
+    if not tok:
+        return None
+    return {"token": tok}
+
 def register(ctx):
     ctx.register_platform(
         name="myplatform",
@@ -754,6 +792,11 @@ def register(ctx):
         adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
         check_fn=check_requirements,
         required_env=["MYPLATFORM_TOKEN"],
+        # Auto-populate PlatformConfig.extra from env so env-only setups
+        # show up in `hermes gateway status` without SDK instantiation.
+        env_enablement_fn=_env_enablement,
+        # Opt in to cron delivery: `deliver=myplatform` routes to this var.
+        cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
         emoji="💬",
         platform_hint="You are chatting via MyPlatform. Keep responses concise.",
     )
@@ -762,10 +805,18 @@ def register(ctx):
 ```yaml
 # plugins/platforms/myplatform/plugin.yaml
 name: myplatform-platform
+label: MyPlatform
 kind: platform
 version: 1.0.0
 description: MyPlatform gateway adapter
-requires_env: [MYPLATFORM_TOKEN]
+requires_env:
+  - name: MYPLATFORM_TOKEN
+    description: "Bot token from the MyPlatform console"
+    password: true
+optional_env:
+  - name: MYPLATFORM_HOME_CHANNEL
+    description: "Default channel for cron delivery"
+    password: false
 ```
 
 **Full guide:** [Adding Platform Adapters](/docs/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.

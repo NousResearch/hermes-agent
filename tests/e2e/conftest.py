@@ -66,6 +66,9 @@ def _ensure_discord_mock():
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
@@ -221,6 +224,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
     runner._emit_gateway_run_progress = AsyncMock()
+
+    # Disable destructive slash confirm gate so /new executes immediately
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
 
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)

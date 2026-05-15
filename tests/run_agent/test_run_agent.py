@@ -517,6 +517,42 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg(content=content)
         assert agent._extract_reasoning(msg) == expected
 
+    def test_content_list_thinking_blocks_extracted(self, agent):
+        """DeepSeek V4 Pro returns content as a typed-block list (issue #21944).
+
+        Without this branch thinking text is silently dropped → HTTP 400 on
+        the next turn ("thinking must be passed back to the API").
+        """
+        msg = _mock_assistant_msg(
+            content=[
+                {"type": "thinking", "thinking": "deep analysis here"},
+                {"type": "output", "text": "final answer"},
+            ]
+        )
+        result = agent._extract_reasoning(msg)
+        assert result == "deep analysis here"
+
+    def test_content_list_non_thinking_blocks_ignored(self, agent):
+        """Non-thinking blocks in a content list must not be treated as reasoning."""
+        msg = _mock_assistant_msg(
+            content=[
+                {"type": "text", "text": "just a regular response"},
+            ]
+        )
+        assert agent._extract_reasoning(msg) is None
+
+    def test_content_list_thinking_prefers_structured_field(self, agent):
+        """Structured ``reasoning`` field wins over content-list thinking blocks."""
+        msg = _mock_assistant_msg(
+            reasoning="from structured field",
+            content=[
+                {"type": "thinking", "thinking": "from content list"},
+            ],
+        )
+        result = agent._extract_reasoning(msg)
+        # structured field was found first → content-list branch skipped
+        assert result == "from structured field"
+
 
 class TestCleanSessionContent:
     def test_none_passthrough(self):
@@ -723,6 +759,56 @@ class TestInit:
                 skip_memory=True,
             )
             assert a._cache_ttl == "1h"
+
+    def test_model_max_tokens_from_config(self):
+        """model.max_tokens config populates the chat-completions request cap."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            kwargs = a._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert a.max_tokens == 4096
+        assert kwargs["max_tokens"] == 4096
+
+    def test_constructor_max_tokens_wins_over_config(self):
+        """Explicit constructor max_tokens keeps programmatic callers stable."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"model": {"max_tokens": 4096}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="custom",
+                model="claude-opus-4-6-thinking",
+                base_url="http://proxy.example/v1",
+                max_tokens=8192,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert a.max_tokens == 8192
 
     def test_prompt_caching_cache_ttl_invalid_falls_back(self):
         """Non-Anthropic TTL values keep default 5m without raising."""
@@ -2438,8 +2524,9 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
-        assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
-        assert all("usage" in c and "response" not in c for c in post_request_calls)
+        assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
+        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
@@ -3258,6 +3345,88 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
+        """Regression: kanban worker must call kanban_block when iteration
+        budget is exhausted, otherwise the dispatcher sees a protocol
+        violation and gives up after 1 failure (issue #23216)."""
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+
+        # Return a tool call for every iteration to exhaust the budget.
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        # Final summary response from _handle_max_iterations.
+        summary_resp = _mock_response(
+            content="Could not finish — budget exhausted.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        # The agent should have reported the task as not completed.
+        assert result["completed"] is False
+
+        # Among all handle_function_call invocations, one must be
+        # kanban_block with the correct task_id and a reason mentioning
+        # iteration exhaustion.
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list
+            if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 1, (
+            f"Expected exactly 1 kanban_block call, got {len(kanban_block_calls)}. "
+            f"All calls: {mock_hfc.call_args_list}"
+        )
+        call = kanban_block_calls[0]
+        assert call[0][1]["task_id"] == "t_test_task_123"
+        assert "Iteration budget exhausted" in call[0][1]["reason"]
+
+    def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
+        """kanban_block must NOT be called when HERMES_KANBAN_TASK is unset."""
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        summary_resp = _mock_response(
+            content="Summary.", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp, tool_resp, summary_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("do stuff")
+
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list
+            if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 0, (
+            "kanban_block should not be called outside kanban mode"
+        )
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
@@ -3666,9 +3835,21 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_github_copilot(self, agent):
+        """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
+        agent.base_url = "https://api.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
 
-class TestAzureOpenAIRouting:
-    """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""
+    def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
+        """Detect Copilot by hostname even when the configured URL includes a path."""
+        agent.base_url = "https://api.githubcopilot.com/chat/completions"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+
+class TestGpt5ApiModeRouting:
+    """Verify provider-specific GPT-5 API-mode routing."""
 
     def test_azure_gpt5_stays_on_chat_completions(self, agent):
         """Azure serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
@@ -3706,6 +3887,25 @@ class TestAzureOpenAIRouting:
         ):
             agent.api_mode = "codex_responses"
         assert agent.api_mode == "codex_responses"
+
+    def test_nous_gpt5_stays_on_chat_completions(self, agent):
+        """Nous serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "openai/gpt-5.5"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
 
     def test_is_azure_openai_url_detection(self, agent):
         assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True

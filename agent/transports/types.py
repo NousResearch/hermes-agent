@@ -62,7 +62,7 @@ class ToolCall:
         return (self.provider_data or {}).get("response_item_id")
 
     @property
-    def extra_content(self) -> Optional[Dict[str, Any]]:
+    def extra_content(self) -> dict[str, Any] | None:
         """Gemini extra_content (thought_signature) from provider_data.
 
         Gemini 3 thinking models attach ``extra_content`` with a

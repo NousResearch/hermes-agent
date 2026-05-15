@@ -51,6 +51,15 @@ class TestModuleSurface:
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
 
+    def test_module_docstring_matches_exposed_scope(self):
+        """The public module docs should not promise agent-loop-only tools."""
+        from agent.transports import hermes_tools_mcp_server as m
+
+        scope = (m.__doc__ or "").split("What we DO NOT expose:", 1)[0]
+        for unavailable in ("delegate_task", "persistent memory", "session_search", "cross-session search"):
+            assert unavailable not in scope
+        assert "kanban_* handoff/orchestrator tools" in scope
+
     def test_agent_loop_tools_not_exposed(self):
         """delegate_task / memory / session_search / todo require the
         running AIAgent context to dispatch, so a stateless MCP callback

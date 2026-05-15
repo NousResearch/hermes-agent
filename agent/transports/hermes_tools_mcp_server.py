@@ -2,32 +2,32 @@
 
 When the user runs `openai/*` turns through the codex app-server, codex
 owns the loop and builds its own tool list. By default, that means
-Hermes' richer tool surface — web search, browser automation,
-delegate_task subagents, vision analysis, persistent memory, skills,
-cross-session search, image generation, TTS — is unreachable.
+Hermes' richer tool surface — web search, browser automation, vision
+analysis, skills, image generation, TTS, and Kanban handoff tools — is
+unreachable.
 
-This module exposes a curated subset of those Hermes tools to the
-spawned codex subprocess via stdio MCP. Codex registers it as a normal
-MCP server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) and
-the user gets full Hermes capability inside a Codex turn.
+This module exposes a curated subset of Hermes tools to the spawned
+codex subprocess via stdio MCP. Codex registers it as a normal MCP
+server (per `~/.codex/config.toml [mcp_servers.hermes-tools]`) so users
+keep access to stateless Hermes capabilities inside a Codex turn.
 
 Scope (what we expose):
   - web_search, web_extract              — Firecrawl, no codex equivalent
   - browser_navigate / _click / _type /  — Camofox/Browserbase automation
     _snapshot / _screenshot / _scroll / _back / _press / _vision
-  - delegate_task                        — Hermes subagents
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
-  - memory                               — Hermes' persistent memory store
   - skill_view, skills_list              — Hermes' skill library
-  - session_search                       — cross-session search
   - text_to_speech                       — TTS
+  - kanban_* handoff/orchestrator tools  — task completion and dispatch
 
-What we DO NOT expose (codex has equivalents):
+What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
-  - clarify, todo                        — codex's own UX
+  - delegate_task / memory /             — require the running AIAgent loop
+    session_search / todo                  context, not a stateless MCP callback
+  - clarify                              — codex's own UX
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
 Spawned by: CodexAppServerSession.ensure_started() when the runtime is
@@ -120,8 +120,8 @@ def _build_server() -> Any:
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "
             "doesn't cover: web search/extract, browser automation, "
-            "subagent delegation, vision, image generation, persistent "
-            "memory, skills, and cross-session search."
+            "vision analysis, image generation, skills, TTS, and "
+            "Kanban handoff/orchestration tools."
         ),
     )
 

@@ -85,23 +85,56 @@ def _sequence_id(item: dict[str, Any]) -> Optional[int]:
         return None
 
 
-def _state_name(item: dict[str, Any]) -> str:
+def _resolve_state_payload(client: Optional[PlaneClient], item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    state = item.get("state")
+    if isinstance(state, dict):
+        return state
+    raw = str(state or "").strip()
+    if not raw or client is None or not hasattr(client, "list_states"):
+        return None
+    try:
+        for candidate in client.list_states():
+            candidate_id = str(candidate.get("id") or "").strip()
+            if candidate_id == raw:
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _state_name(item: dict[str, Any], client: Optional[PlaneClient] = None) -> str:
+    resolved = _resolve_state_payload(client, item)
+    if resolved is not None:
+        return str(resolved.get("name") or resolved.get("id") or "").strip()
     state = item.get("state")
     if isinstance(state, dict):
         return str(state.get("name") or state.get("id") or "").strip()
     return str(state or "").strip()
 
 
-def _state_id(item: dict[str, Any]) -> Optional[str]:
+def _state_id(item: dict[str, Any], client: Optional[PlaneClient] = None) -> Optional[str]:
+    resolved = _resolve_state_payload(client, item)
+    if resolved is not None:
+        return str(resolved.get("id") or "").strip() or None
     state = item.get("state")
     if isinstance(state, dict):
         return str(state.get("id") or "").strip() or None
-    return None
+    raw = str(state or "").strip()
+    return raw or None
 
 
 def _state_group(state: dict[str, Any]) -> Optional[str]:
     group = state.get("group") or state.get("state_group")
     return str(group).strip() if group is not None and str(group).strip() else None
+
+
+def _is_cancelled_state(item: dict[str, Any], client: Optional[PlaneClient] = None) -> bool:
+    group = None
+    resolved = _resolve_state_payload(client, item)
+    if isinstance(resolved, dict):
+        group = _state_group(resolved)
+    state_name = _state_name(item, client)
+    return str(group or "").strip().casefold() == "cancelled" or state_name.casefold() == "cancelled"
 
 
 def _labels(item: dict[str, Any]) -> list[str]:
@@ -193,8 +226,8 @@ def _summarize_item(client: PlaneClient, item: dict[str, Any], project: Optional
         "readable_id": readable_id,
         "name": item.get("name") or item.get("title"),
         "priority": item.get("priority"),
-        "state_name": _state_name(item),
-        "state_id": _state_id(item),
+        "state_name": _state_name(item, client),
+        "state_id": _state_id(item, client),
         "labels": _labels(item),
         "assignees_names": _assignees(item),
         "url": _plane_url(client, item, project),
@@ -214,10 +247,10 @@ def _matches_filter(value: Optional[str], candidates: Iterable[str]) -> bool:
     return any(needle in str(candidate).casefold() for candidate in candidates)
 
 
-def _filter_items(items: list[dict[str, Any]], args: dict[str, Any]) -> list[dict[str, Any]]:
+def _filter_items(client: Optional[PlaneClient], items: list[dict[str, Any]], args: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in items:
-        if not _matches_filter(args.get("state"), [_state_name(item), _state_id(item) or ""]):
+        if not _matches_filter(args.get("state"), [_state_name(item, client), _state_id(item, client) or ""]):
             continue
         if not _matches_filter(args.get("label"), _labels(item)):
             continue
@@ -405,6 +438,9 @@ def _build_work_item_payload(args: dict[str, Any], client: PlaneClient, *, requi
 
     state_id = _resolve_state_id(client, args.get("state"))
     if state_id:
+        # Live Plane behavior on AI_Factory requires both keys for state
+        # transitions. Sending only state_id can be ignored server-side and
+        # silently leave the item in its previous or default state.
         payload["state_id"] = state_id
         payload["state"] = state_id
 
@@ -459,7 +495,7 @@ def _handle_board_snapshot(args: dict[str, Any], **kw) -> str:
         verbose = bool(args.get("verbose"))
         counts = {str(state.get("name") or state.get("id") or ""): 0 for state in states}
         for item in items:
-            state = _state_name(item) or "No state"
+            state = _state_name(item, client) or "No state"
             counts[state] = counts.get(state, 0) + 1
         state_rows = [_compact_state(state, counts.get(str(state.get("name") or state.get("id") or ""), 0)) for state in states]
         result = {
@@ -473,7 +509,7 @@ def _handle_board_snapshot(args: dict[str, Any], **kw) -> str:
             per_state_limit = int(args.get("per_state_limit") or 5)
             grouped: dict[str, list[dict[str, Any]]] = {}
             for item in items:
-                state = _state_name(item) or "No state"
+                state = _state_name(item, client) or "No state"
                 grouped.setdefault(state, [])
                 if len(grouped[state]) < per_state_limit:
                     grouped[state].append(_summarize_item(client, item, project))
@@ -495,7 +531,7 @@ def _handle_list_work_items(args: dict[str, Any], **kw) -> str:
         project = client.get_project()
         limit = int(args.get("limit") or 50)
         verbose = bool(args.get("verbose"))
-        items = _filter_items(client.list_work_items(), args)[:limit]
+        items = _filter_items(client, client.list_work_items(), args)[:limit]
         result = {"items": [_summarize_item(client, item, project) for item in items], "count": len(items)}
         if verbose:
             result["items_payload"] = items
@@ -671,6 +707,55 @@ def _handle_sync_progress(args: dict[str, Any], **kw) -> str:
         return tool_error(str(exc))
 
 
+def _handle_check_kanban_links(args: dict[str, Any], **kw) -> str:
+    try:
+        hermes_card_ids = args.get("hermes_card_ids") or []
+        if not isinstance(hermes_card_ids, list) or not hermes_card_ids:
+            raise ValueError("hermes_card_ids is required")
+
+        client = get_plane_client()
+        project = client.get_project()
+        anomalies: list[dict[str, Any]] = []
+
+        for raw_card_id in hermes_card_ids:
+            hermes_card_id = str(raw_card_id or "").strip()
+            if not hermes_card_id:
+                continue
+            linkage = _lookup_plane_link_from_kanban_task(hermes_card_id)
+            try:
+                item = _resolve_item(
+                    client,
+                    work_item_id=linkage.get("plane_work_item_id"),
+                    sequence_id=linkage.get("plane_sequence_id"),
+                )
+            except PlaneAPIError as exc:
+                if exc.status_code != 404:
+                    raise
+                anomalies.append({
+                    "hermes_card_id": hermes_card_id,
+                    "status": "missing",
+                    "plane_work_item_id": linkage.get("plane_work_item_id"),
+                    "plane_sequence_id": linkage.get("plane_sequence_id"),
+                    "plane_url": linkage.get("plane_url"),
+                })
+                continue
+
+            if _is_cancelled_state(item, client):
+                anomalies.append({
+                    "hermes_card_id": hermes_card_id,
+                    "status": "cancelled",
+                    "plane_work_item_id": item.get("id") or linkage.get("plane_work_item_id"),
+                    "plane_sequence_id": _sequence_id(item) or linkage.get("plane_sequence_id"),
+                    "plane_state_id": _state_id(item, client) or linkage.get("plane_state_id"),
+                    "plane_state_name": _state_name(item, client),
+                    "plane_url": _plane_url(client, item, project),
+                })
+
+        return _ok(count=len(anomalies), items=anomalies)
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
 def _handle_ping(args: dict[str, Any], **kw) -> str:
     started = time.perf_counter()
     try:
@@ -776,9 +861,9 @@ def _handle_import_to_kanban(args: dict[str, Any], **kw) -> str:
                         f"plane_work_item_id: {item.get('id')}",
                         f"plane_sequence_id: {seq}",
                         f"plane_url: {plane_url}",
-                        f"plane_state_id: {_state_id(item) or ''}",
+                        f"plane_state_id: {_state_id(item, client) or ''}",
                         "",
-                        f"State at import: {_state_name(item) or 'unknown'}",
+                        f"State at import: {_state_name(item, client) or 'unknown'}",
                         f"Priority: {item.get('priority') or ''}",
                         "",
                         str(item.get("description_html") or item.get("description_stripped") or ""),
@@ -860,6 +945,10 @@ def plane_add_comment_tool(args: dict[str, Any]) -> str:
 
 def plane_sync_progress_tool(args: dict[str, Any]) -> str:
     return _handle_sync_progress(args)
+
+
+def plane_check_kanban_links_tool(args: dict[str, Any]) -> str:
+    return _handle_check_kanban_links(args)
 
 
 def plane_prepare_workdir_tool(args: dict[str, Any]) -> str:
@@ -995,6 +1084,18 @@ PLANE_SYNC_PROGRESS_SCHEMA = {
     },
 }
 
+PLANE_CHECK_KANBAN_LINKS_SCHEMA = {
+    "name": "plane_check_kanban_links",
+    "description": "Check linked Hermes kanban tasks against Plane and return only anomalies: cards whose Plane item is Cancelled or missing.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "hermes_card_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["hermes_card_ids"],
+    },
+}
+
 PLANE_IMPORT_TO_KANBAN_SCHEMA = {
     "name": "plane_import_to_kanban",
     "description": "Explicitly import one or more Plane work items into Hermes kanban execution tasks, preserving Plane IDs in the body.",
@@ -1097,6 +1198,15 @@ registry.register(
     toolset="plane",
     schema=PLANE_SYNC_PROGRESS_SCHEMA,
     handler=_handle_sync_progress,
+    check_fn=_check_plane_requirements,
+    requires_env=["PLANE_API_KEY", "PLANE_WORKSPACE", "PLANE_PROJECT_ID"],
+    emoji="🛩️",
+)
+registry.register(
+    name="plane_check_kanban_links",
+    toolset="plane",
+    schema=PLANE_CHECK_KANBAN_LINKS_SCHEMA,
+    handler=_handle_check_kanban_links,
     check_fn=_check_plane_requirements,
     requires_env=["PLANE_API_KEY", "PLANE_WORKSPACE", "PLANE_PROJECT_ID"],
     emoji="🛩️",

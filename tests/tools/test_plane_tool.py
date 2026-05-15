@@ -121,6 +121,7 @@ def test_plane_toolset_registered():
     assert "plane_board_snapshot" in resolved
     assert "plane_add_comment" in resolved
     assert "plane_sync_progress" in resolved
+    assert "plane_check_kanban_links" in resolved
     assert "plane_import_to_kanban" in resolved
 
 
@@ -338,6 +339,7 @@ def test_plane_update_work_item_nominal_path(stub_client):
     assert stub_client.last_update["work_item_id"] == "w1"
     assert payload["name"] == "Renamed via Hermes"
     assert payload["state_id"] == "s2"
+    assert payload["state"] == "s2"
     assert payload["labels"] == ["l1"]
     assert payload["priority"] == "high"
 
@@ -447,6 +449,87 @@ def test_plane_sync_progress_requires_linked_hermes_card(monkeypatch, stub_clien
     }))
 
     assert "not linked to a Plane work item" in data["error"]
+
+
+def test_plane_check_kanban_links_reports_cancelled_and_missing(monkeypatch, stub_client):
+    linkages = {
+        "task-cancelled": {
+            "hermes_card_id": "task-cancelled",
+            "plane_work_item_id": "w-cancelled",
+            "plane_sequence_id": 7,
+            "plane_url": "https://app.plane.so/ai_factory/projects/project-123/issues/AIFACTORY-7",
+            "plane_state_id": "s-cancelled",
+        },
+        "task-missing": {
+            "hermes_card_id": "task-missing",
+            "plane_work_item_id": "w-missing",
+            "plane_sequence_id": 8,
+            "plane_url": "https://app.plane.so/ai_factory/projects/project-123/issues/AIFACTORY-8",
+        },
+        "task-healthy": {
+            "hermes_card_id": "task-healthy",
+            "plane_work_item_id": "w-healthy",
+            "plane_sequence_id": 9,
+            "plane_url": "https://app.plane.so/ai_factory/projects/project-123/issues/AIFACTORY-9",
+        },
+    }
+
+    monkeypatch.setattr(
+        stub_client,
+        "list_states",
+        lambda: [
+            {"id": "s1", "name": "Todo", "group": "unstarted"},
+            {"id": "s-cancelled", "name": "Cancelled", "group": "cancelled"},
+        ],
+    )
+
+    def fake_lookup(card_id):
+        return dict(linkages[card_id])
+
+    def fake_resolve_item(client, *, work_item_id=None, sequence_id=None):
+        if work_item_id == "w-missing":
+            raise plane_tool.PlaneAPIError(404, '{"error":"not found"}', "https://api.plane.so/test")
+        if work_item_id == "w-cancelled":
+            return {
+                "id": "w-cancelled",
+                "sequence_id": sequence_id,
+                "name": "Cancelled item",
+                "state": "s-cancelled",
+            }
+        return {
+            "id": "w-healthy",
+            "sequence_id": sequence_id,
+            "name": "Healthy item",
+            "state": "s1",
+        }
+
+    monkeypatch.setattr(plane_tool, "_lookup_plane_link_from_kanban_task", fake_lookup)
+    monkeypatch.setattr(plane_tool, "_resolve_item", fake_resolve_item)
+
+    data = json.loads(plane_tool._handle_check_kanban_links({
+        "hermes_card_ids": ["task-cancelled", "task-missing", "task-healthy"],
+    }))
+
+    assert data["success"] is True
+    assert data["count"] == 2
+    assert data["items"] == [
+        {
+            "hermes_card_id": "task-cancelled",
+            "status": "cancelled",
+            "plane_work_item_id": "w-cancelled",
+            "plane_sequence_id": 7,
+            "plane_state_id": "s-cancelled",
+            "plane_state_name": "Cancelled",
+            "plane_url": "https://app.plane.so/ai_factory/projects/project-123/issues/AIFACTORY-7",
+        },
+        {
+            "hermes_card_id": "task-missing",
+            "status": "missing",
+            "plane_work_item_id": "w-missing",
+            "plane_sequence_id": 8,
+            "plane_url": "https://app.plane.so/ai_factory/projects/project-123/issues/AIFACTORY-8",
+        },
+    ]
 
 
 def test_plane_prepare_workdir_creates_expected_structure(tmp_path):

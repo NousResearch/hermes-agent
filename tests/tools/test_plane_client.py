@@ -136,6 +136,33 @@ def test_find_work_item_by_external_id_filters_client_side_after_api_lookup(plan
     assert len(calls) == 2
 
 
+def test_find_work_item_by_external_id_falls_back_when_server_rejects_external_filters(plane_env):
+    client = PlaneClient.from_env()
+    calls = []
+
+    def fake_list_work_items(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("external_id") == "ext-1":
+            raise PlaneAPIError(404, '{"error":"The requested resource does not exist."}', "https://api.plane.so/test")
+        return [
+            {"id": "match", "external_source": "nova-hermes", "external_id": "ext-1"},
+            {"id": "other", "external_source": "nova-hermes", "external_id": "ext-2"},
+        ]
+
+    client.list_work_items = fake_list_work_items
+
+    item = client.find_work_item_by_external_id(
+        external_source="nova-hermes",
+        external_id="ext-1",
+    )
+
+    assert item["id"] == "match"
+    assert calls[0]["external_source"] == "nova-hermes"
+    assert calls[0]["external_id"] == "ext-1"
+    assert "external_source" not in calls[1]
+    assert "external_id" not in calls[1]
+
+
 def test_resolve_state_id_by_name_and_id(plane_env):
     client = PlaneClient.from_env()
     client._states_cache = [

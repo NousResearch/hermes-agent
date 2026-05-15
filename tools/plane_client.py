@@ -23,6 +23,7 @@ BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
+UNSUPPORTED_EXTERNAL_FILTER_STATUS_CODES = {400, 404, 422}
 
 
 class PlaneConfigurationError(ValueError):
@@ -264,10 +265,19 @@ class PlaneClient:
         # Plane Cloud may support these filters directly. Keep the exact same
         # client-side filter below as a compatibility fallback because the API
         # has not been stable across deployments for external fields.
-        candidates = self.list_work_items(
-            external_source=source,
-            external_id=identifier,
-        )
+        try:
+            candidates = self.list_work_items(
+                external_source=source,
+                external_id=identifier,
+            )
+        except PlaneAPIError as exc:
+            # Plane Cloud may reject these query params on some deployments.
+            # Treat the filtered lookup as best effort, then fall back to a
+            # normal expanded board scan below.
+            if exc.status_code in UNSUPPORTED_EXTERNAL_FILTER_STATUS_CODES:
+                candidates = []
+            else:
+                raise
         for item in candidates:
             if (
                 str(item.get("external_source") or "").strip() == source

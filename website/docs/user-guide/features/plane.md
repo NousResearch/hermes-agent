@@ -169,6 +169,23 @@ The tool reads the Plane linkage fields stored by `plane_import_to_kanban` in th
 
 Convention: call `plane_sync_progress` on meaningful kanban transitions, for example task start, blocked state, implementation complete, or review done. Use `plane_add_comment` only for comments that should not imply state movement.
 
+`plane_check_kanban_links`
+
+Checks a list of Hermes kanban tasks already linked to Plane and returns only the anomalies. Supports:
+
+- `hermes_card_ids`, required list of Hermes task ids
+
+Return shape: `{"items": [{"hermes_card_id", "status", "plane_work_item_id", "plane_sequence_id", "plane_state_id", "plane_state_name", "plane_url"}], "count": <int>}`.
+
+Behavior:
+
+- `status: "cancelled"` when the linked Plane work item still exists but is in the `Cancelled` state
+- `status: "missing"` when the linked Plane work item can no longer be resolved from the stored linkage
+- no automatic side effects, no kanban mutation, no Plane write
+- tasks not linked to Plane fail fast with a validation error instead of being silently skipped
+
+Use it as a read-only drift detector before starting work on imported Hermes tasks, or as a periodic audit step on in-flight kanban items.
+
 `plane_import_to_kanban`
 
 Creates Hermes kanban tasks from selected Plane work items. The task body stores Plane linkage fields:
@@ -210,9 +227,10 @@ The folder prefix matches the Plane project identifier. If `project_key` is prov
 3. Use `plane_get_work_item` for the specific card.
 4. Use `plane_import_to_kanban` only when a Plane card should become executable agent work.
 5. Agents work in Hermes kanban and local workdirs.
-6. Use `plane_sync_progress` from kanban workers to reflect meaningful progress and optional state transitions back to Plane.
-7. Use `plane_add_comment` for extra notes that should not move the Plane state.
-8. Update Plane explicitly when other fields should change on the project board.
+6. Use `plane_check_kanban_links` before starting or resuming work on imported Hermes tasks when you want a quick drift check against Plane.
+7. Use `plane_sync_progress` from kanban workers to reflect meaningful progress and optional state transitions back to Plane.
+8. Use `plane_add_comment` for extra notes that should not move the Plane state.
+9. Update Plane explicitly when other fields should change on the project board.
 
 ## End-to-end example
 
@@ -254,7 +272,11 @@ A second call to `plane_import_to_kanban` with the same `sequence_ids` returns t
 
 **HTTP 409 on `plane_create_work_item`.** Means another caller (or a previous Hermes attempt) already created the work item with the same `external_source` + `external_id`. The handler converts this case into a clean `already_existed: true` response, with `created: null` and `item` populated with the existing card. If you still see a `tool_error` 409 surface, capture the payload and the resolved `external_id` so the lookup path can be tightened further.
 
-**Lookup misses but card exists.** The pre-create lookup uses the Plane filter API on `external_source` + `external_id`, then falls back to a full board scan. On large boards or when Plane Cloud omits `external_source` / `external_id` from filtered list results, the lookup can briefly miss a card that exists. The 409 fallback above is the safety net.
+**Lookup misses but card exists.** The pre-create lookup uses the Plane filter API on `external_source` + `external_id`, then falls back to a full board scan. On the current Plane Cloud board the full scan cost is negligible, and it remains necessary because the filtered lookup can return `400`, `404`, or `422` even when the card exists. The fallback is therefore intentional best effort behavior, not dead code.
+
+**State update succeeds only with duplicated `state_id` + `state`.** In the current Plane environment Hermes must send both keys for state transitions. The tool keeps this workaround intentionally. If you remove one of the two fields and live updates start failing again, put the duplication back before debugging anything else.
+
+**`plane_check_kanban_links` reports `missing` or `cancelled`.** `missing` means the stored Plane linkage no longer resolves. `cancelled` means the Plane card still exists but has reached the `Cancelled` state. The tool is read-only by design: it reports drift but does not archive, cancel, or edit the Hermes task for you.
 
 **`plane_sync_progress` says the kanban task is not linked.** The Hermes kanban task body must contain the `plane_*` linkage lines written by `plane_import_to_kanban`. Tasks created manually via `hermes kanban` are not linked unless those lines are added by hand.
 

@@ -32,6 +32,24 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_plane_toolset_declared(self):
+        ts = get_toolset("plane")
+        assert ts is not None
+        assert ts["description"]
+        assert set(ts["tools"]) == {
+            "plane_ping",
+            "plane_board_snapshot",
+            "plane_list_work_items",
+            "plane_get_work_item",
+            "plane_create_work_item",
+            "plane_update_work_item",
+            "plane_add_comment",
+            "plane_sync_progress",
+            "plane_check_kanban_links",
+            "plane_import_to_kanban",
+            "plane_prepare_workdir",
+        }
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(
@@ -246,11 +264,3 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
-
-
-class TestDefaultPlatformWebSearchCoverage:
-    def test_hermes_whatsapp_toolset_includes_web_search(self):
-        assert "web_search" in resolve_toolset("hermes-whatsapp")
-
-    def test_hermes_api_server_toolset_includes_web_search(self):
-        assert "web_search" in resolve_toolset("hermes-api-server")

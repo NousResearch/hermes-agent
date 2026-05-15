@@ -82,19 +82,31 @@ Bonus optionnel (non bloquant) : passer `?expand=...` dans le premier `list_work
 
 Ces 6 points sont déjà documentés dans `2026-05-15-plane-v1-review-notes.md` mais n'ont pas été inclus dans le rapport de clôture. Aucun n'est bloquant individuellement, mais leur cumul rend le terme "V1 complète" inexact.
 
-### L1. Rendu Markdown vers HTML insuffisant [REPORTÉ V1.2, hors scope Claude 2026-05-15]
+### L1. Rendu Markdown vers HTML insuffisant [REPORTÉ V1.2, décision Nova 2026-05-15]
 Pipeline actuel : `escape + <br>`. Listes, gras, italique, code, liens ne fonctionnent pas dans les commentaires Plane envoyés depuis Hermes.
 Action : décider si on traite en V1.1 (introduire `markdown` ou `mistune`, lib stable, sans dépendances lourdes) ou si on le reporte explicitement avec une mention claire dans `plane.md`.
 
-**Statut 2026-05-15 (Claude) :** non implémenté côté code. La limite est désormais documentée explicitement dans `plane.md` (section `plane_add_comment` et troubleshooting). Intégration d'une lib Markdown réservée à Nova qui peut valider live contre l'API Plane.
+**Décision 2026-05-15 (Nova) :** report V1.2.
 
-### L2. Drift detection absente (`plane_check_kanban_links`) [HORS SCOPE Claude, à faire par Nova]
+**Justification :** `markdown` est déjà installé mais non sûr tel quel pour du contenu utilisateur, car il laisse passer HTML brut et liens `javascript:`. `mistune` serait un meilleur candidat pur Python pour une V1.2 sandboxée, avec périmètre minimal recommandé : gras, italique, listes, code inline/blocs, liens http/https uniquement. Pour V1.1, la bonne décision produit est de garder le pipeline minimal déjà documenté plutôt que d'introduire un rendu riche insuffisamment assaini.
+
+**Statut 2026-05-15 (Claude + Nova) :** limite déjà documentée dans `plane.md`. Pas de changement code en V1.1.
+
+### L2. Drift detection absente (`plane_check_kanban_links`) [TRAITÉ 2026-05-15 Nova]
 Risque réel : si une carte Plane est annulée / supprimée pendant qu'Hermes bosse dessus, le travail continue dans le vide.
 Action V1.1 minimale : un outil `plane_check_kanban_links` qui prend la liste des tâches Hermes liées à des cartes Plane et retourne celles dont l'état Plane est `Cancelled` ou la carte introuvable. Pas d'auto-action, juste du reporting.
 
-### L3. Traçabilité automatique des writes absente [HORS SCOPE Claude, à faire par Nova]
+**Décision 2026-05-15 (Nova) :** in V1.1.
+
+**Statut 2026-05-15 (Nova) :** implémenté dans `tools/plane_tool.py`. Contrat retenu : entrée `hermes_card_ids: string[]`, sortie `{"items": [...]}` contenant uniquement les anomalies `cancelled` ou `missing`, sans auto-action. Validation live sur carte dédiée `AIFACTORY-15` importée dans le kanban Hermes, puis basculée en `Cancelled` et détectée correctement par l'outil.
+
+### L3. Traçabilité automatique des writes absente [REPORTÉ V1.2, décision Nova 2026-05-15]
 Quand Hermes modifie une carte Plane, rien ne distingue visuellement la modification d'une modification humaine.
 Action V1.1 : ajouter systématiquement un commentaire `[hermes] <action>` après chaque write (`update_work_item`, `add_comment`, changement d'état). Comportement désactivable via flag d'outil pour les cas où c'est explicitement non voulu.
+
+**Décision 2026-05-15 (Nova) :** report V1.2.
+
+**Justification :** le risque de spam est réel, surtout sur `add_comment` et `plane_sync_progress` qui signent déjà l'origine côté contenu. Le bon comportement produit est plus fin qu'un `always on`: probablement actif par défaut sur `plane_update_work_item` et changements d'état, inactif sur `plane_add_comment`, avec un flag d'override explicite. Ça demande un contrat transversal supplémentaire sur tous les outils d'écriture, donc mieux traité proprement en V1.2.
 
 ### L4. `already_imported=True` non exposé sur `plane_import_to_kanban` [TRAITÉ 2026-05-15 Claude]
 Le handler ne retourne pas de signal clair quand la carte Plane est déjà importée dans le kanban Hermes. Symétrique au B1.
@@ -108,9 +120,13 @@ Action V1.1 : décider (recommandation : `None` = ignoré, seuls les champs expl
 
 **Statut 2026-05-15 (Claude) :** sémantique retenue : `None` (ou absent) = ignoré, non envoyé en PATCH. Liste vide `[]` sur `labels` / `assignees` = signal explicite de clear, transmis tel quel. Comportement déjà conforme dans `_build_work_item_payload` ; commentaire de contrat explicite ajouté. Tests `test_plane_update_work_item_ignores_none_fields_in_patch_payload` et `test_plane_update_work_item_empty_list_clears_labels_and_assignees` ajoutés. Documenté dans `plane.md` section `plane_update_work_item`.
 
-### L6. Repo 630 commits behind `origin/main` + 5 fichiers modifiés non liés [HORS SCOPE Claude, à faire par Nova]
+### L6. Repo 630 commits behind `origin/main` + 5 fichiers modifiés non liés [TRAITÉ 2026-05-15 Nova]
 Au démarrage du chantier, l'arbre Git était significativement dérivé. Pas de mention dans le rapport.
 Action immédiate : `git fetch && git status` partagés, décision explicite (rebase, merge, ou ignorer), nettoyage des fichiers modifiés non liés.
+
+**Décision 2026-05-15 (Nova) :** ne pas rebase ni merge pendant cette passe. Isoler d'abord le lot Plane V1.1 sur branche dédiée, préserver les changements hors scope à part, puis laisser la remise à niveau avec `origin/main` pour une étape Git séparée une fois le lot stabilisé.
+
+**Statut 2026-05-15 (Nova) :** clarifié avec Emeric. Branche de travail `plane-v1.1-nova`, branche de préservation `wip/plane-v1-preserve-20260515`, fichiers hors scope sortis du lot courant dans `stash@{0}`. Aucun changement Claude perdu.
 
 ## 4. P2 : code smells secondaires
 
@@ -128,9 +144,13 @@ Fix : prendre le `project_key` réel depuis le project Plane récupéré, pas la
 
 **Statut 2026-05-15 (Claude) :** signature de `prepare_workdir` enrichie d'un kwarg optionnel `project_key`. `_handle_import_to_kanban` passe le `key` calculé via `_project_key(client, project)`. `_handle_prepare_workdir` essaie de résoudre via `get_plane_client().get_project_identifier()` si l'env Plane est configurée, sinon fallback `AIFACTORY`. Le schéma `PLANE_PREPARE_WORKDIR_SCHEMA` expose désormais `project_key` (optionnel). Tests `test_plane_prepare_workdir_honours_custom_project_key` et `test_plane_import_to_kanban_workdir_uses_real_project_key` ajoutés.
 
-### C3. Double scan complet du board à chaque create [HORS SCOPE Claude, à faire par Nova]
+### C3. Double scan complet du board à chaque create [TRAITÉ 2026-05-15 Nova]
 `tools/plane_client.py:280-285`. Coûteux dès que le board grossit, et appelé systématiquement à chaque `plane_create_work_item`.
 Fix : si le premier appel filtré côté serveur retourne 0, ne pas faire le fallback non filtré. Documenter que le lookup externe est best effort.
+
+**Décision 2026-05-15 (Nova) :** in V1.1, mais sous forme de correctif de robustesse plutôt que d'optimisation pure.
+
+**Statut 2026-05-15 (Nova) :** mesuré en live sur le board AI_Factory actuel, charge négligeable. En revanche, le vrai problème observé est plus grave : l'API Plane retourne parfois `404` sur le lookup filtré `external_source` + `external_id`. Le fallback full scan reste donc nécessaire pour la correction fonctionnelle. Implémentation retenue : le filtre serveur reste le premier essai, et les codes `400/404/422` basculent silencieusement vers un scan best effort du board complet. Validation live réussie via création idempotente d'une carte dédiée `AIFACTORY-15`.
 
 ### C4. Usage abusif de `Any` contre les guidelines [TRAITÉ 2026-05-15 Claude]
 Plusieurs helpers internes prennent `client: Any` alors que `PlaneClient` est connu.
@@ -138,8 +158,12 @@ Fix : typer correctement les helpers internes.
 
 **Statut 2026-05-15 (Claude) :** 12 helpers privés re-typés `client: PlaneClient` : `_client_workspace`, `_client_project_id`, `_project_key`, `_summarize_project`, `_plane_url`, `_summarize_item`, `_enrich_item`, `_resolve_item`, `_resolve_state_id`, `_fallback_external_id`, `_prepare_create_idempotency`, `_find_existing_by_external_id`, `_build_work_item_payload`, `_selected_items`. Le `Any` est conservé uniquement pour les dicts JSON Plane (typage runtime via duck-typing tolère le stub client des tests). Tests verts.
 
-### C5. Payload `state_id` + `state` dupliqués [HORS SCOPE Claude, à faire par Nova]
+### C5. Payload `state_id` + `state` dupliqués [TRAITÉ 2026-05-15 Nova]
 `tools/plane_tool.py:401-403` et `:616`. Si c'est un contournement d'un bug Plane connu, le commenter. Sinon, retirer le doublon.
+
+**Décision 2026-05-15 (Nova) :** in V1.1 comme workaround documenté.
+
+**Statut 2026-05-15 (Nova) :** vérifié en live. Le board AI_Factory accepte correctement les transitions quand Hermes envoie à la fois `state_id` et `state`, et ce doublon correspond bien au comportement attendu par l'API dans notre contexte. Le code garde donc les deux champs avec commentaire explicite, et un test de régression vérifie que le PATCH transmis contient bien `state_id` et `state`.
 
 ## 5. Trous de tests à combler
 
@@ -162,8 +186,12 @@ Action : un test par méthode minimum, avec mock HTTP `_FakeResponse`.
 
 **Statut 2026-05-15 (Claude) :** 4 tests ajoutés dans `tests/tools/test_plane_client.py` : `test_create_work_item_posts_payload_to_work_items_endpoint`, `test_create_work_item_rejects_empty_payload`, `test_update_work_item_sends_patch_with_payload`, `test_update_work_item_requires_id_and_payload`. Tous utilisent `_FakeResponse` + `urllib.request.urlopen` mocké.
 
-### T4. Cas d'erreur réseau non couverts [HORS SCOPE Claude, à faire par Nova]
+### T4. Cas d'erreur réseau non couverts [REPORTÉ V1.2, décision Nova 2026-05-15]
 Aucun test pour timeout, 5xx, retry behavior. Pas critique en V1 mais à ajouter avant d'aller en prod intensive.
+
+**Décision 2026-05-15 (Nova) :** report V1.2.
+
+**Justification :** le besoin est réel, mais non bloquant pour fermer V1.1. Les chemins critiques de V1.1 ont désormais un filet de sécurité fonctionnel côté create idempotent, et un vrai traitement retry/timeout mérite d'être conçu proprement au niveau client, pas ajouté à moitié dans cette passe.
 
 ### T5. `plane_update_work_item` chemin nominal [TRAITÉ 2026-05-15 Claude]
 Le seul test actuel valide juste le message d'erreur de validation. Le path qui marche n'est pas couvert.
@@ -197,8 +225,10 @@ V1.1 considérée comme finie si et seulement si :
 5. L6 (état Git) clarifié et nettoyé.
 6. Doc `plane.md` mise à jour sur les 4 points listés en section 6.
 7. C1 (silencieux) et C2 (`AIFACTORY` hardcodé) fixés.
+8. Décisions actées pour le lot restant : L1 report V1.2, L2 in V1.1, L3 report V1.2, C3 in V1.1, C5 in V1.1, T4 report V1.2.
+9. Les items retenus in V1.1 par Nova sont implémentés, testés en mock et validés en live.
 
-L1 (Markdown), L2 (drift), L3 (traçabilité auto), C3 / C4 / C5 : décision explicite "in V1.1" ou "report V1.2", documentée.
+**Etat 2026-05-15 (Nova) :** conditions 1 à 9 satisfaites sur le lot Plane V1.1. Baseline actuelle : `pytest tests/tools/test_plane_client.py tests/tools/test_plane_tool.py tests/test_toolsets.py -q` => `67 passed`.
 
 ## 8. Hors scope V1.1 (à acter)
 
@@ -242,16 +272,16 @@ Fichiers touchés :
 
 ## 11. Reste pour Nova (runtime live requis)
 
-Tout ce qui suit demande un accès à l'API Plane live ou des décisions produits que Claude n'a pas vocation à trancher :
+Tout ce qui suit demandait un accès à l'API Plane live ou des décisions produits que Claude n'avait pas vocation à trancher :
 
-| Item | Pourquoi Nova |
-| --- | --- |
-| **L1 — Markdown riche** | Choix de lib + validation live du rendu côté Plane (escape, sécurité). |
-| **L2 — `plane_check_kanban_links`** | Nouvel outil, doit être validé en live contre cartes annulées / supprimées. |
-| **L3 — Traçabilité auto `[hermes]`** | Décision produit + risque de spam de commentaires, à valider sur board réel. |
-| **L6 — État Git** | `git fetch`, decision rebase / merge, nettoyage des fichiers modifiés non liés. |
-| **T4 — Cas erreur réseau** | Timeouts, 5xx, retry. Utile mais nécessite scénario live ou framework d'injection de pannes. |
-| **C3 — Double scan board** | Optimisation, validation perfs sur board réel + risque de manquer une carte si fallback supprimé. |
-| **C5 — `state_id` + `state` dupliqués** | Vérifier si c'est un workaround Plane connu (Nova a l'historique live). |
+| Item | Statut au 2026-05-15 | Note |
+| --- | --- | --- |
+| **L1 — Markdown riche** | **REPORTÉ V1.2** | `markdown` jugé trop permissif sans sanitization. Candidat recommandé pour V1.2 : `mistune` avec allowlist minimale. |
+| **L2 — `plane_check_kanban_links`** | **TRAITÉ 2026-05-15** | Outil implémenté, contrat figé, tests mockés ajoutés, validation live sur `AIFACTORY-15`. |
+| **L3 — Traçabilité auto `[hermes]`** | **REPORTÉ V1.2** | Décision produit à affiner pour éviter le spam et définir les overrides par outil. |
+| **L6 — État Git** | **TRAITÉ 2026-05-15** | Lot isolé sur `plane-v1.1-nova`, préservation sur `wip/plane-v1-preserve-20260515`, hors scope en `stash@{0}`. |
+| **T4 — Cas erreur réseau** | **REPORTÉ V1.2** | Retry/timeout utiles mais non critiques pour fermer V1.1. |
+| **C3 — Double scan board** | **TRAITÉ 2026-05-15** | Coût live négligeable, mais fallback full scan conservé pour contourner un `404` réel du filtre Plane. |
+| **C5 — `state_id` + `state` dupliqués** | **TRAITÉ 2026-05-15** | Workaround confirmé en live, commenté et couvert par test. |
 
-Conditions d'acceptation V1.1 (section 7) restantes pour Nova : **L6** (état Git), et décision explicite "in V1.1 / report V1.2" sur **L1, L2, L3, C3, C5, T4** documentée dans ce même doc.
+Synthèse Nova : V1.1 retient **L2 + C3 + C5**. **L1 + L3 + T4** sont explicitement reportés en V1.2.

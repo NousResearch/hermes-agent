@@ -12,6 +12,13 @@ __pycache__/
 .env.production.local
 .env.development
 .env.test
+.hermes-docker/
+.notebooklm-home/
+.notebooklm-cli-venv/
+.notebooklm-playwright/
+.pip-cache/
+.uv-cache/
+compose.hermes.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc

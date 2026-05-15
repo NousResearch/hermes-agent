@@ -315,7 +315,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _subject_thread_id(self, subject: str) -> Optional[str]:
         """Return a normalized subject thread id when subject isolation is enabled."""
-        if not self._session_by_subject:
+        if not getattr(self, "_session_by_subject", False):
             return None
         normalized = _normalize_email_subject(subject)
         return normalized or None
@@ -323,7 +323,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _thread_context_key(self, address: str, thread_id: Optional[str] = None) -> str:
         """Build the key used for email reply context."""
         normalized_address = address.lower()
-        if self._session_by_subject and thread_id:
+        if getattr(self, "_session_by_subject", False) and thread_id:
             return f"{normalized_address}{_THREAD_CONTEXT_SEPARATOR}{thread_id}"
         return normalized_address
 

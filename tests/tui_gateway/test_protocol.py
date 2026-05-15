@@ -292,8 +292,11 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def get_session(self, _sid):
             return {"id": "20260409_010101_abc123"}
 
-        def get_session_by_title(self, _title):
+        def resolve_session_by_title(self, _title):
             return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
 
         def reopen_session(self, _sid):
             return None
@@ -328,6 +331,83 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         {"role": "assistant", "text": "yo"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
+
+
+def test_session_resume_title_uses_latest_lineage_variant(server, monkeypatch):
+    resumed = []
+
+    class _DB:
+        def get_session(self, sid):
+            if sid == "s3":
+                return {"id": "s3", "title": "Project #3"}
+            return None
+
+        def resolve_session_by_title(self, title):
+            assert title == "Project"
+            return "s3"
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, sid):
+            resumed.append(sid)
+
+        def get_messages_as_conversation(self, sid, include_ancestors=False):
+            assert sid == "s3"
+            return [{"role": "user", "content": "latest"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {"id": "r-title", "method": "session.resume", "params": {"session_id": "Project"}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["resumed"] == "s3"
+    assert resumed == ["s3"]
+
+
+def test_session_resume_id_redirects_to_compression_tip(server, monkeypatch):
+    initialized = []
+
+    class _DB:
+        def get_session(self, sid):
+            if sid in {"root", "tip"}:
+                return {"id": sid}
+            return None
+
+        def resolve_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            assert sid == "root"
+            return "tip"
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, sid, include_ancestors=False):
+            assert sid == "tip"
+            return [{"role": "user", "content": "continued"}]
+
+    def fake_init(sid, key, agent, history, cols=80):
+        initialized.append((key, history))
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_init_session", fake_init)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {"id": "r-tip", "method": "session.resume", "params": {"session_id": "root"}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["resumed"] == "tip"
+    assert initialized == [("tip", [{"role": "user", "content": "continued"}])]
 
 
 # ── Config I/O ───────────────────────────────────────────────────────

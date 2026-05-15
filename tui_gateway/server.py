@@ -2250,11 +2250,25 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5000)
     found = db.get_session(target)
     if not found:
-        found = db.get_session_by_title(target)
-        if found:
-            target = found["id"]
-        else:
+        resolved_id = db.resolve_session_by_title(target)
+        if not resolved_id:
             return _err(rid, 4007, "session not found")
+        target = str(resolved_id)
+        found = db.get_session(target)
+        if not found:
+            return _err(rid, 4007, "session not found")
+
+    try:
+        resolved_target = db.resolve_resume_session_id(target)
+    except Exception:
+        logger.exception("session.resume continuation resolution failed for %r", target)
+        resolved_target = target
+    if resolved_target and resolved_target != target:
+        target = str(resolved_target)
+        found = db.get_session(target)
+        if not found:
+            return _err(rid, 4007, "session not found")
+
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:

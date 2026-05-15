@@ -11715,6 +11715,20 @@ Examples:
         action="store_true",
         help="Run interactive Hermes provider/model setup for ACP terminal auth",
     )
+    acp_parser.add_argument(
+        "--setup-browser",
+        action="store_true",
+        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+             "for browser tool support (idempotent).",
+    )
+    acp_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        dest="assume_yes",
+        help="Accept all prompts (used by --setup-browser to skip the "
+             "~400 MB Chromium download confirmation).",
+    )
 
     def cmd_acp(args):
         """Launch Hermes Agent as an ACP server."""
@@ -11728,6 +11742,10 @@ Examples:
                 acp_argv.append("--check")
             if getattr(args, "setup", False):
                 acp_argv.append("--setup")
+            if getattr(args, "setup_browser", False):
+                acp_argv.append("--setup-browser")
+            if getattr(args, "assume_yes", False):
+                acp_argv.append("--yes")
             acp_main(acp_argv)
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)

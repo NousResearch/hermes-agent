@@ -78,6 +78,27 @@ hermes acp --version
 hermes acp --check
 ```
 
+### Browser tools (optional)
+
+Browser tools (`browser_navigate`, `browser_click`, etc.) depend on the
+`agent-browser` npm package and Chromium, which aren't part of the Python
+wheel. Install them with:
+
+```bash
+hermes acp --setup-browser           # interactive (prompts before ~400 MB download)
+hermes acp --setup-browser --yes     # accept the download non-interactively
+```
+
+This is the standalone command. The Zed registry's terminal-auth flow (`hermes acp --setup`) also offers the browser bootstrap as a follow-up question after model selection, so most users never need to run `--setup-browser` directly.
+
+What it does:
+
+- Installs Node.js 22 LTS into `~/.hermes/node/` if missing
+- `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
+- Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
+
+The bootstrap is idempotent — re-running it is fast and skips work that's already done.
+
 ## Editor setup
 
 ### VS Code

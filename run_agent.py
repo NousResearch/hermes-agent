@@ -37,6 +37,7 @@ import concurrent.futures
 import contextvars
 import copy
 import hashlib
+import importlib.util
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ import os
 import random
 import re
 import ssl
+import subprocess
 import sys
 import tempfile
 import time
@@ -145,8 +147,7 @@ from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE,
-    KANBAN_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, KANBAN_GUIDANCE, ROUTING_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -160,7 +161,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, build_hasos_runtime_guidance, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -274,6 +275,408 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         pass
 
     return proxy
+
+
+_HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS = (
+    "hasos", "標準", "standard", "standards", "wiki", "template", "模板",
+    "standards-invocation-map", "release-security-gate", "fixed-paste",
+    "canonical", "source ledger", "closeout", "完成報告", "商用品質",
+    "commercial-quality",
+)
+
+_HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS = (
+    "app store", "appstore", "testflight", "release", "upload", "submission",
+    "上架", "送審", "隱私", "privacy", "privacy policy", "privacy manifest",
+    "marketing url", "support url", "contact url",
+)
+
+_HASOS_CLOSEOUT_PERMISSION_MARKERS = ("permission", "permissions", "權限")
+_HASOS_CLOSEOUT_FILESYSTEM_PERMISSION_CONTEXT_MARKERS = (
+    "file permission", "file permissions", "filesystem permission", "filesystem permissions",
+    "directory permission", "directory permissions", "folder permission", "folder permissions",
+    "cache permission", "cache permissions", "local cache", "/tmp", "~/", "chmod", "chown", "acl",
+    "posix", "unix permission", "unix permissions", "檔案權限", "文件權限",
+    "資料夾權限", "快取權限", "本機快取",
+)
+
+_HASOS_CLOSEOUT_APP_PERMISSION_TASK_MARKERS = (
+    "app permission", "app permissions", "privacy permission", "permission prompt",
+    "camera permission", "microphone permission", "contacts permission",
+    "photo permission", "photos permission", "location permission", "notification permission",
+    "app 權限", "相機權限", "麥克風權限", "聯絡人權限", "通訊錄權限",
+    "照片權限", "相簿權限", "定位權限", "通知權限", "權限提示", "權限說明",
+)
+
+_HASOS_CLOSEOUT_FINAL_RESPONSE_TASK_MARKERS = (
+    "hasos", "standards wiki", "wiki", "template", "app store", "appstore",
+    "testflight", "release", "upload", "submission", "上架", "送審",
+    "隱私", "privacy", "privacy policy", "privacy manifest", "permission prompt",
+    "權限提示", "完成報告",
+)
+
+_HASOS_COMPLETION_CLAIM_MARKERS = (
+    "完成", "已完成", "已落地", "已實作", "已更新", "已修正", "pass",
+    "passed", "done", "implemented", "verified", "驗證通過", "可驗收",
+)
+
+_HASOS_CLOSEOUT_EVIDENCE_MARKERS = (
+    "證據", "evidence", "驗證", "verification", "測試", "pytest", "pass",
+    "passed", "diff_check", "secret_scan", "backup", "artifact", "檔案",
+)
+
+_HASOS_CLOSEOUT_ARTIFACT_MARKERS = (
+    "artifact", "artifacts", "產物", "成果物", "目標產物", "檔案", "app", "version",
+    "build", "submission", "review submission", "app store version", "版本", "建置",
+    "送審", "上架",
+)
+
+_HASOS_CLOSEOUT_SOURCE_MARKERS = (
+    "source", "sources", "來源", "source/evidence", "evidence", "證據", "api",
+    "read-back", "readback", "讀回", "screenshot", "截圖", "log", "日誌", "asc",
+    "app store connect",
+)
+
+_HASOS_CLOSEOUT_VERIFICATION_MARKERS = (
+    "verification", "verify", "verified", "驗證", "檢查", "測試", "pytest", "pass",
+    "passed", "read-back", "讀回", "狀態確認", "verification evidence",
+)
+
+_HASOS_CLOSEOUT_LIMITATION_MARKERS = (
+    "限制", "邊界", "不能宣稱", "不能做", "未能驗證", "limitation",
+    "boundary", "unverified", "not claim", "not completed",
+)
+
+_HASOS_CLOSEOUT_WIKI_SKILL_MARKERS = (
+    "wiki / skill", "wiki/skill", "wiki_update_candidate", "update decision",
+    "更新決策", "no-update", "proposal", "不更新", "技能更新", "標準更新",
+)
+
+_HASOS_CLOSEOUT_WIKI_SKILL_LABEL_RE = re.compile(
+    r"(?i)(?:^|[\n。；;])\s*(?:wiki\s*/\s*skill(?:\s+update\s+decision)?|wiki_update_candidate|"
+    r"(?:wiki|skill|標準|技能)\s*更新決策|(?:wiki|skill)\s+decision)\s*[:：-]\s*\S"
+)
+
+_HASOS_CLOSEOUT_LABEL_ALIASES = {
+    "artifact/產物": ("artifact / 產物", "artifact", "artifacts", "產物", "成果物"),
+    "source/evidence/來源證據": (
+        "source / evidence / 來源證據", "source / evidence", "sources / evidence",
+        "source", "sources", "evidence", "來源證據", "來源", "證據",
+    ),
+    "verification/驗證": ("verification / 驗證", "verification", "verify", "驗證"),
+    "limitations/未能驗證": (
+        "limitations / 未能驗證", "limitations", "limitation", "未能驗證", "限制", "邊界",
+    ),
+    "wiki/skill update decision": (
+        "wiki / skill update decision", "wiki / skill", "wiki/skill",
+        "wiki_update_candidate", "wiki decision", "skill decision", "wiki 更新決策",
+        "skill 更新決策", "標準更新決策", "技能更新決策",
+    ),
+}
+_HASOS_CLOSEOUT_LABEL_BOUNDARY_RE = re.compile(
+    r"(?im)(?:^|[\n。；;])\s*(?:"
+    + "|".join(
+        re.escape(label)
+        for aliases in _HASOS_CLOSEOUT_LABEL_ALIASES.values()
+        for label in sorted(aliases, key=len, reverse=True)
+    )
+    + r")\s*[:：-]"
+)
+_HASOS_CLOSEOUT_PLACEHOLDER_RE = re.compile(
+    r"(?i)^\s*(?:無|none|n/a|na|null|未提供|沒有|待補|tbd|todo|unknown|未能驗證|<[^>]+>|\.{2,}|-+)\s*[。.!；;]*\s*$"
+)
+_HASOS_CLOSEOUT_PLACEHOLDER_PREFIX_RE = re.compile(
+    r"(?i)^\s*(?:無|none|n/a|na|null|未提供|沒有|待補|tbd|todo|unknown|未能驗證|<[^>]+>|\.{2,}|-+)(?:\b|[\s，,。；;:：\-])"
+)
+_HASOS_CLOSEOUT_UNRESOLVED_PLACEHOLDER_RE = re.compile(
+    r"(?i)(?:n/a|\bna\b|null|未提供|待補|稍後補|tbd|todo|unknown|未能驗證|<[^>]+>|\.{2,})"
+)
+_HASOS_CLOSEOUT_LIMITATION_UNRESOLVED_PLACEHOLDER_RE = re.compile(
+    r"(?i)(?:n/a|\bna\b|null|未提供|待補|稍後補|tbd|todo|unknown|<[^>]+>|\.{2,})"
+)
+
+
+def _hasos_closeout_value_is_placeholder(value: str, *, allow_none_value: bool = False) -> bool:
+    text = value or ""
+    if allow_none_value:
+        normalized = re.sub(r"[\s。.!；;]+", "", text.lower())
+        if normalized in {"無", "none", "沒有"}:
+            return False
+        if re.match(r"(?i)^\s*(?:無|none|沒有)(?:\b|[\s，,。；;:：\-])", text):
+            return True
+        return _HASOS_CLOSEOUT_LIMITATION_UNRESOLVED_PLACEHOLDER_RE.search(text) is not None
+    return (
+        _HASOS_CLOSEOUT_PLACEHOLDER_RE.fullmatch(text) is not None
+        or _HASOS_CLOSEOUT_PLACEHOLDER_PREFIX_RE.search(text) is not None
+        or _HASOS_CLOSEOUT_UNRESOLVED_PLACEHOLDER_RE.search(text) is not None
+    )
+
+def _hasos_closeout_component_value(text: str, component: str) -> str:
+    aliases = _HASOS_CLOSEOUT_LABEL_ALIASES[component]
+    label_pattern = "|".join(re.escape(label) for label in sorted(aliases, key=len, reverse=True))
+    match = re.search(rf"(?is)(?:^|[\n。；;])\s*(?:{label_pattern})\s*[:：-]\s*", text or "")
+    if not match:
+        return ""
+    next_match = _HASOS_CLOSEOUT_LABEL_BOUNDARY_RE.search(text or "", match.end())
+    end = next_match.start() if next_match else len(text or "")
+    return (text or "")[match.end():end].strip()
+
+
+def _hasos_closeout_component_present(text: str, component: str) -> bool:
+    value = _hasos_closeout_component_value(text, component)
+    if not value:
+        return False
+    if component in {"artifact/產物", "source/evidence/來源證據", "verification/驗證", "wiki/skill update decision"}:
+        return not _hasos_closeout_value_is_placeholder(value)
+    if component == "limitations/未能驗證":
+        return not _hasos_closeout_value_is_placeholder(value, allow_none_value=True)
+    return True
+
+_HASOS_CLOSEOUT_SECRET_RE = re.compile(
+    r"(?is)(sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----|"
+    r"(?:api[_-]?key|token|secret|password|passwd|client[_-]?secret)\s*[:=]\s*['\"]?[^\s'\"]{8,})"
+)
+_HASOS_POLICY_ENGINE_CACHE: tuple[Path | None, Any | None] = (None, None)
+
+
+def _hasos_load_policy_engine_for_closeout() -> Any | None:
+    global _HASOS_POLICY_ENGINE_CACHE
+    path = get_hermes_home() / "scripts" / "hasos_policy_engine.py"
+    cached_path, cached_module = _HASOS_POLICY_ENGINE_CACHE
+    if cached_path == path:
+        return cached_module
+    module: Any | None = None
+    try:
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("hasos_policy_engine_for_closeout", path)
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception:
+        module = None
+    _HASOS_POLICY_ENGINE_CACHE = (path, module)
+    return module
+
+
+def _hasos_redact_closeout_text(text: str) -> str:
+    """Best-effort display redaction before closeout metadata/response replay."""
+    raw = text or ""
+    module = _hasos_load_policy_engine_for_closeout()
+    try:
+        sanitize_text = getattr(module, "sanitize_text", None) if module is not None else None
+        if callable(sanitize_text):
+            raw = sanitize_text(raw)
+        else:
+            redact = getattr(module, "redact", None) if module is not None else None
+            if callable(redact):
+                redacted = redact(raw)
+                if isinstance(redacted, str):
+                    raw = redacted
+    except Exception:
+        pass
+    return _HASOS_CLOSEOUT_SECRET_RE.sub("[REDACTED]", raw)
+
+
+def _hasos_marker_matches(text: str, marker: str) -> bool:
+    lowered_marker = marker.lower()
+    if re.fullmatch(r"[a-z0-9_ -]+", lowered_marker):
+        pattern = r"(?<![a-z0-9_])" + re.escape(lowered_marker) + r"(?![a-z0-9_])"
+        return re.search(pattern, text) is not None
+    if lowered_marker == "可驗收":
+        return re.search(r"(?<!尚未)(?<!不)可驗收", text) is not None
+    return lowered_marker in text
+
+
+def _hasos_text_has_any(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = (text or "").lower()
+    return any(_hasos_marker_matches(lowered, marker) for marker in markers)
+
+
+def _hasos_closeout_gate_enabled() -> bool:
+    return os.environ.get("HERMES_HASOS_CLOSEOUT_GATE", "1").strip().lower() not in {
+        "0", "false", "no", "off", "disabled",
+    }
+
+
+def _hasos_closeout_gate_needed(user_message: Any, final_response: str) -> bool:
+    if not _hasos_closeout_gate_enabled():
+        return False
+    if not isinstance(user_message, str):
+        return False
+    # Scope detection must be based on the user's task, not on the model's
+    # final-response wording.  Otherwise generic assistant phrases such as
+    # "Done" or "passed" can combine with ordinary user text like "file
+    # permission error" and falsely rewrite non-HASOS answers.
+    user_text = user_message or ""
+    has_permission_marker = _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_PERMISSION_MARKERS)
+    has_app_permission_marker = _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_APP_PERMISSION_TASK_MARKERS)
+    filesystem_permission_context = _hasos_text_has_any(
+        user_text,
+        _HASOS_CLOSEOUT_FILESYSTEM_PERMISSION_CONTEXT_MARKERS,
+    )
+    return (
+        _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS)
+        or _hasos_text_has_any(user_text, _HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS)
+        or has_app_permission_marker
+        or (has_permission_marker and not filesystem_permission_context)
+        or (
+            _hasos_response_claims_completion(final_response)
+            and (
+                _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_EXPLICIT_TASK_MARKERS)
+                or _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_HIGH_RISK_TASK_MARKERS)
+                or _hasos_text_has_any(final_response, _HASOS_CLOSEOUT_FINAL_RESPONSE_TASK_MARKERS)
+            )
+        )
+    )
+
+
+def _hasos_response_claims_completion(final_response: str) -> bool:
+    return _hasos_text_has_any(final_response, _HASOS_COMPLETION_CLAIM_MARKERS)
+
+
+def _hasos_closeout_missing_components(final_response: str) -> list[str]:
+    text = final_response or ""
+    required = (
+        "artifact/產物",
+        "source/evidence/來源證據",
+        "verification/驗證",
+        "limitations/未能驗證",
+        "wiki/skill update decision",
+    )
+    return [label for label in required if not _hasos_closeout_component_present(text, label)]
+
+
+def _hasos_response_has_closeout_evidence(final_response: str) -> bool:
+    return not _hasos_closeout_missing_components(final_response)
+
+
+def _hasos_closeout_repair_template(missing_components: list[str]) -> str:
+    missing = "、".join(missing_components) if missing_components else "無"
+    return (
+        "\n\n補救方式：重新回覆時請先補查/讀回狀態，然後使用這個最小 closeout：\n"
+        "```text\n"
+        "Artifact / 產物：<app / version / build / submission 或檔案路徑>\n"
+        "Source / Evidence / 來源證據：<API 讀回、截圖、日誌或檢查輸出；不可貼 secrets>\n"
+        "Verification / 驗證：<逐項確認結果與時間，例如 app identity/version/build/status>\n"
+        "Limitations / 未能驗證：<無也要寫；不能驗證就明列>\n"
+        "Wiki / Skill update decision：<update / proposal / no-update + 理由>\n"
+        "Final status：<可驗收 / 尚未可驗收 / blocked：需要人工處理>\n"
+        "```\n"
+        f"目前缺少：{missing}。"
+    )
+
+
+def _run_hasos_template_quality_gate(timeout_seconds: int = 12) -> dict:
+    """Run the local read-only HASOS template quality gate when installed.
+
+    This gate is deliberately local/read-only.  It never prints credentials and
+    returns a compact metadata dict suitable for the conversation result.
+    """
+    script = get_hermes_home() / "scripts" / "canonical_template_audit.py"
+    if not script.is_file():
+        return {
+            "status": "skipped",
+            "passed": None,
+            "reason": "canonical_template_audit.py not installed",
+            "script": str(script),
+        }
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": f"quality gate timed out after {timeout_seconds}s",
+            "script": str(script),
+        }
+    except OSError as exc:
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": f"quality gate could not run: {exc}",
+            "script": str(script),
+        }
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    try:
+        payload = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    summary = payload.get("summary") if isinstance(payload, dict) else None
+    passed = bool(
+        proc.returncode == 0
+        and isinstance(summary, dict)
+        and summary.get("passed") is True
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "exit_code": proc.returncode,
+        "taskID": payload.get("taskID") if isinstance(payload, dict) else None,
+        "template_count_found": payload.get("template_count_found") if isinstance(payload, dict) else None,
+        "runtime_guidance_chars": payload.get("runtime_guidance_chars") if isinstance(payload, dict) else None,
+        "failures": payload.get("failures", []) if isinstance(payload, dict) else [],
+        "warnings": payload.get("warnings", []) if isinstance(payload, dict) else [],
+        "stderr_preview": _hasos_redact_closeout_text(stderr)[:300] if stderr else "",
+        "script": str(script),
+    }
+
+
+def apply_hasos_closeout_gate(user_message: Any, final_response: str) -> tuple[str, dict | None, bool]:
+    """Apply HASOS closeout protection to high-risk standard/wiki/template tasks.
+
+    Returns ``(possibly_rewritten_response, metadata, blocked)``.  The gate is
+    intentionally narrow: ordinary low-risk chats are untouched.  For triggered
+    tasks, it runs the read-only canonical-template quality gate and blocks
+    completion claims when the gate fails or when the response lacks closeout
+    evidence/limitations required by HASOS.
+    """
+    if not _hasos_closeout_gate_needed(user_message, final_response):
+        return final_response, None, False
+
+    metadata = _run_hasos_template_quality_gate()
+    claims_completion = _hasos_response_claims_completion(final_response)
+    missing_components = _hasos_closeout_missing_components(final_response)
+    has_closeout = not missing_components
+    metadata["claims_completion"] = claims_completion
+    metadata["has_closeout_evidence"] = has_closeout
+    metadata["missing_closeout_components"] = missing_components
+
+    gate_failed = metadata.get("passed") is False
+    missing_closeout = claims_completion and not has_closeout
+    if not (gate_failed or missing_closeout):
+        return final_response, metadata, False
+
+    reasons = []
+    if gate_failed:
+        reasons.append("read-only canonical template quality gate did not pass")
+    if missing_closeout:
+        if missing_components:
+            reasons.append(
+                "completion claim missing closeout components: " + ", ".join(missing_components)
+            )
+        else:
+            reasons.append("completion claim lacks required closeout evidence")
+    reason_text = "; ".join(reasons)
+    corrective = (
+        "⚠️ HASOS closeout gate 已阻止完成宣稱。\n"
+        f"原因：{reason_text}。\n"
+        "此回覆不得視為已完成；需補齊 artifact、source/evidence、verification、"
+        "limitations/未能驗證項目與 wiki/skill update decision，並讓 gate 通過後才能宣稱完成。"
+        + _hasos_closeout_repair_template(missing_components)
+    )
+    original = _hasos_redact_closeout_text((final_response or "").strip())
+    rewritten = corrective if not original else corrective + "\n\n---\n原始回覆（已去敏）：\n" + original
+    return rewritten, metadata, True
 
 
 def _install_safe_stdio() -> None:
@@ -5916,6 +6319,10 @@ class AIAgent:
         session — that's the only way to keep upstream prompt caches
         warm across turns.
         """
+        # Layers (in order, split for prompt-cache stability):
+        #   stable: identity, tool guidance, skills guidance, routing/HASOS guidance
+        #   context: project context files and caller-supplied system_message
+        #   volatile: memory snapshot, external memory, timestamp/platform hints
         # ── Stable tier ────────────────────────────────────────────────
         stable_parts: List[str] = []
 
@@ -5962,6 +6369,17 @@ class AIAgent:
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             stable_parts.append(nous_subscription_prompt)
+        hasos_runtime_guidance = build_hasos_runtime_guidance()
+        if hasos_runtime_guidance:
+            # Runtime-ready standards slice: intentionally compact, local, and
+            # testable. This is stronger than context-file discovery but still
+            # reported as guidance unless paired with event/scorecard hooks.
+            stable_parts.append(hasos_runtime_guidance)
+        else:
+            # Fallback routing reminders for installations without the compact
+            # local HASOS slice. Avoid duplicating the same rules when HASOS is
+            # present because system-prompt weight matters.
+            stable_parts.append(ROUTING_GUIDANCE)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -10648,6 +11066,248 @@ class AIAgent:
             parent_agent=self,
         )
 
+    @staticmethod
+    def _parse_hasos_release_gate_approval(messages: Optional[list]) -> Optional[dict]:
+        """Parse trusted user approval evidence for HASOS Level-4C release work.
+
+        Security boundary: this deliberately reads only the most recent user
+        message in the runtime conversation, never tool arguments or assistant
+        text. The preferred user-facing shape is a concise Traditional Chinese
+        approval sentence naming the exact app/version/build/action scope (for
+        example ``核准單位換算工具 1.3 build 5 上傳並送審``). The legacy fixed
+        ``HASOS_RELEASE_GATE_APPROVED`` template remains accepted as an internal
+        compatibility format. Bare choices such as ``A`` / ``可以`` / ``Approved``
+        are still intent only and do not unlock Level-4C actions.
+        """
+        if not messages:
+            return None
+        latest_user = ""
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    latest_user = content.strip()
+                break
+        if not latest_user:
+            return None
+
+        def _evidence_path_from_env_or_default() -> str:
+            import os as _os
+            from pathlib import Path as _Path
+            configured = _os.environ.get("HASOS_RELEASE_EVIDENCE_PATH", "").strip()
+            if configured:
+                return configured
+            try:
+                from hermes_constants import get_hermes_home as _get_hermes_home
+                return str(_get_hermes_home() / "release-gate-evidence" / "latest.json")
+            except Exception:
+                return str(_Path.home() / ".hermes" / "release-gate-evidence" / "latest.json")
+
+        def _concise_approval_has_matching_gate_evidence(evidence_path: str, app: str, version: str, build: str) -> bool:
+            """Return True only when structured local gate evidence matches the concise approval scope.
+
+            A concise Traditional Chinese approval sentence is authorization,
+            not evidence.  Therefore this verifier deliberately accepts only a
+            small structured JSON evidence shape with exact app/version/build
+            fields plus all three Level-4C gate booleans.  Free-form text, notes,
+            and raw substring matches are not trusted for concise approvals.
+            """
+            import json as _json
+            from pathlib import Path as _Path
+
+            try:
+                path = _Path(evidence_path).expanduser()
+                if not path.is_file() or path.stat().st_size > 512_000:
+                    return False
+                parsed = _json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                return False
+            if not isinstance(parsed, dict):
+                return False
+
+            def _norm(value: object) -> str:
+                return str(value or "").strip().lower()
+
+            app_candidates = {
+                _norm(parsed.get("app")),
+                _norm(parsed.get("product_alias")),
+                _norm(parsed.get("app_name")),
+                _norm(parsed.get("display_name")),
+            }
+            version_candidates = {
+                _norm(parsed.get("version")),
+                _norm(parsed.get("marketing_version")),
+                _norm(parsed.get("app_version")),
+            }
+            build_candidates = {
+                _norm(parsed.get("build")),
+                _norm(parsed.get("build_number")),
+                _norm(parsed.get("build_version")),
+            }
+            return (
+                _norm(app) in app_candidates
+                and _norm(version) in version_candidates
+                and _norm(build) in build_candidates
+                and parsed.get("stop_rules_checked") is True
+                and parsed.get("redaction_checked") is True
+                and parsed.get("release_security_gate_passed") is True
+            )
+
+        def _scope_substrings_from_target(target: str) -> list[str]:
+            target = str(target or "").strip()
+            if not target:
+                return []
+            tokens: list[str] = []
+            version_match = re.search(r"\b\d+(?:\.\d+){0,3}\b", target)
+            if version_match:
+                app_part = target[:version_match.start()].strip(" ，,。:-")
+                version = version_match.group(0)
+                if app_part:
+                    tokens.append(app_part)
+                tokens.append(version)
+                build_match = re.search(r"(?:build|Build|版號|建置)\s*(\d+)", target[version_match.end():], re.I)
+                if build_match:
+                    tokens.append(build_match.group(1))
+            else:
+                first = target.split()[0] if target.split() else target
+                if first:
+                    tokens.append(first)
+            return [t for t in tokens if t]
+
+        concise = re.fullmatch(
+            r"\s*核准\s*(?P<app>[^\n，,。]*?)\s+"
+            r"(?P<version>\d+(?:\.\d+){0,3})\s*"
+            r"(?:build|Build|版號|建置)\s*(?P<build>\d+)\s*"
+            r"(?P<scope>[^\n]*)\s*",
+            latest_user,
+        )
+        if concise:
+            app = concise.group("app").strip()
+            version = concise.group("version").strip()
+            build = concise.group("build").strip()
+            scope = concise.group("scope").strip()
+            if app and scope and re.search(r"(上傳|送審|提交|審查|upload|submit|validate|attach|metadata|review)", scope, re.I):
+                if re.search(r"(不要|不准|不核准|拒絕|暫不|別|勿|不用|不需|無需|無須|毋須|不須|不必|不應|不可|不能|不得|不|do\s+not|don't|no)\s*(?:再|用|需|須|要|必須|進行|執行|做|將|幫我|again|to)?\s*(上傳|送審|提交|審查|upload|submit|validate|attach|metadata|review)", scope, re.I):
+                    return None
+                # Concise approval intentionally accepts only a narrow allowlist
+                # of positive release-action phrases.  Ambiguous prose is
+                # rejected and must use the structured legacy gate template.
+                positive_scope = re.fullmatch(
+                    r"\s*(?:上傳|送審|提交(?:審查)?|審查|upload|submit|validate|attach|metadata|review)"
+                    r"(?:\s*(?:並|和|及|、|,|and|&)\s*"
+                    r"(?:上傳|送審|提交(?:審查)?|審查|upload|submit|validate|attach|metadata|review))*\s*",
+                    scope,
+                    re.I,
+                )
+                if not positive_scope:
+                    return None
+                evidence_path = _evidence_path_from_env_or_default()
+                if not _concise_approval_has_matching_gate_evidence(evidence_path, app, version, build):
+                    return None
+                return {
+                    "policy_authorized": True,
+                    "runbook_id": "concise-release-approval-v1",
+                    "runbook_version": "2026-05-10",
+                    "owner": "忠憲 游",
+                    "target": f"{app} {version} build {build} {scope}",
+                    "evidence_path": evidence_path,
+                    "stop_rules_checked": True,
+                    "redaction_checked": True,
+                    "release_security_gate_passed": True,
+                    "scope_required_substrings": [app, version, build],
+                    "approval_source": "latest_user_concise_traditional_chinese_release_approval_with_matching_gate_evidence",
+                }
+
+        if "HASOS_RELEASE_GATE_APPROVED" not in latest_user:
+            return None
+
+        legacy_lines = latest_user.splitlines()
+        if not legacy_lines or legacy_lines[0].strip() != "HASOS_RELEASE_GATE_APPROVED":
+            return None
+        if re.search(
+            r"(?i)(這不是核准|不是核准|只是範例|範例|example|sample\s+only|not\s+(?:an\s+)?approval|not\s+approved|not\s+for\s+execution|"
+            r"(?:不要|請勿|勿|不准|不核准|拒絕|暫不|別|不用|不需|無需|無須|毋須|不須|不必|不應|不可|不能|不得|不)\s*"
+            r"(?:再|用|需|須|要|必須|進行|執行|做|將|幫我)?\s*(?:執行|上傳|送審|提交|審查)|"
+            r"(?:do\s+not|don'?t|dont|no|not|can'?t|cant|cannot|won'?t|wont|should\s+not)\b[^\n]{0,60}\b"
+            r"(?:send\s+for\s+review|execute|run|upload|submit|submission|review))",
+            latest_user,
+        ):
+            return None
+
+        fields: dict[str, str] = {}
+        for line in legacy_lines[1:]:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().lower().replace("-", "_")
+            value = value.strip()
+            if key and value:
+                fields[key] = value
+
+        required_text = ["runbook_id", "runbook_version", "owner", "target"]
+        if any(not fields.get(k) for k in required_text):
+            return None
+        if not (fields.get("evidence_path") or fields.get("evidence_id") or fields.get("evidence_id_or_path")):
+            return None
+
+        def truthy(key: str) -> bool:
+            return fields.get(key, "").lower() in {"true", "yes", "1", "passed", "核准", "已通過"}
+
+        if not (truthy("stop_rules_checked") and truthy("redaction_checked") and truthy("release_security_gate_passed")):
+            return None
+        def validate_evidence_path(value: str) -> bool:
+            try:
+                from pathlib import Path as _Path
+                evidence_path = _Path(value).expanduser()
+                return evidence_path.is_file() and evidence_path.stat().st_size <= 2_000_000
+            except Exception:
+                return False
+
+        def looks_like_path(value: str) -> bool:
+            lowered = value.strip().lower()
+            return (
+                lowered.startswith(("/", "~/", "./", "../"))
+                or "/" in lowered
+                or "\\" in lowered
+                or re.search(r"\.[a-z0-9]{2,8}$", lowered) is not None
+            )
+
+        if fields.get("evidence_path") and not validate_evidence_path(fields["evidence_path"]):
+            return None
+        if fields.get("evidence_id") and looks_like_path(fields["evidence_id"]):
+            if not validate_evidence_path(fields["evidence_id"]):
+                return None
+        if fields.get("evidence_id_or_path"):
+            if not validate_evidence_path(fields["evidence_id_or_path"]):
+                return None
+
+        policy = {
+            "policy_authorized": True,
+            "runbook_id": fields["runbook_id"],
+            "runbook_version": fields["runbook_version"],
+            "owner": fields["owner"],
+            "target": fields["target"],
+            "stop_rules_checked": True,
+            "redaction_checked": True,
+            "release_security_gate_passed": True,
+            "scope_required_substrings": _scope_substrings_from_target(fields["target"]),
+            "approval_source": "latest_user_hasos_release_gate_template",
+        }
+        if fields.get("evidence_path"):
+            policy["evidence_path"] = fields["evidence_path"]
+        elif fields.get("evidence_id"):
+            policy["evidence_id"] = fields["evidence_id"]
+        else:
+            policy["evidence_id"] = fields["evidence_id_or_path"]
+        return policy
+
+    def _hasos_runtime_policy_for_tool(self, function_name: str, function_args: dict, messages: Optional[list]) -> Optional[dict]:
+        # Only attach the template-derived evidence to side-effect tool calls;
+        # the policy engine still decides whether the call is actually Level 4C.
+        if function_name not in {"terminal", "execute_code", "cronjob", "send_message", "browser_click", "browser_type"}:
+            return None
+        return self._parse_hasos_release_gate_approval(messages)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10733,6 +11393,7 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+                runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
             )
 
     @staticmethod
@@ -11450,6 +12111,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -11470,6 +12132,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        runtime_policy_context=self._hasos_runtime_policy_for_tool(function_name, function_args, messages),
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -11608,6 +12271,22 @@ class AIAgent:
         if num_tools_seq > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
+
+    def _format_tool_limit_reached_response(self, summary: str, api_call_count: int) -> str:
+        """Return a deterministic, non-completion closeout for tool-budget stops."""
+        summary = (summary or "").strip() or "No model summary was available."
+        next_command = "回覆：繼續"
+        return (
+            "⚠️ TOOL_LIMIT_REACHED / 已達本回合工具調用上限，任務尚未可驗收。\n\n"
+            f"Progress summary / 目前進度：\n{summary}\n\n"
+            "Checkpoint / 續跑檢查點：\n"
+            f"- stop_reason: max_iterations_reached({api_call_count}/{self.max_iterations})\n"
+            f"- session_id: {self.session_id or 'unknown'}\n"
+            "- state: transcript and tool results have been preserved in the session history.\n\n"
+            "Next executable command / 下一步：\n"
+            f"`{next_command}`\n\n"
+            "Final status：尚未可驗收"
+        )
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -15423,6 +16102,7 @@ class AIAgent:
                     messages.append({"role": "assistant", "content": final_response})
                     break
         
+        _tool_limit_reached = False
         if final_response is None and (
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
@@ -15431,6 +16111,7 @@ class AIAgent:
             # API call with tools stripped.  _handle_max_iterations injects a
             # user message and makes a single toolless request.
             _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
+            _tool_limit_reached = True
             self._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                 "— asking model to summarise"
@@ -15440,7 +16121,16 @@ class AIAgent:
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                     "— requesting summary..."
                 )
-            final_response = self._handle_max_iterations(messages, api_call_count)
+            _summary_response = self._handle_max_iterations(messages, api_call_count)
+            final_response = self._format_tool_limit_reached_response(_summary_response, api_call_count)
+            if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant":
+                messages[-1]["content"] = final_response
+            else:
+                # Summary fallback/exception paths can return text without
+                # appending an assistant message.  Always persist the
+                # deterministic checkpoint so resume does not see a dangling
+                # synthetic user summary request or consecutive user turns.
+                messages.append({"role": "assistant", "content": final_response})
 
             # If running as a kanban worker, block the task so the dispatcher
             # knows the worker could not complete (rather than treating it as a
@@ -15476,8 +16166,72 @@ class AIAgent:
                         exc_info=True,
                     )
 
+        # File-mutation verifier footer.
+        # If one or more ``write_file`` / ``patch`` calls failed during this
+        # turn and were never superseded by a successful write to the same
+        # path, append an advisory footer before plugins/closeout/persistence.
+        if final_response and not interrupted:
+            try:
+                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
+                if _failed and self._file_mutation_verifier_enabled():
+                    footer = self._format_file_mutation_failure_footer(_failed)
+                    if footer:
+                        final_response = final_response.rstrip() + "\n\n" + footer
+                        for _msg in reversed(messages):
+                            if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                                _msg["content"] = final_response
+                                break
+            except Exception as _ver_err:
+                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
+        
+        # Plugin hook: transform_llm_output
+        # Fired once per turn after the tool-calling loop completes, before
+        # final safety gates.  Post-transform HASOS/tool-limit guards must see
+        # the exact text that can be returned to callers.
+        if final_response and not interrupted and not _tool_limit_reached:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _transform_results = _invoke_hook(
+                    "transform_llm_output",
+                    response_text=final_response,
+                    session_id=self.session_id or "",
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+                for _hook_result in _transform_results:
+                    if isinstance(_hook_result, str) and _hook_result:
+                        final_response = _hook_result
+                        for _msg in reversed(messages):
+                            if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                                _msg["content"] = final_response
+                                break
+                        break  # First non-empty string wins
+            except Exception as exc:
+                logger.warning("transform_llm_output hook failed: %s", exc)
+
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        completed = final_response is not None and not interrupted and not _tool_limit_reached
+
+        hasos_closeout_gate = None
+        hasos_gate_blocked = False
+        if final_response is not None and not interrupted and not _tool_limit_reached:
+            gated_response, hasos_closeout_gate, hasos_gate_blocked = apply_hasos_closeout_gate(
+                original_user_message,
+                final_response,
+            )
+            if gated_response != final_response:
+                final_response = gated_response
+                completed = False
+                _turn_exit_reason = f"hasos_closeout_gate_blocked({_turn_exit_reason})"
+                # Keep the stored transcript aligned with what is returned to
+                # the caller.  Update only the most recent plain assistant
+                # message; tool-call messages must remain unchanged.
+                for _msg in reversed(messages):
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant" and not _msg.get("tool_calls"):
+                        _msg["content"] = final_response
+                        break
+            elif hasos_closeout_gate is not None:
+                _turn_exit_reason = f"hasos_closeout_gate_passed({_turn_exit_reason})"
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
@@ -15537,51 +16291,6 @@ class AIAgent:
         else:
             logger.info(_diag_msg, *_diag_args)
 
-        # File-mutation verifier footer.
-        # If one or more ``write_file`` / ``patch`` calls failed during this
-        # turn and were never superseded by a successful write to the same
-        # path, append an advisory footer to the assistant response.  This
-        # catches the specific case — reported by Ben Eng (#15524-adjacent)
-        # — where a model issues a batch of parallel patches, half of them
-        # fail with "Could not find old_string", and the model summarises
-        # the turn claiming every file was edited.  The user then has to
-        # manually run ``git status`` to catch the lie.  With this footer
-        # the truth is surfaced on every turn, so over-claiming is
-        # structurally impossible past the model.
-        #
-        # Gate: only applied when a real text response exists for this
-        # turn and the user didn't interrupt.  Empty/interrupted turns
-        # already have other surface text that shouldn't be augmented.
-        if final_response and not interrupted:
-            try:
-                _failed = getattr(self, "_turn_failed_file_mutations", None) or {}
-                if _failed and self._file_mutation_verifier_enabled():
-                    footer = self._format_file_mutation_failure_footer(_failed)
-                    if footer:
-                        final_response = final_response.rstrip() + "\n\n" + footer
-            except Exception as _ver_err:
-                logger.debug("file-mutation verifier footer failed: %s", _ver_err)
-
-        # Plugin hook: transform_llm_output
-        # Fired once per turn after the tool-calling loop completes.
-        # Plugins can transform the LLM's output text before it's returned.
-        # First hook to return a string wins; None/empty return leaves text unchanged.
-        if final_response and not interrupted:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _transform_results = _invoke_hook(
-                    "transform_llm_output",
-                    response_text=final_response,
-                    session_id=self.session_id or "",
-                    model=self.model,
-                    platform=getattr(self, "platform", None) or "",
-                )
-                for _hook_result in _transform_results:
-                    if isinstance(_hook_result, str) and _hook_result:
-                        final_response = _hook_result
-                        break  # First non-empty string wins
-            except Exception as exc:
-                logger.warning("transform_llm_output hook failed: %s", exc)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
@@ -15627,6 +16336,7 @@ class AIAgent:
             "api_calls": api_call_count,
             "completed": completed,
             "turn_exit_reason": _turn_exit_reason,
+            "tool_limit_reached": _tool_limit_reached,
             "partial": False,  # True only when stopped due to invalid tool calls
             "interrupted": interrupted,
             "response_previewed": getattr(self, "_response_was_previewed", False),
@@ -15648,6 +16358,9 @@ class AIAgent:
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
+        if hasos_closeout_gate is not None:
+            result["hasos_closeout_gate"] = hasos_closeout_gate
+            result["hasos_closeout_gate_blocked"] = hasos_gate_blocked
         # If a /steer landed after the final assistant turn (no more tool
         # batches to drain into), hand it back to the caller so it can be
         # delivered as the next user turn instead of being silently lost.

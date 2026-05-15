@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -45,6 +46,126 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
+def test_init_preserves_new_failure_columns_when_legacy_columns_also_exist(
+    tmp_path, monkeypatch
+):
+    """Re-opening a partially migrated DB must not clobber newer counters.
+
+    Some v0.13 upgrade paths can leave both legacy spawn_* columns and the
+    renamed failure columns in the DB.  The migration should be idempotent:
+    it may add missing future columns/indexes, but it must not copy old values
+    over already-populated new columns.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    db_path = home / "kanban.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            tenant TEXT,
+            result TEXT,
+            idempotency_key TEXT,
+            spawn_failures INTEGER NOT NULL DEFAULT 0,
+            worker_pid INTEGER,
+            last_spawn_error TEXT,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            current_run_id INTEGER,
+            workflow_template_id TEXT,
+            current_step_key TEXT,
+            skills TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_failure_error TEXT,
+            max_retries INTEGER
+        );
+        CREATE TABLE task_links (parent_id TEXT NOT NULL, child_id TEXT NOT NULL);
+        CREATE TABLE task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        );
+        INSERT INTO tasks (
+            id, title, status, created_at,
+            spawn_failures, consecutive_failures,
+            last_spawn_error, last_failure_error
+        ) VALUES ('t_legacy', 'legacy', 'ready', 1, 7, 3, 'old-error', 'new-error');
+        """
+    )
+    conn.close()
+
+    kb.init_db()
+
+    with sqlite3.connect(db_path) as check:
+        row = check.execute(
+            "SELECT consecutive_failures, last_failure_error FROM tasks WHERE id = ?",
+            ("t_legacy",),
+        ).fetchone()
+        cols = {r[1] for r in check.execute("PRAGMA table_info(task_events)")}
+    assert row == (3, "new-error")
+    assert "run_id" in cols
+
+
+def test_add_column_if_missing_tolerates_duplicate_column_race(tmp_path):
+    db_path = tmp_path / "race.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, race_col TEXT)")
+
+    added = kb._add_column_if_missing(conn, "tasks", "race_col", "race_col TEXT")
+
+    assert added is False
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(tasks)")]
+    assert cols.count("race_col") == 1
+
+
+def test_add_column_if_missing_tolerates_check_alter_race():
+    class RacingConn:
+        def __init__(self):
+            self._pragma_calls = 0
+
+        def execute(self, sql):
+            if sql.startswith("PRAGMA table_info"):
+                self._pragma_calls += 1
+                if self._pragma_calls == 1:
+                    return []
+                return [{"name": "race_col"}]
+            if sql.startswith("ALTER TABLE"):
+                raise sqlite3.OperationalError("duplicate column name: race_col")
+            raise AssertionError(sql)
+
+    added = kb._add_column_if_missing(
+        RacingConn(), "tasks", "race_col", "race_col TEXT"
+    )
+
+    assert added is False
 
 
 # ---------------------------------------------------------------------------

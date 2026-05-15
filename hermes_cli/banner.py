@@ -151,6 +151,24 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _local_git_rev(repo_dir: Path, rev: str = "HEAD") -> Optional[str]:
+    """Resolve a local git revision for update-cache invalidation."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            return value or None
+    except Exception:
+        pass
+    return None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     try:
@@ -190,22 +208,30 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    repo_dir: Optional[Path] = None
+    cache_rev = embedded_rev
+
+    # Read legacy embedded-rev cache before any local-git probing so a fresh
+    # cache stays a cheap startup check.  Cache entries written by newer builds
+    # include ``rev`` and are validated after repo discovery below.
     now = time.time()
+    cache_exists = False
+    legacy_cache_without_rev = False
     try:
         if cache_file.exists():
+            cache_exists = True
             cached = json.loads(cache_file.read_text())
-            if (
-                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
-            ):
-                return cached.get("behind")
+            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+                if embedded_rev and cached.get("rev") == embedded_rev:
+                    return cached.get("behind")
+                if not embedded_rev and "rev" not in cached:
+                    return cached.get("behind")
+            legacy_cache_without_rev = "rev" not in cached
     except Exception:
-        pass
+        cache_exists = False
+        legacy_cache_without_rev = False
 
-    if embedded_rev:
-        behind = _check_via_rev(embedded_rev)
-    else:
+    if not embedded_rev:
         # Prefer the running code's location over the profile-scoped path.
         # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
         # Path(__file__) always resolves to the actual installed checkout.
@@ -214,10 +240,37 @@ def check_for_updates() -> Optional[int]:
             repo_dir = hermes_home / "hermes-agent"
         if not (repo_dir / ".git").exists():
             return None
+        # Cache local checkout results against the actual local HEAD.  Without
+        # this, a stale "behind" count can survive a manual git pull/rebase
+        # until the six-hour cache expires.  Legacy cache entries that do not
+        # carry rev metadata keep the old two-git-command path for one cycle;
+        # a missing/unreadable cache should seed the new HEAD-aware cache now.
+        cache_rev = (
+            None
+            if cache_exists and legacy_cache_without_rev
+            else _local_git_rev(repo_dir)
+        )
+
+    # Read cache — invalidate if the embedded rev or local HEAD changed.
+    try:
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text())
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("rev") == cache_rev
+            ):
+                return cached.get("behind")
+    except Exception:
+        pass
+
+    if embedded_rev:
+        behind = _check_via_rev(embedded_rev)
+    else:
+        assert repo_dir is not None
         behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": cache_rev}))
     except Exception:
         pass
 

@@ -875,7 +875,8 @@ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_run            ON task_events(run_id, id);
+-- idx_events_run depends on a post-v1 optional column. It is created by
+-- _migrate_add_optional_columns after the run_id column is guaranteed to exist.
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
@@ -967,23 +968,49 @@ def init_db(
     return path
 
 
-def _add_column_if_missing(
-    conn: sqlite3.Connection, table: str, column: str, ddl: str
-) -> bool:
-    """Run ``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
+def _quote_sqlite_ident(name: str) -> str:
+    """Return a safely quoted SQLite identifier for internal schema names."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"invalid SQLite identifier: {name!r}")
+    return f'"{name}"'
 
-    Returns ``True`` when the column was actually added by this call.
-    Swallows ``duplicate column name`` errors so a concurrent connection
-    that ran the same migration first does not crash the dispatcher tick
-    (issue #21708).
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({_quote_sqlite_ident(table)})")
+    }
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    column_sql: str,
+) -> bool:
+    """Idempotently add an optional column.
+
+    ``ALTER TABLE ... ADD COLUMN`` has no ``IF NOT EXISTS`` in SQLite.
+    The Kanban dispatcher can also open the same DB from adjacent gateway
+    ticks/processes during upgrades, so a single stale ``PRAGMA table_info``
+    snapshot is not enough: another opener may add the column between the
+    check and the ALTER. Only swallow the exact duplicate-column race and
+    re-read the schema afterward; all other OperationalError cases remain
+    real failures.
     """
+    if column in _table_columns(conn, table):
+        return False
     try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-        return True
+        conn.execute(
+            f"ALTER TABLE {_quote_sqlite_ident(table)} ADD COLUMN {column_sql}"
+        )
     except sqlite3.OperationalError as exc:
-        if "duplicate column name" in str(exc).lower():
-            return False
-        raise
+        message = str(exc).lower()
+        duplicate = "duplicate column name" in message and column.lower() in message
+        if not duplicate or column not in _table_columns(conn, table):
+            raise
+        return False
+    return True
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
@@ -991,19 +1018,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    if "tenant" not in cols:
-        _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
-    if "result" not in cols:
-        _add_column_if_missing(conn, "tasks", "result", "result TEXT")
-    if "idempotency_key" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "idempotency_key", "idempotency_key TEXT"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
-            "ON tasks(idempotency_key)"
-        )
+    _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
+    _add_column_if_missing(conn, "tasks", "result", "result TEXT")
+    _add_column_if_missing(conn, "tasks", "idempotency_key", "idempotency_key TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
+        "ON tasks(idempotency_key)"
+    )
+
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
     # and ``last_spawn_error`` → ``last_failure_error``.
     #
@@ -1015,76 +1037,63 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     #      fails if related objects (views, triggers) reference the old name.
     #
     # ADD-first-then-copy is tolerant of both shapes and preserves
-    # historical counter values when the legacy columns do exist.
-    #
-    # NOTE: ``cols`` reflects the schema at entry to this function and is
-    # not refreshed between ALTER TABLE calls.  Every guard below checks
-    # the *original* snapshot; this is intentional and safe as long as
-    # no step depends on a column added by a previous step in the same call.
-    if "consecutive_failures" not in cols:
-        added = _add_column_if_missing(
-            conn,
-            "tasks",
-            "consecutive_failures",
-            "consecutive_failures INTEGER NOT NULL DEFAULT 0",
+    # historical counter values when the legacy columns do exist. Backfill
+    # only when this process actually created the new column; if both legacy
+    # and new columns already exist, the new column may contain newer state
+    # and must not be overwritten by legacy values.
+    cols = _table_columns(conn, "tasks")
+    added_consecutive = _add_column_if_missing(
+        conn,
+        "tasks",
+        "consecutive_failures",
+        "consecutive_failures INTEGER NOT NULL DEFAULT 0",
+    )
+    if added_consecutive and "spawn_failures" in cols:
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
         )
-        if added and "spawn_failures" in cols:
-            conn.execute(
-                "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
-            )
-    if "worker_pid" not in cols:
-        _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
-    if "last_failure_error" not in cols:
-        added = _add_column_if_missing(
-            conn, "tasks", "last_failure_error", "last_failure_error TEXT"
-        )
-        if added and "last_spawn_error" in cols:
-            conn.execute(
-                "UPDATE tasks SET last_failure_error = last_spawn_error"
-            )
-    if "max_runtime_seconds" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
-        )
-    if "last_heartbeat_at" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
-        )
-    if "current_run_id" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "current_run_id", "current_run_id INTEGER"
-        )
-    if "workflow_template_id" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "workflow_template_id", "workflow_template_id TEXT"
-        )
-    if "current_step_key" not in cols:
-        _add_column_if_missing(
-            conn, "tasks", "current_step_key", "current_step_key TEXT"
-        )
-    if "skills" not in cols:
-        # JSON array of skill names the dispatcher force-loads into the
-        # worker (additive to the built-in `kanban-worker`). NULL is fine
-        # for existing rows.
-        _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
 
-    if "max_retries" not in cols:
-        # Per-task override for the consecutive-failure circuit breaker.
-        # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
-        # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
-        # which is the correct default (they keep the global behaviour
-        # they were getting before the column existed).
-        _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+    _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+
+    cols = _table_columns(conn, "tasks")
+    added_last_failure = _add_column_if_missing(
+        conn, "tasks", "last_failure_error", "last_failure_error TEXT"
+    )
+    if added_last_failure and "last_spawn_error" in cols:
+        conn.execute("UPDATE tasks SET last_failure_error = last_spawn_error")
+
+    _add_column_if_missing(
+        conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
+    )
+    _add_column_if_missing(
+        conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
+    )
+    _add_column_if_missing(conn, "tasks", "current_run_id", "current_run_id INTEGER")
+    _add_column_if_missing(
+        conn, "tasks", "workflow_template_id", "workflow_template_id TEXT"
+    )
+    _add_column_if_missing(
+        conn, "tasks", "current_step_key", "current_step_key TEXT"
+    )
+    # JSON array of skill names the dispatcher force-loads into the
+    # worker (additive to the built-in `kanban-worker`). NULL is fine
+    # for existing rows.
+    _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
+
+    # Per-task override for the consecutive-failure circuit breaker.
+    # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
+    # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
+    # which is the correct default (they keep the global behaviour
+    # they were getting before the column existed).
+    _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
-    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
-    if "run_id" not in ev_cols:
-        _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_run "
-            "ON task_events(run_id, id)"
-        )
+    _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_run "
+        "ON task_events(run_id, id)"
+    )
 
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"

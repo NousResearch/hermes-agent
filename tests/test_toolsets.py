@@ -56,6 +56,11 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_code_graph_is_explicit_opt_in_toolset(self):
+        tools = resolve_toolset("code_graph")
+        assert set(tools) == {"code_graph_index", "code_graph_context", "code_graph_impact"}
+        assert not set(tools).intersection(resolve_toolset("hermes-cli"))
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

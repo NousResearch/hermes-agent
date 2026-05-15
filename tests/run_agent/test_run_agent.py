@@ -24,6 +24,349 @@ from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
+def test_hasos_closeout_gate_ignores_low_risk_chat():
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "你好，今天如何？",
+        "一切正常。",
+    )
+
+    assert response == "一切正常。"
+    assert metadata is None
+    assert blocked is False
+
+
+def test_hasos_closeout_gate_ignores_generic_permission_task(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "skipped", "passed": None},
+    )
+
+    for user_message in (
+        "fix file permission error in the local cache",
+        "fix file permissions error in the local cache",
+        "fix permissions on local cache",
+        "chmod failed on cache permissions",
+        "fix file ACL permission error",
+        "repair directory permissions",
+        "repair directory permissions after chmod failure",
+        "repair permissions for /tmp",
+        "修正本機快取權限錯誤",
+    ):
+        response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+            user_message,
+            "Done. Tests passed.",
+        )
+
+        assert response == "Done. Tests passed."
+        assert metadata is None
+        assert blocked is False
+
+
+def test_hasos_closeout_gate_ignores_final_response_without_task_markers(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "skipped", "passed": None},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "修正本機快取錯誤",
+        "已完成。證據：pytest passed。限制：未能驗證 gateway runtime。",
+    )
+
+    assert response.startswith("已完成。證據")
+    assert metadata is None
+    assert blocked is False
+
+
+def test_hasos_closeout_gate_uses_constrained_final_response_context_for_continuations(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True},
+    )
+
+    for final_response in (
+        "Updated App Store privacy labels. Done.",
+        "Updated source ledger. Done.",
+        "Updated commercial-quality canonical standard. Done.",
+    ):
+        response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+            "go ahead",
+            final_response,
+        )
+
+        assert blocked is True
+        assert metadata["claims_completion"] is True
+        assert "HASOS closeout gate 已阻止完成宣稱" in response
+
+
+@pytest.mark.parametrize(
+    "user_message",
+    [
+        "update the standards wiki",
+        "update wiki standard page",
+        "review privacy labels",
+        "review app permissions",
+        "update camera permission prompt",
+        "update camera permission denied prompt",
+        "cache camera permission state locally",
+        "update microphone permission copy",
+        "contacts permission description",
+        "fix file permissions and update the camera permission prompt",
+        "更新檔案權限並更新相機權限提示",
+        "更新隱私清單",
+        "更新相機權限提示",
+        "麥克風權限說明",
+    ],
+)
+def test_hasos_closeout_gate_preserves_standard_wiki_privacy_triggers(monkeypatch, user_message):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        user_message,
+        "已完成。",
+    )
+
+    assert blocked is True
+    assert metadata["claims_completion"] is True
+    assert "HASOS closeout gate 已阻止完成宣稱" in response
+
+
+def test_hasos_closeout_gate_blocks_completion_claim_without_closeout(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "直接落地 HASOS 商用品質標準",
+        "已完成。",
+    )
+
+    assert blocked is True
+    assert metadata["passed"] is True
+    assert metadata["claims_completion"] is True
+    assert metadata["has_closeout_evidence"] is False
+    assert "artifact/產物" in metadata["missing_closeout_components"]
+    assert "wiki/skill update decision" in metadata["missing_closeout_components"]
+    assert "HASOS closeout gate 已阻止完成宣稱" in response
+    assert "completion claim missing closeout components" in response
+    assert "補救方式" in response
+    assert "Artifact / 產物" in response
+    assert "原始回覆" in response
+
+
+def test_hasos_closeout_gate_reports_specific_missing_app_store_components(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "請確認 JapanTravel App Store 送審狀態",
+        (
+            "是，已完成到可送審並已送出 App Store Review 的程度。"
+            "App：日本旅遊地圖 / JapanTravel。版本：1.3。Build：5。"
+            "App Store Connect 狀態：WAITING_FOR_REVIEW。"
+            "Review Submission 狀態：WAITING_FOR_REVIEW。"
+            "代表：已完成上傳、驗證、掛 build、metadata / privacy / encryption / IDFA / review notes gates。"
+        ),
+    )
+
+    assert blocked is True
+    assert metadata["missing_closeout_components"] == [
+        "artifact/產物",
+        "source/evidence/來源證據",
+        "verification/驗證",
+        "limitations/未能驗證",
+        "wiki/skill update decision",
+    ]
+    assert "目前缺少：artifact/產物、source/evidence/來源證據、verification/驗證、limitations/未能驗證、wiki/skill update decision" in response
+
+
+def test_hasos_closeout_gate_allows_completion_with_evidence_and_limitations(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+
+    final = (
+        "已完成。Artifact / 產物：run_agent.py、HASOS template audit。"
+        "Source / Evidence：pytest passed。Verification：DIFF_CHECK PASS。"
+        "Limitations / 未能驗證：不能宣稱 cron/hook 已完成。"
+        "Wiki / Skill update decision：no-update，本次只驗證 closeout gate。"
+    )
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "HASOS 商用品質最佳化",
+        final,
+    )
+
+    assert response == final
+    assert blocked is False
+    assert metadata["passed"] is True
+    assert metadata["has_closeout_evidence"] is True
+
+
+def test_hasos_closeout_gate_rejects_placeholder_evidence_sections(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+
+    final = (
+        "已完成。Artifact / 產物：N/A - 待補。"
+        "Source / Evidence：TBD after deploy。Verification：未提供，稍後補。"
+        "Limitations / 未能驗證：無。"
+        "Wiki / Skill update decision：no-update，本次只驗證 closeout gate。"
+    )
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "HASOS 商用品質最佳化",
+        final,
+    )
+
+    assert blocked is True
+    assert metadata["has_closeout_evidence"] is False
+    assert metadata["missing_closeout_components"] == [
+        "artifact/產物",
+        "source/evidence/來源證據",
+        "verification/驗證",
+    ]
+    assert "目前缺少：artifact/產物、source/evidence/來源證據、verification/驗證" in response
+
+
+def test_hasos_closeout_gate_rejects_placeholder_limitations_but_allows_explicit_none(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+    valid_none = (
+        "已完成。Artifact / 產物：run_agent.py。"
+        "Source / Evidence：pytest output 621 passed。"
+        "Verification：git diff --check passed。"
+        "Limitations / 未能驗證：無。"
+        "Wiki / Skill update decision：no-update，本次只強化 closeout gate。"
+    )
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "HASOS 商用品質最佳化",
+        valid_none,
+    )
+    assert blocked is False
+    assert metadata["has_closeout_evidence"] is True
+
+    valid_explicit_limitation = valid_none.replace(
+        "Limitations / 未能驗證：無。",
+        "Limitations / 未能驗證：未能驗證 gateway runtime，因為本測試沒有啟動 gateway 服務。",
+    )
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "HASOS 商用品質最佳化",
+        valid_explicit_limitation,
+    )
+    assert blocked is False
+    assert metadata["has_closeout_evidence"] is True
+
+    for bad_limitations in [
+        "Limitations / 未能驗證：待補。",
+        "Limitations / 未能驗證：無 - 待補。",
+        "Limitations / 未能驗證：無，稍後補。",
+        "Limitations / 未能驗證：none, TBD after deploy。",
+        "Limitations / 未能驗證：沒有，未提供。",
+        "Limitations / 未能驗證：目前待補。",
+    ]:
+        placeholder_limitations = valid_none.replace("Limitations / 未能驗證：無。", bad_limitations)
+        response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+            "HASOS 商用品質最佳化",
+            placeholder_limitations,
+        )
+        assert blocked is True, bad_limitations
+        assert metadata["missing_closeout_components"] == ["limitations/未能驗證"]
+        assert "目前缺少：limitations/未能驗證" in response
+
+    placeholder_source = valid_none.replace(
+        "Source / Evidence：pytest output 621 passed。",
+        "Source / Evidence：pytest passed, TBD after deploy。",
+    )
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "HASOS 商用品質最佳化",
+        placeholder_source,
+    )
+    assert blocked is True
+    assert metadata["missing_closeout_components"] == ["source/evidence/來源證據"]
+    assert "目前缺少：source/evidence/來源證據" in response
+
+
+def test_hasos_completion_claim_marker_ignores_negative_acceptance_status():
+    assert run_agent._hasos_response_claims_completion("Final status：可驗收") is True
+    assert run_agent._hasos_response_claims_completion("Final status：尚未可驗收") is False
+    assert run_agent._hasos_response_claims_completion("Final status：不可驗收") is False
+
+
+def test_hasos_closeout_gate_requires_explicit_wiki_skill_update_decision(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "更新 wiki 標準並完成 HASOS 驗證",
+        (
+            "已完成。Artifact / 產物：wiki page。"
+            "Source / Evidence：wiki audit passed。Verification：pytest passed。"
+            "Limitations / 未能驗證：不能宣稱 full runtime enforcement。"
+            "本次 wiki 內容已更新。"
+        ),
+    )
+
+    assert blocked is True
+    assert "wiki/skill update decision" in metadata["missing_closeout_components"]
+    assert "目前缺少：wiki/skill update decision" in response
+
+
+def test_hasos_closeout_gate_does_not_treat_pass_with_limitations_as_done(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "passed", "passed": True, "taskID": "canonical_template_runtime_quality_gate"},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "請 review HASOS 標準融合計劃",
+        "Verdict: PASS_WITH_LIMITATIONS。限制：未能驗證 gateway runtime。",
+    )
+
+    assert blocked is False
+    assert metadata["claims_completion"] is False
+    assert response.startswith("Verdict: PASS_WITH_LIMITATIONS")
+
+
+def test_hasos_closeout_gate_blocks_when_quality_gate_fails(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "_run_hasos_template_quality_gate",
+        lambda: {"status": "failed", "passed": False, "failures": ["missing template"]},
+    )
+
+    response, metadata, blocked = run_agent.apply_hasos_closeout_gate(
+        "更新 wiki template 標準",
+        "已完成。證據：pytest passed。限制：不能宣稱 release 已完成。",
+    )
+
+    assert blocked is True
+    assert metadata["passed"] is False
+    assert "quality gate did not pass" in response
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -993,6 +1336,40 @@ class TestBuildSystemPrompt:
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
+
+    def test_includes_routing_guidance_when_hasos_not_installed(self, agent, monkeypatch):
+        from agent.prompt_builder import ROUTING_GUIDANCE
+
+        monkeypatch.setattr(run_agent, "build_hasos_runtime_guidance", lambda: "")
+
+        prompt = agent._build_system_prompt()
+        assert ROUTING_GUIDANCE in prompt
+
+    def test_prefers_hasos_runtime_guidance_over_duplicate_routing_guidance(self, agent, monkeypatch):
+        from agent.prompt_builder import ROUTING_GUIDANCE
+
+        monkeypatch.setattr(
+            run_agent,
+            "build_hasos_runtime_guidance",
+            lambda: "# HASOS P0 Runtime Guidance\nverify with evidence",
+        )
+
+        prompt = agent._build_system_prompt()
+
+        assert "# HASOS P0 Runtime Guidance" in prompt
+        assert ROUTING_GUIDANCE not in prompt
+
+    def test_includes_hasos_runtime_guidance_when_installed(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            run_agent,
+            "build_hasos_runtime_guidance",
+            lambda: "# HASOS P0 Runtime Guidance\nverify with evidence",
+        )
+
+        prompt = agent._build_system_prompt()
+
+        assert "# HASOS P0 Runtime Guidance" in prompt
+        assert "verify with evidence" in prompt
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -2090,6 +2467,7 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
+                runtime_policy_context=None,
             )
             assert result == "result"
 
@@ -2493,6 +2871,98 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_tool_limit_response_is_checkpoint_not_completion(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent.iteration_budget = run_agent.IterationBudget(1)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        summary_resp = _mock_response(content="Found one search result but still need to inspect it.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [tool_resp, summary_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something thoroughly")
+
+        assert result["completed"] is False
+        assert result["tool_limit_reached"] is True
+        assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert "TOOL_LIMIT_REACHED" in result["final_response"]
+        assert "任務尚未可驗收" in result["final_response"]
+        assert "回覆：繼續" in result["final_response"]
+        assert result["messages"][-1]["content"] == result["final_response"]
+
+    def test_tool_limit_skips_hasos_closeout_gate(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent.iteration_budget = run_agent.IterationBudget(1)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        summary_resp = _mock_response(content="Need more work.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [tool_resp, summary_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("run_agent.apply_hasos_closeout_gate", side_effect=AssertionError("HASOS gate should not run on tool-limit checkpoints")),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=AssertionError("transform hook should not rewrite tool-limit checkpoints")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("直接落地 HASOS 商用品質標準")
+
+        assert result["tool_limit_reached"] is True
+        assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert "TOOL_LIMIT_REACHED" in result["final_response"]
+        assert "hasos_closeout_gate" not in result
+
+    def test_transform_hook_output_is_still_checked_by_hasos_closeout_gate(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        monkeypatch.setattr(
+            run_agent,
+            "_run_hasos_template_quality_gate",
+            lambda: {"status": "passed", "passed": True},
+        )
+        agent.client.chat.completions.create.return_value = _mock_response(content="Draft response", finish_reason="stop")
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=["已完成。"]),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("直接落地 HASOS 商用品質標準")
+
+        assert result["completed"] is False
+        assert "HASOS closeout gate 已阻止完成宣稱" in result["final_response"]
+        assert result["messages"][-1]["content"] == result["final_response"]
+
+    def test_tool_limit_summary_failure_appends_checkpoint_assistant(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 1
+        agent.iteration_budget = run_agent.IterationBudget(1)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        agent.client.chat.completions.create.side_effect = [tool_resp, Exception("summary API down")]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something thoroughly")
+
+        assert result["tool_limit_reached"] is True
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"] == result["final_response"]
+        assert "TOOL_LIMIT_REACHED" in result["final_response"]
+        assert "summary API down" in result["final_response"]
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
@@ -5306,3 +5776,248 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+    def test_final_answer_on_last_iteration_is_not_marked_incomplete(self):
+        """A final answer on the last allowed API call is complete unless the explicit tool-limit path ran."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "completed = final_response is not None and not interrupted and not _tool_limit_reached" in src
+        assert "completed = final_response is not None and api_call_count < self.max_iterations" not in src
+
+
+def test_hasos_release_gate_template_parser_accepts_complete_user_template(tmp_path):
+    evidence = tmp_path / "secretvideo-release-gate-closeout.md"
+    evidence.write_text("release gate evidence", encoding="utf-8")
+    messages = [
+        {"role": "assistant", "content": "請貼上 HASOS release gate approval template"},
+        {"role": "user", "content": f"""HASOS_RELEASE_GATE_APPROVED
+runbook_id: secretvideo-app-store-resubmit
+runbook_version: 2026-05-05
+owner: 忠憲 游
+target: 秘密影音 1.0 iOS App Store Connect screenshot replacement and resubmission
+evidence_path: {evidence}
+stop_rules_checked: true
+redaction_checked: true
+release_security_gate_passed: true"""},
+    ]
+
+    policy = AIAgent._parse_hasos_release_gate_approval(messages)
+
+    assert policy["policy_authorized"] is True
+    assert policy["runbook_id"] == "secretvideo-app-store-resubmit"
+    assert policy["release_security_gate_passed"] is True
+    assert policy["evidence_path"] == str(evidence)
+    assert policy["scope_required_substrings"] == ["秘密影音", "1.0"]
+
+
+def test_hasos_release_gate_template_parser_rejects_missing_evidence_path_or_path_alias(tmp_path):
+    missing_paths = [
+        str(tmp_path / "missing-release-gate.json"),
+        "definitely-missing-release-gate-20260515.json",
+        "definitely-missing-release-gate-20260515.pdf",
+        "release-gate-evidence.csv",
+        "release_gate_evidence.plist",
+        "missing_evidence.HTML",
+    ]
+
+    for field in ("evidence_path", "evidence_id_or_path", "evidence_id"):
+        for missing_path in missing_paths:
+            assert AIAgent._parse_hasos_release_gate_approval([
+                {"role": "user", "content": f"""HASOS_RELEASE_GATE_APPROVED
+runbook_id: rb
+runbook_version: v1
+owner: owner
+target: app 1.0 build 1 submit
+{field}: {missing_path}
+stop_rules_checked: true
+redaction_checked: true
+release_security_gate_passed: true"""},
+            ]) is None
+
+
+def test_hasos_release_gate_template_parser_rejects_quoted_or_negated_legacy_template(tmp_path):
+    evidence = tmp_path / "release-gate-evidence.json"
+    evidence.write_text("{}", encoding="utf-8")
+
+    base = f"""HASOS_RELEASE_GATE_APPROVED
+runbook_id: rb
+runbook_version: v1
+owner: owner
+target: app 1.0 build 1 submit
+evidence_path: {evidence}
+stop_rules_checked: true
+redaction_checked: true
+release_security_gate_passed: true"""
+
+    for message in (
+        f"""這不是核准，只是範例，請不要執行：
+{base}""",
+        base + "\nnote: not an approval",
+        base + "\nnote: this is not approved",
+        base + "\nnote: sample only",
+        base + "\nnote: do not upload",
+        base + "\nnote: do not send for review",
+        base + "\nnote: not upload",
+        base + "\nnote: not to upload",
+        base + "\nnote: no submit",
+        base + "\nnote: no need to submit",
+        base + "\nnote: do not proceed to upload",
+        base + "\nnote: can't upload",
+        base + "\nnote: cant upload",
+        base + "\nnote: won't submit",
+        base + "\nnote: wont submit",
+        base + "\nnote: do not proceed with submission",
+        base + "\nnote: dont run",
+        base + "\nnote: don't run",
+        base + "\nnote: not for execution",
+        base + "\nnote: 不要送審",
+        base + "\nnote: 請勿提交",
+        base + "\nnote: 不要審查",
+        base + "\nnote: 不准送審",
+        base + "\nnote: 不核准送審",
+        base + "\nnote: 勿上傳",
+        base + "\nnote: 勿送審",
+    ):
+        assert AIAgent._parse_hasos_release_gate_approval([
+            {"role": "user", "content": message},
+        ]) is None
+
+
+def test_hasos_release_gate_parser_accepts_concise_traditional_chinese_approval(tmp_path, monkeypatch):
+    evidence = tmp_path / "release-gate-evidence.json"
+    evidence.write_text(
+        '{"app":"單位換算工具","version":"1.3","build":"5",'
+        '"stop_rules_checked":true,"redaction_checked":true,'
+        '"release_security_gate_passed":true}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HASOS_RELEASE_EVIDENCE_PATH", str(evidence))
+
+    policy = AIAgent._parse_hasos_release_gate_approval([
+        {"role": "assistant", "content": "範圍：單位換算工具 1.3 build 5 上傳並送審"},
+        {"role": "user", "content": "核准單位換算工具 1.3 build 5 上傳並送審"},
+    ])
+
+    assert policy["policy_authorized"] is True
+    assert policy["runbook_id"] == "concise-release-approval-v1"
+    assert policy["owner"] == "忠憲 游"
+    assert policy["release_security_gate_passed"] is True
+    assert policy["evidence_path"] == str(evidence)
+    assert policy["scope_required_substrings"] == ["單位換算工具", "1.3", "5"]
+    assert "單位換算工具 1.3 build 5 上傳並送審" in policy["target"]
+    assert policy["approval_source"] == "latest_user_concise_traditional_chinese_release_approval_with_matching_gate_evidence"
+
+
+def test_hasos_release_gate_parser_rejects_concise_approval_without_matching_gate_evidence(tmp_path, monkeypatch):
+    evidence = tmp_path / "release-gate-evidence.json"
+    evidence.write_text(
+        '{"app":"其他工具","version":"1.3","build":"5",'
+        '"stop_rules_checked":true,"redaction_checked":true,'
+        '"release_security_gate_passed":true}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HASOS_RELEASE_EVIDENCE_PATH", str(evidence))
+
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "user", "content": "核准單位換算工具 1.3 build 5 上傳並送審"},
+    ]) is None
+
+
+def test_hasos_release_gate_parser_rejects_negated_or_quoted_concise_approval(tmp_path, monkeypatch):
+    evidence = tmp_path / "release-gate-evidence.json"
+    evidence.write_text(
+        '{"app":"單位換算工具","version":"1.3","build":"5",'
+        '"stop_rules_checked":true,"redaction_checked":true,'
+        '"release_security_gate_passed":true}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HASOS_RELEASE_EVIDENCE_PATH", str(evidence))
+
+    for message in (
+        "不要核准單位換算工具 1.3 build 5 上傳並送審",
+        "不核准單位換算工具 1.3 build 5 上傳並送審",
+        "你要我輸入『核准單位換算工具 1.3 build 5 上傳並送審』但我拒絕",
+        "範例：核准單位換算工具 1.3 build 5 上傳並送審",
+        "核准單位換算工具 1.3 build 5 不要上傳",
+        "核准單位換算工具 1.3 build 5 不上傳",
+        "核准單位換算工具 1.3 build 5 不送審",
+        "核准單位換算工具 1.3 build 5 不提交",
+        "核准單位換算工具 1.3 build 5 暫不送審",
+        "核准單位換算工具 1.3 build 5 不要再上傳",
+        "核准單位換算工具 1.3 build 5 別再上傳",
+        "核准單位換算工具 1.3 build 5 勿再送審",
+        "核准單位換算工具 1.3 build 5 不用上傳",
+        "核准單位換算工具 1.3 build 5 不需提交",
+        "核准單位換算工具 1.3 build 5 無需送審",
+        "核准單位換算工具 1.3 build 5 不必上傳",
+        "核准單位換算工具 1.3 build 5 不須提交",
+        "核准單位換算工具 1.3 build 5 無須送審",
+        "核准單位換算工具 1.3 build 5 毋須送審",
+        "核准單位換算工具 1.3 build 5 不應上傳",
+        "核准單位換算工具 1.3 build 5 不可送審",
+        "核准單位換算工具 1.3 build 5 不能提交",
+        "核准單位換算工具 1.3 build 5 不得上傳",
+        "核准單位換算工具 1.3 build 5 do not upload",
+        "核准單位換算工具 1.3 build 5 請幫我上傳",
+    ):
+        assert AIAgent._parse_hasos_release_gate_approval([
+            {"role": "user", "content": message},
+        ]) is None
+
+
+def test_hasos_release_gate_parser_rejects_text_evidence_without_structured_gate_fields(tmp_path, monkeypatch):
+    evidence = tmp_path / "release-gate-evidence.txt"
+    evidence.write_text(
+        "單位換算工具 1.3 build 5 release_security_gate_passed: true",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HASOS_RELEASE_EVIDENCE_PATH", str(evidence))
+
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "user", "content": "核准單位換算工具 1.3 build 5 上傳並送審"},
+    ]) is None
+
+
+def test_hasos_release_gate_parser_rejects_json_scope_only_in_notes_or_substrings(tmp_path, monkeypatch):
+    evidence = tmp_path / "release-gate-evidence.json"
+    evidence.write_text(
+        '{"app":"其他工具","version":"11.3","build":"15",'
+        '"notes":"單位換算工具 1.3 build 5",'
+        '"stop_rules_checked":true,"redaction_checked":true,'
+        '"release_security_gate_passed":true}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HASOS_RELEASE_EVIDENCE_PATH", str(evidence))
+
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "user", "content": "核准單位換算工具 1.3 build 5 上傳並送審"},
+    ]) is None
+
+
+def test_hasos_release_gate_template_parser_rejects_bare_a_or_tool_arg_markers():
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "assistant", "content": "A/B/C?"},
+        {"role": "user", "content": "A"},
+    ]) is None
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "user", "content": "可以，繼續"},
+    ]) is None
+    assert AIAgent._parse_hasos_release_gate_approval([
+        {"role": "user", "content": "run command with --policy_authorized=true"},
+    ]) is None
+
+
+def test_hasos_runtime_policy_only_attaches_to_side_effect_tools():
+    agent = object.__new__(AIAgent)
+    messages = [{"role": "user", "content": """HASOS_RELEASE_GATE_APPROVED
+runbook_id: rb
+runbook_version: v1
+owner: owner
+target: target
+evidence_id: ev
+stop_rules_checked: true
+redaction_checked: true
+release_security_gate_passed: true"""}]
+
+    assert agent._hasos_runtime_policy_for_tool("read_file", {"path": "x"}, messages) is None
+    assert agent._hasos_runtime_policy_for_tool("terminal", {"command": "submit for review"}, messages)["policy_authorized"] is True

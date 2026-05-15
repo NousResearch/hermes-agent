@@ -251,6 +251,15 @@ class TestDefaultContextLengths:
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             assert value > 0, f"{key} has non-positive context length"
 
+    def test_exact_builtin_default_overrides_conflicting_openrouter_metadata(self):
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={
+            "hy3-preview": {"context_length": 999_999},
+        }), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            assert get_model_context_length("hy3-preview") == DEFAULT_CONTEXT_LENGTHS["hy3-preview"]
+
     def test_dict_is_not_empty(self):
         assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
 

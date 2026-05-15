@@ -9,8 +9,10 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -39,6 +41,26 @@ def _reset_registration_state():
     shell_hooks.reset_for_tests()
     yield
     shell_hooks.reset_for_tests()
+
+
+class _TTYInput:
+    def isatty(self):
+        return True
+
+
+def test_hook_consent_prompt_redacts_secret_like_command(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+    monkeypatch.setattr(sys, "stdin", _TTYInput())
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    secret = "sk-" + ("x" * 28)
+    command = f"python hook.py --api-key {secret}"
+
+    allowed = shell_hooks._prompt_and_record("pre_tool_call", command, accept_hooks=False)
+
+    out = capsys.readouterr().out
+    assert allowed is False
+    assert secret not in out
+    assert "[REDACTED]" in out
 
 
 # ── _parse_response ───────────────────────────────────────────────────────
@@ -73,6 +95,17 @@ class TestParseResponse:
 
     def test_invalid_json_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "not json") is None
+
+    def test_invalid_json_stdout_preview_redacts_secret(self, caplog):
+        secret = "sk-" + "A" * 24
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            assert shell_hooks._parse_response(
+                "pre_tool_call",
+                f"not json api_key={secret}",
+            ) is None
+
+        assert secret not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
     def test_non_dict_json_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "[1, 2]") is None
@@ -258,6 +291,26 @@ class TestCallbackSubprocess:
         )
         cb = shell_hooks._make_callback(spec)
         assert cb(tool_name="terminal") == {"action": "block", "message": "via exit 1"}
+
+    def test_stderr_logging_redacts_secret_on_debug_and_warning(self, tmp_path, caplog):
+        secret = "sk-" + ("x" * 28)
+        script = _write_script(
+            tmp_path, "exit1_secret_stderr.sh",
+            "#!/usr/bin/env bash\n"
+            f"printf 'api_key={secret}\\n' >&2\n"
+            'printf \'{"decision": "block", "reason": "via exit 1"}\\n\'\n'
+            "exit 1\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+
+        with caplog.at_level(logging.DEBUG, logger=shell_hooks.logger.name):
+            assert cb(tool_name="terminal") == {"action": "block", "message": "via exit 1"}
+
+        assert secret not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
     def test_block_translation_end_to_end(self, tmp_path):
         """v1 schema-bug regression gate.

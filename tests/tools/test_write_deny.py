@@ -41,6 +41,21 @@ class TestWriteDenyExactPaths:
         path = str(get_hermes_home() / ".env")
         assert _is_write_denied(path) is True
 
+    def test_hasos_runtime_release_policy_files(self):
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        for path in [
+            home / "standards" / "HASOS" / "policies" / "runtime-release-gate-evidence.json",
+            home / "release-gate-evidence" / "active-runtime-policy.json",
+            home / "policies" / "runtime-release-gate-evidence.json",
+        ]:
+            assert _is_write_denied(str(path)) is True
+
+    def test_hasos_release_gate_evidence_directory(self):
+        from hermes_constants import get_hermes_home
+        path = get_hermes_home() / "release-gate-evidence" / "agent-created-release-gate.json"
+        assert _is_write_denied(str(path)) is True
+
     def test_shell_profiles(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:

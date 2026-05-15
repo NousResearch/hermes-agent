@@ -50,6 +50,16 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             mock_run.return_value = MagicMock(returncode=0, stdout="not valid json", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
+    def test_returns_none_for_json_non_object_payload(self):
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(["not", "an", "object"]),
+                stderr="",
+            )
+            assert _read_claude_code_credentials_from_keychain() is None
+
     def test_returns_none_when_password_field_is_missing_claude_ai_oauth(self):
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
              patch("agent.anthropic_adapter.subprocess.run") as mock_run:
@@ -155,6 +165,20 @@ class TestReadClaudeCodeCredentialsPriority:
 
     def test_returns_none_when_neither_keychain_nor_json_has_creds(self, tmp_path, monkeypatch):
         """No credentials anywhere — must return None cleanly."""
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+            creds = read_claude_code_credentials()
+
+        assert creds is None
+
+    def test_returns_none_when_json_file_payload_is_not_object(self, tmp_path, monkeypatch):
+        """Valid JSON with the wrong shape must not crash the fallback path."""
+        json_cred_file = tmp_path / ".claude" / ".credentials.json"
+        json_cred_file.parent.mkdir(parents=True)
+        json_cred_file.write_text(json.dumps(["not", "an", "object"]))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \

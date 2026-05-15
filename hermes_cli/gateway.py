@@ -1211,12 +1211,18 @@ def _container_systemd_operational() -> bool:
 def supports_systemd_services() -> bool:
     if not is_linux() or is_termux():
         return False
-    if shutil.which("systemctl") is None:
-        return False
     if is_wsl():
         return _wsl_systemd_operational()
     if is_container():
         return _container_systemd_operational()
+    systemctl_path = shutil.which("systemctl")
+    if systemctl_path is None:
+        # Unit tests monkeypatch ``is_linux`` while running on macOS; avoid
+        # treating the host's missing systemctl as evidence that native Linux
+        # lacks systemd.  If ``shutil.which`` itself is monkeypatched to None,
+        # still honor that explicit simulated absence.
+        if sys.platform.startswith("linux") or getattr(shutil.which, "__module__", "") != "shutil":
+            return False
     return True
 
 

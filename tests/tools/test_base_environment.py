@@ -23,6 +23,44 @@ class _TestableEnv(BaseEnvironment):
         pass
 
 
+class _FinishedProc:
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.pid = 12345
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+class _InvalidFilenoStdout:
+    def __iter__(self):
+        return iter(["fallback output\n"])
+
+    def fileno(self):
+        return object()
+
+    def close(self):
+        pass
+
+
+class _FragmentedBytesStdout:
+    def __iter__(self):
+        return iter([b"\xe4\xbd", b"\xa0\n"])
+
+    def fileno(self):
+        return object()
+
+    def close(self):
+        pass
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()
@@ -184,6 +222,32 @@ class TestInitSessionFailure:
 
         assert len(calls) == 1
         assert calls[0]["login"] is True
+
+
+class TestWaitForProcessStdoutFallback:
+    def test_iterable_stdout_without_fileno_is_captured(self):
+        env = _TestableEnv()
+        proc = _FinishedProc(iter(["mock output\n"]))
+
+        result = env._wait_for_process(proc, timeout=1)
+
+        assert result == {"output": "mock output\n", "returncode": 0}
+
+    def test_invalid_fileno_stdout_falls_back_to_iteration(self):
+        env = _TestableEnv()
+        proc = _FinishedProc(_InvalidFilenoStdout())
+
+        result = env._wait_for_process(proc, timeout=1)
+
+        assert result == {"output": "fallback output\n", "returncode": 0}
+
+    def test_fragmented_bytes_stdout_uses_incremental_decoder(self):
+        env = _TestableEnv()
+        proc = _FinishedProc(_FragmentedBytesStdout())
+
+        result = env._wait_for_process(proc, timeout=1)
+
+        assert result == {"output": "你\n", "returncode": 0}
 
 
 class TestCwdMarker:

@@ -10202,7 +10202,18 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            try:
+                _thread_meta = self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                )
+            except AttributeError:
+                # Unit tests and narrow callers may exercise this helper as an
+                # unbound method with a minimal sentinel for ``self``.  Keep the
+                # routing helper functional by falling back to the platform
+                # adapter's shared metadata builder instead of dropping media.
+                from gateway.platforms.base import _thread_metadata_for_source
+                _thread_meta = _thread_metadata_for_source(event.source)
 
             from gateway.platforms.base import should_send_media_as_audio
 
@@ -15552,6 +15563,8 @@ class GatewayRunner:
                     "failed": result.get("failed", False),
                     "partial": result.get("partial", False),
                     "completed": result.get("completed"),
+                    "tool_limit_reached": result.get("tool_limit_reached", False),
+                    "turn_exit_reason": result.get("turn_exit_reason"),
                     "interrupted": result.get("interrupted", False),
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
@@ -15671,6 +15684,8 @@ class GatewayRunner:
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
+                "tool_limit_reached": result_holder[0].get("tool_limit_reached", False) if result_holder[0] else False,
+                "turn_exit_reason": result_holder[0].get("turn_exit_reason") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,

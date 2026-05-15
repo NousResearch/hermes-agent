@@ -26,6 +26,13 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
+_CODE_GRAPH_TOOLS = [
+    "code_graph_index",
+    "code_graph_context",
+    "code_graph_impact",
+]
+
+
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
@@ -60,6 +67,10 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Code graph stays opt-in because it can expose source metadata/excerpts even
+    # though it is read-only and recursively redacted. Enable the `code_graph`
+    # toolset for source-impact review sessions rather than loading it into every
+    # Telegram/API/core schema by default.
     # Kanban multi-agent coordination — only in schema when the agent is
     # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
     # profile explicitly enables the kanban toolset. Gated via check_fn in
@@ -98,6 +109,12 @@ TOOLSETS = {
     "video": {
         "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
         "tools": ["video_analyze"],
+        "includes": []
+    },
+
+    "code_graph": {
+        "description": "Read-only source-code graph and impact analysis tools (opt-in)",
+        "tools": _CODE_GRAPH_TOOLS,
         "includes": []
     },
     

@@ -11,7 +11,9 @@ import { MessageLine } from './messageLine.js'
 import { TodoPanel } from './todoPanel.js'
 
 const groupedSegments = (segments: Msg[]): Msg[] =>
-  segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
+  segments
+    .filter(msg => !(msg.kind === 'trail' && !msg.text && !msg.thinking?.trim() && msg.tools?.length))
+    .reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
 
 export const StreamingAssistant = memo(function StreamingAssistant({
   cols,
@@ -25,10 +27,9 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streamSegments = useTurnSelector(state => state.streamSegments)
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
-  const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
-  if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
+  if (!progress.showProgressArea && !showStreamingArea) {
     return null
   }
 
@@ -46,19 +47,6 @@ export const StreamingAssistant = memo(function StreamingAssistant({
           t={ui.theme}
         />
       ))}
-
-      {!!activeTools.length && (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          detailsModeCommandOverride={detailsModeCommandOverride}
-          msg={{ kind: 'trail', role: 'system', text: '' }}
-          sections={sections}
-          t={ui.theme}
-          tools={activeTools}
-        />
-      )}
 
       {showStreamingArea && (
         <MessageLine

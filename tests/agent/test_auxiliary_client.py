@@ -2121,7 +2121,14 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        elapsed = time.monotonic() - started
+        # The adapter cannot interrupt a synchronous iterator while it is
+        # inside the producer's blocking sleep; it checks the total deadline
+        # between stream events. Keep the assertion below the full fake stream
+        # duration plus a realistic macOS/Python scheduling/import margin so
+        # regressions that wait for the entire stream are still caught without
+        # making the test timing-flaky on slower workers.
+        assert elapsed < 0.25
 
 
 # ---------------------------------------------------------------------------

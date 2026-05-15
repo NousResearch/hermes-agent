@@ -23,12 +23,15 @@ from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms import api_server as api_server_mod
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS,
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _sse_queue_poll_timeout,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -47,6 +50,22 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+class TestSSEQueuePollTimeout:
+    def test_defaults_to_half_second_cap(self):
+        assert CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS > 0.5
+        assert _sse_queue_poll_timeout() == 0.5
+
+    def test_tracks_short_keepalive_for_chat_and_responses_loops(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.02)
+
+        assert _sse_queue_poll_timeout() == 0.02
+
+    def test_never_busy_spins_below_minimum(self, monkeypatch):
+        monkeypatch.setattr(api_server_mod, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.001)
+
+        assert _sse_queue_poll_timeout() == 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +450,31 @@ class TestAgentExecution:
             task_id="session-123",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_agent_forwards_tool_limit_metadata(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {
+            "final_response": "TOOL_LIMIT_REACHED\nFinal status：尚未可驗收",
+            "completed": False,
+            "tool_limit_reached": True,
+            "turn_exit_reason": "max_iterations_reached(1/1)",
+        }
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+            )
+
+        assert result["tool_limit_reached"] is True
+        assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert result["completed"] is False
+        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
 
 # ---------------------------------------------------------------------------
 # /health endpoint
@@ -754,6 +798,91 @@ class TestChatCompletionsEndpoint:
             fake_task.callbacks[0](fake_task)
             assert stream_q.get_nowait() is None
 
+    @pytest.mark.asyncio
+    async def test_stream_tool_limit_uses_length_finish_reason_and_metadata(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("partial pre-gate text")
+                return (
+                    {
+                        "final_response": "TOOL_LIMIT_REACHED\nFinal status：尚未可驗收",
+                        "completed": False,
+                        "tool_limit_reached": True,
+                        "turn_exit_reason": "max_iterations_reached(1/1)",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "continue"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        finish_chunks = []
+        for line in body.splitlines():
+            if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                payload = json.loads(line[len("data: "):])
+                for choice in payload.get("choices", []):
+                    if choice.get("finish_reason") is not None:
+                        finish_chunks.append(payload)
+        assert finish_chunks
+        final_chunk = finish_chunks[-1]
+        assert final_chunk["choices"][0]["finish_reason"] == "length"
+        assert final_chunk["hermes"]["tool_limit_reached"] is True
+        assert final_chunk["hermes"]["completed"] is False
+        assert final_chunk["hermes"]["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert "partial pre-gate text" in body
+        assert "TOOL_LIMIT_REACHED" in body
+        assert "[DONE]" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_append_passed_closeout_gate_metadata(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Final answer")
+                return (
+                    {
+                        "final_response": "Final answer with transcript-only suffix",
+                        "completed": True,
+                        "hasos_closeout_gate": {"passed": True},
+                        "hasos_closeout_gate_blocked": False,
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "closeout ok"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "Final answer" in body
+        assert "transcript-only suffix" not in body
+        assert '"finish_reason": "stop"' in body
+        assert "[DONE]" in body
     @pytest.mark.asyncio
     async def test_stream_sends_keepalive_during_quiet_tool_gap(self, adapter):
         """Idle SSE streams should send keepalive comments while tools run silently."""
@@ -1343,6 +1472,40 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
+    async def test_tool_limit_response_is_incomplete_with_hermes_metadata(self, adapter):
+        mock_result = {
+            "final_response": "TOOL_LIMIT_REACHED\nFinal status：尚未可驗收",
+            "completed": False,
+            "tool_limit_reached": True,
+            "turn_exit_reason": "max_iterations_reached(1/1)",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Continue long task",
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["status"] == "incomplete"
+        assert data["hermes"]["completed"] is False
+        assert data["hermes"]["tool_limit_reached"] is True
+        assert data["hermes"]["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert data["hermes"]["error_code"] == "max_iterations_reached"
+        assert resp.headers.get("X-Hermes-Completed") == "false"
+        assert resp.headers.get("X-Hermes-Tool-Limit-Reached") == "true"
+        assert resp.headers.get("X-Hermes-Turn-Exit-Reason") == "max_iterations_reached(1/1)"
+
+    @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
         """Array input with role/content objects."""
         mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
@@ -1794,6 +1957,71 @@ class TestResponsesStreaming:
             assert stream_q.empty()
             fake_task.callbacks[0](fake_task)
             assert stream_q.get_nowait() is None
+
+    @pytest.mark.asyncio
+    async def test_stream_appends_closeout_gate_text_after_prior_delta(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("已完成。")
+                return (
+                    {
+                        "final_response": "HASOS closeout gate 已阻止完成宣稱：目前缺少：verification/驗證。",
+                        "completed": False,
+                        "hasos_closeout_gate": {"blocked": True},
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "HASOS closeout", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert r"\u5df2\u5b8c\u6210\u3002" in body
+        assert "HASOS closeout gate" in body
+        assert "event: response.incomplete" in body
+        assert '"status": "incomplete"' in body
+
+    @pytest.mark.asyncio
+    async def test_responses_stream_does_not_append_passed_closeout_gate_metadata(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Final response")
+                return (
+                    {
+                        "final_response": "Final response with transcript-only suffix",
+                        "completed": True,
+                        "hasos_closeout_gate": {"passed": True},
+                        "hasos_closeout_gate_blocked": False,
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "HASOS closeout", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+        assert "Final response" in body
+        assert "transcript-only suffix" not in body
+        assert "event: response.completed" in body
+        assert "event: response.incomplete" not in body
 
     @pytest.mark.asyncio
     async def test_stream_emits_function_call_and_output_items(self, adapter):
@@ -2611,6 +2839,61 @@ class TestChatCompletionsAgentIncomplete:
             assert data["error"]["hermes"]["partial"] is True
             assert data["error"]["hermes"]["failed"] is True
             assert resp.headers.get("X-Hermes-Completed") == "false"
+
+    @pytest.mark.asyncio
+    async def test_tool_limit_checkpoint_uses_length_finish_reason_and_metadata(self, adapter):
+        mock_result = {
+            "final_response": "TOOL_LIMIT_REACHED\nFinal status：尚未可驗收",
+            "completed": False,
+            "partial": False,
+            "failed": False,
+            "tool_limit_reached": True,
+            "turn_exit_reason": "max_iterations_reached(1/1)",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "continue long task"}]},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["choices"][0]["finish_reason"] == "length"
+        assert data["hermes"]["completed"] is False
+        assert data["hermes"]["tool_limit_reached"] is True
+        assert data["hermes"]["turn_exit_reason"] == "max_iterations_reached(1/1)"
+        assert data["hermes"]["error_code"] == "max_iterations_reached"
+        assert resp.headers.get("X-Hermes-Completed") == "false"
+        assert resp.headers.get("X-Hermes-Tool-Limit-Reached") == "true"
+        assert resp.headers.get("X-Hermes-Turn-Exit-Reason") == "max_iterations_reached(1/1)"
+
+    @pytest.mark.asyncio
+    async def test_soft_incomplete_without_error_uses_length_finish_reason(self, adapter):
+        mock_result = {
+            "final_response": "HASOS closeout gate blocked: 尚未可驗收",
+            "completed": False,
+            "partial": False,
+            "failed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "done?"}]},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["choices"][0]["finish_reason"] == "length"
+        assert data["hermes"]["completed"] is False
+        assert data["hermes"]["error_code"] == "output_truncated"
 
     @pytest.mark.asyncio
     async def test_normal_completion_unchanged(self, adapter):

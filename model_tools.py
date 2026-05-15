@@ -22,15 +22,18 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
+import importlib.util
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
+_HASOS_POLICY_ENGINE_CACHE: Tuple[Optional[Path], Any] = (None, None)
 
 
 # =============================================================================
@@ -485,6 +488,148 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+def _load_hasos_policy_engine() -> Any:
+    """Best-effort optional load of the local HASOS policy engine.
+
+    The source-level gate must never make tool dispatch crash when a user does
+    not have HASOS installed, so import failures are debug-only and fail open.
+    """
+    global _HASOS_POLICY_ENGINE_CACHE
+    try:
+        from hermes_constants import get_hermes_home
+
+        external_path = get_hermes_home() / "scripts" / "hasos_policy_engine.py"
+    except Exception as exc:
+        logger.debug("HASOS source gate: cannot resolve Hermes home, using bundled fallback if available: %s", exc)
+        external_path = None
+
+    bundled_path = Path(__file__).resolve().parent / "agent" / "hasos_policy_engine_runtime.py"
+    candidate_paths = [p for p in (external_path, bundled_path) if p is not None]
+
+    cached = _HASOS_POLICY_ENGINE_CACHE
+    cached_path = cached_module = cached_mtime = None
+    if isinstance(cached, tuple):
+        if len(cached) >= 2:
+            cached_path, cached_module = cached[0], cached[1]
+        if len(cached) >= 3:
+            cached_mtime = cached[2]
+    try:
+        path = next((p for p in candidate_paths if p.exists()), bundled_path)
+        current_mtime = path.stat().st_mtime if path.exists() else None
+    except Exception:
+        current_mtime = None
+    if cached_path == path and cached_mtime == current_mtime:
+        return cached_module
+
+    module = None
+    try:
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("hasos_policy_engine_for_model_tools", path)
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception as exc:
+        logger.debug("HASOS source gate import failed; failing open: %s", exc)
+        module = None
+    _HASOS_POLICY_ENGINE_CACHE = (path, module, current_mtime)
+    return module
+
+
+def _hasos_sanitize_text(policy_engine: Any, value: Any) -> str:
+    def _fallback_sanitize(text: Any) -> str:
+        try:
+            from agent.shell_hooks import sanitize_for_display
+
+            return sanitize_for_display(text)
+        except Exception:
+            return "" if text is None else str(text)
+
+    try:
+        sanitize_text = getattr(policy_engine, "sanitize_text", None)
+        if callable(sanitize_text):
+            # Defense in depth: the local policy engine is the primary sanitizer,
+            # then Hermes' built-in display sanitizer catches high-confidence
+            # token shapes if the local script lags behind the runtime.
+            return _fallback_sanitize(sanitize_text(value))
+        redact = getattr(policy_engine, "redact", None)
+        if callable(redact):
+            redacted = redact(value)
+            if isinstance(redacted, str):
+                text = redacted
+            else:
+                text = json.dumps(redacted, ensure_ascii=False, default=str)
+            return _fallback_sanitize(text)
+    except Exception:
+        pass
+    return _fallback_sanitize(value)
+
+
+def _hasos_source_pre_tool_gate(
+    function_name: str,
+    function_args: Dict[str, Any],
+    *,
+    task_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    runtime_policy_context: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Block clear Level-5 and ungated Level-4 tool calls before dispatch.
+
+    Boundary: this is a Hermes source-level pre-tool gate.  It is not an OS
+    sandbox and cannot govern processes launched outside Hermes.
+    """
+    policy_engine = _load_hasos_policy_engine()
+    if policy_engine is None:
+        return None
+    evaluate_payload = getattr(policy_engine, "evaluate_payload", None)
+    if not callable(evaluate_payload):
+        logger.debug("HASOS source gate skipped: evaluate_payload missing")
+        return None
+
+    payload = {
+        "hook_event_name": "pre_tool_call",
+        "tool_name": function_name,
+        "tool_input": function_args if isinstance(function_args, dict) else {},
+        "session_id": session_id or "",
+        "extra": {
+            "task_id": task_id or "",
+            "tool_call_id": tool_call_id or "",
+            "source_gate": "model_tools.handle_function_call",
+        },
+    }
+    if isinstance(runtime_policy_context, dict) and runtime_policy_context:
+        # Trusted only when supplied by the runtime caller (e.g. run_agent after
+        # parsing a user-authored HASOS approval template). Never read policy
+        # fields from tool arguments, prompt text, or generic hook extras here.
+        payload["runtime_policy"] = runtime_policy_context
+    try:
+        decision = evaluate_payload(payload)
+    except Exception as exc:
+        logger.debug("HASOS source gate evaluation failed; failing open: %s", exc)
+        return None
+
+    if not isinstance(decision, dict) or decision.get("action") != "block":
+        return None
+
+    message = _hasos_sanitize_text(policy_engine, decision.get("message") or "HASOS source pre-tool gate blocked this tool call.")
+    blocked = {
+        "blocked": True,
+        "blocked_by": "hasos_source_pre_tool_gate",
+        "schema_version": decision.get("schema_version"),
+        "level": decision.get("level"),
+        "decision": decision.get("decision"),
+        "action": "block",
+        "tool_name": function_name,
+        "message": message,
+        "error": message,
+        "reason_codes": decision.get("reason_codes", []),
+        "required_gates": decision.get("required_gates", []),
+        "missing_gates": decision.get("missing_gates", []),
+        "os_sandbox": False,
+    }
+    return json.dumps(blocked, ensure_ascii=False)
+
+
 # =========================================================================
 # Tool argument type coercion
 # =========================================================================
@@ -694,6 +839,7 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    runtime_policy_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -717,6 +863,17 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        source_gate_result = _hasos_source_pre_tool_gate(
+            function_name,
+            function_args,
+            task_id=task_id,
+            tool_call_id=tool_call_id,
+            session_id=session_id,
+            runtime_policy_context=runtime_policy_context,
+        )
+        if source_gate_result is not None:
+            return source_gate_result
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

@@ -12,10 +12,10 @@ import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
-import { fmtK } from '../lib/text.js'
+import { compactPreview, fmtK, formatToolCall } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, TodoItem, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -245,6 +245,79 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+const latest = <T,>(items: readonly T[]) => items[items.length - 1]
+
+export const feedbackStatusLine = ({
+  activity,
+  outcome,
+  pendingTools,
+  todos,
+  tools,
+  turnTrail
+}: {
+  activity: readonly ActivityItem[]
+  outcome: string
+  pendingTools: readonly string[]
+  todos: readonly TodoItem[]
+  tools: readonly ActiveTool[]
+  turnTrail: readonly string[]
+}) => {
+  const activeTool = latest(tools)
+
+  if (activeTool) {
+    const prefix = tools.length > 1 ? `${tools.length} tools: ` : 'tool: '
+
+    return `${prefix}${formatToolCall(activeTool.name, activeTool.context ?? '')}`
+  }
+
+  const pending = latest(pendingTools)
+
+  if (pending) {
+    return compactPreview(pending, 80)
+  }
+
+  const activityItem = latest(activity)
+
+  if (activityItem) {
+    return compactPreview(activityItem.text, 80)
+  }
+
+  const trail = latest(turnTrail)
+
+  if (trail) {
+    return compactPreview(trail, 80)
+  }
+
+  const currentTodo = todos.find(todo => todo.status === 'in_progress') ?? todos.find(todo => todo.status === 'pending')
+
+  if (currentTodo) {
+    return `todo: ${compactPreview(currentTodo.content, 72)}`
+  }
+
+  return outcome ? compactPreview(outcome, 80) : ''
+}
+
+function FeedbackHud({ t }: { t: Theme }) {
+  const activity = useTurnSelector(state => state.activity)
+  const outcome = useTurnSelector(state => state.outcome)
+  const pendingTools = useTurnSelector(state => state.streamPendingTools)
+  const todos = useTurnSelector(state => state.todos)
+  const tools = useTurnSelector(state => state.tools)
+  const turnTrail = useTurnSelector(state => state.turnTrail)
+  const text = feedbackStatusLine({ activity, outcome, pendingTools, todos, tools, turnTrail })
+
+  if (!text) {
+    return null
+  }
+
+  const hasActiveTool = tools.length > 0
+  const hasWarn = activity.at(-1)?.tone === 'warn'
+  const hasError = activity.at(-1)?.tone === 'error' || pendingTools.at(-1)?.endsWith(' ✗')
+  const color = hasError ? t.color.error : hasWarn ? t.color.warn : hasActiveTool ? t.color.accent : t.color.muted
+
+  return <Text color={color}> │ {text}</Text>
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -343,6 +416,7 @@ export function StatusRule({
             </Text>
           ) : null}
           {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
+          <FeedbackHud t={t} />
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}

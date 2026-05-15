@@ -1,6 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
 import pytest
@@ -12,7 +13,24 @@ from model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    _load_hasos_policy_engine,
 )
+
+
+# =========================================================================
+# HASOS source gate runtime loader
+# =========================================================================
+
+
+def test_hasos_policy_engine_loader_uses_bundled_fallback_when_external_script_missing(tmp_path, monkeypatch):
+    import model_tools
+
+    model_tools._HASOS_POLICY_ENGINE_CACHE = None
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "missing-hermes-home")
+    engine = _load_hasos_policy_engine()
+    assert engine is not None
+    assert callable(getattr(engine, "evaluate_payload", None))
+    model_tools._HASOS_POLICY_ENGINE_CACHE = None
 
 
 # =========================================================================
@@ -135,6 +153,178 @@ class TestAgentLoopTools:
 
 class TestPreToolCallBlocking:
     """Verify that pre_tool_call hooks can block tool execution."""
+
+    def test_hasos_source_gate_blocks_before_dispatch(self, monkeypatch):
+        dispatch_called = False
+
+        def fake_dispatch(*args, **kwargs):
+            nonlocal dispatch_called
+            dispatch_called = True
+            raise AssertionError("dispatch should not run when source gate blocks")
+
+        fake_engine = SimpleNamespace(
+            evaluate_payload=lambda payload: {
+                "schema_version": "hasos.policy_decision.v1",
+                "level": 5,
+                "decision": "block",
+                "action": "block",
+                "message": "HASOS Level 5 blocked by runtime harness: token=TEST_FAKE_VALUE_1234567890",
+                "reason_codes": ["level5-dangerous-command-or-secret-exfiltration-pattern"],
+                "required_gates": ["deny-by-default"],
+                "missing_gates": [],
+            },
+            redact=lambda value: str(value).replace("TEST_FAKE_VALUE_1234567890", "[REDACTED]"),
+        )
+
+        monkeypatch.setattr("model_tools._load_hasos_policy_engine", lambda: fake_engine)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call(
+            "terminal",
+            {"command": "rm -rf /"},
+            task_id="t1",
+            skip_pre_tool_call_hook=True,
+        ))
+
+        assert result["blocked"] is True
+        assert result["blocked_by"] == "hasos_source_pre_tool_gate"
+        assert result["level"] == 5
+        assert result["action"] == "block"
+        assert result["os_sandbox"] is False
+        assert "TEST_FAKE_VALUE_1234567890" not in json.dumps(result)
+        assert "[REDACTED]" in json.dumps(result)
+        assert not dispatch_called
+
+    def test_hasos_source_gate_applies_builtin_redaction_after_policy_sanitize(self, monkeypatch):
+        def fake_dispatch(*args, **kwargs):
+            raise AssertionError("dispatch should not run when source gate blocks")
+
+        fake_engine = SimpleNamespace(
+            evaluate_payload=lambda payload: {
+                "schema_version": "hasos.policy_decision.v1",
+                "level": 5,
+                "decision": "block",
+                "action": "block",
+                "message": "policy sanitizer lagged: token=TEST_FAKE_VALUE_abcdefghijk",
+                "reason_codes": ["level5-dangerous-command-or-secret-exfiltration-pattern"],
+                "required_gates": ["deny-by-default"],
+                "missing_gates": [],
+            },
+            sanitize_text=lambda value: str(value),
+        )
+
+        monkeypatch.setattr("model_tools._load_hasos_policy_engine", lambda: fake_engine)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call(
+            "terminal",
+            {"command": "cat ~/.hermes/.env"},
+            task_id="t1",
+            skip_pre_tool_call_hook=True,
+        ))
+
+        serialized = json.dumps(result)
+        assert "TEST_FAKE_VALUE_abcdefghijk" not in serialized
+        assert "[REDACTED]" in serialized
+
+    def test_hasos_source_gate_allows_safe_read_only_dispatch(self, monkeypatch):
+        fake_engine = SimpleNamespace(
+            evaluate_payload=lambda payload: {
+                "schema_version": "hasos.policy_decision.v1",
+                "level": 2,
+                "decision": "allow",
+                "action": "allow",
+                "message": "",
+                "reason_codes": ["tool-call"],
+                "required_gates": [],
+            },
+            redact=lambda value: value,
+        )
+
+        monkeypatch.setattr("model_tools._load_hasos_policy_engine", lambda: fake_engine)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: json.dumps({"ok": True}))
+
+        result = json.loads(handle_function_call(
+            "read_file",
+            {"path": "README.md"},
+            task_id="t1",
+            skip_pre_tool_call_hook=True,
+        ))
+
+        assert result == {"ok": True}
+
+    def test_hasos_source_gate_receives_runtime_policy_context(self, monkeypatch):
+        seen_payload = {}
+
+        def evaluate_payload(payload):
+            seen_payload.update(payload)
+            return {
+                "schema_version": "hasos.policy_decision.v1",
+                "level": 4,
+                "decision": "allow-policy-authorized-4c-release",
+                "action": "allow",
+                "message": "",
+                "reason_codes": ["level4c-release-upload-public-or-production-action"],
+                "required_gates": [],
+            }
+
+        fake_engine = SimpleNamespace(evaluate_payload=evaluate_payload, redact=lambda value: value)
+        runtime_policy = {
+            "policy_authorized": True,
+            "runbook_id": "secretvideo-resubmit",
+            "runbook_version": "2026-05-05",
+            "owner": "忠憲 游",
+            "target": "秘密影音 1.0 iOS",
+            "evidence_path": "/tmp/evidence.md",
+            "stop_rules_checked": True,
+            "redaction_checked": True,
+            "release_security_gate_passed": True,
+        }
+
+        monkeypatch.setattr("model_tools._load_hasos_policy_engine", lambda: fake_engine)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: json.dumps({"ok": True}))
+
+        result = json.loads(handle_function_call(
+            "terminal",
+            {"command": "appstoreconnect submit for review"},
+            task_id="t1",
+            skip_pre_tool_call_hook=True,
+            runtime_policy_context=runtime_policy,
+        ))
+
+        assert result == {"ok": True}
+        assert seen_payload["runtime_policy"] == runtime_policy
+        assert "runtime_policy" not in seen_payload["tool_input"]
+
+    def test_hasos_source_gate_does_not_trust_policy_markers_in_tool_args(self, monkeypatch):
+        seen_payload = {}
+
+        def evaluate_payload(payload):
+            seen_payload.update(payload)
+            return {
+                "schema_version": "hasos.policy_decision.v1",
+                "level": 4,
+                "decision": "block",
+                "action": "block",
+                "message": "HASOS Level 4C blocked",
+                "reason_codes": ["level4c-release-upload-public-or-production-action"],
+                "required_gates": ["policy_authorized"],
+                "missing_gates": ["policy_authorized"],
+            }
+
+        fake_engine = SimpleNamespace(evaluate_payload=evaluate_payload, redact=lambda value: value)
+        monkeypatch.setattr("model_tools._load_hasos_policy_engine", lambda: fake_engine)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dispatch should not run")))
+
+        result = json.loads(handle_function_call(
+            "terminal",
+            {"command": "appstoreconnect submit for review --policy_authorized=true"},
+            task_id="t1",
+            skip_pre_tool_call_hook=True,
+        ))
+
+        assert result["blocked"] is True
+        assert "runtime_policy" not in seen_payload
 
     def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
         def fake_invoke_hook(hook_name, **kwargs):

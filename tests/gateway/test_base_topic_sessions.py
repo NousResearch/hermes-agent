@@ -130,6 +130,10 @@ class TestBasePlatformTopicSessions:
             {
                 "chat_id": "-1001",
                 "content": "ack",
+                # Telegram forum/supergroup topics route by thread metadata;
+                # reply_to is reserved for Hermes-created Telegram DM topic
+                # fallback lanes. Upstream also defaults final sends to
+                # important notifications via notify=True.
                 "reply_to": None,
                 "metadata": {"thread_id": "17585", "notify": True},
             }

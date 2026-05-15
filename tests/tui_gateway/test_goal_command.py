@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import threading
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -54,7 +55,7 @@ def server(hermes_home):
 @pytest.fixture()
 def session(server):
     sid = "sid-test"
-    session_key = "tui-goal-session-1"
+    session_key = f"tui-goal-session-{uuid.uuid4().hex}"
     s = {
         "session_key": session_key,
         "history": [],

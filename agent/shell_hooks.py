@@ -54,6 +54,7 @@ Wire protocol
 from __future__ import annotations
 
 import difflib
+import importlib.util
 import json
 import logging
 import os
@@ -84,6 +85,31 @@ DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
 
+_LOG_SECRET_VALUE_RE = re.compile(
+    r"(?is)("
+    r"sk-[A-Za-z0-9_-]{20,}|"
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{20,}|"
+    r"AIza[0-9A-Za-z_-]{20,}|"
+    r"TEST_FAKE_VALUE_[A-Za-z0-9_-]{8,}|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"
+    r")"
+)
+_LOG_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?ix)("
+    r"\b(?:"
+    r"[A-Za-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
+    r"secret|password|passwd|pwd|private[_-]?key|credential|cookie|jwt)[A-Za-z0-9_-]*|"
+    r"auth(?:[_-]?(?:token|key))?"
+    r")\b"
+    r"['\"]?\s*[:=]\s*['\"]?"
+    r")([^'\"\s,;}\]]+)"
+)
+_LOG_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\bauthorization\s*:\s*(?:bearer|basic)\s+)[^\s,;]+"
+)
+_POLICY_ENGINE_CACHE: Tuple[Optional[Path], Any] = (None, None)
+
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
 # the same script can legitimately register for different matchers under
@@ -100,6 +126,69 @@ _registered_lock = threading.Lock()
 # (``threading.Lock`` is non-reentrant).  POSIX callers use the sibling
 # ``.lock`` file via ``fcntl.flock`` and bypass this.
 _allowlist_write_lock = threading.Lock()
+
+
+def _load_policy_engine_for_sanitizer() -> Any:
+    """Load the optional HASOS policy engine sanitizer without making hooks depend on it."""
+    global _POLICY_ENGINE_CACHE
+    path = get_hermes_home() / "scripts" / "hasos_policy_engine.py"
+    cached_path, cached_module = _POLICY_ENGINE_CACHE
+    if cached_path == path:
+        return cached_module
+    module = None
+    try:
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("hasos_policy_engine_for_shell_hooks", path)
+            if spec is not None and spec.loader is not None:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+    except Exception:
+        module = None
+    _POLICY_ENGINE_CACHE = (path, module)
+    return module
+
+
+def _fallback_redact_for_log(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = _LOG_AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", text)
+    text = _LOG_SECRET_ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", text)
+    return _LOG_SECRET_VALUE_RE.sub("[REDACTED]", text)
+
+
+def sanitize_for_display(value: Any, limit: Optional[int] = None) -> str:
+    """Best-effort redaction for hook diagnostics and CLI display.
+
+    Prefers the shared HASOS policy engine sanitizer when available.  The local
+    fallback remains intentionally small so hooks fail open for execution but
+    still avoid printing common token/password/private-key shapes.
+    """
+    module = _load_policy_engine_for_sanitizer()
+    try:
+        sanitize_text = getattr(module, "sanitize_text", None) if module is not None else None
+        if callable(sanitize_text):
+            return sanitize_text(value, limit=limit)
+        redact = getattr(module, "redact", None) if module is not None else None
+        if callable(redact):
+            redacted = redact(value)
+            if isinstance(redacted, str):
+                text = redacted
+            else:
+                text = json.dumps(redacted, ensure_ascii=False, default=str)
+            text = _fallback_redact_for_log(text)
+            return text[:limit] if limit is not None else text
+    except Exception:
+        pass
+    text = _fallback_redact_for_log(value)
+    return text[:limit] if limit is not None else text
+
+
+def _redact_for_log(value: Any) -> str:
+    """Best-effort redaction for diagnostic logs only."""
+    return sanitize_for_display(value)
+
+
+def _log_preview(value: Any, limit: int) -> str:
+    return sanitize_for_display(value, limit=limit)
 
 
 @dataclass
@@ -202,7 +291,7 @@ def register_from_config(
                     "Use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / "
                     "hooks_auto_accept: true, or approve at the TTY "
                     "prompt next run.",
-                    spec.event, spec.command,
+                    spec.event, _log_preview(spec.command, 240),
                 )
                 continue
 
@@ -214,7 +303,7 @@ def register_from_config(
             registered.append(spec)
             logger.info(
                 "shell hook registered: %s -> %s (matcher=%s, timeout=%ds)",
-                spec.event, spec.command, spec.matcher, spec.timeout,
+                spec.event, _log_preview(spec.command, 240), spec.matcher, spec.timeout,
             )
 
     return registered
@@ -432,13 +521,13 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
         if r["error"]:
             logger.warning(
                 "shell hook failed (event=%s command=%s): %s",
-                spec.event, spec.command, r["error"],
+                spec.event, _log_preview(spec.command, 240), _log_preview(r["error"], 400),
             )
             return None
         if r["timed_out"]:
             logger.warning(
                 "shell hook timed out after %.2fs (event=%s command=%s)",
-                r["elapsed_seconds"], spec.event, spec.command,
+                r["elapsed_seconds"], spec.event, _log_preview(spec.command, 240),
             )
             return None
 
@@ -446,14 +535,14 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
         if stderr:
             logger.debug(
                 "shell hook stderr (event=%s command=%s): %s",
-                spec.event, spec.command, stderr[:400],
+                spec.event, _log_preview(spec.command, 240), _log_preview(stderr, 400),
             )
         # Non-zero exits: log but still parse stdout so scripts that
         # signal failure via exit code can also return a block directive.
         if r["returncode"] != 0:
             logger.warning(
                 "shell hook exited %d (event=%s command=%s); stderr=%s",
-                r["returncode"], spec.event, spec.command, stderr[:400],
+                r["returncode"], spec.event, _log_preview(spec.command, 240), _log_preview(stderr, 400),
             )
         return _parse_response(spec.event, r["stdout"])
 
@@ -506,7 +595,7 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         logger.warning(
             "shell hook stdout was not valid JSON (event=%s): %s",
-            event, stdout[:200],
+            event, _log_preview(stdout, 200),
         )
         return None
 
@@ -637,7 +726,7 @@ def _prompt_and_record(
         _record_approval(event, command)
         logger.info(
             "shell hook auto-approved via --accept-hooks / env / config: "
-            "%s -> %s", event, command,
+            "%s -> %s", event, _log_preview(command, 240),
         )
         return True
 
@@ -648,7 +737,7 @@ def _prompt_and_record(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n"
         f"  command on your behalf.\n\n"
         f"    Event:   {event}\n"
-        f"    Command: {command}\n\n"
+        f"    Command: {_log_preview(command, 240)}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n"
         f"  commands you trust."
     )

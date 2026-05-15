@@ -28,6 +28,7 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -46,6 +47,29 @@ import sys
 logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
+
+
+async def _call_vision_llm_with_deadline(call_kwargs: Dict[str, Any]) -> Any:
+    """Call the auxiliary vision LLM with a tool-side wall-clock deadline.
+
+    Some auxiliary backends (notably Codex Responses routed through a worker
+    thread) can fail to return promptly even when the provider timeout is
+    forwarded. Keep the tool boundary responsive so gateway sessions do not
+    sit idle until the global inactivity watchdog fires.
+    """
+    raw_timeout = call_kwargs.get("timeout")
+    try:
+        provider_timeout = float(raw_timeout) if raw_timeout is not None else 120.0
+    except (TypeError, ValueError):
+        provider_timeout = 120.0
+    if provider_timeout <= 0:
+        return await async_call_llm(**call_kwargs)
+    grace = min(10.0, max(0.05, provider_timeout * 0.25))
+    return await asyncio.wait_for(
+        async_call_llm(**call_kwargs),
+        timeout=provider_timeout + grace,
+    )
+
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
@@ -807,7 +831,7 @@ async def vision_analyze_tool(
             call_kwargs["model"] = model
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
-            response = await async_call_llm(**call_kwargs)
+            response = await _call_vision_llm_with_deadline(call_kwargs)
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
@@ -820,7 +844,7 @@ async def vision_analyze_tool(
                 image_data_url = _resize_image_for_vision(
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
-                response = await async_call_llm(**call_kwargs)
+                response = await _call_vision_llm_with_deadline(call_kwargs)
             else:
                 raise
         
@@ -830,7 +854,7 @@ async def vision_analyze_tool(
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _call_vision_llm_with_deadline(call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
@@ -1289,12 +1313,12 @@ async def video_analyze_tool(
         if model:
             call_kwargs["model"] = model
 
-        response = await async_call_llm(**call_kwargs)
+        response = await _call_vision_llm_with_deadline(call_kwargs)
         analysis = extract_content_or_reasoning(response)
 
         if not analysis:
             logger.warning("Empty video response, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _call_vision_llm_with_deadline(call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis) if analysis else 0

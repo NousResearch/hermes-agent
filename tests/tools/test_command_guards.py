@@ -9,6 +9,7 @@ import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     check_all_command_guards,
+    detect_dangerous_command,
     is_approved,
     set_current_session_key,
     reset_current_session_key,
@@ -276,6 +277,24 @@ class TestWarnEmptyFindings:
         desc = cb.call_args[0][1]
         assert "Security scan" in desc
 
+
+
+# ---------------------------------------------------------------------------
+# HASOS runtime release gate policy/evidence writes
+# ---------------------------------------------------------------------------
+
+class TestHasosRuntimePolicyWriteTargets:
+    @pytest.mark.parametrize("command", [
+        "printf '{}' > $HERMES_HOME/standards/HASOS/policies/runtime-release-gate-evidence.json",
+        "printf '{}' > ${HERMES_HOME}/policies/runtime-release-gate-evidence.json",
+        "printf '{}' > ~/.hermes/release-gate-evidence/active-runtime-policy.json",
+        "tee /Users/example/.hermes/release-gate-evidence/agent-created-release-gate.json",
+        "cp /tmp/policy.json $HOME/.hermes/release-gate-evidence/active-runtime-policy.json",
+    ])
+    def test_policy_and_evidence_write_targets_are_dangerous(self, command):
+        dangerous, _key, description = detect_dangerous_command(command)
+        assert dangerous is True
+        assert "overwrite" in description
 
 
 # ---------------------------------------------------------------------------

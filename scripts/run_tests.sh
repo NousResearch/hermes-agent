@@ -103,6 +103,18 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
   fi
 fi
 
+# ── File descriptor budget ──────────────────────────────────────────────────
+# macOS interactive shells often start with a 256-fd soft limit. The full
+# xdist suite opens enough temporary files, sockets, and pipes across workers
+# to hit EMFILE before test failures can be trusted. Raise the soft limit when
+# the OS allows it; keep running if a constrained environment refuses.
+if current_nofile="$(ulimit -n 2>/dev/null)"; then
+  if [ "$current_nofile" != "unlimited" ] && [ "$current_nofile" -lt 4096 ]; then
+    ulimit -n 4096 2>/dev/null || true
+  fi
+fi
+NOFILE_LIMIT="$(ulimit -n 2>/dev/null || echo unknown)"
+
 # ── Worker count ────────────────────────────────────────────────────────────
 # CI uses `-n auto` on ubuntu-latest which gives 4 workers. A 20-core
 # workstation with `-n auto` gets 20 workers and exposes test-ordering
@@ -120,10 +132,17 @@ echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
-  -o "addopts=" \
-  -n "$WORKERS" \
-  --ignore=tests/integration \
-  --ignore=tests/e2e \
-  -m "not integration" \
-  "${ARGS[@]}"
+PYTEST_CMD=(
+  "$PYTHON" -m pytest
+  -o "addopts="
+  -n "$WORKERS"
+  --ignore=tests/integration
+  --ignore=tests/e2e
+  -m "not integration"
+)
+
+if [ "${#ARGS[@]}" -gt 0 ]; then
+  PYTEST_CMD+=("${ARGS[@]}")
+fi
+
+exec "${PYTEST_CMD[@]}"

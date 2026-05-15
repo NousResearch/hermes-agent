@@ -76,6 +76,18 @@ class TestHooksList:
         assert "✗ not allowlisted" in out
         assert str(script) in out
 
+    def test_redacts_secret_like_command_display(self, tmp_path):
+        secret = "sk-" + ("x" * 28)
+        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        command = f"{script} --api-key={secret}"
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="list"))
+
+        assert secret not in out
+        assert "[REDACTED]" in out
+
 
 # ── test ──────────────────────────────────────────────────────────────────
 
@@ -135,6 +147,34 @@ class TestHooksTest:
         # Parsed block appears in output
         assert '"action": "block"' in out
         assert '"message": "nope"' in out
+
+    def test_redacts_stdout_stderr_and_parsed_display(self, tmp_path):
+        secret = "sk-" + ("x" * 28)
+        script = _hook_script(
+            tmp_path,
+            "#!/usr/bin/env bash\n"
+            f"printf 'password={secret}\\n' >&2\n"
+            f"printf '{{\"decision\":\"block\",\"reason\":\"token={secret}\"}}\\n'\n",
+            name="secret-output.sh",
+        )
+        cfg = {
+            "hooks": {
+                "pre_tool_call": [
+                    {"matcher": "terminal", "command": str(script)},
+                ],
+            },
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(
+                hooks_action="test", event="pre_tool_call",
+                for_tool="terminal", payload_file=None,
+            ))
+
+        assert secret not in out
+        assert "[REDACTED]" in out
+        assert "stdout:" in out
+        assert "stderr:" in out
+        assert "parsed (Hermes wire shape):" in out
 
     def test_for_tool_matcher_filters(self, tmp_path):
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
@@ -212,6 +252,20 @@ class TestHooksDoctor:
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not valid JSON" in out
+
+    def test_redacts_invalid_json_preview(self, tmp_path):
+        secret = "sk-" + ("x" * 28)
+        script = _hook_script(
+            tmp_path,
+            f"#!/usr/bin/env bash\necho 'not json api_key={secret}'\n",
+        )
+        shell_hooks._record_approval("on_session_start", str(script))
+        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            out = _run(SimpleNamespace(hooks_action="doctor"))
+        assert "not valid JSON" in out
+        assert secret not in out
+        assert "[REDACTED]" in out
 
     def test_flags_mtime_drift(self, tmp_path, monkeypatch):
         """Allowlist with older mtime than current -> drift warning."""

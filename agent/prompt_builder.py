@@ -251,6 +251,55 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+ROUTING_GUIDANCE = (
+    "# Routing reminder\n"
+    "When a task touches release, upload, review, signing, build, privacy, or wiki standards, "
+    "consult `standards-invocation-map` first. For App Store / release work, keep `release-security-gate` "
+    "in the path before any upload, export, or public sharing step. Follow the current wiki/AGENTS instructions "
+    "for the specific workflow instead of relying on chat memory.\n\n"
+    "# Agent orchestration reliability\n"
+    "For long-running background work, spawned agents, gateway lanes, cron jobs, or external CLI harnesses: "
+    "run lightweight preflight before dispatch; do not treat process/session existence as task acceptance; "
+    "confirm ready signal, prompt acceptance or observable progress; track lifecycle states such as "
+    "spawning, trust_required, ready_for_prompt, prompt_accepted, running, blocked, finished, failed; "
+    "prefer structured JSON/log/event evidence over pane scraping; recover once from known operational failures "
+    "before escalating; and report partial subsystem failure as degraded mode rather than total failure."
+)
+
+HASOS_RUNTIME_GUIDANCE_RELATIVE_PATH = Path("standards") / "HASOS" / "runtime-guidance.md"
+HASOS_RUNTIME_GUIDANCE_MAX_CHARS = 5000
+
+
+def build_hasos_runtime_guidance(hermes_home: Path | None = None) -> str:
+    """Load the compact local HASOS runtime guidance when installed.
+
+    HASOS is maintained as a local standards package under HERMES_HOME. This
+    loader intentionally reads only the compact runtime slice rather than the
+    full standards/wiki tree so the core prompt gets stable safety/lifecycle
+    guidance without large token or external-drive dependencies.
+    """
+    base = hermes_home or get_hermes_home()
+    guidance_path = base / HASOS_RUNTIME_GUIDANCE_RELATIVE_PATH
+    try:
+        if not guidance_path.is_file():
+            return ""
+        content = guidance_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.debug("Failed to load HASOS runtime guidance from %s: %s", guidance_path, exc)
+        return ""
+
+    if not content:
+        return ""
+
+    content = _scan_context_content(content, str(HASOS_RUNTIME_GUIDANCE_RELATIVE_PATH))
+    content = _truncate_content(
+        content,
+        str(HASOS_RUNTIME_GUIDANCE_RELATIVE_PATH),
+        max_chars=HASOS_RUNTIME_GUIDANCE_MAX_CHARS,
+    )
+    return "# HASOS P0 Runtime Guidance\n" + content
+
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
@@ -822,6 +871,7 @@ def build_environment_hints() -> str:
 
 
 CONTEXT_FILE_MAX_CHARS = 20_000
+PROJECT_CONTEXT_CHAIN_MAX_CHARS = 32 * 1024
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
@@ -1352,20 +1402,101 @@ def _load_hermes_md(cwd_path: Path) -> str:
         return ""
 
 
+def _read_context_file(path: Path, label: str, *, strip_frontmatter: bool = False) -> str:
+    """Read, sanitize, and wrap one project context file."""
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        if strip_frontmatter:
+            content = _strip_yaml_frontmatter(content)
+        content = _scan_context_content(content, label)
+        return f"## {label}\n\n{content}"
+    except Exception as e:
+        logger.debug("Could not read %s: %s", path, e)
+        return ""
+
+
+def _same_context_file(left: Path, right: Path) -> bool:
+    """Best-effort same-file check that tolerates missing/racy paths."""
+    try:
+        return left.samefile(right)
+    except OSError:
+        return left.resolve() == right.resolve()
+
+
+def _first_existing_file(directory: Path, names: tuple[str, ...]) -> Optional[Path]:
+    """Return the first existing unique context file in *directory*."""
+    for name in names:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _relative_context_label(path: Path, cwd_path: Path) -> str:
+    """Return a stable label for project-context source ledgers.
+
+    Prefer repo-root-relative paths so a root ``AGENTS.md`` and a nested
+    ``AGENTS.md`` remain distinguishable when Hermes is launched from a
+    subdirectory. Fall back to cwd-relative paths outside git repos.
+    """
+    git_root = _find_git_root(cwd_path)
+    if git_root:
+        try:
+            return str(path.relative_to(git_root))
+        except ValueError:
+            pass
+    try:
+        return str(path.relative_to(cwd_path))
+    except ValueError:
+        return path.name
+
+
+def _context_search_directories(cwd_path: Path) -> list[Path]:
+    """Return directories from repo root to cwd for AGENTS-style chaining."""
+    cwd_path = cwd_path.resolve()
+    git_root = _find_git_root(cwd_path)
+    if git_root:
+        chain = []
+        for directory in [cwd_path, *cwd_path.parents]:
+            chain.append(directory)
+            if directory == git_root:
+                break
+        return list(reversed(chain))
+    return [cwd_path]
+
+
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+    """AGENTS.md compatibility wrapper for the current directory only."""
+    candidate = _first_existing_file(cwd_path, ("AGENTS.override.md", "AGENTS.md", "agents.md"))
+    if not candidate:
+        return ""
+    return _truncate_content(
+        _read_context_file(candidate, candidate.name),
+        candidate.name,
+    )
+
+
+def _load_agents_chain(cwd_path: Path) -> list[tuple[Path, str]]:
+    """Load Codex-style AGENTS instructions from repo root to cwd.
+
+    Each directory contributes at most one file. ``AGENTS.override.md`` wins
+    over ``AGENTS.md`` / ``agents.md`` in the same directory; deeper files are
+    appended later and therefore can refine earlier guidance.
+    """
+    loaded: list[tuple[Path, str]] = []
+    seen: list[Path] = []
+    for directory in _context_search_directories(cwd_path):
+        candidate = _first_existing_file(directory, ("AGENTS.override.md", "AGENTS.md", "agents.md"))
+        if not candidate or any(_same_context_file(candidate, p) for p in seen):
+            continue
+        label = _relative_context_label(candidate, cwd_path)
+        content = _read_context_file(candidate, label)
+        if content:
+            loaded.append((candidate, _truncate_content(content, candidate.name)))
+            seen.append(candidate)
+    return loaded
 
 
 def _load_claude_md(cwd_path: Path) -> str:
@@ -1384,9 +1515,10 @@ def _load_claude_md(cwd_path: Path) -> str:
     return ""
 
 
-def _load_cursorrules(cwd_path: Path) -> str:
+def _load_cursorrules_with_paths(cwd_path: Path) -> tuple[str, list[Path]]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
+    loaded_paths: list[Path] = []
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
@@ -1394,6 +1526,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
             if content:
                 content = _scan_context_content(content, ".cursorrules")
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
+                loaded_paths.append(cursorrules_file)
         except Exception as e:
             logger.debug("Could not read .cursorrules: %s", e)
 
@@ -1406,25 +1539,80 @@ def _load_cursorrules(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
+                    loaded_paths.append(mdc_file)
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
 
     if not cursorrules_content:
-        return ""
-    return _truncate_content(cursorrules_content, ".cursorrules")
+        return "", []
+    return _truncate_content(cursorrules_content, ".cursorrules"), loaded_paths
+
+
+def _load_cursorrules(cwd_path: Path) -> str:
+    content, _ = _load_cursorrules_with_paths(cwd_path)
+    return content
+
+
+def _available_unloaded_context_refs(cwd_path: Path, loaded_paths: list[Path]) -> list[str]:
+    """List recognized context files that exist but were not auto-loaded."""
+    refs: list[str] = []
+    seen: list[Path] = []
+    names = ("CLAUDE.md", "claude.md", ".cursorrules")
+    for directory in _context_search_directories(cwd_path):
+        for name in names:
+            candidate = directory / name
+            if not candidate.is_file():
+                continue
+            if any(_same_context_file(candidate, p) for p in loaded_paths + seen):
+                continue
+            refs.append(_relative_context_label(candidate, cwd_path))
+            seen.append(candidate)
+        cursor_rules_dir = directory / ".cursor" / "rules"
+        if cursor_rules_dir.is_dir():
+            for candidate in sorted(cursor_rules_dir.glob("*.mdc")):
+                if any(_same_context_file(candidate, p) for p in loaded_paths + seen):
+                    continue
+                refs.append(_relative_context_label(candidate, cwd_path))
+                seen.append(candidate)
+    return refs
+
+
+def _apply_project_context_budget(sections: list[str], max_chars: int = PROJECT_CONTEXT_CHAIN_MAX_CHARS) -> list[str]:
+    """Keep project context deterministic while bounding total chain size."""
+    kept: list[str] = []
+    used = 0
+    for section in sections:
+        extra = len(section) + (2 if kept else 0)
+        if used + extra <= max_chars:
+            kept.append(section)
+            used += extra
+            continue
+        remaining = max_chars - used - (2 if kept else 0)
+        if remaining > 500:
+            kept.append(_truncate_content(section, "project context chain", remaining))
+        kept.append(
+            "## Project context budget warning\n\n"
+            f"[truncated project context chain at {max_chars} chars. "
+            "Use file tools to read skipped or truncated context files.]"
+        )
+        break
+    return kept
 
 
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
-      1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+    Project context uses controlled fusion rather than global first-found-wins:
+      1. .hermes.md / HERMES.md is a Hermes-specific compact prelude.
+      2. AGENTS.override.md / AGENTS.md / agents.md are loaded root → cwd;
+         each directory contributes at most one file, and deeper files appear
+         later so they can refine earlier guidance.
+      3. CLAUDE.md / .cursorrules are compatibility fallbacks when no Hermes or
+         AGENTS context is present; otherwise they are listed as available but
+         not auto-loaded.
 
     SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
+    Project context is capped by ``PROJECT_CONTEXT_CHAIN_MAX_CHARS``.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1434,16 +1622,52 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     cwd_path = Path(cwd).resolve()
     sections = []
+    project_sections: list[str] = []
+    loaded_paths: list[Path] = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if hermes_md_path:
+        hermes_content = _read_context_file(
+            hermes_md_path,
+            _relative_context_label(hermes_md_path, cwd_path),
+            strip_frontmatter=True,
+        )
+        if hermes_content:
+            project_sections.append(_truncate_content(hermes_content, hermes_md_path.name))
+            loaded_paths.append(hermes_md_path)
+
+    agents_chain = _load_agents_chain(cwd_path)
+    for path, content in agents_chain:
+        project_sections.append(content)
+        loaded_paths.append(path)
+
+    # Compatibility fallback only when no native Hermes/AGENTS context exists.
+    if not project_sections:
+        fallback_context = _load_claude_md(cwd_path)
+        if fallback_context:
+            project_sections.append(fallback_context)
+            for name in ("CLAUDE.md", "claude.md", ".cursorrules"):
+                candidate = cwd_path / name
+                if candidate.is_file():
+                    loaded_paths.append(candidate)
+                    break
+        else:
+            fallback_context, cursorrules_paths = _load_cursorrules_with_paths(cwd_path)
+            if fallback_context:
+                project_sections.append(fallback_context)
+                loaded_paths.extend(cursorrules_paths)
+
+    if project_sections:
+        ledger_lines = ["## Project context source ledger", "", "Loaded:"]
+        for path in loaded_paths:
+            ledger_lines.append(f"- {_relative_context_label(path, cwd_path)}")
+        available_refs = _available_unloaded_context_refs(cwd_path, loaded_paths)
+        if available_refs:
+            ledger_lines.append("")
+            ledger_lines.append("Available but not auto-loaded:")
+            ledger_lines.extend(f"- {ref}" for ref in available_refs)
+        project_sections.append("\n".join(ledger_lines))
+        sections.extend(_apply_project_context_budget(project_sections))
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

@@ -22,6 +22,7 @@ from tools.file_tools import (
     write_file_tool,
     patch_tool,
     _check_file_staleness,
+    _check_sensitive_path,
     _read_tracker,
 )
 
@@ -290,6 +291,15 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
             }
         # File doesn't exist → stat fails → returns None (let write handle it)
         self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))
+
+
+class TestSensitivePathTempAllowlist(unittest.TestCase):
+    def test_platform_tempdir_is_not_blocked_by_private_var_guard(self):
+        path = os.path.join(tempfile.gettempdir(), "hermes-temp-allowlist.txt")
+        self.assertIsNone(_check_sensitive_path(path))
+
+    def test_private_etc_still_blocked(self):
+        self.assertIsNotNone(_check_sensitive_path("/private/etc/hosts"))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,15 @@ def _hermes_home_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hasos_runtime_policy_paths(hermes_home: Path) -> list[str]:
+    """Runtime release policy files are privileged gate inputs, not workspace edits."""
+    return [
+        str(hermes_home / "standards" / "HASOS" / "policies" / "runtime-release-gate-evidence.json"),
+        str(hermes_home / "release-gate-evidence" / "active-runtime-policy.json"),
+        str(hermes_home / "policies" / "runtime-release-gate-evidence.json"),
+    ]
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -27,6 +36,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
             str(hermes_home / ".env"),
+            *_hasos_runtime_policy_paths(hermes_home),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
@@ -45,6 +55,7 @@ def build_write_denied_paths(home: str) -> set[str]:
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
+    hermes_home = _hermes_home_path()
     return [
         os.path.realpath(p) + os.sep
         for p in [
@@ -57,6 +68,7 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".docker"),
             os.path.join(home, ".azure"),
             os.path.join(home, ".config", "gh"),
+            str(hermes_home / "release-gate-evidence"),
         ]
     ]
 

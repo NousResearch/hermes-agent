@@ -23,6 +23,21 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def _redact_display(value: Any, limit: int | None = None) -> str:
+    """Sanitize hook CLI output without hiding ordinary debugging context."""
+    try:
+        from agent import shell_hooks
+
+        return shell_hooks.sanitize_for_display(value, limit=limit)
+    except Exception:
+        text = "" if value is None else str(value)
+        return text[:limit] if limit is not None else text
+
+
+def _preview(value: Any, limit: int) -> str:
+    return _truncate(_redact_display(value), limit)
+
+
 def hooks_command(args) -> None:
     """Entry point for ``hermes hooks`` — dispatches to the requested action."""
     sub = getattr(args, "hooks_action", None)
@@ -81,7 +96,7 @@ def _cmd_list(_args) -> None:
             status = "✓ allowed" if is_approved else "✗ not allowlisted"
             matcher_part = f" matcher={spec.matcher!r}" if spec.matcher else ""
             print(
-                f"    - {spec.command}{matcher_part} "
+                f"    - {_redact_display(spec.command)}{matcher_part} "
                 f"(timeout={spec.timeout}s, {status})"
             )
 
@@ -211,7 +226,7 @@ def _cmd_test(args) -> None:
             else:
                 print(f"Warning: {args.payload_file} is not a JSON object; ignoring")
         except Exception as exc:
-            print(f"Error reading payload file: {exc}")
+            print(f"Error reading payload file: {_redact_display(exc)}")
             return
 
     specs = shell_hooks.iter_configured_hooks(load_config())
@@ -232,7 +247,7 @@ def _cmd_test(args) -> None:
 
     print(f"Firing {len(specs)} hook(s) for event '{event}':\n")
     for spec in specs:
-        print(f"  → {spec.command}")
+        print(f"  → {_redact_display(spec.command)}")
         result = shell_hooks.run_once(spec, payload)
         _print_run_result(result)
         print()
@@ -240,7 +255,7 @@ def _cmd_test(args) -> None:
 
 def _print_run_result(result: Dict[str, Any]) -> None:
     if result.get("error"):
-        print(f"      ✗ error: {result['error']}")
+        print(f"      ✗ error: {_redact_display(result['error'])}")
         return
     if result.get("timed_out"):
         print(f"      ✗ timed out after {result['elapsed_seconds']}s")
@@ -253,13 +268,14 @@ def _print_run_result(result: Dict[str, Any]) -> None:
     stdout = (result.get("stdout") or "").strip()
     stderr = (result.get("stderr") or "").strip()
     if stdout:
-        print(f"      stdout: {_truncate(stdout, 400)}")
+        print(f"      stdout: {_preview(stdout, 400)}")
     if stderr:
-        print(f"      stderr: {_truncate(stderr, 400)}")
+        print(f"      stderr: {_preview(stderr, 400)}")
 
     parsed = result.get("parsed")
     if parsed:
-        print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
+        parsed_json = json.dumps(parsed, ensure_ascii=False)
+        print(f"      parsed (Hermes wire shape): {_redact_display(parsed_json)}")
     else:
         print("      parsed: <none — hook contributed nothing to the dispatcher>")
 
@@ -277,9 +293,9 @@ def _cmd_revoke(args) -> None:
 
     removed = shell_hooks.revoke(args.command)
     if removed == 0:
-        print(f"No allowlist entry found for command: {args.command}")
+        print(f"No allowlist entry found for command: {_redact_display(args.command)}")
         return
-    print(f"Removed {removed} allowlist entry/entries for: {args.command}")
+    print(f"Removed {removed} allowlist entry/entries for: {_redact_display(args.command)}")
     print(
         "Note: currently running CLI / gateway processes keep their "
         "already-registered callbacks until they restart."
@@ -304,7 +320,7 @@ def _cmd_doctor(_args) -> None:
 
     problems = 0
     for spec in specs:
-        print(f"  [{spec.event}] {spec.command}")
+        print(f"  [{spec.event}] {_redact_display(spec.command)}")
         problems += _doctor_one(spec, shell_hooks)
         print()
 
@@ -364,7 +380,7 @@ def _doctor_one(spec, shell_hooks) -> int:
                   f"on synthetic payload (timeout={spec.timeout}s)")
         elif result.get("error"):
             problems += 1
-            print(f"      ✗ execution error: {result['error']}")
+            print(f"      ✗ execution error: {_redact_display(result['error'])}")
         else:
             rc = result.get("returncode")
             elapsed = result.get("elapsed_seconds", 0)
@@ -377,7 +393,7 @@ def _doctor_one(spec, shell_hooks) -> int:
                 except json.JSONDecodeError:
                     problems += 1
                     print(f"      ✗ stdout was not valid JSON (exit={rc}, "
-                          f"{elapsed}s): {_truncate(stdout, 120)}")
+                          f"{elapsed}s): {_preview(stdout, 120)}")
             else:
                 print(f"      ✓ ran clean with empty stdout "
                       f"(exit={rc}, {elapsed}s) — hook is observer-only")

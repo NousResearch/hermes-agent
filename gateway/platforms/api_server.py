@@ -63,6 +63,16 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
+def _sse_queue_poll_timeout() -> float:
+    """Return queue poll timeout bounded by the configured SSE keepalive.
+
+    Tests may lower ``CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS`` below the
+    production 30s value. Polling must then wake at least that often so both
+    Chat Completions and Responses streams can emit keepalives on time.
+    """
+    return min(0.5, max(0.01, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -1232,15 +1242,22 @@ class APIServerAdapter(BasePlatformAdapter):
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
+        tool_limit_reached = bool(result.get("tool_limit_reached"))
+        turn_exit_reason = result.get("turn_exit_reason")
         err_msg = result.get("error")
 
         # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
         # for normal completion, and downstream SDKs accept "error" / custom
-        # codes. See issue #22496.
-        if is_partial and err_msg and "truncat" in err_msg.lower():
+        # codes. Tool-limit checkpoints are soft stops with usable text, but
+        # not completed work; expose them as length plus Hermes metadata.
+        if tool_limit_reached:
+            finish_reason = "length"
+        elif is_partial and err_msg and "truncat" in err_msg.lower():
             finish_reason = "length"
         elif is_failed or (not completed and err_msg):
             finish_reason = "error"
+        elif not completed:
+            finish_reason = "length"
         else:
             finish_reason = "stop"
 
@@ -1263,9 +1280,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "completed": completed,
                 "partial": is_partial,
                 "failed": is_failed,
+                "tool_limit_reached": tool_limit_reached,
+                "turn_exit_reason": turn_exit_reason,
             }
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if tool_limit_reached:
+                response_headers["X-Hermes-Tool-Limit-Reached"] = "true"
             return web.json_response(err_body, status=502, headers=response_headers)
 
         # Soft-partial path: we have *some* text but the run did not complete
@@ -1293,15 +1314,27 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
         if is_partial or is_failed or not completed:
+            if tool_limit_reached:
+                error_code = "max_iterations_reached"
+            elif finish_reason == "length":
+                error_code = "output_truncated"
+            else:
+                error_code = "agent_error"
             response_data["hermes"] = {
                 "completed": completed,
                 "partial": is_partial,
                 "failed": is_failed,
                 "error": err_msg,
-                "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
+                "error_code": error_code,
+                "tool_limit_reached": tool_limit_reached,
+                "turn_exit_reason": turn_exit_reason,
             }
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if tool_limit_reached:
+                response_headers["X-Hermes-Tool-Limit-Reached"] = "true"
+            if turn_exit_reason:
+                response_headers["X-Hermes-Turn-Exit-Reason"] = str(turn_exit_reason)[:200]
             if err_msg:
                 response_headers["X-Hermes-Error"] = err_msg[:200]
 
@@ -1337,6 +1370,7 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
+        emitted_text_parts: List[str] = []
 
         try:
             last_activity = time.monotonic()
@@ -1367,6 +1401,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    emitted_text_parts.append(str(item))
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -1379,7 +1414,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    timeout = _sse_queue_poll_timeout()
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -1404,23 +1440,44 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result: Dict[str, Any] = {}
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
+            agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            tool_limit_reached = bool(result.get("tool_limit_reached")) if isinstance(result, dict) else False
+            completed = bool(result.get("completed", True)) if isinstance(result, dict) else True
+            hasos_closeout_blocked = bool(result.get("hasos_closeout_gate_blocked")) if isinstance(result, dict) else False
+            emitted_text = "".join(emitted_text_parts)
+            if agent_final and (
+                not emitted_text
+                or ((tool_limit_reached or not completed or hasos_closeout_blocked) and emitted_text.strip() != agent_final.strip())
+            ):
+                await _emit(("\n\n" if emitted_text else "") + agent_final)
+            turn_exit_reason = result.get("turn_exit_reason") if isinstance(result, dict) else None
+            finish_reason = "length" if tool_limit_reached or not completed else "stop"
+
             # Finish chunk
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
+            if tool_limit_reached or not completed:
+                finish_chunk["hermes"] = {
+                    "completed": completed,
+                    "tool_limit_reached": tool_limit_reached,
+                    "turn_exit_reason": turn_exit_reason,
+                    "error_code": "max_iterations_reached" if tool_limit_reached else "agent_incomplete",
+                }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -1565,6 +1622,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
+        result: Dict[str, Any] = {}
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
@@ -1828,7 +1886,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    timeout = _sse_queue_poll_timeout()
+                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain remaining
@@ -1872,8 +1931,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 # the full response at the end), emit a single fallback
                 # delta so Responses clients still receive a live text part.
                 agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-                if agent_final and not final_text_parts:
-                    await _emit_text_delta(agent_final)
+                tool_limit_reached = bool(result.get("tool_limit_reached")) if isinstance(result, dict) else False
+                completed = bool(result.get("completed", True)) if isinstance(result, dict) else True
+                hasos_closeout_blocked = bool(result.get("hasos_closeout_gate_blocked")) if isinstance(result, dict) else False
+                emitted_text = "".join(final_text_parts)
+                if agent_final and (
+                    not emitted_text
+                    or ((tool_limit_reached or not completed or hasos_closeout_blocked) and emitted_text.strip() != agent_final.strip())
+                ):
+                    await _emit_text_delta(("\n\n" if emitted_text else "") + agent_final)
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
@@ -1884,6 +1950,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
+            tool_limit_reached = bool(result.get("tool_limit_reached")) if isinstance(result, dict) else False
+            completed = bool(result.get("completed", True)) if isinstance(result, dict) else True
+            turn_exit_reason = result.get("turn_exit_reason") if isinstance(result, dict) else None
             if message_opened:
                 await _write_event("response.output_text.done", {
                     "type": "response.output_text.done",
@@ -1970,6 +2039,35 @@ class APIServerAdapter(BasePlatformAdapter):
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
+                })
+            elif tool_limit_reached or not completed:
+                incomplete_env = _envelope("incomplete")
+                incomplete_env["output"] = final_items
+                incomplete_env["usage"] = {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                }
+                incomplete_env["hermes"] = {
+                    "completed": completed,
+                    "tool_limit_reached": tool_limit_reached,
+                    "turn_exit_reason": turn_exit_reason,
+                    "error_code": "max_iterations_reached" if tool_limit_reached else "agent_incomplete",
+                }
+                incomplete_history = self._build_response_conversation_history(
+                    conversation_history,
+                    user_message,
+                    result,
+                    final_response_text,
+                )
+                _persist_response_snapshot(
+                    incomplete_env,
+                    conversation_history_snapshot=incomplete_history,
+                )
+                terminal_snapshot_persisted = True
+                await _write_event("response.incomplete", {
+                    "type": "response.incomplete",
+                    "response": incomplete_env,
                 })
             else:
                 completed_env = _envelope("completed")
@@ -2280,6 +2378,9 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
+        completed = bool(result.get("completed", True))
+        tool_limit_reached = bool(result.get("tool_limit_reached"))
+        turn_exit_reason = result.get("turn_exit_reason")
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
@@ -2306,7 +2407,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_data = {
             "id": response_id,
             "object": "response",
-            "status": "completed",
+            "status": "incomplete" if (tool_limit_reached or not completed) else "completed",
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
@@ -2316,6 +2417,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        if tool_limit_reached or not completed:
+            response_data["hermes"] = {
+                "completed": completed,
+                "tool_limit_reached": tool_limit_reached,
+                "turn_exit_reason": turn_exit_reason,
+                "error_code": "max_iterations_reached" if tool_limit_reached else "agent_incomplete",
+            }
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
@@ -2333,6 +2441,12 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if not completed:
+            response_headers["X-Hermes-Completed"] = "false"
+        if tool_limit_reached:
+            response_headers["X-Hermes-Tool-Limit-Reached"] = "true"
+        if turn_exit_reason:
+            response_headers["X-Hermes-Turn-Exit-Reason"] = str(turn_exit_reason)[:200]
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------

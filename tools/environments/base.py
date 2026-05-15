@@ -525,7 +525,54 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
-            fd = proc.stdout.fileno()
+            drain_tid = threading.current_thread().ident
+            drain_pid = getattr(proc, "pid", None)
+            stdout = getattr(proc, "stdout", None)
+            if stdout is None:
+                if _DEBUG_INTERRUPT:
+                    logger.info(
+                        "[interrupt-debug] _wait_for_process stdout drain skipped "
+                        "tid=%s pid=%s reason=no_stdout",
+                        drain_tid, drain_pid,
+                    )
+                return
+
+            def _drain_iterable_stdout(reason: str) -> None:
+                if _DEBUG_INTERRUPT:
+                    logger.info(
+                        "[interrupt-debug] _wait_for_process stdout drain fallback "
+                        "tid=%s pid=%s reason=%s stdout_type=%s",
+                        drain_tid, drain_pid, reason, type(stdout).__name__,
+                    )
+                try:
+                    for chunk in stdout:
+                        if isinstance(chunk, bytes):
+                            output_chunks.append(decoder.decode(chunk))
+                        else:
+                            output_chunks.append(str(chunk))
+                except Exception as exc:
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process stdout fallback failed "
+                            "tid=%s pid=%s reason=%s error=%s",
+                            drain_tid, drain_pid, reason, exc,
+                        )
+                finally:
+                    try:
+                        tail = decoder.decode(b"", final=True)
+                        if tail:
+                            output_chunks.append(tail)
+                    except Exception:
+                        pass
+
+            try:
+                fd = stdout.fileno()
+                if not isinstance(fd, int):
+                    _drain_iterable_stdout(f"invalid_fileno:{type(fd).__name__}")
+                    return
+            except (AttributeError, TypeError, ValueError, OSError) as exc:
+                _drain_iterable_stdout(f"fileno_unavailable:{type(exc).__name__}")
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -840,4 +887,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

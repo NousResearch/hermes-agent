@@ -19,6 +19,7 @@ from tools.vision_tools import (
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
+    _call_vision_llm_with_deadline,
     vision_analyze_tool,
     check_vision_requirements,
 )
@@ -396,6 +397,15 @@ class TestVisionConfig:
         assert result["success"] is True
         assert mock_llm.await_args.kwargs["temperature"] == 1.0
         assert mock_llm.await_args.kwargs["timeout"] == 77.0
+
+    @pytest.mark.asyncio
+    async def test_vision_tool_side_deadline_caps_hung_auxiliary_call(self):
+        async def hung_call(**kwargs):
+            await asyncio.sleep(10)
+
+        with patch("tools.vision_tools.async_call_llm", side_effect=hung_call):
+            with pytest.raises(asyncio.TimeoutError):
+                await _call_vision_llm_with_deadline({"messages": [], "timeout": 0.01})
 
     @pytest.mark.asyncio
     async def test_vision_defaults_temperature_when_config_omits_it(self, tmp_path):

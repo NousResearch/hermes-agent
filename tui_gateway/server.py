@@ -3385,6 +3385,43 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 with session["history_lock"]:
                     session["running"] = False
 
+        # Drain background process completion notifications and inject them
+        # as follow-up turns so the agent learns about completed background
+        # processes.  Mirrors CLI's completion_queue drain in cli.py's
+        # process_loop (both after-turn and idle-loop paths).
+        # Uses the same pattern as goal continuation above — release
+        # session["running"] in the outer finally first, then re-acquire.
+        try:
+            from tools.process_registry import process_registry
+            from cli import _format_process_notification
+
+            while not process_registry.completion_queue.empty():
+                evt = process_registry.completion_queue.get_nowait()
+                _evt_sid = evt.get("session_id", "")
+                if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+                    continue
+                synth = _format_process_notification(evt)
+                if not synth:
+                    continue
+                with session["history_lock"]:
+                    if session.get("running"):
+                        process_registry.completion_queue.put(evt)
+                        break
+                    session["running"] = True
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(rid, sid, session, synth)
+                except Exception as _n_exc:
+                    print(
+                        f"[tui_gateway] completion notification dispatch failed: "
+                        f"{type(_n_exc).__name__}: {_n_exc}",
+                        file=sys.stderr,
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+        except Exception:
+            pass
+
     threading.Thread(target=run, daemon=True).start()
 
 

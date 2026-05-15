@@ -25,6 +25,9 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES = 4320
+SHORT_THREAD_AUTO_ARCHIVE_MINUTES = 1440
+LONG_THREAD_AUTO_ARCHIVE_MINUTES = 10080
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -113,6 +116,59 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _parse_thread_auto_archive_minutes(value: Any, default: int = DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES) -> int:
+    """Return a Discord-supported thread auto-archive duration in minutes."""
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed in VALID_THREAD_AUTO_ARCHIVE_MINUTES else default
+
+
+def _smart_auto_thread_archive_duration(content: str) -> int:
+    """Choose an auto-thread archive duration from the initial prompt.
+
+    Discord only accepts 60, 1440, 4320, and 10080 minutes. Keep the existing
+    three-day default for normal work, shorten quick/one-shot tasks to 24h, and
+    keep longer-running work visible for a week.
+    """
+    default_duration = _parse_thread_auto_archive_minutes(
+        os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT"),
+        DEFAULT_THREAD_AUTO_ARCHIVE_MINUTES,
+    )
+    smart_enabled = os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART", "true").lower() not in {
+        "0", "false", "no", "off"
+    }
+    if not smart_enabled:
+        return default_duration
+
+    text = (content or "").lower()
+    if not text.strip():
+        return default_duration
+
+    long_markers = {
+        "deploy", "deployment", "prod", "production", "release", "migration",
+        "migrate", "refactor", "refacto", "architecture", "database", "schema",
+        "debug", "bug", "crash", "fix", "failing", "failure", "tests", "ci",
+        "pr", "pull request", "review", "merge", "rebase", "branch", "github",
+        "multica", "issue", "goal", "plan", "audit", "security", "hardening",
+        "implement", "implementation", "feature", "build", "chantier", "long terme",
+        "long-term", "semaine", "week", "costaud", "lourd",
+    }
+    if any(re.search(rf"\b{re.escape(marker)}\b", text) for marker in long_markers):
+        return LONG_THREAD_AUTO_ARCHIVE_MINUTES
+
+    short_markers = {
+        "quick", "vite", "rapide", "simple", "petit", "ponctuel", "check",
+        "regarde", "question", "possible", "combien", "où", "c'est quoi",
+        "what is", "skills", "skill", "import", "sync", "liste", "list",
+    }
+    if len(text) <= 240 or any(marker in text for marker in short_markers):
+        return SHORT_THREAD_AUTO_ARCHIVE_MINUTES
+
+    return default_duration
 
 
 def check_discord_requirements() -> bool:
@@ -4236,9 +4292,10 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
+        auto_archive_duration = _smart_auto_thread_archive_duration(content)
 
         try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=4320)
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=auto_archive_duration)
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -4247,7 +4304,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
                 thread = await seed_msg.create_thread(
                     name=thread_name,
-                    auto_archive_duration=4320,
+                    auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
                 return thread
@@ -6443,7 +6500,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
-    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
+    ``DISCORD_AUTO_THREAD``, ``DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT``,
+    ``DISCORD_AUTO_THREAD_ARCHIVE_SMART``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
@@ -6485,6 +6543,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_archive_default" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT"):
+        os.environ["DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT"] = str(discord_cfg["auto_thread_archive_default"])
+    if "auto_thread_archive_smart" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART"):
+        os.environ["DISCORD_AUTO_THREAD_ARCHIVE_SMART"] = str(discord_cfg["auto_thread_archive_smart"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)
@@ -6573,9 +6635,10 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
-        # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
-        # thread_require_mention) into ``DISCORD_*`` env vars that the
+        # auto_thread, auto_thread_archive_default,
+        # auto_thread_archive_smart, reactions, ignored_channels,
+        # allowed_channels, no_thread_channels, allow_mentions.*,
+        # reply_to_mode, thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,

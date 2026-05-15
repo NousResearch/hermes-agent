@@ -75,7 +75,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _smart_auto_thread_archive_duration,
+)
 
 
 class FakeTree:
@@ -494,7 +497,9 @@ def test_build_slash_event_uses_group_context_for_channels(adapter):
 
 
 @pytest.mark.asyncio
-async def test_auto_create_thread_uses_message_content_as_name(adapter):
+async def test_auto_create_thread_uses_message_content_as_name(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART", raising=False)
     thread = SimpleNamespace(id=999, name="Hello world")
     message = SimpleNamespace(
         content="Hello world, how are you?",
@@ -510,6 +515,49 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     call_kwargs = message.create_thread.await_args[1]
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_week_for_long_running_work(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART", raising=False)
+    thread = SimpleNamespace(id=999, name="long")
+    message = SimpleNamespace(
+        content="Can you debug this production deploy crash and prepare the PR?",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["auto_archive_duration"] == 10080
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_can_disable_smart_archive(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT", "4320")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART", "false")
+    thread = SimpleNamespace(id=999, name="Hello")
+    message = SimpleNamespace(
+        content="quick check please",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["auto_archive_duration"] == 4320
+
+
+def test_smart_auto_thread_archive_ignores_invalid_default(monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE_DEFAULT", "999")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_ARCHIVE_SMART", "false")
+
+    assert _smart_auto_thread_archive_duration("anything") == 4320
 
 
 @pytest.mark.asyncio

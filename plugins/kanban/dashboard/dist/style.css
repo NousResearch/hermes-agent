@@ -1580,11 +1580,11 @@
 /* ---- Card trash button + delete-confirm dialog ----------------------- */
 
 /* Pinned to the far-right of the first card row via margin-left: auto.
- * Subtle by default (opacity:0 except on focus), opacity:1 only when the
- * card is hovered — keeps the column dense and avoids drawing the eye
- * away from the title. Red is reserved for the hover/focus state so the
- * destructive action is visually obvious only when the user is committing
- * to the click. */
+ * Always visible (so users discover it) but at reduced opacity so it
+ * doesn't fight the title for attention. Bumps to full opacity + red
+ * tint on hover/focus to make the destructive intent obvious when the
+ * user is about to commit to the click. Earlier version was opacity:0
+ * until card-hover but that hid the affordance from non-hovering users. */
 .hermes-kanban-trash-btn {
   margin-left: auto;
   display: inline-flex;
@@ -1598,7 +1598,7 @@
   background: transparent;
   color: var(--color-muted-foreground);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.45;
   transition: opacity 0.12s ease-out, color 0.12s, background 0.12s, transform 0.12s;
 }
 .hermes-kanban-trash-btn:focus-visible {
@@ -1608,7 +1608,7 @@
 }
 .hermes-kanban-card:hover .hermes-kanban-trash-btn,
 .hermes-kanban-card:focus-within .hermes-kanban-trash-btn {
-  opacity: 0.65;
+  opacity: 0.75;
 }
 .hermes-kanban-trash-btn:hover,
 .hermes-kanban-card .hermes-kanban-trash-btn:hover,

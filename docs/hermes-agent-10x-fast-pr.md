@@ -80,6 +80,10 @@ Generated visual:
 
 ![Hermes Agent 10x Fast generated PR visual](assets/10x-fast/hermes-agent-10x-fast-phase-1.png)
 
+Macro promotional comparison:
+
+![Hermes Agent 10x Fast macro original vs branch comparison](assets/10x-fast/generated/macro-original-vs-10x-fast.png)
+
 ## Image Comparison Contract
 
 Every generated or diagrammed image used in the README/PR must answer three
@@ -88,6 +92,7 @@ The table below is the canonical mapping for review.
 
 | Image | Old | New | Gain |
 | --- | ---: | ---: | ---: |
+| `generated/macro-original-vs-10x-fast.png` | original branch across six criteria | 10x Fast branch across six criteria | up to 24.21x |
 | `perf-startup-model-tools.svg` | `import_model_tools` 2.0847s | 0.8419s | 2.48x |
 | `perf-tool-definitions-startup.svg` | `import_and_get_tool_definitions` 1.8782s | 0.8741s | 2.15x |
 | `perf-plugin-discovery.svg` | full platform discovery 0.5571s | deferred fast path 0.1930s | 2.89x |

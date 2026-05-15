@@ -46,6 +46,8 @@ Full PR documentation:
 
 ![Hermes Agent 10x Fast performance dashboard](docs/assets/10x-fast/perf-summary-dashboard.svg)
 
+![Hermes Agent 10x Fast macro original vs branch comparison](docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png)
+
 ### Visual Before/After Gallery
 
 Every image below is tagged and tied to a measured old-vs-new comparison. The
@@ -57,6 +59,7 @@ specific benchmark claim it represents.
 
 | Visual | Tags | Old | New | Gain |
 | --- | --- | ---: | ---: | ---: |
+| <img src="docs/assets/10x-fast/generated/macro-original-vs-10x-fast.png" width="320" alt="macro comparison original vs 10x fast branch showing speed gains across startup plugin discovery sqlite endpoint guard and parallel tools"> | `#macro` `#promo` `#overview` `#generated` | original branch across six criteria | 10x Fast branch across six criteria | **up to 24.21x** |
 | <img src="docs/assets/10x-fast/perf-startup-model-tools.svg" width="320" alt="model_tools startup old 2.0847s new 0.8419s gain 2.48x"> | `#startup` `#model-tools` | 2.0847s | 0.8419s | **2.48x** |
 | <img src="docs/assets/10x-fast/perf-tool-definitions-startup.svg" width="320" alt="tool definitions startup old 1.8782s new 0.8741s gain 2.15x"> | `#startup` `#tool-schema` | 1.8782s | 0.8741s | **2.15x** |
 | <img src="docs/assets/10x-fast/perf-plugin-discovery.svg" width="320" alt="plugin discovery old 0.5571s new 0.1930s gain 2.89x"> | `#plugin-discovery` `#startup` | 0.5571s | 0.1930s | **2.89x** |

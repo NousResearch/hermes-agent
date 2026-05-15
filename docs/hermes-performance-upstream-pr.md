@@ -381,6 +381,7 @@ The branch includes diagrams under `docs/assets/10x-fast/`:
 - `phase-7-delegate-parallel-guard.svg`
 - `research-principles-map.svg`
 - generated PNGs under `docs/assets/10x-fast/generated/`
+  including `macro-original-vs-10x-fast.png` for public repository promotion.
 
 They are documentation aids only; runtime behavior is covered by tests and the
 benchmark harness.

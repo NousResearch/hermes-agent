@@ -2782,6 +2782,7 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+        self._fallback_extra_body = None
 
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
@@ -8832,6 +8833,13 @@ class AIAgent:
                 self._transport_cache.clear()
             self._fallback_activated = True
 
+            # Carry fallback-entry-specific extra_body (e.g. OpenRouter
+            # provider routing metadata) into the active request path.
+            # This allows per-fallback provider order/allow_fallbacks
+            # without affecting the primary or other fallback entries.
+            # See #26460.
+            self._fallback_extra_body = fb.get("extra_body") or None
+
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
             # SDK default.
@@ -8994,6 +9002,7 @@ class AIAgent:
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+            self._fallback_extra_body = None
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
@@ -9744,6 +9753,7 @@ class AIAgent:
                 anthropic_max_output=_ant_max,
                 supports_reasoning=self._supports_reasoning_extra_body(),
                 qwen_session_metadata=_qwen_meta,
+                extra_body_additions=self._fallback_extra_body,
             )
 
         # ── Legacy flag path ────────────────────────────────────────────
@@ -9791,6 +9801,7 @@ class AIAgent:
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
+            extra_body_additions=self._fallback_extra_body,
         )
 
     def _supports_reasoning_extra_body(self) -> bool:

@@ -5306,3 +5306,100 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestFallbackExtraBody:
+    """Test that fallback entry extra_body is forwarded into request kwargs."""
+
+    def test_fallback_activation_stores_extra_body(self, agent):
+        """_try_activate_fallback stores extra_body from the fallback entry."""
+        agent._fallback_activated = False
+        agent._fallback_chain = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+            "extra_body": {
+                "provider": {
+                    "order": ["baidu/fp8", "gmicloud/fp8"],
+                    "allow_fallbacks": False,
+                },
+            },
+        }]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "test-key"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._fallback_activated is True
+        assert agent._fallback_extra_body == {
+            "provider": {
+                "order": ["baidu/fp8", "gmicloud/fp8"],
+                "allow_fallbacks": False,
+            },
+        }
+
+    def test_fallback_without_extra_body_sets_none(self, agent):
+        """Fallback entry without extra_body sets _fallback_extra_body to None."""
+        agent._fallback_activated = False
+        agent._fallback_chain = [{
+            "provider": "openrouter",
+            "model": "z-ai/glm-5.1",
+        }]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "test-key"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent._fallback_extra_body is None
+
+    def test_fallback_reset_clears_extra_body(self, agent):
+        """Resetting fallback state clears _fallback_extra_body."""
+        agent._fallback_activated = True
+        agent._fallback_extra_body = {"provider": {"order": ["baidu/fp8"]}}
+        agent._fallback_index = 1
+
+        # Simulate what _primary_runtime_restore does
+        agent._fallback_activated = False
+        agent._fallback_index = 0
+        agent._fallback_extra_body = None
+
+        assert agent._fallback_extra_body is None
+
+    def test_extra_body_merged_in_transport(self, agent):
+        """Fallback extra_body reaches the transport's extra_body_additions param."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        agent._fallback_extra_body = {
+            "provider": {"order": ["baidu/fp8"], "allow_fallbacks": False},
+        }
+
+        transport = ChatCompletionsTransport()
+        profile = MagicMock()
+        profile.build_extra_body.return_value = {}
+        profile.build_api_kwargs_extras.return_value = ({}, {})
+
+        with patch.object(transport, "build_kwargs", wraps=transport.build_kwargs) as mock_bw:
+            try:
+                transport.build_kwargs(
+                    model="z-ai/glm-5.1",
+                    messages=[{"role": "user", "content": "test"}],
+                    provider_profile=profile,
+                    extra_body_additions=agent._fallback_extra_body,
+                )
+            except Exception:
+                pass
+
+            mock_bw.assert_called_once()
+            call_kwargs = mock_bw.call_args
+            assert call_kwargs[1].get("extra_body_additions") == {
+                "provider": {"order": ["baidu/fp8"], "allow_fallbacks": False},
+            }

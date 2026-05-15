@@ -566,6 +566,54 @@ def _interactive_auth() -> None:
             print()
     except ImportError:
         pass  # boto3 or bedrock_adapter not available
+
+    # Show Azure Foundry Entra ID status
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _model_cfg = _cfg.get("model") if isinstance(_cfg, dict) else None
+        if isinstance(_model_cfg, dict):
+            _cfg_provider = str(_model_cfg.get("provider") or "").strip().lower()
+            _cfg_auth_mode = str(_model_cfg.get("auth_mode") or "").strip().lower()
+            if _cfg_provider == "azure-foundry" and _cfg_auth_mode == "entra_id":
+                from agent.azure_identity_adapter import (
+                    EntraIdentityConfig,
+                    SCOPE_AI_AZURE_DEFAULT,
+                    describe_active_credential,
+                    has_azure_identity_installed,
+                )
+                _base_url = str(_model_cfg.get("base_url") or "").strip()
+                _entra = _model_cfg.get("entra") or {}
+                if not isinstance(_entra, dict):
+                    _entra = {}
+                _scope = (
+                    str(_entra.get("scope") or "").strip()
+                    or SCOPE_AI_AZURE_DEFAULT
+                )
+                print(f"azure-foundry (Microsoft Entra ID):")
+                print(f"  Endpoint: {_base_url or '(not configured)'}")
+                print(f"  Scope: {_scope}")
+                if not has_azure_identity_installed():
+                    print("  Status: ⚠ azure-identity not installed "
+                          "(pip install azure-identity)")
+                else:
+                    _entra_cfg = EntraIdentityConfig(
+                        scope=_scope,
+                    )
+                    _info = describe_active_credential(config=_entra_cfg, timeout_seconds=10.0)
+                    _env_sources = _info.get("env_sources") or []
+                    if _info.get("ok"):
+                        _tag = ", ".join(_env_sources) if _env_sources else "default chain"
+                        print(f"  Status: ✓ token acquired ({_tag})")
+                    else:
+                        _err = _info.get("error") or "credential chain exhausted"
+                        print(f"  Status: ⚠ {_err}")
+                        _hint = _info.get("hint")
+                        if _hint:
+                            print(f"  Hint: {_hint}")
+                print()
+    except Exception:
+        pass
     print()
 
     # Main menu

@@ -62,13 +62,9 @@ import sys
 import tempfile
 import threading
 import time
-import requests
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
-from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
-from hermes_cli.config import cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -83,21 +79,47 @@ try:
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
-from tools.browser_providers.base import CloudBrowserProvider
-from tools.browser_providers.browserbase import BrowserbaseProvider
-from tools.browser_providers.browser_use import BrowserUseProvider
-from tools.browser_providers.firecrawl import FirecrawlProvider
-from tools.tool_backend_helpers import normalize_browser_cloud_provider
-
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
-try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
-except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+def _is_camofox_mode() -> bool:
+    try:
+        from tools.browser_camofox import is_camofox_mode
+    except ImportError:
+        return False
+    return bool(is_camofox_mode())
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyRequests:
+    """Import requests only when CDP discovery or tests actually need it."""
+
+    def __getattr__(self, name: str) -> Any:
+        import requests as _requests
+
+        return getattr(_requests, name)
+
+
+requests = _LazyRequests()
+
+
+def call_llm(**kwargs):
+    from agent.auxiliary_client import call_llm as _call_llm
+
+    return _call_llm(**kwargs)
+
+
+def _cfg_get(*args, **kwargs):
+    from hermes_cli.config import cfg_get
+
+    return cfg_get(*args, **kwargs)
+
+
+def _is_truthy_value(value: object) -> bool:
+    from utils import is_truthy_value
+
+    return is_truthy_value(value)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
@@ -197,7 +219,7 @@ def _get_command_timeout() -> int:
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        val = cfg_get(cfg, "browser", "command_timeout")
+        val = _cfg_get(cfg, "browser", "command_timeout")
         if val is not None:
             result = max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
@@ -391,13 +413,47 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 # Cloud Provider Registry
 # ============================================================================
 
-_PROVIDER_REGISTRY: Dict[str, type] = {
-    "browserbase": BrowserbaseProvider,
-    "browser-use": BrowserUseProvider,
-    "firecrawl": FirecrawlProvider,
-}
+def _normalize_browser_cloud_provider(value: object | None) -> str:
+    provider = str(value or "local").strip().lower()
+    return provider or "local"
 
-_cached_cloud_provider: Optional[CloudBrowserProvider] = None
+
+def _browser_use_direct_config_possible(browser_cfg: Dict[str, Any]) -> bool:
+    if not os.getenv("BROWSER_USE_API_KEY"):
+        return False
+    return not _is_truthy_value(browser_cfg.get("use_gateway"))
+
+
+def _browserbase_direct_config_possible() -> bool:
+    return bool(os.getenv("BROWSERBASE_API_KEY") and os.getenv("BROWSERBASE_PROJECT_ID"))
+
+
+def _managed_browser_gateway_possible() -> bool:
+    if os.getenv("TOOL_GATEWAY_USER_TOKEN"):
+        return True
+    try:
+        return (get_hermes_home() / "auth.json").is_file()
+    except Exception:
+        return False
+
+
+def _new_cloud_provider(provider_key: str) -> Optional[Any]:
+    if provider_key == "browserbase":
+        from tools.browser_providers.browserbase import BrowserbaseProvider
+
+        return BrowserbaseProvider()
+    if provider_key == "browser-use":
+        from tools.browser_providers.browser_use import BrowserUseProvider
+
+        return BrowserUseProvider()
+    if provider_key == "firecrawl":
+        from tools.browser_providers.firecrawl import FirecrawlProvider
+
+        return FirecrawlProvider()
+    return None
+
+
+_cached_cloud_provider: Optional[Any] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
@@ -410,44 +466,47 @@ _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
 
 
-def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+def _get_cloud_provider() -> Optional[Any]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
     for the process lifetime. An explicit ``local`` provider disables cloud
-    fallback. If unset, fall back to Browserbase when direct or managed
-    Browserbase credentials are available.
+    fallback. If unset, fall back to Browser Use or Browserbase when their
+    credentials are available.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
     if _cloud_provider_resolved:
         return _cached_cloud_provider
 
     _cloud_provider_resolved = True
+    browser_cfg: Dict[str, Any] = {}
+    provider_key = None
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
+        maybe_browser_cfg = cfg.get("browser", {})
+        browser_cfg = maybe_browser_cfg if isinstance(maybe_browser_cfg, dict) else {}
         provider_key = None
-        if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
-            provider_key = normalize_browser_cloud_provider(
-                browser_cfg.get("cloud_provider")
-            )
+        if "cloud_provider" in browser_cfg:
+            provider_key = _normalize_browser_cloud_provider(browser_cfg.get("cloud_provider"))
             if provider_key == "local":
                 _cached_cloud_provider = None
                 return None
-        if provider_key and provider_key in _PROVIDER_REGISTRY:
-            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+        if provider_key:
+            _cached_cloud_provider = _new_cloud_provider(provider_key)
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
-    if _cached_cloud_provider is None:
+    if _cached_cloud_provider is None and not provider_key:
         # Prefer Browser Use (managed Nous gateway or direct API key),
         # fall back to Browserbase (direct credentials only).
-        fallback_provider = BrowserUseProvider()
-        if fallback_provider.is_configured():
-            _cached_cloud_provider = fallback_provider
-        else:
-            fallback_provider = BrowserbaseProvider()
+        if _browser_use_direct_config_possible(browser_cfg) or _managed_browser_gateway_possible():
+            fallback_provider = _new_cloud_provider("browser-use")
+            if fallback_provider is not None and fallback_provider.is_configured():
+                _cached_cloud_provider = fallback_provider
+
+        if _cached_cloud_provider is None and _browserbase_direct_config_possible():
+            fallback_provider = _new_cloud_provider("browserbase")
             if fallback_provider.is_configured():
                 _cached_cloud_provider = fallback_provider
 
@@ -988,7 +1047,7 @@ def _allow_private_urls() -> bool:
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {})
         if isinstance(browser_cfg, dict):
-            _cached_allow_private_urls = is_truthy_value(
+            _cached_allow_private_urls = _is_truthy_value(
                 browser_cfg.get("allow_private_urls"), default=False
             )
     except Exception as e:
@@ -2730,7 +2789,7 @@ def _maybe_start_recording(task_id: str):
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
         cfg = read_raw_config()
-        record_enabled = cfg_get(cfg, "browser", "record_sessions", default=False)
+        record_enabled = _cfg_get(cfg, "browser", "record_sessions", default=False)
 
         if not record_enabled:
             return
@@ -2996,7 +3055,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         try:
             from hermes_cli.config import load_config
             _cfg = load_config()
-            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
+            _vision_cfg = _cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)

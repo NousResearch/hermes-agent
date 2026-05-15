@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import importlib.util
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -120,6 +122,29 @@ def _import_piper():
     """
     from piper import PiperVoice
     return PiperVoice
+
+
+def _module_available(name: str) -> bool:
+    try:
+        if sys.modules.get(name) is not None:
+            return True
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def _lazy_import_available(module_name: str, importer: Callable[[], Any], original_name: str) -> bool:
+    """Check package availability without importing unless tests patched importer."""
+    if (
+        getattr(importer, "__module__", None) != __name__
+        or getattr(importer, "__name__", None) != original_name
+    ):
+        try:
+            importer()
+            return True
+        except ImportError:
+            return False
+    return _module_available(module_name)
 
 
 # ===========================================================================
@@ -1237,20 +1262,12 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 def _check_neutts_available() -> bool:
     """Check if the neutts engine is importable (installed locally)."""
-    try:
-        import importlib.util
-        return importlib.util.find_spec("neutts") is not None
-    except Exception:
-        return False
+    return _module_available("neutts")
 
 
 def _check_kittentts_available() -> bool:
     """Check if the kittentts engine is importable (installed locally)."""
-    try:
-        import importlib.util
-        return importlib.util.find_spec("kittentts") is not None
-    except Exception:
-        return False
+    return _module_available("kittentts")
 
 
 def _default_neutts_ref_audio() -> str:
@@ -1328,11 +1345,7 @@ _piper_voice_cache: Dict[str, Any] = {}
 
 def _check_piper_available() -> bool:
     """Check whether the piper-tts package is importable."""
-    try:
-        import importlib.util
-        return importlib.util.find_spec("piper") is not None
-    except Exception:
-        return False
+    return _module_available("piper")
 
 
 def _get_piper_voices_dir() -> Path:
@@ -1821,35 +1834,23 @@ def check_tts_requirements() -> bool:
     # Any configured command provider counts as available.
     if _has_any_command_tts_provider():
         return True
-    try:
-        _import_edge_tts()
+    if _lazy_import_available("edge_tts", _import_edge_tts, "_import_edge_tts"):
         return True
-    except ImportError:
-        pass
-    try:
-        _import_elevenlabs()
+    if _lazy_import_available("elevenlabs", _import_elevenlabs, "_import_elevenlabs"):
         if get_env_value("ELEVENLABS_API_KEY"):
             return True
-    except ImportError:
-        pass
-    try:
-        _import_openai_client()
+    if _lazy_import_available("openai", _import_openai_client, "_import_openai_client"):
         if _has_openai_audio_backend():
             return True
-    except ImportError:
-        pass
     if get_env_value("MINIMAX_API_KEY"):
         return True
     if get_env_value("XAI_API_KEY"):
         return True
     if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
         return True
-    try:
-        _import_mistral_client()
+    if _lazy_import_available("mistralai", _import_mistral_client, "_import_mistral_client"):
         if get_env_value("MISTRAL_API_KEY"):
             return True
-    except ImportError:
-        pass
     if _check_neutts_available():
         return True
     if _check_kittentts_available():

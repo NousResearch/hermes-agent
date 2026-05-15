@@ -610,6 +610,7 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
+        self._platform_plugins_loaded: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
@@ -618,23 +619,37 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(
+        self,
+        force: bool = False,
+        *,
+        include_platforms: bool = True,
+    ) -> None:
         """Scan all plugin sources and load each plugin found.
 
         When ``force`` is true, clear cached discovery state first so config
         changes or newly-added bundled backends become visible in long-lived
         sessions without requiring a full agent restart.
+        ``include_platforms`` controls whether gateway platform plugins
+        (``kind: platform``) are imported. Plain CLI/model-tool startup does
+        not need those adapters, and some of them pull in gateway HTTP stacks.
+        Gateway and platform-introspection callers should use the default
+        ``True`` so the platform registry is populated.
         """
         if self._discovered and not force:
+            if include_platforms and not self._platform_plugins_loaded:
+                self._load_platform_plugins()
             return
         if force:
             self._plugins.clear()
             self._hooks.clear()
             self._plugin_tool_names.clear()
+            self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._context_engine = None
+            self._platform_plugins_loaded = False
         self._discovered = True
 
         manifests: List[PluginManifest] = []
@@ -660,9 +675,10 @@ class PluginManager:
                 skip_names={"memory", "context_engine", "platforms", "model-providers"},
             )
         )
-        manifests.extend(
-            self._scan_directory(repo_plugins / "platforms", source="bundled")
-        )
+        if include_platforms:
+            manifests.extend(
+                self._scan_directory(repo_plugins / "platforms", source="bundled")
+            )
 
         # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"
@@ -690,6 +706,13 @@ class PluginManager:
             winners[manifest.key or manifest.name] = manifest
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
+
+            if manifest.kind == "platform" and not include_platforms:
+                logger.debug(
+                    "Skipping platform plugin '%s' during fast non-gateway discovery",
+                    lookup_key,
+                )
+                continue
 
             # Explicit disable always wins (matches on key or on legacy
             # bare name for back-compat with existing user configs).
@@ -769,6 +792,70 @@ class PluginManager:
                 len(self._plugins),
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
+        if include_platforms:
+            self._platform_plugins_loaded = True
+
+    def _load_platform_plugins(self) -> None:
+        """Load platform plugins after an earlier fast discovery skipped them."""
+        manifests: List[PluginManifest] = []
+        repo_plugins = get_bundled_plugins_dir()
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
+        )
+
+        user_dir = get_hermes_home() / "plugins"
+        manifests.extend(
+            manifest
+            for manifest in self._scan_directory(user_dir, source="user")
+            if manifest.kind == "platform"
+        )
+
+        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+            project_dir = Path.cwd() / ".hermes" / "plugins"
+            manifests.extend(
+                manifest
+                for manifest in self._scan_directory(project_dir, source="project")
+                if manifest.kind == "platform"
+            )
+
+        if not manifests:
+            self._platform_plugins_loaded = True
+            return
+
+        disabled = _get_disabled_plugins()
+        enabled = _get_enabled_plugins()
+        winners: Dict[str, PluginManifest] = {}
+        for manifest in manifests:
+            winners[manifest.key or manifest.name] = manifest
+
+        for manifest in winners.values():
+            lookup_key = manifest.key or manifest.name
+            existing = self._plugins.get(lookup_key)
+            if existing and existing.enabled:
+                continue
+            if lookup_key in disabled or manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[lookup_key] = loaded
+                continue
+            if manifest.source == "bundled":
+                self._load_plugin(manifest)
+                continue
+            is_enabled = (
+                enabled is not None
+                and (lookup_key in enabled or manifest.name in enabled)
+            )
+            if is_enabled:
+                self._load_plugin(manifest)
+            else:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = (
+                    "not enabled in config (run `hermes plugins enable {}` to activate)"
+                    .format(lookup_key)
+                )
+                self._plugins[lookup_key] = loaded
+
+        self._platform_plugins_loaded = True
 
     # -----------------------------------------------------------------------
     # Directory scanning
@@ -1185,13 +1272,16 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(force: bool = False, *, include_platforms: bool = True) -> None:
     """Discover and load all plugins.
 
     Default behavior is idempotent. Pass ``force=True`` to rescan plugin
     manifests and reload state in the current process.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    get_plugin_manager().discover_and_load(
+        force=force,
+        include_platforms=include_platforms,
+    )
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Agent 10x Fast Phase 1 benchmark before and after</title>
+  <desc id="desc">Before and after bar chart showing faster cold startup paths on the performance branch.</desc>
+  <rect width="1200" height="760" fill="#0e1116"/>
+  <rect x="40" y="40" width="1120" height="680" rx="18" fill="#151a22" stroke="#2d3748"/>
+  <text x="80" y="105" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="42" font-weight="700">Hermes Agent 10x Fast - Phase 1</text>
+  <text x="80" y="145" fill="#aeb8c7" font-family="Segoe UI, Arial, sans-serif" font-size="20">Cold startup benchmark, median of 7 subprocess runs</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="18">
+    <rect x="80" y="190" width="24" height="24" fill="#ef4444"/>
+    <text x="116" y="209" fill="#d9e2ef">main baseline</text>
+    <rect x="300" y="190" width="24" height="24" fill="#22c55e"/>
+    <text x="336" y="209" fill="#d9e2ef">performance branch</text>
+  </g>
+
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="80" y="275" fill="#f8fafc" font-size="24" font-weight="700">import_model_tools</text>
+    <rect x="80" y="300" width="650" height="34" rx="7" fill="#ef4444"/>
+    <rect x="80" y="344" width="263" height="34" rx="7" fill="#22c55e"/>
+    <text x="750" y="324" fill="#f8fafc" font-size="22">2.0847s</text>
+    <text x="363" y="368" fill="#f8fafc" font-size="22">0.8419s</text>
+    <text x="900" y="346" fill="#86efac" font-size="26" font-weight="700">2.48x faster</text>
+
+    <text x="80" y="435" fill="#f8fafc" font-size="24" font-weight="700">import + tool definitions</text>
+    <rect x="80" y="460" width="586" height="34" rx="7" fill="#ef4444"/>
+    <rect x="80" y="504" width="273" height="34" rx="7" fill="#22c55e"/>
+    <text x="686" y="484" fill="#f8fafc" font-size="22">1.8782s</text>
+    <text x="373" y="528" fill="#f8fafc" font-size="22">0.8741s</text>
+    <text x="900" y="506" fill="#86efac" font-size="26" font-weight="700">2.15x faster</text>
+
+    <text x="80" y="595" fill="#f8fafc" font-size="24" font-weight="700">plugin discovery fast path</text>
+    <rect x="80" y="620" width="174" height="34" rx="7" fill="#ef4444"/>
+    <rect x="80" y="664" width="60" height="34" rx="7" fill="#22c55e"/>
+    <text x="274" y="644" fill="#f8fafc" font-size="22">0.5571s full baseline</text>
+    <text x="160" y="688" fill="#f8fafc" font-size="22">0.1930s fast path</text>
+    <text x="900" y="666" fill="#86efac" font-size="26" font-weight="700">2.89x faster</text>
+  </g>
+
+  <text x="80" y="705" fill="#8fa1b8" font-family="Segoe UI, Arial, sans-serif" font-size="16">Benchmark script: scripts/benchmark_startup_perf.py</text>
+</svg>

@@ -20,6 +20,31 @@ def _reset_session_state(monkeypatch):
     monkeypatch.setattr(browser_tool, "_update_session_activity", lambda t: None)
 
 
+def test_get_cloud_provider_skips_provider_imports_without_credentials(monkeypatch, tmp_path):
+    """Local default should not import cloud provider modules during schema checks."""
+    _reset_session_state(monkeypatch)
+    for key in (
+        "BROWSER_USE_API_KEY",
+        "BROWSERBASE_API_KEY",
+        "BROWSERBASE_PROJECT_ID",
+        "FIRECRAWL_API_KEY",
+        "TOOL_GATEWAY_USER_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    from hermes_cli import config as cli_config
+
+    monkeypatch.setattr(cli_config, "read_raw_config", lambda: {"browser": {}})
+    monkeypatch.setattr(browser_tool, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        browser_tool,
+        "_new_cloud_provider",
+        Mock(side_effect=AssertionError("provider import should be skipped")),
+    )
+
+    assert browser_tool._get_cloud_provider() is None
+
+
 class TestCloudProviderRuntimeFallback:
     """Tests for _get_session_info cloud → local fallback."""
 

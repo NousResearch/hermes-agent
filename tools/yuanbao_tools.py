@@ -19,14 +19,19 @@ accessed via ``get_active_adapter()``.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def _get_active_adapter():
+def _get_active_adapter(*, import_if_needed: bool = True):
     """Lazy import to avoid ImportError when gateway.platforms.yuanbao is unavailable."""
+    if not import_if_needed:
+        module = sys.modules.get("gateway.platforms.yuanbao")
+        get_active_adapter = getattr(module, "get_active_adapter", None)
+        return get_active_adapter() if callable(get_active_adapter) else None
     try:
         from gateway.platforms.yuanbao import get_active_adapter
         return get_active_adapter()
@@ -425,7 +430,7 @@ def _check_yuanbao():
             return True
     except Exception:
         pass
-    return _get_active_adapter() is not None
+    return _get_active_adapter(import_if_needed=False) is not None
 
 
 async def _handle_yb_query_group_info(args, **kw):

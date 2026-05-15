@@ -14,10 +14,10 @@ Import chain (circular-import safe):
     run_agent.py, cli.py, batch_runner.py, etc.
 """
 
-import ast
 import importlib
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -26,17 +26,7 @@ from typing import Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
-def _is_registry_register_call(node: ast.AST) -> bool:
-    """Return True when *node* is a ``registry.register(...)`` call expression."""
-    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-        return False
-    func = node.value.func
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr == "register"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "registry"
-    )
+_TOP_LEVEL_REGISTER_RE = re.compile(r"(?m)^registry\.register\s*\(")
 
 
 def _module_registers_tools(module_path: Path) -> bool:
@@ -47,11 +37,10 @@ def _module_registers_tools(module_path: Path) -> bool:
     """
     try:
         source = module_path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(module_path))
-    except (OSError, SyntaxError):
+    except OSError:
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    return _TOP_LEVEL_REGISTER_RE.search(source) is not None
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:

@@ -186,6 +186,42 @@ class TestPluginDiscovery:
 
         assert "ep_plugin" in mgr._plugins
 
+    def test_platform_plugins_can_be_deferred_then_loaded(self, tmp_path, monkeypatch):
+        """Fast discovery skips platform imports but a later full pass loads them."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        plugins_dir = hermes_home / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "fast-platform",
+            register_body=(
+                'ctx.register_platform(name="fast", label="Fast", '
+                'adapter_factory=lambda cfg: object(), check_fn=lambda: True)'
+            ),
+            manifest_extra={"kind": "platform"},
+        )
+
+        from gateway.platform_registry import platform_registry
+
+        original = dict(platform_registry._entries)
+        platform_registry._entries.clear()
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load(include_platforms=False)
+
+            assert "fast-platform" not in mgr._plugins
+            assert not mgr._platform_plugins_loaded
+            assert not platform_registry.is_registered("fast")
+
+            mgr.discover_and_load()
+
+            assert mgr._plugins["fast-platform"].enabled
+            assert mgr._platform_plugins_loaded
+            assert platform_registry.is_registered("fast")
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original)
+
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────
 

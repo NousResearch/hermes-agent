@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{{icao}}</title>
+<style>{{{theme_css}}}
+.ac-frame { background: radial-gradient(circle at 92% 8%, rgba(61,219,217,.10), transparent 30%), var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 24px; max-width: 780px; margin: 16px auto; box-shadow: 0 14px 42px rgba(0,0,0,0.42); animation: fade-up .42s ease both; }
+.ac-head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1px solid var(--border); padding-bottom:16px; margin-bottom:20px; }
+.ac-icao { font-size: 32px; font-weight: 700; letter-spacing: 1px; color:#fff; }
+.ac-city { font-size: 13px; color: var(--text-muted); letter-spacing: 2px; margin-top:4px; text-transform: uppercase; }
+.ac-iata { font-size: 11px; color: var(--text-dim); letter-spacing: 3px; margin-top:6px; }
+.ac-tabs { display:flex; gap: 0; margin-bottom:20px; border-bottom:1px solid var(--border); }
+.ac-tab { padding: 10px 20px; font-size: 11px; letter-spacing: 2px; color: var(--text-muted); border-bottom: 2px solid transparent; }
+.ac-tab.active { color: #fff; border-bottom-color: var(--accent); }
+.ac-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:20px; }
+.ac-stat { display:flex; gap:14px; align-items:center; }
+.ac-dial { width:54px; height:54px; border-radius:50%; display:flex; align-items:center; justify-content:center; position:relative; }
+.ac-dial::after { content:""; position:absolute; inset: 6px; border-radius:50%; background: var(--bg); }
+.ac-stat-label { font-size: 10px; letter-spacing:2px; color: var(--text-muted); margin-bottom:3px; text-transform: uppercase; }
+.ac-stat-value { font-size: 13px; color: var(--text); }
+.ac-row { display:flex; gap:14px; padding:12px 0; border-top:1px solid var(--border); align-items:center; }
+.ac-row-icon { width:30px; color: var(--accent); font-size:18px; text-align:center; }
+.ac-row-label { font-size:10px; letter-spacing:2px; color: var(--text-muted); text-transform: uppercase; }
+.ac-row-value { font-size:12px; color: var(--text); }
+.ac-side { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:2px; color: var(--text-dim); padding-right:14px; padding-top: 14px; text-transform: uppercase; }
+.ac-side-item.active { color: var(--accent); border-left:2px solid var(--accent); padding-left:8px; margin-left:-10px; }
+.ac-rows-wrap { display:flex; }
+.ac-rows { flex:1; }
+.ac-publish { font-size:10px; color: var(--text-dim); letter-spacing:2px; margin-bottom:18px; }
+.ac-actions { display:flex; gap:8px; align-items:center; }
+.icon-btn { width:34px; height:34px; border-radius:50%; border:1px solid rgba(61,219,217,.55); display:grid; place-items:center; color:var(--accent); background:rgba(61,219,217,.07); }
+.ac-intel { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:18px 0; }
+.intel-card { border:1px solid var(--border); background:var(--panel); border-radius:8px; padding:12px; position:relative; overflow:hidden; }
+.intel-card::after { content:""; position:absolute; inset:0; width:45%; background:linear-gradient(90deg, transparent, rgba(61,219,217,.08), transparent); animation:glow-scan 3.2s ease-in-out infinite; }
+.intel-value { color:#fff; font-size:16px; margin-top:5px; font-weight:800; }
+@media (max-width: 680px) {
+  .ac-frame { margin:0; border-radius:0; padding:16px; }
+  .ac-head, .alert-strip { flex-direction:column; align-items:flex-start; }
+  .ac-tabs { overflow:hidden; }
+  .ac-tab { padding:10px 11px; font-size:10px; }
+  .ac-grid, .ac-intel { grid-template-columns:1fr; gap:14px; }
+  .ac-rows-wrap { display:block; }
+  .ac-side { flex-direction:row; padding:0 0 12px; }
+}
+</style>
+</head>
+<body>
+<div class="ac-frame">
+  <div class="ac-head">
+    <div>
+      <div class="live-chip">LIVE AIRPORT INTEL</div>
+      <div class="ac-icao">{{icao}}</div>
+      <div class="ac-city">{{name}}</div>
+      <div class="ac-iata">{{iata}} · {{country}}</div>
+    </div>
+    <div class="ac-actions"><div class="icon-btn">⌖</div><div class="icon-btn">↗</div></div>
+  </div>
+  <div class="ac-tabs">
+    <div class="ac-tab active">AIRPORT</div>
+    <div class="ac-tab">CITY</div>
+    <div class="ac-tab">COUNTRY</div>
+    <div class="ac-tab">AIRSPACE</div>
+  </div>
+  {{?alert}}
+  <div class="alert-strip">
+    <span style="color: var(--accent)">▲</span>
+    <span class="alert-time">{{alert_time}}</span>
+    <span>{{alert_text}}</span>
+    <span class="tag" style="margin-left:auto">{{alert_distance_km}}KM</span>
+  </div>
+  {{/alert}}
+  <div class="ac-publish">DATE OF PUBLISH {{date_of_publish}}</div>
+  <div class="ac-intel">
+    <div class="intel-card"><div class="label">DISPATCH POSTURE</div><div class="intel-value">Normal Ops</div></div>
+    <div class="intel-card"><div class="label">NEARBY ALERTS</div><div class="intel-value">{{rating}} Active Signal</div></div>
+    <div class="intel-card"><div class="label">DATA CONFIDENCE</div><div class="intel-value">High</div></div>
+  </div>
+  <div class="ac-grid">
+    <div class="ac-stat">
+      <div class="ac-dial" style="background: conic-gradient(var(--accent) 0deg {{rating_deg}}deg, var(--border) {{rating_deg}}deg 360deg);"></div>
+      <div><div class="ac-stat-label">AIRPORT RATING</div><div class="ac-stat-value">{{rating}} — {{rating_label}}</div></div>
+    </div>
+    <div class="ac-stat">
+      <div class="ac-dial" style="background: conic-gradient(var(--accent) 0deg {{covid_deg}}deg, var(--border) {{covid_deg}}deg 360deg);"></div>
+      <div><div class="ac-stat-label">COVID IMPACT</div><div class="ac-stat-value">Inbound {{covid_inbound}} · Domestic {{covid_domestic}}</div></div>
+    </div>
+    <div class="ac-stat">
+      <div class="ac-dial" style="background: conic-gradient(var(--success) 0deg {{city_risk_deg}}deg, var(--border) {{city_risk_deg}}deg 360deg);"></div>
+      <div><div class="ac-stat-label">CITY RISK</div><div class="ac-stat-value">{{city_risk_label}}</div></div>
+    </div>
+    <div class="ac-stat">
+      <div class="ac-dial" style="background: conic-gradient(var(--success) 0deg {{medical_risk_deg}}deg, var(--border) {{medical_risk_deg}}deg 360deg);"></div>
+      <div><div class="ac-stat-label">MEDICAL RISK</div><div class="ac-stat-value">{{medical_risk_label}}</div></div>
+    </div>
+  </div>
+  <div class="ac-rows-wrap">
+    <div class="ac-side">
+      <div class="ac-side-item active">OVERVIEW</div>
+      <div class="ac-side-item">OPERATIONS</div>
+      <div class="ac-side-item">SECURITY</div>
+    </div>
+    <div class="ac-rows">
+      <div class="ac-row"><div class="ac-row-icon">✈</div><div><div class="ac-row-label">RUNWAY SPECS</div><div class="ac-row-value">{{runway_summary}}</div></div></div>
+      <div class="ac-row"><div class="ac-row-icon">⛟</div><div><div class="ac-row-label">GROUND HANDLING</div><div class="ac-row-value">{{ground_handling_summary}}</div></div></div>
+    </div>
+  </div>
+</div>
+</body></html>

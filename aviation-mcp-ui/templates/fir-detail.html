@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{{id}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>{{{theme_css}}}
+html, body { min-height: 100%; overflow: hidden; }
+body { background: radial-gradient(circle at 84% 8%, rgba(61,219,217,.12), transparent 30%), var(--bg); }
+.fir-frame { max-width:980px; margin:0 auto; padding:18px; background:var(--bg); }
+.skeleton { position:fixed; inset:0; z-index:20; background:var(--bg); display:grid; gap:14px; padding:24px; transition:opacity .28s ease, visibility .28s ease; }
+.skeleton.done { opacity:0; visibility:hidden; }
+.sk { border-radius:8px; background:linear-gradient(90deg,#10212a 0%,#17313c 45%,#10212a 90%); background-size:240% 100%; animation: shimmer 1.1s ease-in-out infinite; }
+.sk.head { height:74px; } .sk.map { height:300px; } .sk.row { height:120px; }
+@keyframes shimmer { 0% { background-position:100% 0; } 100% { background-position:-100% 0; } }
+@keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+@keyframes pulseBorder { 0%,100% { box-shadow:0 0 0 rgba(217,77,61,.0), 0 0 0 rgba(61,219,217,.0); } 50% { box-shadow:0 0 34px rgba(217,77,61,.25), 0 0 18px rgba(61,219,217,.18); } }
+.fir-hero { display:grid; grid-template-columns:1.15fr .85fr; gap:14px; animation:fadeUp .45s ease both; }
+.fir-card { background:rgba(17,32,42,.96); border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 14px 44px rgba(0,0,0,.36); }
+.fir-card.hot { animation:pulseBorder 2.8s ease-in-out infinite; border-color:rgba(217,77,61,.52); }
+.fir-head { padding:22px 24px; border-bottom:1px solid var(--border); background:linear-gradient(135deg,#101c25,#122731); }
+.topline { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+.live-pill { display:inline-flex; align-items:center; gap:7px; color:#fff; font-size:10px; letter-spacing:2px; text-transform:uppercase; }
+.live-dot { width:7px; height:7px; border-radius:50%; background:var(--danger); box-shadow:0 0 10px var(--danger); }
+.severity-chip { border:1px solid rgba(217,77,61,.55); color:#fff; border-radius:999px; padding:7px 10px; font-size:10px; letter-spacing:1.5px; background:rgba(217,77,61,.15); }
+.fir-id { font-size:38px; line-height:1; color:#fff; font-weight:800; letter-spacing:1px; }
+.fir-name { margin-top:7px; font-size:16px; color:var(--text-muted); letter-spacing:2px; text-transform:uppercase; }
+.fir-alert { padding:16px 22px; background:#121114; border-left:4px solid var(--danger); display:flex; justify-content:space-between; gap:14px; align-items:center; }
+.fir-alert strong { color:#fff; }
+.fir-more { border-radius:18px; padding:8px 14px; background:var(--accent); color:#061116; font-weight:800; white-space:nowrap; }
+.fir-map-wrap { position:relative; min-height:370px; background:#071017; }
+#fir-map { height:370px; width:100%; background:#071017; }
+.map-overlay { position:absolute; left:14px; bottom:14px; right:14px; z-index:450; display:grid; grid-template-columns:repeat(3,1fr); gap:8px; pointer-events:none; }
+.overlay-stat { background:rgba(7,16,23,.82); border:1px solid rgba(61,219,217,.25); border-radius:7px; padding:10px; backdrop-filter:blur(8px); }
+.stat-num { color:#fff; font-size:20px; font-weight:800; }
+.side-panel { display:grid; gap:14px; }
+.risk-meter { padding:18px; }
+.meter-top { display:flex; justify-content:space-between; align-items:end; gap:12px; }
+.score { font-size:48px; color:#fff; font-weight:900; letter-spacing:1px; }
+.meter-track { height:12px; border-radius:999px; background:#0a151c; overflow:hidden; border:1px solid var(--border); margin-top:14px; }
+.meter-fill { width:{{risk_score}}%; height:100%; background:linear-gradient(90deg,var(--warning),var(--danger)); animation:grow .9s ease both; }
+@keyframes grow { from { width:0; } }
+.posture { padding:18px; border-top:1px solid var(--border); background:rgba(61,219,217,.06); }
+.posture-title { color:#fff; font-weight:800; margin-bottom:8px; }
+.ops-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:14px; animation:fadeUp .55s ease .08s both; }
+.ops-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; min-height:112px; }
+.ops-card strong { display:block; color:#fff; margin:6px 0; font-size:16px; }
+.fir-body { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; animation:fadeUp .55s ease .15s both; }
+.section { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:18px; }
+.risk-title { margin:0 0 12px; font-size:12px; letter-spacing:2px; color:#fff; text-transform:uppercase; }
+.risk-row { display:grid; grid-template-columns:160px 1fr; align-items:center; gap:16px; margin-bottom:12px; }
+.risk-bar { height:18px; border-left:1px solid var(--danger); background:repeating-linear-gradient(135deg, rgba(217,77,61,.9) 0 3px, transparent 3px 6px), rgba(217,77,61,.18); }
+.fl-scale { display:flex; justify-content:space-between; color:var(--text-dim); font-size:9px; letter-spacing:1px; margin-top:4px; }
+.weapons { display:grid; grid-template-columns:repeat(5,1fr); border:1px solid var(--border); }
+.weapon { padding:12px 8px; text-align:center; border-right:1px solid var(--border); border-bottom:1px solid var(--border); font-size:11px; min-height:44px; }
+.weapon.active { color:#fff; background:#121114; }
+.weapon.inactive { color:var(--text-dim); background:#0d151b; }
+.feed { display:grid; gap:8px; }
+.feed-item { border-left:3px solid var(--accent); background:#101a21; padding:10px 12px; border-radius:0 6px 6px 0; }
+.warn-row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }
+.warn { background:#121114; border-left:3px solid var(--accent); padding:12px; border-radius:0 6px 6px 0; }
+.cta-row { display:flex; gap:10px; margin-top:14px; }
+.cta { flex:1; border-radius:22px; background:var(--accent); color:#061116; text-align:center; padding:14px; font-weight:900; letter-spacing:1px; }
+.cta.secondary { background:#101a21; color:var(--text); border:1px solid var(--border); }
+.leaflet-control-attribution { display:none; }
+.alert-pin { width:18px; height:18px; border-radius:50%; border:2px solid #fff; background:var(--danger); box-shadow:0 0 16px rgba(217,77,61,.9); }
+@media (max-width: 720px) {
+  .fir-frame { padding:10px; }
+  .fir-hero, .fir-body, .ops-grid, .warn-row { grid-template-columns:1fr; }
+  .fir-id { font-size:34px; }
+  #fir-map, .fir-map-wrap { height:320px; min-height:320px; }
+  .map-overlay { grid-template-columns:1fr; position:relative; left:auto; right:auto; bottom:auto; padding:10px; }
+  .risk-row { grid-template-columns:1fr; gap:8px; }
+  .weapons { grid-template-columns:repeat(2,1fr); }
+}
+</style></head>
+<body>
+<div class="skeleton" id="skeleton"><div class="sk head"></div><div class="sk map"></div><div class="sk row"></div></div>
+<div class="fir-frame">
+  <div class="fir-hero">
+    <div class="fir-card hot">
+      <div class="fir-head">
+        <div class="topline">
+          <div class="live-pill"><span class="live-dot"></span>LIVE AIRSPACE MONITOR</div>
+          <div class="severity-chip">{{severity_label}} THREAT</div>
+        </div>
+        <div class="fir-id">{{id}}</div>
+        <div class="fir-name">{{name}} · {{country}}</div>
+      </div>
+      <div class="fir-alert">
+        <div><div class="label">{{alert_time}} · {{alert_region}}</div><strong>{{alert_headline}}</strong></div>
+        <div class="fir-more">+{{alert_count}} Alerts</div>
+      </div>
+      <div class="fir-map-wrap">
+        <div id="fir-map" class="fir-map"></div>
+        <div class="map-overlay">
+          <div class="overlay-stat"><div class="label">RISK SCORE</div><div class="stat-num">{{risk_score}}</div></div>
+          <div class="overlay-stat"><div class="label">FLOOR</div><div class="stat-num">FL{{flight_level_floor}}</div></div>
+          <div class="overlay-stat"><div class="label">VALID TO</div><div class="stat-num">17:00Z</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="side-panel">
+      <div class="fir-card risk-meter">
+        <div class="meter-top">
+          <div><div class="label">DYNAMIC RISK INDEX</div><div class="score">{{risk_score}}</div></div>
+          <div class="tag">{{confidence}}</div>
+        </div>
+        <div class="meter-track"><div class="meter-fill"></div></div>
+      </div>
+      <div class="fir-card posture">
+        <div class="label">Recommended routing posture</div>
+        <div class="posture-title">{{posture}}</div>
+        <div class="muted">Dispatch should confirm state advisories, active NOTAMs, and company risk threshold before release.</div>
+      </div>
+      <div class="fir-card posture">
+        <div class="label">Live intelligence feed</div>
+        <div class="feed">{{#alert_items}}<div class="feed-item"><strong>{{severity}}</strong> {{headline}}<br><span class="muted">{{region}} · active to {{active_to}}</span></div>{{/alert_items}}</div>
+      </div>
+    </div>
+  </div>
+  <div class="ops-grid">
+    <div class="ops-card"><div class="label">OPERATIONAL IMPACT</div><strong>Route Review</strong><span class="muted">Manual dispatch concurrence recommended for affected city pairs.</span></div>
+    <div class="ops-card"><div class="label">CREW BRIEFING</div><strong>Required</strong><span class="muted">Include missile, intercept, and diversion posture in preflight packet.</span></div>
+    <div class="ops-card"><div class="label">SOURCE</div><strong>{{issued_by}}</strong><span class="muted">Published {{date_of_publish}}</span></div>
+  </div>
+  <div class="fir-body">
+    <div class="section">
+      <div class="risk-title">Flight Level Risk</div>
+      <div class="risk-row">
+        <div><span class="dot dot-red"></span>WEAPONRY RANGE<br><span class="muted">FL-{{weaponry_range_floor}}</span></div>
+        <div><div class="risk-bar"></div><div class="fl-scale"><span>ALL</span><span>FL-600</span><span>FL-300</span><span>FL-260</span><span>FL-180</span></div></div>
+      </div>
+      <div class="risk-row">
+        <div><span class="dot dot-red"></span>FLIGHT RESTRICTIONS</div>
+        <div><div class="risk-bar"></div><div class="muted">FL-{{flight_level_floor}} through FL-{{flight_level_ceiling}}</div></div>
+      </div>
+      <div class="warn-row">{{#warnings}}<div class="warn">{{.}}</div>{{/warnings}}<div class="warn">ISSUED BY {{issued_by}}</div></div>
+      <div class="cta-row"><div class="cta">GENERATE REPORT</div><div class="cta secondary">EXPORT BRIEF</div></div>
+    </div>
+    <div class="section">
+      <div class="risk-title">Aircraft Weaponry Risk</div>
+      <div class="weapons">{{#weapons}}<div class="weapon {{class_name}}">{{label}}</div>{{/weapons}}</div>
+      <div class="label" style="text-align:center; margin-top:12px">{{hostile_intercepts}}</div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const firPolygon = {{{fir_polygon_json}}};
+const firCenter = {{{fir_center_json}}};
+const alerts = {{{alert_markers_json}}};
+const map = L.map("fir-map", { zoomControl: false, attributionControl: false, dragging: true, scrollWheelZoom: false }).setView(firCenter, 6);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png").addTo(map);
+const polygon = L.polygon(firPolygon, {
+  color: "#3ddbd9",
+  weight: 3,
+  fillColor: "{{severity}}" === "critical" ? "#d94d3d" : "#d9a83d",
+  fillOpacity: .28,
+  dashArray: "8 6"
+}).addTo(map);
+for (const alert of alerts) {
+  const icon = L.divIcon({ className: "", html: '<div class="alert-pin"></div>', iconSize: [18, 18] });
+  L.marker([alert.lat, alert.lng], { icon }).bindTooltip(alert.headline).addTo(map);
+}
+map.fitBounds(polygon.getBounds(), { padding: [28, 28] });
+setTimeout(() => { map.invalidateSize(); document.getElementById("skeleton").classList.add("done"); }, 420);
+</script>
+</body></html>

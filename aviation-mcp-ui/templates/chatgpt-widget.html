@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { margin: 0; height: 680px; overflow: hidden; background: #0b1419; color: #d8e6ec; transition: height 180ms ease; }
+    .shell { height: 680px; overflow: hidden; background: #0b1419; transition: height 180ms ease; }
+    .dashboard-frame { display: block; width: 100%; height: 680px; border: 0; background: #0b1419; transition: height 180ms ease; }
+    .fallback { padding: 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div class="shell" id="shell">
+    <div class="fallback">Loading aviation dashboard...</div>
+  </div>
+  <script>
+    const DEFAULT_FRAME_HEIGHT = 760;
+    let frameHeight = DEFAULT_FRAME_HEIGHT;
+
+    function notifyHeight() {
+      const api = window.openai;
+      if (api && typeof api.notifyIntrinsicHeight === 'function') {
+        api.notifyIntrinsicHeight(frameHeight);
+      }
+      window.parent.postMessage({ type: 'ui-size-change', payload: { height: frameHeight } }, '*');
+    }
+
+    function readDashboardHeight() {
+      const api = window.openai;
+      const metadata = api && api.toolResponseMetadata;
+      const height = metadata && Number(metadata.height);
+      return Number.isFinite(height) ? Math.max(520, Math.min(1600, height)) : DEFAULT_FRAME_HEIGHT;
+    }
+
+    function setFrameHeight(height) {
+      frameHeight = height;
+      document.documentElement.style.height = height + 'px';
+      document.body.style.height = height + 'px';
+      shell.style.height = height + 'px';
+      const frame = shell.querySelector('.dashboard-frame');
+      if (frame) frame.style.height = height + 'px';
+      notifyHeight();
+    }
+
+    const shell = document.getElementById('shell');
+    let renderedHtml = '';
+    let gaveUp = false;
+
+    function readDashboardHtml() {
+      const api = window.openai;
+      const metadata = api && api.toolResponseMetadata;
+      return metadata && typeof metadata.html === 'string' ? metadata.html : '';
+    }
+
+    function renderDashboard(html) {
+      if (!html || html === renderedHtml) return Boolean(renderedHtml);
+      renderedHtml = html;
+      setFrameHeight(readDashboardHeight());
+      const frame = document.createElement('iframe');
+      frame.className = 'dashboard-frame';
+      frame.style.height = frameHeight + 'px';
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+      frame.srcdoc = html;
+      shell.replaceChildren(frame);
+      frame.addEventListener('load', notifyHeight);
+      notifyHeight();
+      return true;
+    }
+
+    function showMissingPayload() {
+      if (!renderedHtml && !gaveUp) {
+        gaveUp = true;
+        shell.innerHTML = '<div class="fallback">No dashboard payload received. Try reloading this dashboard.</div>';
+      }
+    }
+
+    function waitForDashboardPayload() {
+      setFrameHeight(readDashboardHeight());
+      if (renderDashboard(readDashboardHtml())) return;
+      shell.innerHTML = '<div class="fallback">Loading aviation dashboard...</div>';
+      const started = Date.now();
+      const interval = setInterval(() => {
+        if (renderDashboard(readDashboardHtml())) {
+          clearInterval(interval);
+          return;
+        }
+        if (Date.now() - started > 5000) {
+          clearInterval(interval);
+          showMissingPayload();
+        }
+      }, 100);
+    }
+
+    window.addEventListener('openai:set_globals', waitForDashboardPayload);
+    window.addEventListener('message', waitForDashboardPayload);
+    waitForDashboardPayload();
+    notifyHeight();
+    setTimeout(notifyHeight, 100);
+    setTimeout(notifyHeight, 600);
+  </script>
+</body>
+</html>

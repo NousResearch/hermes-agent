@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{{origin}}-{{dest}}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>{{{theme_css}}}
+html, body { width:100%; height:680px; max-height:680px; overflow:hidden; }
+#map { width:100%; height:680px; }
+.route-panel { position:absolute; z-index:500; top:18px; left:18px; width:360px; background:rgba(17,32,42,.94); border:1px solid var(--border); border-radius:8px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.45); backdrop-filter:blur(8px); animation:fade-up .38s ease both; }
+.route-title { font-size:22px; color:#fff; font-weight:700; margin:4px 0; }
+.route-sub { color:var(--text-muted); margin-bottom:14px; }
+.route-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+.metric { border:1px solid var(--border); border-radius:7px; padding:10px; background:#0d171d; }
+.metric strong { display:block; color:#fff; font-size:17px; margin-top:4px; }
+.alert-item { border-top:1px solid var(--border); padding:12px 0; transition:background .18s ease; }
+.alert-item:hover { background:rgba(61,219,217,.06); }
+.pin { width:18px; height:18px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 12px rgba(217,77,61,.8); }
+.pin.critical { background:var(--danger); }
+.pin.warning { background:var(--warning); }
+.pin.notice { background:var(--accent); }
+.pin.advisory { background:var(--text-muted); }
+.leaflet-control-attribution { display:none; }
+@media (max-width: 620px) {
+  html, body, #map { height:760px; max-height:760px; }
+  .route-panel { left:10px; right:10px; top:10px; width:auto; }
+  .route-metrics { grid-template-columns:1fr; }
+}
+</style></head>
+<body>
+<div id="map"></div>
+<div class="route-panel">
+  <div class="live-chip">ROUTE RISK OVERLAY</div>
+  <div class="route-title">{{origin}} → {{dest}}</div>
+  <div class="route-sub">{{origin_name}} to {{dest_name}} · {{distance_km}} KM · {{alert_count}} alerts</div>
+  <div class="route-metrics">
+    <div class="metric"><div class="label">Corridor</div><strong>250km</strong></div>
+    <div class="metric"><div class="label">Exposure</div><strong>{{alert_count}}</strong></div>
+    <div class="metric"><div class="label">Posture</div><strong>Review</strong></div>
+  </div>
+  {{#alerts}}
+  <div class="alert-item">
+    <div class="{{severity_class}}">{{severity}}</div>
+    <div>{{headline}}</div>
+    <div class="muted">{{region}} · {{tags}}</div>
+  </div>
+  {{/alerts}}
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const route = {{{route_json}}};
+const origin = {{{origin_json}}};
+const dest = {{{dest_json}}};
+const alerts = {{{alerts_json}}};
+const map = L.map("map", { zoomControl: false, attributionControl: false, scrollWheelZoom: false }).setView(origin, 5);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "Leaflet" }).addTo(map);
+L.polyline(route, { color: "#3ddbd9", weight: 3, opacity: 0.95 }).addTo(map);
+L.circleMarker(origin, { radius: 7, color: "#3ddbd9", fillColor: "#3ddbd9", fillOpacity: 1 }).bindTooltip("{{origin}}").addTo(map);
+L.circleMarker(dest, { radius: 7, color: "#fff", fillColor: "#3ddbd9", fillOpacity: 1 }).bindTooltip("{{dest}}").addTo(map);
+for (const alert of alerts) {
+  const icon = L.divIcon({ className: "", html: `<div class="pin ${alert.severity}"></div>`, iconSize: [18, 18] });
+  L.marker([alert.lat, alert.lng], { icon }).bindPopup(`<strong>${alert.severity.toUpperCase()}</strong><br>${alert.headline}`).addTo(map);
+}
+map.fitBounds(L.polyline(route).getBounds(), { padding: [28, 28] });
+setTimeout(() => map.invalidateSize(), 250);
+</script>
+</body></html>

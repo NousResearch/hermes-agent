@@ -971,6 +971,11 @@ DEFAULT_CONFIG = {
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Prefix the CLI status bar with the active session title (or
+        # /title-pending value) when one is set. The trim logic in
+        # cli._build_status_bar_text() drops it first when the terminal
+        # is too narrow, so this is safe to leave on by default.
+        "status_bar_title": True,
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

@@ -3087,7 +3087,25 @@ class HermesCLI:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        session_title = ""
+        try:
+            show_title = bool(
+                ((self.config or {}).get("display") or {}).get("status_bar_title", True)
+            )
+        except Exception:
+            show_title = True
+        if show_title:
+            try:
+                db = getattr(self, "_session_db", None)
+                sid = getattr(self, "session_id", None)
+                if db and sid:
+                    session_title = db.get_session_title(sid) or ""
+                if not session_title:
+                    session_title = getattr(self, "_pending_title", None) or ""
+            except Exception:
+                session_title = ""
         snapshot = {
+            "session_title": session_title,
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
@@ -3333,15 +3351,17 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            title = (snapshot.get("session_title") or "").strip()
+            title_prefix = f"❝{title}❞ " if title else ""
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{title_prefix}⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"{title_prefix}⚕ {snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3358,7 +3378,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"{title_prefix}⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             parts.append(duration_label)

@@ -81,6 +81,104 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_status_bar_includes_session_title_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Refactor parser"
+        cli_obj.config = {"display": {"status_bar_title": True}}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Refactor parser" in text
+        cli_obj._session_db.get_session_title.assert_called_with("20260514_1100_abc")
+
+    def test_status_bar_omits_title_when_toggle_disabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Should not appear"
+        cli_obj.config = {"display": {"status_bar_title": False}}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Should not appear" not in text
+        # Toggle short-circuits the DB lookup entirely.
+        cli_obj._session_db.get_session_title.assert_not_called()
+
+    def test_status_bar_falls_back_to_pending_title(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = None
+        cli_obj._pending_title = "Queued title"
+        cli_obj.config = {"display": {"status_bar_title": True}}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "Queued title" in text
+
+    def test_status_bar_narrow_width_still_trims_with_title(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "A very long session title " * 5
+        cli_obj.config = {"display": {"status_bar_title": True}}
+
+        # Narrow terminal — must not exceed the budget even with the title prefix.
+        text = cli_obj._build_status_bar_text(width=40)
+        assert cli_obj._status_bar_display_width(text) <= 40
+
+    def test_status_bar_handles_missing_config_gracefully(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "20260514_1100_abc"
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.get_session_title.return_value = "Title shown by default"
+        cli_obj.config = None  # simulate degraded init
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "Title shown by default" in text
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 

@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
+from agent.session_identity import resolve_binding_key
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
@@ -91,6 +92,30 @@ def get_sandbox_dir() -> Path:
         p = get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _collect_binding_env() -> dict[str, str]:
+    """Return the minimal binding metadata to expose to subprocesses."""
+    values: dict[str, str] = {}
+    session_id = os.getenv("HERMES_SESSION_ID", "").strip()
+    if session_id:
+        values["HERMES_SESSION_ID"] = session_id
+    binding_key = resolve_binding_key()
+    if binding_key:
+        values["HERMES_BINDING_KEY"] = binding_key
+    return values
+
+
+def _wrap_command_with_session_env(command: str, env_values: dict[str, str]) -> str:
+    """Prefix commands with minimal session exports for reused shells."""
+    exports: list[str] = []
+    for name in ("HERMES_SESSION_ID", "HERMES_BINDING_KEY"):
+        value = str(env_values.get(name, "") or "").strip()
+        if value:
+            exports.append(f"export {name}={shlex.quote(value)}")
+    if not exports:
+        return command
+    return f"{'; '.join(exports)}; {command}"
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +336,10 @@ class BaseEnvironment(ABC):
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
         self.timeout = timeout
-        self.env = env or {}
+        merged_env = dict(env or {})
+        for key, value in _collect_binding_env().items():
+            merged_env.setdefault(key, value)
+        self.env = merged_env
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -808,7 +836,10 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        wrapped = self._wrap_command(
+            _wrap_command_with_session_env(exec_command, self.env),
+            effective_cwd,
+        )
 
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
@@ -840,4 +871,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

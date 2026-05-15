@@ -4,8 +4,9 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import os
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from tools.environments.base import BaseEnvironment, _cwd_marker
 
@@ -195,3 +196,21 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestBindingEnvForwarding:
+    def test_base_environment_includes_binding_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_ID": "session-123",
+                "HERMES_BINDING_KEY": "binding-xyz",
+                "HERMES_SESSION_KEY": "raw-session-key",
+            },
+            clear=False,
+        ):
+            env = _TestableEnv()
+
+        assert env.env["HERMES_SESSION_ID"] == "session-123"
+        assert env.env["HERMES_BINDING_KEY"] == "binding-xyz"
+        assert "HERMES_SESSION_KEY" not in env.env

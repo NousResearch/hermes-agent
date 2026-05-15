@@ -347,6 +347,15 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_view_keeps_binding_key_template_literal(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "templated", body="Binding: ${HERMES_BINDING_KEY}")
+            raw = skill_view("templated")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Binding: ${HERMES_BINDING_KEY}" in result["content"]
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

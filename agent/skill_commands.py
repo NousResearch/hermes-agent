@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.session_identity import resolve_binding_key
 from hermes_constants import display_hermes_home
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
@@ -142,6 +143,7 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
     session_id: str | None = None,
+    binding_key: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
@@ -153,7 +155,12 @@ def _build_skill_message(
     # supporting-file hints) see the expanded content.
     skills_cfg = _load_skills_config()
     if skills_cfg.get("template_vars", True):
-        content = _substitute_template_vars(content, skill_dir, session_id)
+        content = _substitute_template_vars(
+            content,
+            skill_dir,
+            session_id,
+            binding_key=binding_key,
+        )
     if skills_cfg.get("inline_shell", False):
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
         content = _expand_inline_shell(content, skill_dir, timeout)
@@ -429,6 +436,18 @@ def build_skill_invocation_message(
 
     loaded_skill, skill_dir, skill_name = loaded
 
+    session_key = None
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "") or None
+    except Exception:
+        session_key = None
+    binding_key = resolve_binding_key(
+        session_key=session_key,
+        cwd=os.getenv("TERMINAL_CWD") or os.getcwd(),
+    )
+
     # Track active usage for Curator lifecycle management (#17782)
     try:
         from tools.skill_usage import bump_use
@@ -447,6 +466,7 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
         session_id=task_id,
+        binding_key=binding_key,
     )
 
 
@@ -494,6 +514,9 @@ def build_preloaded_skills_prompt(
                 skill_dir,
                 activation_note,
                 session_id=task_id,
+                binding_key=resolve_binding_key(
+                    cwd=os.getenv("TERMINAL_CWD") or os.getcwd()
+                ),
             )
         )
         loaded_names.append(skill_name)

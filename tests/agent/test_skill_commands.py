@@ -613,8 +613,9 @@ class TestSkillDirectoryHeader:
 
 
 class TestTemplateVarSubstitution:
-    """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body
-    are replaced before the agent sees the content."""
+    """``${HERMES_SKILL_DIR}``, ``${HERMES_SESSION_ID}``, and
+    ``${HERMES_BINDING_KEY}`` in SKILL.md body are replaced before the
+    agent sees the content."""
 
     def test_substitutes_skill_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -659,6 +660,22 @@ class TestTemplateVarSubstitution:
         assert msg is not None
         # No session — token left intact so the author can spot it.
         assert "Session: ${HERMES_SESSION_ID}" in msg
+
+    def test_substitutes_binding_key_when_available(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.dict(os.environ, {"HERMES_BINDING_KEY": "binding-xyz"}, clear=False),
+        ):
+            _make_skill(
+                tmp_path,
+                "binding-templated",
+                body="Binding: ${HERMES_BINDING_KEY}",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/binding-templated", task_id="abc-123")
+
+        assert msg is not None
+        assert "Binding: binding-xyz" in msg
 
     def test_disable_template_vars_via_config(self, tmp_path):
         with (

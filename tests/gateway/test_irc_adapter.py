@@ -243,6 +243,8 @@ class TestIRCAdapterMessageParsing:
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "hello there"
         assert dispatched[0]["chat_id"] == "#test"
+        assert dispatched[0]["user_id"] == "user!u@host"
+        assert dispatched[0]["user_name"] == "user"
 
     @pytest.mark.asyncio
     async def test_ignores_unaddressed_channel_message(self, adapter):
@@ -304,7 +306,7 @@ class TestIRCAdapterMessageParsing:
 
     @pytest.mark.asyncio
     async def test_allowed_users_case_insensitive(self, monkeypatch):
-        """Allowlist should match nicks case-insensitively."""
+        """Allowlist should match full hostmask identities case-insensitively."""
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         from gateway.config import PlatformConfig
@@ -316,7 +318,7 @@ class TestIRCAdapterMessageParsing:
                 "nickname": "hermes",
                 "channel": "#test",
                 "use_tls": False,
-                "allowed_users": ["Admin", "BOB"],
+                "allowed_users": ["Admin!u@Host", "BOB!u@host"],
             },
         )
         adapter = IRCAdapter(cfg)
@@ -330,14 +332,14 @@ class TestIRCAdapterMessageParsing:
         adapter._dispatch_message = capture_dispatch
         adapter._message_handler = AsyncMock()
 
-        # "admin" matches "Admin" in allowlist
+        # "admin!u@host" matches "Admin!u@Host" in allowlist
         await adapter._handle_line(":admin!u@host PRIVMSG #test :hermes: hello")
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "hello"
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_blocked(self, monkeypatch):
-        """Nicks not in allowlist should be ignored."""
+        """Hostmasks not in allowlist should be ignored."""
         for key in ("IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL", "IRC_USE_TLS"):
             monkeypatch.delenv(key, raising=False)
         from gateway.config import PlatformConfig
@@ -349,7 +351,7 @@ class TestIRCAdapterMessageParsing:
                 "nickname": "hermes",
                 "channel": "#test",
                 "use_tls": False,
-                "allowed_users": ["Admin", "BOB"],
+                "allowed_users": ["Admin!u@host", "BOB!u@host"],
             },
         )
         adapter = IRCAdapter(cfg)
@@ -365,6 +367,26 @@ class TestIRCAdapterMessageParsing:
 
         await adapter._handle_line(":eve!u@host PRIVMSG #test :hermes: hello")
         assert len(dispatched) == 0
+
+    @pytest.mark.asyncio
+    async def test_same_nick_different_hostmask_is_distinct_identity(self, adapter):
+        """Gateway user IDs must not collapse different IRC hostmasks to one nick."""
+        dispatched = []
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+        adapter._message_handler = AsyncMock()
+
+        await adapter._handle_line(":alice!u@trusted.example PRIVMSG hermes :first")
+        await adapter._handle_line(":alice!u@other.example PRIVMSG hermes :second")
+
+        assert [msg["user_id"] for msg in dispatched] == [
+            "alice!u@trusted.example",
+            "alice!u@other.example",
+        ]
+        assert [msg["user_name"] for msg in dispatched] == ["alice", "alice"]
 
     @pytest.mark.asyncio
     async def test_nick_collision_retry(self, adapter):

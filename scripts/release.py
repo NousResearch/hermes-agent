@@ -821,6 +821,7 @@ AUTHOR_MAP = {
     "danieldliu@tencent.com": "danieldliu",
     "loongzhao@tencent.com": "loongzhao",
     "Bartok9@users.noreply.github.com": "Bartok9",
+    "bartok9@users.noreply.github.com": "Bartok9",  # lowercase form (older commits)
     "LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "mbelleau@Michels-MacBook-Pro.local": "malaiwah",

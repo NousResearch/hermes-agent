@@ -185,11 +185,35 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
 
     assert result.expanded
     assert "git diff" in result.message
-    assert "git diff --staged" in result.message
+    assert "git diff --cached" in result.message
     assert "git log -1 -p" in result.message
     assert "initial" in result.message
     assert "return 'changed'" in result.message
     assert "VALUE = 2" in result.message
+
+
+def test_expand_staged_uses_git_diff_cached(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    real_run = subprocess.run
+    seen_git_commands: list[list[str]] = []
+
+    def track_git_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "git":
+            seen_git_commands.append(cmd)
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=track_git_run):
+        result = preprocess_context_references(
+            "Inspect @staged",
+            cwd=sample_repo,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert ["git", "diff", "--cached"] in seen_git_commands
+    assert ["git", "diff", "--staged"] not in seen_git_commands
 
 
 def test_binary_and_missing_files_become_warnings(sample_repo: Path):

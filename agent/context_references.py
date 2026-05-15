@@ -218,7 +218,7 @@ async def _expand_reference(
         if ref.kind == "diff":
             return _expand_git_reference(ref, cwd, ["diff"], "git diff")
         if ref.kind == "staged":
-            return _expand_git_reference(ref, cwd, ["diff", "--staged"], "git diff --staged")
+            return _expand_git_reference(ref, cwd, ["diff", "--cached"], "git diff --cached")
         if ref.kind == "git":
             count = max(1, min(int(ref.target or "1"), 10))
             return _expand_git_reference(ref, cwd, ["log", f"-{count}", "-p"], f"git log -{count} -p")

@@ -1925,9 +1925,16 @@ def _preserve_ctrl_enter_newline() -> bool:
     some thin PTYs without SSH) still need c-j bound to submit, so we keep
     that binding for those.
 
+    On macOS we also leave c-j unbound from submit so Ctrl+J inserts a newline,
+    matching the behaviour that macOS terminal users intuitively expect from a
+    J-shaped key adjacent to K (line up). Only environments where Enter arrives
+    as LF (docker exec, thin PTYs) keep the c-j→submit binding.
+
     See issue #22379.
     """
     if sys.platform == "win32":
+        return True
+    if sys.platform == "darwin":
         return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
@@ -11664,16 +11671,13 @@ class HermesCLI:
         if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):
-                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
+                """Ctrl+Enter / Ctrl+J inserts a newline on macOS, Windows, WSL, and SSH.
 
-                Windows Terminal (incl. WSL/SSH sessions through it) delivers
-                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
-                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
+                macOS and Windows Terminal (incl. WSL/SSH sessions through it)
+                deliver Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m).
+                This binding makes Ctrl+J the equivalent of Alt+Enter on those
                 terminals, giving an Enter-involving newline keystroke
-                without requiring terminal settings changes. Ctrl+J (the raw
-                LF keystroke) also triggers this by virtue of being the same
-                key code — a harmless side effect since Ctrl+J has no
-                conflicting Hermes binding. See issue #22379.
+                without requiring terminal settings changes. See issue #22379.
                 """
                 event.current_buffer.insert_text('\n')
 

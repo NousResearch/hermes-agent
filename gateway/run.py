@@ -1814,6 +1814,26 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED"] = str(
                     _display_cfg["busy_steer_ack_enabled"]
                 )
+            # Issue #26024: bridge display.busy_ack_templates to a JSON env
+            # var so subprocesses (cron / spawned tools / dashboard worker)
+            # see the same overrides as the main gateway runtime. None of
+            # the consumers crash on a missing/empty value; the helper in
+            # tools.busy_ack_templates handles every degenerate shape.
+            _busy_ack_templates_cfg = _display_cfg.get("busy_ack_templates")
+            if _busy_ack_templates_cfg:
+                try:
+                    from tools.busy_ack_templates import (
+                        ENV_VAR_TEMPLATES as _BUSY_ACK_ENV_VAR,
+                        encode_templates_for_env as _busy_ack_encode,
+                    )
+                    _encoded = _busy_ack_encode(_busy_ack_templates_cfg)
+                    if _encoded is not None:
+                        os.environ[_BUSY_ACK_ENV_VAR] = _encoded
+                except Exception as _busy_ack_err:  # pragma: no cover - defensive
+                    logger.debug(
+                        "Failed to bridge display.busy_ack_templates to env: %s",
+                        _busy_ack_err,
+                    )
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -6204,13 +6224,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+
+        # Issue #26024: messages are now configurable via
+        # display.busy_ack_templates in config.yaml. Defaults match the
+        # strings that shipped before this feature, so unconfigured
+        # deployments see no behaviour change. Empty / malformed overrides
+        # fall through to defaults inside the helper.
+        # _busy_demoted_message: when set, bypasses the template system
+        # for the special demoted-subagent case (#30170, orthogonal to the
+        # standard 3-mode interrupt/queue/steer template selection).
+        _busy_demoted_message: Optional[str] = None
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            _busy_mode_key = "steer"
         elif is_redirect_mode:
-            message = (
+            # Redirect is a distinct mode added on main, orthogonal to the
+            # busy_ack_templates 3-mode (interrupt/queue/steer) system —
+            # bypass templates with its explicit message but keep a valid
+            # mode key (mirrors the #30170 / compression special cases).
+            _busy_mode_key = "steer"
+            _busy_demoted_message = (
                 f"↪ Redirected current run{status_detail}. "
                 f"I'll adjust using your correction."
             )
@@ -6218,25 +6250,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
-            message = (
+            # Use direct message (not templated) — this is a special
+            # case orthogonal to the busy_ack_templates 3-mode system.
+            _busy_mode_key = "queue"
+            _busy_demoted_message = (
                 f"⏳ Subagent working{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode and demoted_for_compression:
-            message = (
+            # Special-case (orthogonal to the busy_ack_templates 3-mode
+            # system, like the #30170 subagent case) — bypass templates
+            # with an explicit compression message but keep a valid mode key.
+            _busy_mode_key = "queue"
+            _busy_demoted_message = (
                 f"⏳ Compressing context{status_detail} — your message is queued for "
                 f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
+            _busy_mode_key = "queue"
         else:
-            message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+            _busy_mode_key = "interrupt"
+
+        if _busy_demoted_message is not None:
+            # Special-case (#30170) bypasses templates with the explicit
+            # demotion message. Continues through the empty-string
+            # suppression check below using the assigned mode key.
+            message = _busy_demoted_message
+        else:
+            try:
+                from tools.busy_ack_templates import (
+                    load_templates_from_env as _load_busy_templates,
+                    render_busy_ack as _render_busy_ack,
+                )
+                _busy_templates = _load_busy_templates()
+                message = _render_busy_ack(
+                    _busy_templates, _busy_mode_key, status_detail=status_detail
+                )
+            except Exception as _busy_render_err:  # pragma: no cover - defensive
+                logger.debug(
+                    "busy_ack template render failed (%s); using built-in default",
+                    _busy_render_err,
+                )
+                if _busy_mode_key == "steer":
+                    message = (
+                        f"⏩ Steered into current run{status_detail}. "
+                        f"Your message arrives after the next tool call."
+                    )
+                elif _busy_mode_key == "queue":
+                    message = (
+                        f"⏳ Queued for the next turn{status_detail}. "
+                        f"I'll respond once the current task finishes."
+                    )
+                else:
+                    message = (
+                        f"⚡ Interrupting current task{status_detail}. "
+                        f"I'll respond to your message shortly."
+                    )
+
+        # If the operator deliberately set an empty template for this mode
+        # (whitespace-only string), skip sending the ack entirely. This is
+        # the documented way to suppress one specific mode without
+        # disabling busy_ack_enabled globally.
+        if not message or not message.strip():
+            logger.debug(
+                "Busy ack suppressed by empty template for session %s mode %s",
+                session_key, _busy_mode_key,
             )
+            return True
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the

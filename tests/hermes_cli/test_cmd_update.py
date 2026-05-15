@@ -89,6 +89,36 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_clean_main_divergence_merges_origin_before_resetting(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A clean fork-local main keeps local commits when upstream advances."""
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-list HEAD..origin/main --count" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+            if joined == "git pull --ff-only origin main":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="diverged")
+            if joined == "git status --porcelain":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "git merge --no-edit origin/main":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Merge made\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert "git merge --no-edit origin/main" in commands
+        assert "git reset --hard origin/main" not in commands
+        assert "preserving local main commits" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_already_up_to_date(
         self, mock_run, _mock_which, mock_args, capsys
     ):

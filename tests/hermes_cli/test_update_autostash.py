@@ -443,6 +443,7 @@ def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
     ff_only_fails=False,
+    merge_fails=False,
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
@@ -471,6 +472,14 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
+        if "merge" in joined and "--no-edit" in joined:
+            if merge_fails:
+                return SimpleNamespace(
+                    stdout="",
+                    stderr="CONFLICT (content): merge conflict\n",
+                    returncode=1,
+                )
+            return SimpleNamespace(stdout="Merge made by the 'ort' strategy.\n", stderr="", returncode=0)
         if "reset" in joined and "--hard" in joined:
             if reset_fails:
                 return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
@@ -480,12 +489,12 @@ def _make_update_side_effect(
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_falls_back_to_reset_when_auto_merge_fails(monkeypatch, tmp_path, capsys):
+    """When --ff-only and auto-merge fail, update resets to origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, merge_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     hermes_main.cmd_update(SimpleNamespace())

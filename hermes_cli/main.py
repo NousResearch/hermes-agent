@@ -8110,26 +8110,72 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                # ff-only failed — local and remote have diverged.  For a clean
+                # main checkout, first try a normal merge so fork-local commits
+                # (for example local update policy) survive future updates and
+                # can still be mirrored to the fork backup.  If the merge cannot
+                # be resolved automatically, abort it and fall back to the older
+                # reset-to-origin behavior so update still completes safely.
+                can_preserve_local_main = (
+                    current_branch == branch
+                    and auto_stash_ref is None
+                    and _is_worktree_clean(git_cmd, PROJECT_ROOT)
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                if can_preserve_local_main:
+                    merge_result = subprocess.run(
+                        git_cmd + ["merge", "--no-edit", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
                     )
-                    sys.exit(1)
+                    if merge_result.returncode == 0:
+                        print(
+                            f"  ✓ Merged origin/{branch} while preserving local {branch} commits"
+                        )
+                    else:
+                        subprocess.run(
+                            git_cmd + ["merge", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        print(
+                            "  ⚠ Fast-forward not possible and auto-merge failed; resetting to match remote..."
+                        )
+                        reset_result = subprocess.run(
+                            git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        if reset_result.returncode != 0:
+                            print(f"✗ Failed to reset to origin/{branch}.")
+                            if reset_result.stderr.strip():
+                                print(f"  {reset_result.stderr.strip()}")
+                            print(
+                                "  Try manually: git fetch origin && git reset --hard origin/main"
+                            )
+                            sys.exit(1)
+                else:
+                    # Since local changes are already stashed (or this is not a
+                    # clean main update), reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            "  Try manually: git fetch origin && git reset --hard origin/main"
+                        )
+                        sys.exit(1)
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:

@@ -117,6 +117,46 @@ class TestShellFileOpsCwdTracking:
             "patch must NOT land in the init-time dir (main)"
         )
 
+
+    def test_write_file_denies_relative_path_outside_safe_root_live_cwd(self, tmp_path, monkeypatch):
+        """Deny checks must resolve relative writes against the live terminal cwd."""
+        safe_root = tmp_path / "safe"
+        outside = tmp_path / "outside"
+        safe_root.mkdir()
+        outside.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.chdir(safe_root)
+
+        env = _FakeEnv(start_cwd=str(safe_root))
+        ops = ShellFileOperations(env, cwd=str(safe_root))
+        env.execute(f"cd {outside}")
+
+        result = ops.write_file("escape.txt", "blocked\n")
+
+        assert result.error and "Write denied" in result.error
+        assert not (outside / "escape.txt").exists()
+        assert not (safe_root / "escape.txt").exists()
+
+    def test_patch_replace_denies_relative_path_outside_safe_root_live_cwd(self, tmp_path, monkeypatch):
+        """Patch deny checks must use the same cwd that _exec uses."""
+        safe_root = tmp_path / "safe"
+        outside = tmp_path / "outside"
+        safe_root.mkdir()
+        outside.mkdir()
+        (outside / "patchme.txt").write_text("old\n")
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.chdir(safe_root)
+
+        env = _FakeEnv(start_cwd=str(safe_root))
+        ops = ShellFileOperations(env, cwd=str(safe_root))
+        env.execute(f"cd {outside}")
+
+        result = ops.patch_replace("patchme.txt", "old\n", "new\n")
+
+        assert result.error and "Write denied" in result.error
+        assert (outside / "patchme.txt").read_text() == "old\n"
+        assert not (safe_root / "patchme.txt").exists()
+
     def test_explicit_cwd_arg_still_wins(self, tmp_path):
         """An explicit cwd= arg to _exec must override both env.cwd and self.cwd."""
         dir_a = tmp_path / "a"

@@ -1081,6 +1081,27 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
+    # Blaxel (if using blaxel backend)
+    if terminal_env == "blaxel":
+        bl_key = os.getenv("BL_API_KEY")
+        bl_workspace = os.getenv("BL_WORKSPACE")
+        if bl_key:
+            check_ok("Blaxel API key", "(configured)")
+        else:
+            check_fail("BL_API_KEY not set", "(required for TERMINAL_ENV=blaxel)")
+            issues.append("Set BL_API_KEY environment variable")
+        if bl_workspace:
+            check_ok("Blaxel workspace", f"({bl_workspace})")
+        else:
+            check_fail("BL_WORKSPACE not set", "(required for TERMINAL_ENV=blaxel)")
+            issues.append("Set BL_WORKSPACE environment variable")
+        try:
+            from blaxel.core import SyncSandboxInstance  # noqa: F401
+            check_ok("blaxel SDK", "(installed)")
+        except ImportError:
+            check_fail("blaxel SDK not installed", "(pip install 'hermes-agent[blaxel]')")
+            issues.append("Install the Blaxel optional dependency: pip install 'hermes-agent[blaxel]'")
+
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"

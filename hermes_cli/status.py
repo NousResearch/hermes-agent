@@ -359,6 +359,18 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "blaxel":
+        blaxel_image = os.getenv("TERMINAL_BLAXEL_IMAGE") or terminal_cfg.get("blaxel_image") or "blaxel/base-image:latest"
+        bl_key_set = bool(os.getenv("BL_API_KEY"))
+        bl_workspace = os.getenv("BL_WORKSPACE", "")
+        bl_region = os.getenv("BL_REGION", "") or "us-pdx-1"
+        sdk_ok = importlib.util.find_spec("blaxel") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[blaxel]')"
+        print(f"  Blaxel Image: {blaxel_image}")
+        print(f"  Workspace:    {bl_workspace or '(not set)'}")
+        print(f"  Region:       {bl_region}")
+        print(f"  API key:      {check_mark(bl_key_set)} {'configured' if bl_key_set else '(not set)'}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
     elif terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
         persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")

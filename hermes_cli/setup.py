@@ -639,7 +639,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona, Blaxel)."""
     terminal = config.setdefault("terminal", {})
 
     print()
@@ -1320,11 +1320,12 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Blaxel - workspace-scoped cloud sandboxes with standby/resume",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "blaxel"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "blaxel": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1602,6 +1603,68 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend == "blaxel":
+        print_success("Terminal backend: Blaxel")
+        print_info("Workspace-scoped cloud sandboxes with standby/resume.")
+        print_info("Sign up at: https://blaxel.ai")
+
+        # Check if blaxel SDK is installed
+        try:
+            __import__("blaxel")
+        except ImportError:
+            print_info("Installing blaxel SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "blaxel"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "blaxel"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("blaxel SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install 'hermes-agent[blaxel]'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # Blaxel API key
+        print()
+        existing_key = get_env_value("BL_API_KEY")
+        if existing_key:
+            print_info("  Blaxel API key: already configured")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    Blaxel API key", password=True)
+                if api_key:
+                    save_env_value("BL_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    Blaxel API key", password=True)
+            if api_key:
+                save_env_value("BL_API_KEY", api_key)
+                print_success("    Configured")
+
+        # Blaxel workspace
+        existing_workspace = get_env_value("BL_WORKSPACE")
+        workspace = prompt("  Blaxel workspace", existing_workspace or "")
+        if workspace:
+            save_env_value("BL_WORKSPACE", workspace)
+
+        # Blaxel image
+        current_image = cfg_get(config, "terminal", "blaxel_image", default="blaxel/base-image:latest")
+        image = prompt("  Sandbox image", current_image)
+        config["terminal"]["blaxel_image"] = image
+        save_env_value("TERMINAL_BLAXEL_IMAGE", image)
+
+        _prompt_container_resources(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

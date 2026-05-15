@@ -18,6 +18,7 @@ network, so it runs in CI on every PR.
 """
 from unittest.mock import MagicMock, patch
 
+from hermes_cli import __version__ as HERMES_VERSION
 from run_agent import AIAgent
 
 
@@ -59,6 +60,35 @@ def _make_fake_openai_factory(constructed):
                     pass
 
     return _FakeOpenAI
+
+
+def test_create_openai_client_adds_ninerouter_user_agent_override():
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.9router.com/v1",
+        model="main",
+        provider="custom",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    constructed = []
+    fake_openai = _make_fake_openai_factory(constructed)
+
+    with patch("run_agent.OpenAI", fake_openai):
+        client = agent._create_openai_client(
+            {
+                "api_key": "test-key-value",
+                "base_url": "https://example.9router.com/v1",
+            },
+            reason="ninerouter",
+            shared=True,
+        )
+
+    assert constructed[0] is client
+    assert client._kwargs["default_headers"] == {
+        "User-Agent": f"HermesAgent/{HERMES_VERSION}",
+    }
 
 
 def test_second_create_does_not_wrap_closed_transport_from_first():

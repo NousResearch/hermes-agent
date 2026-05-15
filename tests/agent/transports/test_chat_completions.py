@@ -47,6 +47,47 @@ class TestChatCompletionsBasic:
         assert "codex_message_items" in msgs[0]
 
 
+class TestChatCompletionsNormalizeResponse:
+
+    def test_skips_null_tool_calls(self, transport):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            None,
+                            SimpleNamespace(
+                                id="call_1",
+                                function=SimpleNamespace(name="terminal", arguments='{"cmd":"pwd"}'),
+                            ),
+                        ],
+                    ),
+                )
+            ]
+        )
+
+        nr = transport.normalize_response(response)
+
+        assert nr.finish_reason == "tool_calls"
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].type == "function"
+        assert nr.tool_calls[0].function.name == "terminal"
+
+    def test_tolerates_missing_message(self, transport):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason="stop", message=None)]
+        )
+
+        nr = transport.normalize_response(response)
+
+        assert nr.finish_reason == "stop"
+        assert nr.content is None
+        assert nr.tool_calls is None
+
+
 class TestChatCompletionsBuildKwargs:
 
     def test_basic_kwargs(self, transport):

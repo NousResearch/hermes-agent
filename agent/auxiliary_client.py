@@ -379,6 +379,26 @@ _AI_GATEWAY_HEADERS = {
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
+
+def _ninerouter_headers() -> Dict[str, str]:
+    """Return non-SDK User-Agent for 9router endpoints behind Cloudflare/WAF."""
+    return {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    }
+
+
+def _default_headers_for_base_url(base_url: Optional[str], *, is_vision: bool = False) -> Optional[Dict[str, str]]:
+    """Return provider-specific default headers for OpenAI-compatible endpoints."""
+    if base_url_host_matches(base_url, "api.kimi.com"):
+        return {"User-Agent": "claude-code/0.1.0"}
+    if base_url_host_matches(base_url, "api.githubcopilot.com"):
+        from hermes_cli.copilot_auth import copilot_request_headers
+
+        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
+    if base_url_host_matches(base_url, "9router.com"):
+        return _ninerouter_headers()
+    return None
+
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
@@ -1342,12 +1362,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
-            if base_url_host_matches(base_url, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(base_url, "api.githubcopilot.com"):
-                from hermes_cli.models import copilot_default_headers
-
-                extra["default_headers"] = copilot_default_headers()
+            headers = _default_headers_for_base_url(base_url)
+            if headers:
+                extra["default_headers"] = headers
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -1377,12 +1394,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if is_native_gemini_base_url(base_url):
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
-        if base_url_host_matches(base_url, "api.kimi.com"):
-            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-
-            extra["default_headers"] = copilot_default_headers()
+        headers = _default_headers_for_base_url(base_url)
+        if headers:
+            extra["default_headers"] = headers
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -2632,28 +2646,25 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
-    elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
-        from hermes_cli.copilot_auth import copilot_request_headers
-
-        async_kwargs["default_headers"] = copilot_request_headers(
-            is_agent_turn=True, is_vision=is_vision
-        )
-    elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     else:
-        # Fall back to profile.default_headers for providers that declare
-        # client-level headers on their ProviderProfile (e.g. attribution
-        # User-Agent strings). Provider is inferred from the hostname.
-        try:
-            from agent.model_metadata import _infer_provider_from_url
-            from providers import get_provider_profile as _gpf_async
-            _inferred = _infer_provider_from_url(sync_base_url)
-            if _inferred:
-                _ph_async = _gpf_async(_inferred)
-                if _ph_async and _ph_async.default_headers:
-                    async_kwargs["default_headers"] = dict(_ph_async.default_headers)
-        except Exception:
-            pass
+        headers = _default_headers_for_base_url(sync_base_url, is_vision=is_vision)
+        if headers:
+            async_kwargs["default_headers"] = headers
+        else:
+            # Fall back to profile.default_headers for providers that declare
+            # client-level headers on their ProviderProfile (e.g. attribution
+            # User-Agent strings). Provider is inferred from the hostname.
+            try:
+                from agent.model_metadata import _infer_provider_from_url
+                from providers import get_provider_profile as _gpf_async
+
+                _inferred = _infer_provider_from_url(sync_base_url)
+                if _inferred:
+                    _ph_async = _gpf_async(_inferred)
+                    if _ph_async and _ph_async.default_headers:
+                        async_kwargs["default_headers"] = dict(_ph_async.default_headers)
+            except Exception:
+                pass
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -2874,13 +2885,9 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
-            if base_url_host_matches(custom_base, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
-                from hermes_cli.copilot_auth import copilot_request_headers
-                extra["default_headers"] = copilot_request_headers(
-                    is_agent_turn=True, is_vision=is_vision
-                )
+            headers = _default_headers_for_base_url(custom_base, is_vision=is_vision)
+            if headers:
+                extra["default_headers"] = headers
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -3070,22 +3077,15 @@ def resolve_provider_client(
                         else (client, final_model))
 
         # Provider-specific headers
-        headers = {}
-        if base_url_host_matches(base_url, "api.kimi.com"):
-            headers["User-Agent"] = "claude-code/0.1.0"
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
-            from hermes_cli.copilot_auth import copilot_request_headers
-
-            headers.update(copilot_request_headers(
-                is_agent_turn=True, is_vision=is_vision
-            ))
-        else:
+        headers = _default_headers_for_base_url(base_url, is_vision=is_vision) or {}
+        if not headers:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
             # User-Agent for traffic identification, Vercel AI Gateway
             # Referer/Title for analytics).
             try:
                 from providers import get_provider_profile as _gpf_main
+
                 _ph_main = _gpf_main(provider)
                 if _ph_main and _ph_main.default_headers:
                     headers.update(_ph_main.default_headers)

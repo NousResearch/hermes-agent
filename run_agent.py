@@ -1047,6 +1047,15 @@ def _routermint_headers() -> dict:
     }
 
 
+def _ninerouter_headers() -> dict:
+    """Return a non-SDK User-Agent for 9router endpoints behind Cloudflare."""
+    from hermes_cli import __version__ as _HERMES_VERSION
+
+    return {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    }
+
+
 def _pool_may_recover_from_rate_limit(
     pool, *, provider: str | None = None, base_url: str | None = None
 ) -> bool:
@@ -1666,6 +1675,8 @@ class AIAgent:
                     client_kwargs["default_headers"] = build_or_headers()
                 elif base_url_host_matches(effective_base, "api.routermint.com"):
                     client_kwargs["default_headers"] = _routermint_headers()
+                elif base_url_host_matches(effective_base, "9router.com"):
+                    client_kwargs["default_headers"] = _ninerouter_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
                     from hermes_cli.models import copilot_default_headers
 
@@ -6606,6 +6617,7 @@ class AIAgent:
         # copy locks the contract so future transport/keepalive work can't reintroduce
         # the same class of bug.
         client_kwargs = dict(client_kwargs)
+        self._apply_default_headers_to_client_kwargs(client_kwargs, str(client_kwargs.get("base_url", "")))
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -7288,27 +7300,30 @@ class AIAgent:
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
-    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+    def _apply_default_headers_to_client_kwargs(self, client_kwargs: dict, base_url: str) -> None:
         from agent.auxiliary_client import _AI_GATEWAY_HEADERS, build_or_headers
 
         if base_url_host_matches(base_url, "openrouter.ai"):
-            self._client_kwargs["default_headers"] = build_or_headers()
+            client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
-            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+            client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "api.routermint.com"):
-            self._client_kwargs["default_headers"] = _routermint_headers()
+            client_kwargs["default_headers"] = _routermint_headers()
+        elif base_url_host_matches(base_url, "9router.com"):
+            client_kwargs["default_headers"] = _ninerouter_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
-            self._client_kwargs["default_headers"] = copilot_default_headers()
+            client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
-            self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
-            self._client_kwargs["default_headers"] = _qwen_portal_headers()
+            client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):
             from agent.auxiliary_client import _codex_cloudflare_headers
-            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
-                self._client_kwargs.get("api_key", "")
+
+            client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                client_kwargs.get("api_key", "")
             )
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
@@ -7321,9 +7336,12 @@ class AIAgent:
             except Exception:
                 pass
             if _ph_headers:
-                self._client_kwargs["default_headers"] = _ph_headers
+                client_kwargs["default_headers"] = _ph_headers
             else:
-                self._client_kwargs.pop("default_headers", None)
+                client_kwargs.pop("default_headers", None)
+
+    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+        self._apply_default_headers_to_client_kwargs(self._client_kwargs, base_url)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

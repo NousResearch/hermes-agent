@@ -348,6 +348,28 @@ class TestBuildCodexClient:
         assert mock_openai.call_count == 2
 
 
+class TestDefaultHeadersForBaseUrl:
+    def test_returns_ninerouter_headers(self):
+        from agent.auxiliary_client import _default_headers_for_base_url
+
+        headers = _default_headers_for_base_url("https://example.9router.com/v1")
+
+        assert isinstance(headers, dict)
+        assert headers.get("User-Agent", "").startswith("HermesAgent/")
+
+    def test_resolve_provider_client_custom_main_applies_ninerouter_headers(self):
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            resolve_provider_client(
+                "custom",
+                model="main",
+                explicit_base_url="https://example.9router.com/v1",
+                explicit_api_key="test-key",
+            )
+
+        assert mock_openai.call_args.kwargs["default_headers"]["User-Agent"].startswith("HermesAgent/")
+
+
 class TestExpiredCodexFallback:
     """Test that expired Codex tokens don't block the auto chain."""
 

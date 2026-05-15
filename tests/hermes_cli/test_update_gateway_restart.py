@@ -148,6 +148,34 @@ class TestLaunchdPlistReplace:
         replace_idx = string_values.index("--replace")
         assert replace_idx == run_idx + 1
 
+    def test_plist_contains_fd_resource_limits(self):
+        """macOS launchd plist must raise the open-file limit to 4096.
+
+        The default macOS per-process fd limit is 256.  The gateway spawns
+        cron-job subprocesses concurrently; without a higher limit each
+        Popen() call consumes descriptors that accumulate across parallel
+        runs and trigger EAGAIN / BlockingIOError, crashing the gateway.
+
+        Both HardResourceLimits and SoftResourceLimits are required:
+        - SoftResourceLimits is the effective runtime cap.
+        - HardResourceLimits is the ceiling the process can raise itself to.
+        Setting only Soft leaves the Hard at the OS default (256 on macOS),
+        so any code that calls setrlimit() to raise the soft limit will hit
+        the hard wall and fail.
+        """
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>HardResourceLimits</key>" in plist
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>4096</integer>" in plist
+
+    def test_plist_fd_limits_appear_once_each(self):
+        """Each resource-limit key appears exactly once — no accidental duplication."""
+        plist = gateway_cli.generate_launchd_plist()
+        assert plist.count("<key>HardResourceLimits</key>") == 1
+        assert plist.count("<key>SoftResourceLimits</key>") == 1
+        assert plist.count("<integer>4096</integer>") == 2  # one per Hard/Soft block
+
 
 class TestLaunchdPlistPath:
     def test_plist_contains_environment_variables(self):

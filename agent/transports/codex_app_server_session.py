@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerError,
@@ -38,6 +39,13 @@ from agent.transports.codex_app_server import (
 from agent.transports.codex_event_projector import CodexEventProjector
 
 logger = logging.getLogger(__name__)
+
+
+# How many tailing stderr lines from the codex subprocess to attach to a
+# user-facing error when we don't have a more specific classification (OAuth,
+# wedge watchdog, etc.). Small enough to keep error messages legible, large
+# enough to surface a config/provider/auth diagnostic.
+_STDERR_TAIL_LINES = 12
 
 
 # Permission profile mapping mirrors the docstring in PR proposal:
@@ -276,6 +284,45 @@ class CodexAppServerSession:
         and unwind. Called by AIAgent's _interrupt_requested path."""
         self._interrupt_event.set()
 
+    # ---------- diagnostics ----------
+
+    def _format_error_with_stderr(
+        self,
+        prefix: str,
+        exc: Any = "",
+        *,
+        tail_lines: int = _STDERR_TAIL_LINES,
+    ) -> str:
+        """Build a user-facing error string for codex failures.
+
+        Appends the last few lines of codex's stderr buffer when available,
+        passed through agent.redact with force=True so secrets in provider
+        error responses (auth headers, query-string tokens, sk-* keys) never
+        leak into chat output or trajectories. The codex CLI's own error
+        text ('Internal error', 'turn/start failed: ...') is otherwise
+        opaque and forces users to re-run with verbose flags to diagnose
+        config / provider / auth-bridge problems.
+
+        Use this for the generic / catch-all branches. Specific
+        classifications (OAuth via _classify_oauth_failure, post-tool wedge
+        watchdog) already produce a clean hint and should be used instead.
+        """
+        exc_str = str(exc) if exc != "" and exc is not None else ""
+        base = f"{prefix}: {exc_str}" if exc_str else prefix
+        if self._client is None:
+            return base
+        try:
+            tail = self._client.stderr_tail(tail_lines)
+        except Exception:  # pragma: no cover - diagnostic best-effort
+            return base
+        if not tail:
+            return base
+        joined = "\n".join(line.rstrip() for line in tail if line)
+        if not joined.strip():
+            return base
+        redacted = redact_sensitive_text(joined, force=True)
+        return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
+
     # ---------- per-turn ----------
 
     def run_turn(
@@ -296,12 +343,27 @@ class CodexAppServerSession:
         Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
         so a wedged codex doesn't burn the full turn deadline.
         """
-        self.ensure_started()
+        # Pre-create the result so startup failures (codex subprocess can't
+        # spawn, initialize handshake rejects, thread/start blows up) surface
+        # the same way per-turn failures do — with a TurnResult.error string
+        # the caller can render — instead of bubbling raw codex exceptions
+        # up to AIAgent.run_conversation.
+        result = TurnResult()
+        try:
+            self.ensure_started()
+        except (CodexAppServerError, TimeoutError) as exc:
+            result.error = self._format_error_with_stderr(
+                "codex app-server startup failed", exc
+            )
+            # Subprocess almost certainly unhealthy — retire so the next
+            # turn re-spawns cleanly.
+            result.should_retire = True
+            return result
         assert self._client is not None and self._thread_id is not None
+        result.thread_id = self._thread_id
 
         self._interrupt_event.clear()
         projector = CodexEventProjector()
-        result = TurnResult(thread_id=self._thread_id)
 
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
@@ -327,13 +389,17 @@ class CodexAppServerSession:
                 # via `codex login` between turns).
                 result.should_retire = True
             else:
-                result.error = f"turn/start failed: {exc}"
+                result.error = self._format_error_with_stderr(
+                    "turn/start failed", exc
+                )
             return result
         except TimeoutError as exc:
             # turn/start hanging is a strong signal the subprocess is wedged.
             stderr_blob = "\n".join(self._client.stderr_tail(40))
             hint = _classify_oauth_failure(stderr_blob)
-            result.error = hint or f"turn/start timed out: {exc}"
+            result.error = hint or self._format_error_with_stderr(
+                "turn/start timed out", exc
+            )
             result.should_retire = True
             return result
 
@@ -359,10 +425,13 @@ class CodexAppServerSession:
             if not self._client.is_alive():
                 stderr_blob = "\n".join(self._client.stderr_tail(60))
                 hint = _classify_oauth_failure(stderr_blob)
-                result.error = hint or (
-                    f"codex app-server subprocess exited unexpectedly: "
-                    f"{stderr_blob[-300:] if stderr_blob else '<no stderr>'}"
-                )
+                if hint is not None:
+                    result.error = hint
+                else:
+                    result.error = self._format_error_with_stderr(
+                        "codex app-server subprocess exited unexpectedly",
+                        tail_lines=20,
+                    )
                 result.should_retire = True
                 break
 
@@ -489,8 +558,8 @@ class CodexAppServerSession:
                             result.error = hint
                             result.should_retire = True
                         else:
-                            result.error = (
-                                f"turn ended status={turn_status}: {err_msg}"
+                            result.error = self._format_error_with_stderr(
+                                f"turn ended status={turn_status}", err_msg
                             )
 
         if not turn_complete and not result.interrupted:
@@ -500,7 +569,10 @@ class CodexAppServerSession:
             # turn shouldn't inherit.
             self._issue_interrupt(result.turn_id)
             result.interrupted = True
-            result.error = result.error or f"turn timed out after {turn_timeout}s"
+            if not result.error:
+                result.error = self._format_error_with_stderr(
+                    f"turn timed out after {turn_timeout}s"
+                )
             result.should_retire = True
 
         return result

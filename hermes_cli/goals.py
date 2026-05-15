@@ -45,6 +45,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+# Judge output budget. The freeform judge returns a one-line JSON verdict, but
+# reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
+# before emitting the visible JSON — and the first /goal turn's prompt is
+# larger than later turns, which pushes total reply length past tight caps.
+# 200 tokens (the original default) reliably truncated the JSON on reasoning
+# models, leaving '{"done": true, "reason": "The agent successfully' and
+# triggering the auto-pause. 4096 covers reasoning + verdict on every model
+# we've live-tested; override via auxiliary.goal_judge.max_tokens for
+# specifically constrained setups.
+DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
@@ -282,6 +292,30 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
+def _goal_judge_max_tokens() -> int:
+    """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
+
+    ``load_config()`` is cached on the config file's (mtime, size), so calling
+    this once per judge turn is cheap. A non-positive or non-int value falls
+    back to the default rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS)
+        )
+        value = int(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_MAX_TOKENS
+
+
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
@@ -404,7 +438,7 @@ def judge_goal(
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=200,
+            max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
             extra_body=get_auxiliary_extra_body() or None,
         )

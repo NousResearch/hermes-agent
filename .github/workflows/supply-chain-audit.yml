@@ -11,6 +11,7 @@ on:
       - '**/sitecustomize.py'
       - '**/usercustomize.py'
       - '**/__init__.pth'
+      - 'pyproject.toml'
 
 permissions:
   pull-requests: write
@@ -136,4 +137,69 @@ jobs:
         if: steps.scan.outputs.found == 'true'
         run: |
           echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          exit 1
+
+  dep-bounds:
+    name: Check PyPI dependency upper bounds
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.changed_files_url, 'pyproject.toml') || true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for unbounded PyPI deps
+        id: bounds
+        run: |
+          set -euo pipefail
+
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # Only check added lines in pyproject.toml
+          ADDED=$(git diff "$BASE".."$HEAD" -- pyproject.toml | grep '^+' | grep -v '^+++' || true)
+
+          if [ -z "$ADDED" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Match PyPI dep specs that have >= but no < ceiling.
+          # Pattern: "package>=version" without a following ",<" bound.
+          # Excludes git+ URLs (which use commit SHAs) and comments.
+          UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
+
+          if [ -n "$UNBOUNDED" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$UNBOUNDED" > /tmp/unbounded.txt
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post unbounded dep warning
+        if: steps.bounds.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="## ⚠️ Unbounded PyPI Dependency Detected
+
+          This PR adds PyPI dependencies without a \`<next_major\` upper bound. Per our [supply chain policy](../blob/main/CONTRIBUTING.md#dependency-pinning-policy-supply-chain-hardening), all PyPI deps must be pinned as \`>=floor,<next_major\`.
+
+          **Unbounded specs found:**
+          \`\`\`
+          $(cat /tmp/unbounded.txt)
+          \`\`\`
+
+          **Fix:** Add an upper bound, e.g. \`\"package>=1.2.0,<2\"\`
+
+          ---
+          *See PR #2810 and CONTRIBUTING.md for the full policy rationale.*"
+
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+
+      - name: Fail on unbounded deps
+        if: steps.bounds.outputs.found == 'true'
+        run: |
+          echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
           exit 1

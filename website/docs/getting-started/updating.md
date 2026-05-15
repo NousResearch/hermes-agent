@@ -123,13 +123,11 @@ If you installed manually (not via the quick installer):
 cd /path/to/hermes-agent
 export VIRTUAL_ENV="$(pwd)/venv"
 
-# Pull latest code and submodules
+# Pull latest code
 git pull origin main
-git submodule update --init --recursive
 
 # Reinstall (picks up new dependencies)
 uv pip install -e ".[all]"
-uv pip install -e "./tinker-atropos"
 
 # Check for new config options
 hermes config check

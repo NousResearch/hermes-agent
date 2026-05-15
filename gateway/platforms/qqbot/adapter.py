@@ -1620,11 +1620,17 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): record as text.
+                # Other attachments (video, file, etc.): keep the text marker
+                # and pass the cached local path through the normal media_urls
+                # channel so downstream tools can open the file.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(
+                        url, ct, original_filename=filename
+                    )
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
+                        image_urls.append(cached_path)
+                        image_media_types.append(ct)
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 
@@ -1636,7 +1642,12 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
+    async def _download_and_cache(
+            self,
+            url: str,
+            content_type: str,
+            original_filename: str = "",
+    ) -> Optional[str]:
         """Download a URL and cache it locally."""
         from tools.url_safety import is_safe_url
 
@@ -1668,7 +1679,11 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
+            filename = (
+                original_filename.strip()
+                or Path(urlparse(url).path).name
+                or "qq_attachment"
+            )
             return cache_document_from_bytes(data, filename)
 
     @staticmethod

@@ -236,6 +236,60 @@ class TestQQWebSocketProxy:
         assert seen_session_kwargs.get("trust_env") is True
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
+
+class TestQQAttachmentProcessing:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_surfaces_cached_documents_to_agent(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/report.xlsx")  # type: ignore[method-assign]
+
+        out = await adapter._process_attachments([
+            {
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "url": "https://grouptalk.c2c.qq.com/files/qqdownloadftnv5",
+                "filename": "成绩表.xlsx",
+            }
+        ])
+
+        assert out["image_urls"] == ["/tmp/report.xlsx"]
+        assert out["image_media_types"] == [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ]
+        assert out["attachment_info"] == "[Attachment: 成绩表.xlsx]"
+        adapter._download_and_cache.assert_awaited_once_with(
+            "https://grouptalk.c2c.qq.com/files/qqdownloadftnv5",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            original_filename="成绩表.xlsx",
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_and_cache_prefers_original_filename_for_documents(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+
+        response = mock.Mock()
+        response.content = b"spreadsheet-bytes"
+        response.raise_for_status = mock.Mock()
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.get = mock.AsyncMock(return_value=response)
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True), \
+                mock.patch(
+                    "gateway.platforms.qqbot.adapter.cache_document_from_bytes",
+                    return_value="/tmp/成绩表.xlsx",
+                ) as cache_doc:
+            cached = await adapter._download_and_cache(
+                "https://grouptalk.c2c.qq.com/files/qqdownloadftnv5",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                original_filename="成绩表.xlsx",
+            )
+
+        assert cached == "/tmp/成绩表.xlsx"
+        cache_doc.assert_called_once_with(b"spreadsheet-bytes", "成绩表.xlsx")
+
 # ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------

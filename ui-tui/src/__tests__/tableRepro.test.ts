@@ -15,7 +15,7 @@
  */
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, renderSync, stringWidth } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
@@ -47,7 +47,7 @@ const renderAtWidth = (md: string, columns: number): string[] => {
   const node = React.createElement(
     Box,
     { width: columns },
-    React.createElement(Md, { t, text: md })
+    React.createElement(Md, { cols: columns, t, text: md })
   )
 
   const instance = renderSync(node, {

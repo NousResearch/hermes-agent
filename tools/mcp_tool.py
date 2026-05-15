@@ -2687,14 +2687,13 @@ def _make_check_fn(server_name: str):
 # Discovery & registration
 # ---------------------------------------------------------------------------
 
-def _normalize_mcp_input_schema(schema: dict | None) -> dict:
+def _normalize_mcp_input_schema(schema: Any) -> dict:
     """Normalize MCP input schemas for LLM tool-calling compatibility.
 
     MCP servers can emit plain JSON Schema with ``definitions`` /
-    ``#/definitions/...`` references.  Kimi / Moonshot rejects that form and
-    requires local refs to point into ``#/$defs/...`` instead.  Normalize the
-    common draft-07 shape here so MCP tool schemas remain portable across
-    OpenAI-compatible providers.
+    ``#/definitions/...`` references.  Some MCP clients and provider
+    validators reject ``$ref`` in tool input schemas, so local refs are
+    inlined before Hermes registers the tool.
 
     Additional MCP-server robustness repairs applied recursively:
 
@@ -2710,11 +2709,14 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
       nullable branches in tool input schemas, so nullable unions are collapsed
       to the non-null branch and optionality remains represented solely by the
       parent object's ``required`` list.
+    * Boolean schemas are normalized to object-form schemas.  ``true`` becomes
+      ``{}``; ``false`` becomes ``{"not": {}}``.  JSON Schema permits bare
+      booleans, but some tool-calling clients reject them in MCP tool schemas.
 
     All repairs are provider-agnostic and ideally produce a schema valid on
     OpenAI, Anthropic, Gemini, and Moonshot in one pass.
     """
-    if not schema:
+    if schema is None or schema == {}:
         return {"type": "object", "properties": {}}
 
     def _rewrite_local_refs(node):
@@ -2730,6 +2732,106 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         if isinstance(node, list):
             return [_rewrite_local_refs(item) for item in node]
         return node
+
+    def _lookup_local_ref(root, ref: str):
+        """Resolve a local ``#/$defs/...`` JSON Pointer against ``root``."""
+        if not ref.startswith("#/$defs/"):
+            return None
+        current = root
+        for raw_part in ref[2:].split("/"):
+            part = raw_part.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current
+
+    def _inline_local_refs(node, root, resolving=frozenset()):
+        """Inline local refs and drop now-unused ``$defs`` containers."""
+        if isinstance(node, list):
+            return [_inline_local_refs(item, root, resolving) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            target = _lookup_local_ref(root, ref)
+            siblings = {
+                key: value
+                for key, value in node.items()
+                if key != "$ref" and key != "$defs"
+            }
+            if target is not None and ref not in resolving:
+                inlined = _inline_local_refs(target, root, resolving | {ref})
+                if not siblings:
+                    return inlined
+                repaired_siblings = _inline_local_refs(siblings, root, resolving)
+                if isinstance(inlined, dict) and isinstance(repaired_siblings, dict):
+                    return {**inlined, **repaired_siblings}
+                return repaired_siblings
+            if siblings:
+                return _inline_local_refs(siblings, root, resolving)
+            return {}
+
+        return {
+            key: _inline_local_refs(value, root, resolving)
+            for key, value in node.items()
+            if key != "$defs"
+        }
+
+    def _materialize_boolean_schemas(node, schema_position: bool = True):
+        """Replace JSON Schema boolean nodes with equivalent object schemas."""
+        if isinstance(node, bool):
+            return {} if node else {"not": {}} if schema_position else node
+        if isinstance(node, list):
+            return [
+                _materialize_boolean_schemas(item, schema_position)
+                for item in node
+            ]
+        if not isinstance(node, dict):
+            return node
+
+        schema_map_keys = {
+            "properties",
+            "patternProperties",
+            "$defs",
+            "definitions",
+            "dependentSchemas",
+        }
+        schema_value_keys = {
+            "additionalProperties",
+            "unevaluatedProperties",
+            "items",
+            "contains",
+            "not",
+            "if",
+            "then",
+            "else",
+            "propertyNames",
+        }
+        schema_array_keys = {"allOf", "anyOf", "oneOf", "prefixItems"}
+
+        materialized = {}
+        for key, value in node.items():
+            if key in schema_map_keys and isinstance(value, dict):
+                materialized[key] = {
+                    name: _materialize_boolean_schemas(schema_node)
+                    for name, schema_node in value.items()
+                }
+            elif key in schema_value_keys:
+                materialized[key] = _materialize_boolean_schemas(value)
+            elif key in schema_array_keys and isinstance(value, list):
+                materialized[key] = [
+                    _materialize_boolean_schemas(schema_node)
+                    for schema_node in value
+                ]
+            elif isinstance(value, (dict, list)):
+                materialized[key] = _materialize_boolean_schemas(
+                    value, schema_position=False,
+                )
+            else:
+                materialized[key] = value
+        return materialized
 
     def _strip_nullable_union(node):
         """Collapse JSON Schema nullable unions to provider-safe non-null schemas.
@@ -2783,6 +2885,8 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return repaired
 
     normalized = _rewrite_local_refs(schema)
+    normalized = _inline_local_refs(normalized, normalized)
+    normalized = _materialize_boolean_schemas(normalized)
     normalized = _strip_nullable_union(normalized)
     normalized = _repair_object_shape(normalized)
 

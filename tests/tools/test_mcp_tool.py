@@ -120,7 +120,7 @@ class TestSchemaConversion:
 
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
-    def test_definitions_refs_are_rewritten_to_defs(self):
+    def test_definitions_refs_are_inlined(self):
         from tools.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
@@ -146,11 +146,18 @@ class TestSchemaConversion:
 
         schema = _convert_mcp_schema("forms", mcp_tool)
 
-        assert schema["parameters"]["properties"]["input"]["$ref"] == "#/$defs/Payload"
-        assert "$defs" in schema["parameters"]
+        assert schema["parameters"]["properties"]["input"] == {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+            },
+            "required": ["query"],
+        }
+        assert "$ref" not in schema["parameters"]["properties"]["input"]
+        assert "$defs" not in schema["parameters"]
         assert "definitions" not in schema["parameters"]
 
-    def test_nested_definition_refs_are_rewritten_recursively(self):
+    def test_nested_definition_refs_are_inlined_recursively(self):
         from tools.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
@@ -183,8 +190,44 @@ class TestSchemaConversion:
 
         schema = _convert_mcp_schema("forms", mcp_tool)
 
-        assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
-        assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+        entry = schema["parameters"]["properties"]["items"]["items"]
+        assert entry == {
+            "type": "object",
+            "properties": {
+                "child": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                    },
+                },
+            },
+        }
+        assert "$ref" not in json.dumps(schema["parameters"])
+        assert "$defs" not in schema["parameters"]
+
+    def test_boolean_schema_nodes_are_materialized(self):
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "allow_any": True,
+                "allow_none": False,
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": True,
+                },
+                "closed": {
+                    "type": "object",
+                    "additionalProperties": False,
+                },
+            },
+        })
+
+        assert schema["properties"]["allow_any"] == {}
+        assert schema["properties"]["allow_none"] == {"not": {}}
+        assert schema["properties"]["labels"]["additionalProperties"] == {}
+        assert schema["properties"]["closed"]["additionalProperties"] == {"not": {}}
 
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""

@@ -31,8 +31,6 @@ class TestGetToolset:
         ts = get_toolset("web")
         assert ts is not None
         assert "web_search" in ts["tools"]
-        assert "web_extract" in ts["tools"]
-        assert "web_crawl" in ts["tools"]
 
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
@@ -56,14 +54,13 @@ class TestGetToolset:
 class TestResolveToolset:
     def test_leaf_toolset(self):
         tools = resolve_toolset("web")
-        assert set(tools) == {"web_search", "web_extract", "web_crawl"}
+        assert set(tools) == {"web_search", "web_extract"}
 
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools
         assert "web_search" in tools
         assert "web_extract" in tools
-        assert "web_crawl" in tools
 
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
@@ -156,7 +153,7 @@ class TestGetToolsetInfo:
         info = get_toolset_info("web")
         assert info["name"] == "web"
         assert info["is_composite"] is False
-        assert info["tool_count"] == 3
+        assert info["tool_count"] == 2
 
     def test_composite(self):
         info = get_toolset_info("debugging")

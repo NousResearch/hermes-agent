@@ -190,7 +190,9 @@ class TestSSHPreflight:
 
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", _fake_establish)
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
-        monkeypatch.setattr(ssh_env.SSHEnvironment, "_sync_skills_and_credentials", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
 
         env = ssh_env.SSHEnvironment(host="example.com", user="alice")
 

@@ -1,5 +1,5 @@
 {
-  "patch_count": 4,
+  "patch_count": 5,
   "updated": "2026-05-15",
   "note": "Baseline reset during HAD-1001 upstream merge after retiring hadto_patches sealed-domain wrappers."
 }

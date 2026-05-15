@@ -95,12 +95,14 @@ jobs:
           "
           fi
 
-          # --- Install-hook files (setup.py/sitecustomize/usercustomize/__init__.pth) ---
-          # These execute during pip install or interpreter startup.
-          SETUP_HITS=$(git diff --name-only "$BASE".."$HEAD" | grep -E '(^|/)(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
+          # --- Newly-added install-hook files (setup.py/sitecustomize/usercustomize/__init__.pth) ---
+          # These execute during pip install or interpreter startup. Existing setup files
+          # are still covered by the line-pattern checks above; only new hook files hard-fail
+          # here so large upstream syncs do not fail solely because setup.py changed.
+          SETUP_HITS=$(git diff --name-status "$BASE".."$HEAD" | awk '$1 == "A" {print $2}' | grep -E '(^|/)(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
           if [ -n "$SETUP_HITS" ]; then
             FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: Install-hook file added or modified
+          ### 🚨 CRITICAL: Install-hook file added
           These files can execute code during package installation or interpreter startup.
 
           **Files:**

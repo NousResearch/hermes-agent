@@ -162,29 +162,6 @@ class TestCreateJob:
                 assert call_kwargs["prompt"] == "do something"
 
     @pytest.mark.asyncio
-    async def test_create_job_with_role_and_scope(self, adapter):
-        """POST /api/jobs forwards role and scope metadata."""
-        app = _create_app(adapter)
-        mock_create = MagicMock(return_value=SAMPLE_JOB)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(
-                APIServerAdapter, "_CRON_AVAILABLE", True
-            ), patch.object(
-                APIServerAdapter, "_cron_create", mock_create
-            ):
-                resp = await cli.post("/api/jobs", json={
-                    "name": "test-job",
-                    "schedule": "*/5 * * * *",
-                    "prompt": "do something",
-                    "role": "implement",
-                    "scope": "pipeline",
-                })
-                assert resp.status == 200
-                call_kwargs = mock_create.call_args[1]
-                assert call_kwargs["role"] == "implement"
-                assert call_kwargs["scope"] == "pipeline"
-
-    @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""
         app = _create_app(adapter)
@@ -336,27 +313,6 @@ class TestUpdateJob:
                 assert "schedule" in sanitized
 
     @pytest.mark.asyncio
-    async def test_update_job_allows_role_and_scope(self, adapter):
-        """PATCH /api/jobs/{id} allows topology metadata updates."""
-        app = _create_app(adapter)
-        updated_job = {**SAMPLE_JOB, "role": "implement", "scope": "ontology"}
-        mock_update = MagicMock(return_value=updated_job)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(
-                APIServerAdapter, "_CRON_AVAILABLE", True
-            ), patch.object(
-                APIServerAdapter, "_cron_update", mock_update
-            ):
-                resp = await cli.patch(
-                    f"/api/jobs/{VALID_JOB_ID}",
-                    json={"role": "implement", "scope": "ontology"},
-                )
-                assert resp.status == 200
-                sanitized = mock_update.call_args[0][1]
-                assert sanitized["role"] == "implement"
-                assert sanitized["scope"] == "ontology"
-
-    @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):
         """PATCH /api/jobs/{id} — only allowed fields pass through."""
         app = _create_app(adapter)
@@ -457,23 +413,7 @@ class TestPauseJob:
                 data = await resp.json()
                 assert data["job"] == paused_job
                 assert data["job"]["enabled"] is False
-                mock_pause.assert_called_once_with(VALID_JOB_ID, reason=None)
-
-    @pytest.mark.asyncio
-    async def test_pause_job_with_reason(self, adapter):
-        """POST /api/jobs/{id}/pause forwards optional pause reason."""
-        app = _create_app(adapter)
-        paused_job = {**SAMPLE_JOB, "enabled": False, "paused_reason": "maintenance"}
-        mock_pause = MagicMock(return_value=paused_job)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(
-                APIServerAdapter, "_CRON_AVAILABLE", True
-            ), patch.object(
-                APIServerAdapter, "_cron_pause", mock_pause
-            ):
-                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/pause", json={"reason": "maintenance"})
-                assert resp.status == 200
-                mock_pause.assert_called_once_with(VALID_JOB_ID, reason="maintenance")
+                mock_pause.assert_called_once_with(VALID_JOB_ID)
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ patches below.
 | file | patch category | description | upstream-able? |
 | --- | --- | --- | --- |
 | `agent/trajectory.py` | security | Deep-copies and redacts trajectory content before writing JSONL trajectory artifacts. | yes |
+| `gateway/platforms/discord.py` | robustness | Treats dummy/no-history Discord channels as empty context and avoids catching a mocked non-exception `discord.Forbidden` in tests. | yes |
 | `gateway/platforms/slack.py` | messaging | Normalizes raw Slack member IDs like `@U...`/`@W...` into mrkdwn mention IDs so Slack notifications fire. | yes |
 | `hermes_state.py` | security | Redacts tool message content before writing to `state.db`. | yes |
 | `tools/delegate_tool.py` | security | Tells delegated child agents not to call Slack, Moshi, webhook URLs, or other external notification endpoints unless the task explicitly requires it. | yes |

@@ -151,10 +151,7 @@ class TestGatewayQuickCommands:
     async def test_exec_command_returns_output(self):
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {
-            "quick_commands": {"limits": {"type": "exec", "command": "echo ok"}},
-            "quick_commands_allowed_users": ["test_user"],
-        }
+        runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
@@ -222,10 +219,7 @@ class TestGatewayQuickCommands:
         from gateway.run import GatewayRunner
         import asyncio
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {
-            "quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}},
-            "quick_commands_allowed_users": ["test_user"],
-        }
+        runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
@@ -243,8 +237,7 @@ class TestGatewayQuickCommands:
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(
-            quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
-            quick_commands_allowed_users=["test_user"],
+            quick_commands={"limits": {"type": "exec", "command": "echo ok"}}
         )
         runner._running_agents = {}
         runner._pending_messages = {}

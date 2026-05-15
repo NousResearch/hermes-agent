@@ -3678,6 +3678,10 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             pass  # Malformed cache entry — fall back to cold-start scan
 
+        history = getattr(channel, "history", None)
+        if not callable(history):
+            return ""
+
         try:
             collected = []
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
@@ -3687,7 +3691,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # high-traffic windows that returns stale tool traces and drops
             # the actual final answer.  See the regression test
             # `test_fetch_channel_context_cache_uses_latest_window_when_after_set`.
-            async for msg in channel.history(
+            async for msg in history(
                 limit=limit,
                 before=before,
                 after=_after_obj,
@@ -3727,10 +3731,11 @@ class DiscordAdapter(BasePlatformAdapter):
             collected.reverse()
             return "[Recent channel messages]\n" + "\n".join(collected)
 
-        except discord.Forbidden:
-            logger.debug("[%s] Missing permissions to fetch channel history", self.name)
-            return ""
         except Exception as e:
+            forbidden = getattr(discord, "Forbidden", None)
+            if isinstance(forbidden, type) and isinstance(e, forbidden):
+                logger.debug("[%s] Missing permissions to fetch channel history", self.name)
+                return ""
             logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
             return ""
 

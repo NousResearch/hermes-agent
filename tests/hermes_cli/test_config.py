@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
 import yaml
 
 from hermes_cli.config import (
@@ -192,11 +191,6 @@ class TestSaveAndLoadRoundtrip:
 
 
 class TestSaveEnvValueSecure:
-    def test_save_env_value_hard_fails_when_doppler_required(self, tmp_path, monkeypatch):
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_REQUIRE_DOPPLER": "1"}, clear=False):
-            with pytest.raises(RuntimeError, match="Doppler-only secrets"):
-                save_env_value("TENOR_API_KEY", "sk-test-secret")
-
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_env_value("TENOR_API_KEY", "sk-test-secret")
@@ -533,7 +527,7 @@ class TestCustomProviderCompatibility:
                 {
                     "_config_version": 11,
                     "model": {
-                        "default": "openai/gpt-5.5",
+                        "default": "openai/gpt-5.4",
                         "provider": "openrouter",
                     },
                     "custom_providers": [

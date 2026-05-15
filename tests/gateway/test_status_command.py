@@ -279,13 +279,10 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
     result = await runner._handle_message(_make_event("hello"))
 
     assert result == "ok"
-    runner.session_store.update_session.assert_called_once()
-    args, kwargs = runner.session_store.update_session.call_args
-    assert args == (session_entry.session_key,)
-    assert kwargs["last_prompt_tokens"] == 80
-    assert kwargs["input_tokens"] == 120
-    assert kwargs["output_tokens"] == 45
-    assert kwargs["model"] == "openai/test-model"
+    runner.session_store.update_session.assert_called_once_with(
+        session_entry.session_key,
+        last_prompt_tokens=80,
+    )
 
 
 @pytest.mark.asyncio

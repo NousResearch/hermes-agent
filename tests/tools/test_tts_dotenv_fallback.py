@@ -57,7 +57,12 @@ class TestDotenvFallbackPerProvider:
             mock_import.return_value.assert_called_once_with(api_key="el-dotenv-key")
 
     def test_xai_reads_dotenv_key(self, tmp_path):
+        """xAI TTS now resolves credentials through ``tools.xai_http``; the
+        dotenv fallback contract from #17140 is preserved by patching the
+        resolver's ``get_env_value`` rather than ``tts_tool.get_env_value``.
+        """
         from tools import tts_tool
+        from tools import xai_http
 
         captured: dict = {}
 
@@ -69,7 +74,7 @@ class TestDotenvFallbackPerProvider:
             response.raise_for_status = MagicMock()
             return response
 
-        with patch.object(tts_tool, "get_env_value", return_value="xai-dotenv-key"), \
+        with patch.object(xai_http, "get_env_value", return_value="xai-dotenv-key"), \
              patch("requests.post", side_effect=fake_post):
             tts_tool._generate_xai_tts("hi", str(tmp_path / "out.mp3"), {})
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_diagnostics as kd
 
 
 # ---------------------------------------------------------------------------
@@ -1403,7 +1404,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         sev = getattr(args, "severity", None)
         if sev:
             for tid in list(diags_by_task.keys()):
-                kept = [d for d in diags_by_task[tid] if d.severity == sev]
+                kept = [d for d in diags_by_task[tid] if kd.severity_at_or_above(d.severity, sev)]
                 if kept:
                     diags_by_task[tid] = kept
                 else:

@@ -1543,7 +1543,7 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
 
 
 def test_diagnostics_endpoint_severity_filter(client):
-    """Warning-severity filter excludes error-severity entries."""
+    """Severity filter keeps diagnostics at or above the requested level."""
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
@@ -1564,8 +1564,8 @@ def test_diagnostics_endpoint_severity_filter(client):
     r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] == 1
-    assert data["diagnostics"][0]["task_id"] == p1
+    assert data["count"] == 2
+    assert {row["task_id"] for row in data["diagnostics"]} == {p1, p2}
 
     r = client.get("/api/plugins/kanban/diagnostics?severity=error")
     data = r.json()

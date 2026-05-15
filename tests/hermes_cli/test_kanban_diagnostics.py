@@ -67,6 +67,17 @@ def _run(outcome="completed", run_id=1, error=None):
 # ---------------------------------------------------------------------------
 
 
+def test_severity_at_or_above_uses_threshold_semantics():
+    assert kd.severity_at_or_above("warning", "warning") is True
+    assert kd.severity_at_or_above("error", "warning") is True
+    assert kd.severity_at_or_above("critical", "warning") is True
+    assert kd.severity_at_or_above("critical", "error") is True
+    assert kd.severity_at_or_above("warning", "error") is False
+    assert kd.severity_at_or_above("error", "critical") is False
+    assert kd.severity_at_or_above("mystery", "warning") is False
+    assert kd.severity_at_or_above("warning", None) is True
+
+
 def test_hallucinated_cards_fires_on_blocked_event():
     task = _task(status="ready")
     events = [

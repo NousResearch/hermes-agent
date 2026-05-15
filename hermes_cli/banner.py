@@ -130,6 +130,23 @@ UPDATE_AVAILABLE_NO_COUNT = -1
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 
+def _safe_git_env() -> dict:
+    """Return an environment for update-check Git commands that ignores user config."""
+    env = os.environ.copy()
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    for key in (
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+    ):
+        env.pop(key, None)
+    return env
+
+
 def _check_via_rev(local_rev: str) -> Optional[int]:
     """Compare an embedded git revision to upstream main via ls-remote.
 
@@ -138,8 +155,21 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     """
     try:
         result = subprocess.run(
-            ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "git",
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "protocol.https.allow=always",
+                "ls-remote",
+                _UPSTREAM_REPO_URL,
+                "refs/heads/main",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=os.path.abspath(os.sep),
+            env=_safe_git_env(),
         )
     except Exception:
         return None

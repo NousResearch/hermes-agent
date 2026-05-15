@@ -147,7 +147,7 @@ def test_request_user_code_happy_path():
 
     # Verify correct endpoint was called
     call_args = client.post.call_args
-    assert "/oauth/code" in call_args[0][0]
+    assert "/oauth2/device/code" in call_args[0][0]
     headers = call_args[1].get("headers", {})
     assert "x-request-id" in headers
 
@@ -538,3 +538,18 @@ def test_generic_auth_status_dispatches_minimax_oauth():
     assert status["logged_in"] is True
     assert status["provider"] == "minimax-oauth"
     assert status["region"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# 16. CN OAuth provider — registered alongside global
+# ---------------------------------------------------------------------------
+
+def test_provider_registry_contains_minimax_cn_oauth():
+    assert "minimax-cn-oauth" in PROVIDER_REGISTRY
+    pconfig = PROVIDER_REGISTRY["minimax-cn-oauth"]
+    assert pconfig.auth_type == "oauth_minimax"
+    assert pconfig.client_id == MINIMAX_OAUTH_CLIENT_ID
+    # CN config points at minimaxi.com, not minimax.io
+    assert "minimaxi.com" in pconfig.portal_base_url
+    assert "minimaxi.com" in pconfig.inference_base_url
+    assert pconfig.extra.get("region") == "cn"

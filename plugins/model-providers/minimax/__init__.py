@@ -40,6 +40,20 @@ minimax_oauth = ProviderProfile(
     default_aux_model="MiniMax-M2.7-highspeed",
 )
 
+minimax_cn_oauth = ProviderProfile(
+    name="minimax-cn-oauth",
+    aliases=("minimax_cn_oauth", "minimax-oauth-cn"),
+    api_mode="anthropic_messages",
+    display_name="MiniMax China (OAuth)",
+    description="MiniMax China via OAuth browser flow — no API key required",
+    signup_url="https://api.minimaxi.com/",
+    env_vars=(),
+    base_url="https://api.minimaxi.com/anthropic",
+    auth_type="oauth_external",
+    default_aux_model="MiniMax-M2.7-highspeed",
+)
+
 register_provider(minimax)
 register_provider(minimax_cn)
 register_provider(minimax_oauth)
+register_provider(minimax_cn_oauth)

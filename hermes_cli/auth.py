@@ -72,11 +72,11 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
-MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
-MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
-MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
-MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
+MINIMAX_OAUTH_CLIENT_ID = "62a38dcb-17d9-4303-a71e-aa694efa20fd"
+MINIMAX_OAUTH_SCOPE = "openid profile coding_plan"
+MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+MINIMAX_OAUTH_GLOBAL_BASE = "https://account.minimax.io"
+MINIMAX_OAUTH_CN_BASE = "https://account.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
@@ -305,6 +305,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimaxi.com/anthropic",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
+    ),
+    "minimax-cn-oauth": ProviderConfig(
+        id="minimax-cn-oauth",
+        name="MiniMax (OAuth \u00b7 minimaxi.com)",
+        auth_type="oauth_minimax",
+        portal_base_url=MINIMAX_OAUTH_CN_BASE,
+        inference_base_url=MINIMAX_OAUTH_CN_INFERENCE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
+        extra={"region": "cn"},
     ),
     "deepseek": ProviderConfig(
         id="deepseek",
@@ -4782,9 +4792,8 @@ def _minimax_request_user_code(
     code_challenge: str, state: str,
 ) -> Dict[str, Any]:
     response = client.post(
-        f"{portal_base_url}/oauth/code",
+        f"{portal_base_url}/oauth2/device/code",
         data={
-            "response_type": "code",
             "client_id": client_id,
             "scope": MINIMAX_OAUTH_SCOPE,
             "code_challenge": code_challenge,
@@ -4848,7 +4857,7 @@ def _minimax_poll_token(
 
     while _time.time() < deadline:
         response = client.post(
-            f"{portal_base_url}/oauth/token",
+            f"{portal_base_url}/oauth2/token",
             data={
                 "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
                 "client_id": client_id,
@@ -5007,7 +5016,7 @@ def _refresh_minimax_oauth_state(
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
                       follow_redirects=True) as client:
         response = client.post(
-            f"{portal_base_url}/oauth/token",
+            f"{portal_base_url}/oauth2/token",
             data={
                 "grant_type": "refresh_token",
                 "client_id": state["client_id"],

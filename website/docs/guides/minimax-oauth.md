@@ -56,11 +56,17 @@ hermes auth add minimax-oauth
 
 ### China region
 
-If your account is on the China platform (`minimaxi.com`), use the China-region OAuth provider id `minimax-cn` instead, or skip OAuth and configure `MINIMAX_CN_API_KEY` / `MINIMAX_CN_BASE_URL` directly. The `--region cn` flag described in older docs is **not** wired through the CLI's argument parser; use the `minimax-cn` provider instead:
+If your account is on the China platform (`minimaxi.com`), use the dedicated `minimax-cn-oauth` provider:
 
 ```bash
-hermes auth add minimax-cn --type oauth   # if OAuth is supported on your CN account
-# or simpler:
+hermes auth add minimax-cn-oauth
+```
+
+Or via `hermes model` — the picker now lists **"MiniMax China (OAuth)"** alongside the global OAuth entry. The flow is identical to the global one but the browser opens `account.minimaxi.com`. The token is saved to the same `~/.hermes/auth.json` slot as the global OAuth (region recorded inside the entry), so switching between the global and China OAuth picker entries triggers a fresh login.
+
+If you'd rather skip OAuth on China entirely, the API-key path still works:
+
+```bash
 echo 'MINIMAX_CN_API_KEY=your-key' >> ~/.hermes/.env
 ```
 

@@ -6500,6 +6500,12 @@ class GatewayRunner:
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
+        if canonical == "set-prompt":
+            return await self._handle_set_prompt_command(event)
+
+        if canonical == "clear-prompt":
+            return await self._handle_clear_prompt_command(event)
+
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
@@ -9784,6 +9790,83 @@ class GatewayRunner:
             )
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+
+    async def _handle_set_prompt_command(self, event: MessageEvent) -> str:
+        """Handle /set-prompt <text> -- write a per-channel runtime context prompt.
+
+        Writes (or updates) the channel prompt for the current channel in
+        ``~/.hermes/channel_prompts.json``.  The file is written atomically so a
+        concurrent gateway read never sees a partially-written file.
+
+        The runtime file takes precedence over ``channel_prompts`` in
+        config.yaml; no gateway restart is required.
+        """
+        prompt_text = event.get_command_args().strip()
+        if not prompt_text:
+            return "Usage: /set-prompt <text>  — sets the context prompt for this channel."
+
+        channel_id = event.source.chat_id if event.source else None
+        if not channel_id:
+            return "Cannot determine channel ID for this event."
+
+        runtime_path = _hermes_home / "channel_prompts.json"
+        try:
+            import json as _json
+
+            existing: dict = {}
+            if runtime_path.exists():
+                try:
+                    loaded = _json.loads(runtime_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        existing = loaded
+                except Exception:
+                    pass  # Corrupted file — start fresh
+
+            existing[str(channel_id)] = prompt_text
+            atomic_json_write(runtime_path, existing)
+        except Exception as exc:
+            logger.warning("Failed to write channel_prompts.json: %s", exc, exc_info=True)
+            return f"Failed to save channel prompt: {exc}"
+
+        return f"Channel prompt set for this channel. It will apply from the next message."
+
+    async def _handle_clear_prompt_command(self, event: MessageEvent) -> str:
+        """Handle /clear-prompt -- remove the runtime channel prompt for this channel.
+
+        Removes the entry for the current channel from
+        ``~/.hermes/channel_prompts.json``.  If no runtime prompt is set (the
+        channel may still have a config.yaml prompt) a notice is returned.
+        """
+        channel_id = event.source.chat_id if event.source else None
+        if not channel_id:
+            return "Cannot determine channel ID for this event."
+
+        runtime_path = _hermes_home / "channel_prompts.json"
+        try:
+            import json as _json
+
+            if not runtime_path.exists():
+                return "No runtime channel prompt is set for this channel."
+
+            existing: dict = {}
+            try:
+                loaded = _json.loads(runtime_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except Exception:
+                return "No runtime channel prompt is set for this channel."
+
+            channel_key = str(channel_id)
+            if channel_key not in existing:
+                return "No runtime channel prompt is set for this channel."
+
+            del existing[channel_key]
+            atomic_json_write(runtime_path, existing)
+        except Exception as exc:
+            logger.warning("Failed to update channel_prompts.json: %s", exc, exc_info=True)
+            return f"Failed to clear channel prompt: {exc}"
+
+        return "Channel prompt cleared for this channel."
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

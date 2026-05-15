@@ -1184,13 +1184,38 @@ def resolve_channel_prompt(
 ) -> str | None:
     """Resolve a per-channel ephemeral prompt from platform config.
 
-    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Checks the runtime file ``~/.hermes/channel_prompts.json`` FIRST (prompts
+    set via ``/set-prompt`` at runtime), then falls back to ``channel_prompts``
+    in the adapter's ``config.extra`` dict (config.yaml).  Runtime prompts win.
+
     Prefers an exact match on *channel_id*; falls back to *parent_id*
     (useful for forum threads / child channels inheriting a parent prompt).
 
     Returns the prompt string, or None if no match is found.  Blank/whitespace-
     only prompts are treated as absent.
     """
+    import json
+    from hermes_constants import get_hermes_home
+
+    # --- runtime overrides (written by /set-prompt) ---
+    runtime_path = get_hermes_home() / "channel_prompts.json"
+    try:
+        if runtime_path.exists():
+            runtime_prompts = json.loads(runtime_path.read_text(encoding="utf-8"))
+            if isinstance(runtime_prompts, dict):
+                for key in (channel_id, parent_id):
+                    if not key:
+                        continue
+                    prompt = runtime_prompts.get(key)
+                    if prompt is None:
+                        continue
+                    prompt = str(prompt).strip()
+                    if prompt:
+                        return prompt
+    except Exception:
+        pass  # Silently degrade — corrupted runtime file should not block messages
+
+    # --- config.yaml fallback ---
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):
         return None

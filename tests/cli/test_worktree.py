@@ -31,7 +31,7 @@ def git_repo(tmp_path):
         cwd=repo, capture_output=True,
     )
     # Create initial commit (worktrees need at least one commit)
-    (repo / "README.md").write_text("# Test Repo\n")
+    (repo / "README.md").write_text("# Test Repo\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
@@ -352,24 +352,25 @@ class TestGitignoreManagement:
 
         # Now manually add .worktrees/ to .gitignore (mirrors cli.py logic)
         _ignore_entry = ".worktrees/"
-        existing = gitignore.read_text() if gitignore.exists() else ""
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
         if _ignore_entry not in existing.splitlines():
-            with open(gitignore, "a") as f:
+            with open(gitignore, "a", encoding="utf-8") as f:
                 if existing and not existing.endswith("\n"):
                     f.write("\n")
                 f.write(f"{_ignore_entry}\n")
 
-        content = gitignore.read_text()
-        assert ".worktrees/" in content
+        content = gitignore.read_text(encoding="utf-8")
+        assert _ignore_entry in content.splitlines()
 
     def test_does_not_duplicate_gitignore_entry(self, git_repo):
         """If .worktrees/ is already in .gitignore, don't add again."""
         gitignore = git_repo / ".gitignore"
-        gitignore.write_text(".worktrees/\n")
+        gitignore.write_text(".worktrees/\n", encoding="utf-8")
 
         # The check should see it's already there
-        existing = gitignore.read_text()
+        existing = gitignore.read_text(encoding="utf-8")
         assert ".worktrees/" in existing.splitlines()
+        assert existing.count(".worktrees/") == 1
 
 
 class TestMultipleWorktrees:

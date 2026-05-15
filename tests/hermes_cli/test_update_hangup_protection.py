@@ -175,7 +175,7 @@ class TestInstallHangupProtection:
             assert state["log_file"] is None
             assert state["installed"] is False
             if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == prev_sighup
+                assert signal.getsignal(signal.SIGHUP) == prev_sighup  # windows-footgun: ok — guarded by hasattr above
         finally:
             _finalize_update_output(state)
 
@@ -190,15 +190,15 @@ class TestInstallHangupProtection:
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
-        original_handler = signal.getsignal(signal.SIGHUP)
+        original_handler = signal.getsignal(signal.SIGHUP)  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
         state = _install_hangup_protection(gateway_mode=False)
 
         try:
-            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
         finally:
             _finalize_update_output(state)
             # Restore whatever was there before so we don't leak to other tests.
-            signal.signal(signal.SIGHUP, original_handler)
+            signal.signal(signal.SIGHUP, original_handler)  # windows-footgun: ok — test is skipif(not hasattr(signal, "SIGHUP"))
 
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -282,11 +282,11 @@ class TestInstallHangupProtection:
             assert state["installed"] is False
             # SIGHUP must still be installed even when log setup fails.
             if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+                assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN  # windows-footgun: ok — guarded by hasattr above
         finally:
             _finalize_update_output(state)
             if hasattr(signal, "SIGHUP") and original_handler is not None:
-                signal.signal(signal.SIGHUP, original_handler)
+                signal.signal(signal.SIGHUP, original_handler)  # windows-footgun: ok — guarded by hasattr above
 
 
 # -----------------------------------------------------------------------------

@@ -132,7 +132,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "exec 1>&2; ( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            preexec_fn=os.setsid,  # windows-footgun: ok — POSIX-only test (setsid creates session for orphan simulation)
         )
 
         s = _make_session(sid="proc_orphan_test")
@@ -162,7 +162,7 @@ class TestOrphanedPipeReconciliation:
 
         # Clean up the orphaned descendant.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX-only cleanup
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -206,7 +206,7 @@ class TestOrphanedPipeReconciliation:
             ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
+            preexec_fn=os.setsid,  # windows-footgun: ok — POSIX-only test (setsid creates session for orphan simulation)
         )
 
         s = _make_session(sid="proc_wait_orphan")
@@ -226,7 +226,7 @@ class TestOrphanedPipeReconciliation:
         )
 
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — POSIX-only cleanup
         except (ProcessLookupError, PermissionError):
             pass
 

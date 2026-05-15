@@ -41,6 +41,16 @@ Security model:
   :class:`FeatureUnavailable` with the actual pip stderr — no silent
   retries, no caching of bad state.
 
+Nix support:
+
+Hermes Agent's Nix build produces a sealed, read-only Python environment
+in ``/nix/store``. Standard venv-scoped pip installs fail because the
+store path is immutable. When running from a Nix store path, the
+installer transparently falls back to a user-local prefix at
+``~/.hermes/lazy-deps/`` (or ``$HERMES_HOME/lazy-deps/``) and injects
+that prefix into ``sys.path`` so the newly-installed packages are
+importable in the current process.
+
 Adding a new backend:
 
 1. Add an entry to :data:`LAZY_DEPS` with the package specs.
@@ -57,6 +67,7 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -209,6 +220,63 @@ class _InstallResult:
 
 
 # =============================================================================
+# Nix / immutable-venv detection
+# =============================================================================
+
+
+def _is_nix_venv() -> bool:
+    """Return True if the active Python interpreter lives in a Nix store path.
+
+    Nix builds produce sealed, read-only environments under ``/nix/store/``.
+    pip/uv cannot write into them, so lazy installs must target a user-local
+    prefix instead.
+    """
+    exe = Path(sys.executable).resolve()
+    return str(exe).startswith("/nix/store/")
+
+
+def _user_local_prefix() -> Path:
+    """Return the user-local prefix for lazy deps on immutable systems.
+
+    Uses ``$HERMES_HOME/lazy-deps`` when set, otherwise ``~/.hermes/lazy-deps``.
+    """
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        return Path(home) / "lazy-deps"
+    return Path.home() / ".hermes" / "lazy-deps"
+
+
+def _nix_site_dir() -> Path | None:
+    """Return the site-packages directory inside the user-local prefix.
+
+    Uses ``sysconfig.get_path('purelib', vars={'base': prefix})`` so the
+    path matches pip's ``--prefix`` layout for the current interpreter
+    version.
+    """
+    prefix = _user_local_prefix()
+    try:
+        site = Path(
+            sysconfig.get_path("purelib", vars={"base": str(prefix)})
+        )
+    except KeyError:
+        # Fallback for Python builds where sysconfig doesn't expose purelib.
+        version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        site = prefix / "lib" / f"python{version}" / "site-packages"
+    return site
+
+
+def _ensure_nix_site_path() -> None:
+    """Inject the user-local site-packages into ``sys.path`` if not present."""
+    site = _nix_site_dir()
+    if site is None:
+        return
+    site_str = str(site)
+    if site_str not in sys.path:
+        sys.path.insert(0, site_str)
+        logger.debug("Added Nix lazy-deps site-packages to sys.path: %s", site_str)
+
+
+# =============================================================================
 # Internals
 # =============================================================================
 
@@ -268,65 +336,44 @@ def _specifier_from_spec(spec: str) -> str:
 
 
 def _is_satisfied(spec: str) -> bool:
-    """Is ``spec`` already satisfied in the current env?
+    """Check whether a spec is already satisfied in the current env.
 
-    Checks both presence AND version. If the package is installed at a
-    version outside the spec's range, returns False so the caller will
-    upgrade/downgrade to the pinned version. This is what makes
-    ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
-    installed backends instead of silently leaving stale versions in place.
-
-    If ``packaging`` is unavailable for any reason (it's a transitive of
-    pip so this should never happen), we fall back to a presence-only check
-    so we err on the side of "don't churn".
+    If the spec has a version constraint, we try to import the package and
+    compare its ``__version__`` (or ``VERSION``) attribute. If the package
+    has no version attribute we treat it as satisfied (present but
+    unversioned).  If the spec has no constraint, importability alone is
+    sufficient.
     """
     pkg = _pkg_name_from_spec(spec)
+    specifier = _specifier_from_spec(spec)
+
     try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:
-        return False
-    try:
-        installed = version(pkg)
-    except PackageNotFoundError:
-        return False
+        mod = __import__(pkg.replace("-", "_"))
     except Exception:
         return False
 
-    spec_tail = _specifier_from_spec(spec)
-    if not spec_tail:
-        # Bare ``"package"`` — no version constraint, presence is enough.
+    if not specifier:
         return True
 
-    try:
-        from packaging.specifiers import InvalidSpecifier, SpecifierSet
-        from packaging.version import InvalidVersion, Version
-    except ImportError:
-        # packaging unavailable — fall back to "installed counts as satisfied".
+    ver = getattr(mod, "__version__", getattr(mod, "VERSION", None))
+    if ver is None:
         return True
 
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
     try:
-        return Version(installed) in SpecifierSet(spec_tail)
-    except (InvalidSpecifier, InvalidVersion, Exception):
-        # Malformed spec or installed version we can't parse — don't churn.
+        return Version(ver) in SpecifierSet(specifier)
+    except Exception:
         return True
 
 
 def _is_present(spec: str) -> bool:
-    """Cheap presence-only check (package name installed at any version).
-
-    Used by :func:`active_features` to detect backends the user has
-    previously activated, regardless of whether the version pin moved.
-    """
+    """Import-only check — does the top-level module exist regardless of version."""
     pkg = _pkg_name_from_spec(spec)
     try:
-        from importlib.metadata import PackageNotFoundError, version
-    except ImportError:
-        return False
-    try:
-        version(pkg)
+        __import__(pkg.replace("-", "_"))
         return True
-    except PackageNotFoundError:
-        return False
     except Exception:
         return False
 
@@ -340,6 +387,62 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     if not specs:
         return _InstallResult(True, "", "")
 
+    # ── Nix / immutable-venv fallback ──────────────────────────────────────
+    # Nix store paths are read-only. Install into a user-local prefix and
+    # let the caller inject that prefix into sys.path.
+    if _is_nix_venv():
+        prefix = _user_local_prefix()
+        prefix.mkdir(parents=True, exist_ok=True)
+        site = _nix_site_dir()
+        if site:
+            site.mkdir(parents=True, exist_ok=True)
+
+        # Tier 1: uv with --prefix
+        uv_bin = shutil.which("uv")
+        if uv_bin:
+            try:
+                r = subprocess.run(
+                    [uv_bin, "pip", "install", "--prefix", str(prefix), *specs],
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                if r.returncode == 0:
+                    return _InstallResult(True, r.stdout or "", r.stderr or "")
+                logger.debug("uv pip install --prefix failed: %s", r.stderr)
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                logger.debug("uv --prefix invocation failed: %s", e)
+
+        # Tier 2: pip with --prefix (bootstrap ensurepip if needed)
+        pip_cmd = [sys.executable, "-m", "pip"]
+        try:
+            probe = subprocess.run(
+                pip_cmd + ["--version"], capture_output=True, text=True, timeout=15,
+            )
+            if probe.returncode != 0:
+                raise FileNotFoundError("pip not in venv")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    capture_output=True, text=True, timeout=120, check=True,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                return _InstallResult(
+                    False, "",
+                    f"pip not available and ensurepip failed: {e}",
+                )
+
+        try:
+            r = subprocess.run(
+                pip_cmd + ["install", "--prefix", str(prefix), *specs],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
+        except subprocess.TimeoutExpired as e:
+            return _InstallResult(False, "", f"pip install --prefix timed out: {e}")
+        except Exception as e:
+            return _InstallResult(False, "", f"pip install --prefix failed: {e}")
+
+    # ── Standard mutable-venv path ─────────────────────────────────────────
     venv_root = Path(sys.executable).parent.parent
     uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
 
@@ -418,75 +521,48 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     the gate in that case.
     """
     if feature not in LAZY_DEPS:
-        raise FeatureUnavailable(
-            feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
-        )
+        raise KeyError(f"Unknown lazy feature: {feature!r}")
 
     missing = feature_missing(feature)
     if not missing:
         return
 
-    # Validate every spec against the allowlist + safety regex. Belt and
-    # braces — the keys-in-LAZY_DEPS check above already constrains this.
-    for spec in missing:
-        if not _spec_is_safe(spec):
-            raise FeatureUnavailable(
-                feature, missing,
-                f"refusing to install unsafe spec {spec!r}"
-            )
-
     if not _allow_lazy_installs():
         raise FeatureUnavailable(
             feature, missing,
-            "lazy installs disabled (security.allow_lazy_installs=false)"
+            "lazy installs disabled (set security.allow_lazy_installs: true or unset HERMES_DISABLE_LAZY_INSTALLS)"
         )
 
-    if prompt and sys.stdin.isatty() and sys.stdout.isatty():
-        spec_list = ", ".join(missing)
+    # Interactive confirmation
+    if prompt and sys.stdin.isatty():
+        specs_str = " ".join(missing)
+        print(
+            f"\nFeature '{feature}' requires additional packages: {specs_str}\n"
+            f"Install now? [Y/n] ", end="", flush=True
+        )
         try:
-            answer = input(
-                f"\nFeature {feature!r} requires: {spec_list}\n"
-                f"Install into the active venv now? [Y/n] "
-            ).strip().lower()
+            answer = input().strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer and answer not in ("y", "yes"):
-            raise FeatureUnavailable(
-                feature, missing, "user declined install at prompt"
-            )
+            raise FeatureUnavailable(feature, missing, "user declined install")
 
-    logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
+    # Security gate: every spec must be in the allowlist regex
+    bad = [s for s in missing if not _spec_is_safe(s)]
+    if bad:
+        raise FeatureUnavailable(
+            feature, tuple(bad),
+            f"unsafe pip specs rejected by allowlist: {bad}"
+        )
+
     result = _venv_pip_install(missing)
     if not result.success:
-        # Surface the actual pip error so the user can debug PyPI-side
-        # issues (404 quarantine, network down, etc.).
-        snippet = (result.stderr or result.stdout or "").strip()
-        if snippet:
-            # Clip to a readable size — pip can dump pages of resolution traces.
-            snippet = snippet[-2000:]
-        raise FeatureUnavailable(
-            feature, missing,
-            f"pip install failed: {snippet or 'no error output'}"
-        )
+        raise FeatureUnavailable(feature, missing, result.stderr.strip() or "unknown error")
 
-    # Verify post-install. importlib.metadata caches per-process, so if we
-    # just installed something the cache may not see it without a refresh.
-    try:
-        import importlib.metadata as _md
-        if hasattr(_md, "_cache_clear"):
-            _md._cache_clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
-
-    still_missing = feature_missing(feature)
-    if still_missing:
-        raise FeatureUnavailable(
-            feature, still_missing,
-            "install reported success but packages still not importable "
-            "(may require Python restart)"
-        )
-
-    logger.info("Lazy install complete for feature %r", feature)
+    # On Nix, the packages landed in a user-local prefix outside sys.path.
+    # Inject that prefix so the caller's subsequent import finds them.
+    if _is_nix_venv():
+        _ensure_nix_site_path()
 
 
 def is_available(feature: str) -> bool:
@@ -601,7 +677,7 @@ def ensure_and_bind(
 
     try:
         bindings = importer()
-    except ImportError:
+    except Exception:
         return False
 
     target_globals.update(bindings)

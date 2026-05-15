@@ -2161,6 +2161,37 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
     return server
 
 
+def _reconnect_server_sync(server_name: str, timeout: float = 15.0) -> None:
+    """Trigger a reconnect for *server_name* and wait for readiness.
+
+    Uses the same ``_reconnect_event`` mechanism as the auth-recovery
+    and session-expiry paths.  Safe to call from any thread (the event
+    is set thread-safe on the MCP loop).
+
+    Raises on timeout so callers can fall through to the error path.
+    """
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return
+
+    logger.info("MCP '%s': lazy reconnect triggered (session was dead)", server_name)
+    loop.call_soon_threadsafe(srv._reconnect_event.set)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if srv.session is not None and srv._ready.is_set():
+            _reset_server_error(server_name)
+            return
+        time.sleep(0.25)
+
+    raise TimeoutError(f"MCP '{server_name}' reconnect did not ready within {timeout}s")
+
+
 # ---------------------------------------------------------------------------
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
@@ -2202,10 +2233,24 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            _bump_server_error(server_name)
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
+            # Lazy reconnect: if the server entry exists but its session
+            # is dead (e.g. MCP child process crashed between cron ticks),
+            # attempt one reconnect before giving up.
+            if server is not None:
+                try:
+                    _reconnect_server_sync(server_name)
+                    with _lock:
+                        server = _servers.get(server_name)
+                except Exception as rc_exc:
+                    logger.debug(
+                        "MCP %s lazy reconnect failed: %s",
+                        server_name, rc_exc,
+                    )
+            if not server or not server.session:
+                _bump_server_error(server_name)
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' is not connected"
+                }, ensure_ascii=False)
 
         async def _call():
             async with server._rpc_lock:
@@ -2294,6 +2339,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+
+            # Transport-level connection refused (#26042): MCP child
+            # process may have crashed between cron ticks.  Attempt
+            # a lazy reconnect before surfacing the error.
+            _TRANSPORT_ERROR_MARKERS = (
+                "ECONNREFUSED", "ECONNRESET", "Connection refused",
+                "Connection reset", "broken pipe", "EPIPE",
+            )
+            exc_msg = str(exc)
+            if any(m in exc_msg for m in _TRANSPORT_ERROR_MARKERS):
+                try:
+                    _reconnect_server_sync(server_name)
+                    result = _call_once()
+                    _reset_server_error(server_name)
+                    return result
+                except Exception:
+                    pass  # fall through to error response
 
             _bump_server_error(server_name)
             logger.error(

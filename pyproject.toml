@@ -210,7 +210,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*"]
+hermes_cli = ["web_dist/**/*", "tui_dist/**/*"]
 gateway = ["assets/**/*"]
 acp_adapter = ["bootstrap/*.sh", "bootstrap/*.ps1"]
 

@@ -30,13 +30,13 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "crawl4ai_deep_crawl",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "image_generate", "jucode_image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -78,8 +78,8 @@ _HERMES_CORE_TOOLS = [
 TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
-        "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
+        "description": "Web research, content extraction, and local Crawl4AI deep crawling tools",
+        "tools": ["web_search", "web_extract", "crawl4ai_deep_crawl"],
         "includes": []  # No other toolsets included
     },
     
@@ -103,7 +103,7 @@ TOOLSETS = {
     
     "image_gen": {
         "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "tools": ["image_generate", "jucode_image_generate"],
         "includes": []
     },
 

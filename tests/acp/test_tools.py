@@ -49,6 +49,9 @@ class TestToolKindMap:
     def test_tool_kind_web_search(self):
         assert get_tool_kind("web_search") == "fetch"
 
+    def test_tool_kind_crawl4ai_deep_crawl(self):
+        assert get_tool_kind("crawl4ai_deep_crawl") == "fetch"
+
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
 
@@ -115,6 +118,10 @@ class TestBuildToolTitle:
     def test_web_search_title(self):
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
+
+    def test_crawl4ai_deep_crawl_title(self):
+        title = build_tool_title("crawl4ai_deep_crawl", {"url": "https://example.com/docs"})
+        assert title == "deep crawl: https://example.com/docs"
 
     def test_skill_view_title_includes_skill_name(self):
         title = build_tool_title("skill_view", {"name": "github-pitfalls"})

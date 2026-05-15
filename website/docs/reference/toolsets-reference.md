@@ -81,7 +81,7 @@ Or in-session:
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |
 | `vision` | `vision_analyze` | Image analysis via vision-capable models. |
 | `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
-| `web` | `web_extract`, `web_search` | Web search and page content extraction. |
+| `web` | `crawl4ai_deep_crawl`, `web_extract`, `web_search` | Web search, page content extraction, and local Crawl4AI deep crawling. |
 | `yuanbao` | `yb_query_group_info`, `yb_query_group_members`, `yb_search_sticker`, `yb_send_dm`, `yb_send_sticker` | Yuanbao DM/group actions and sticker search. Registered only on `hermes-yuanbao`. |
 
 ## Platform Toolsets

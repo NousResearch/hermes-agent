@@ -36,6 +36,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     # Web / fetch
     "web_search": "fetch",
     "web_extract": "fetch",
+    "crawl4ai_deep_crawl": "fetch",
     # Browser
     "browser_navigate": "fetch",
     "browser_click": "execute",
@@ -62,7 +63,7 @@ _POLISHED_TOOLS = {
     # Files / execution
     "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
     # Skills / web / browser / media
-    "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
+    "skill_view", "skills_list", "skill_manage", "web_search", "web_extract", "crawl4ai_deep_crawl",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
     "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
     "vision_analyze", "image_generate", "text_to_speech",
@@ -112,6 +113,8 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         if urls:
             return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
         return "web extract"
+    if tool_name == "crawl4ai_deep_crawl":
+        return f"deep crawl: {args.get('url', '?')}"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"
         sid = str(args.get("session_id") or "").strip()

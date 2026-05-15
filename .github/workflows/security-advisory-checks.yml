@@ -1,0 +1,58 @@
+name: Security Advisory Checks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-advisory-checks-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  advisory-audit:
+    name: advisory-audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v4.3.0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524f8c527ef179e95f04d8cd9d884c7ad55 # v5.4.0
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@f8b8b7c89d5bfd329c458fb2a86de32fa3e9b1c3 # v6.6.0
+
+      - name: Install osv-scanner
+        env:
+          OSV_SCANNER_VERSION: v2.3.8
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" -o /tmp/osv-scanner
+          chmod +x /tmp/osv-scanner
+          sudo mv /tmp/osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: Audit Python uv.lock
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ]; then
+            osv-scanner scan --lockfile=uv.lock
+          else
+            echo 'uv.lock not present; skipping Python audit'
+          fi
+
+      - name: Audit root npm lockfile if present
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            osv-scanner scan --lockfile=package-lock.json
+          else
+            echo 'root package-lock.json not present; skipping npm audit'
+          fi

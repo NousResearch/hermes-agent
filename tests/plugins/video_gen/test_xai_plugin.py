@@ -54,6 +54,50 @@ def test_xai_generate_requires_xai_key(monkeypatch):
     assert result["error_type"] == "auth_required"
 
 
+def test_xai_available_with_oauth_only(monkeypatch):
+    """The plugin must honour xAI Grok OAuth credentials, not just
+    XAI_API_KEY. Otherwise the agent's tool-availability check filters
+    ``video_generate`` out of the toolbelt and the agent silently falls
+    back to whatever skill advertises video generation (e.g. comfyui).
+    """
+    import plugins.video_gen.xai as xai_plugin
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    assert xai_plugin.XAIVideoGenProvider().is_available() is True
+
+
+def test_xai_resolved_credentials_threaded_through_request(monkeypatch):
+    """OAuth-resolved creds must reach the HTTP layer — bug class where
+    ``is_available()`` says yes but the request still hits with no key.
+    """
+    import plugins.video_gen.xai as xai_plugin
+
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "tools.xai_http.resolve_xai_http_credentials",
+        lambda: {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    api_key, base_url = xai_plugin._resolve_xai_credentials()
+    assert api_key == "oauth-bearer-token"
+    assert base_url == "https://api.x.ai/v1"
+    headers = xai_plugin._xai_headers(api_key)
+    assert headers["Authorization"] == "Bearer oauth-bearer-token"
+
+
 def test_xai_no_operation_kwarg():
     """The ABC's generate() signature no longer accepts 'operation'.
     Passing it through **kwargs should be ignored (forward-compat)."""

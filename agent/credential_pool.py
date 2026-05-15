@@ -29,6 +29,7 @@ from hermes_cli.auth import (
     _resolve_zai_base_url,
     _save_auth_store,
     _save_provider_state,
+    _store_provider_state,
     read_credential_pool,
     write_credential_pool,
 )
@@ -539,6 +540,64 @@ class CredentialPool:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
         return entry
 
+    def _sync_xai_oauth_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+        """Sync an xAI OAuth pool entry from auth.json if tokens differ.
+
+        xAI OAuth refresh tokens are single-use.  When another Hermes process
+        (or another profile sharing the same auth.json) refreshes the token,
+        it writes the new pair to ``providers["xai-oauth"]["tokens"]`` under
+        ``_auth_store_lock``.  Without this resync, our in-memory pool entry
+        keeps the consumed refresh_token and the next ``_refresh_entry`` call
+        would replay it and get a ``refresh_token_reused``-style 4xx.
+
+        Only applies to entries seeded from the singleton (``loopback_pkce``);
+        manually added entries (``manual:xai_pkce``) are independent
+        credentials with their own refresh-token lifecycle.
+        """
+        if self.provider != "xai-oauth" or entry.source != "loopback_pkce":
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "xai-oauth")
+            if not isinstance(state, dict):
+                return entry
+            tokens = state.get("tokens")
+            if not isinstance(tokens, dict):
+                return entry
+            store_access = tokens.get("access_token", "")
+            store_refresh = tokens.get("refresh_token", "")
+            entry_access = entry.access_token or ""
+            entry_refresh = entry.refresh_token or ""
+            if store_access and (
+                store_access != entry_access
+                or (store_refresh and store_refresh != entry_refresh)
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing xAI OAuth tokens from auth.json "
+                    "(refreshed by another process)",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": store_access,
+                    "refresh_token": store_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if state.get("last_refresh"):
+                    field_updates["last_refresh"] = state["last_refresh"]
+                updated = replace(entry, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync xAI OAuth entry from auth.json: %s", exc)
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -604,9 +663,22 @@ class CredentialPool:
         re-seeding a consumed single-use refresh token.
 
         Applies to any OAuth provider whose singleton lives in auth.json
-        (currently Nous and OpenAI Codex).
+        (currently Nous, OpenAI Codex, and xAI Grok OAuth).
+
+        ``set_active=False`` on every write: a pool sync-back is a
+        token-rotation side effect, not the user choosing a provider.
+        Using ``_save_provider_state`` (which sets ``active_provider``)
+        here would mean every Nous/Codex/xAI refresh in a multi-provider
+        setup silently flips the ``active_provider`` flag — the next
+        ``hermes`` invocation that defaults to the active provider
+        (e.g. setup wizard, ``hermes auth status``) would land on
+        whatever provider happened to refresh last, not whatever the
+        user actually chose.
         """
-        if entry.source != "device_code":
+        # Only sync entries that were seeded *from* a singleton.  Manually
+        # added pool entries (source="manual:*") are independent credentials
+        # and must not write back to the singleton.
+        if entry.source not in {"device_code", "loopback_pkce"}:
             return
         try:
             with _auth_store_lock():
@@ -632,7 +704,7 @@ class CredentialPool:
                             state[extra_key] = val
                     if entry.inference_base_url:
                         state["inference_base_url"] = entry.inference_base_url
-                    _save_provider_state(auth_store, "nous", state)
+                    _store_provider_state(auth_store, "nous", state, set_active=False)
 
                 elif self.provider == "openai-codex":
                     state = _load_provider_state(auth_store, "openai-codex")
@@ -646,7 +718,21 @@ class CredentialPool:
                         tokens["refresh_token"] = entry.refresh_token
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
-                    _save_provider_state(auth_store, "openai-codex", state)
+                    _store_provider_state(auth_store, "openai-codex", state, set_active=False)
+
+                elif self.provider == "xai-oauth":
+                    state = _load_provider_state(auth_store, "xai-oauth")
+                    if not isinstance(state, dict):
+                        return
+                    tokens = state.get("tokens")
+                    if not isinstance(tokens, dict):
+                        return
+                    tokens["access_token"] = entry.access_token
+                    if entry.refresh_token:
+                        tokens["refresh_token"] = entry.refresh_token
+                    if entry.last_refresh:
+                        state["last_refresh"] = entry.last_refresh
+                    _store_provider_state(auth_store, "xai-oauth", state, set_active=False)
 
                 else:
                     return
@@ -690,6 +776,25 @@ class CredentialPool:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
                 refreshed = auth_mod.refresh_codex_oauth_pure(
+                    entry.access_token,
+                    entry.refresh_token,
+                )
+                updated = replace(
+                    entry,
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed["refresh_token"],
+                    last_refresh=refreshed.get("last_refresh"),
+                )
+            elif self.provider == "xai-oauth":
+                # Adopt fresher tokens from auth.json before spending the
+                # refresh_token — single-use tokens consumed by another
+                # process (or another profile sharing the singleton) would
+                # otherwise trigger ``refresh_token_reused`` on the next
+                # POST.  Only meaningful for singleton-seeded entries.
+                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                refreshed = auth_mod.refresh_xai_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
                 )
@@ -777,6 +882,30 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            # For xai-oauth: same race as nous — another process may have
+            # consumed the refresh token between our proactive sync and the
+            # HTTP call.  Re-check auth.json and adopt the fresh tokens if
+            # they have rotated since.  Only meaningful for singleton-seeded
+            # (loopback_pkce) entries; manual entries don't share state with
+            # the singleton.
+            if self.provider == "xai-oauth":
+                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug(
+                        "xAI OAuth refresh failed but auth.json has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    return updated
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
             # auth.json and adopt the fresh tokens if available.
@@ -829,6 +958,11 @@ class CredentialPool:
                 entry.access_token,
                 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
             )
+        if self.provider == "xai-oauth":
+            return auth_mod._xai_access_token_is_expiring(
+                entry.access_token,
+                auth_mod.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+            )
         if self.provider == "nous":
             # Nous refresh/mint can require network access and should happen when
             # runtime credentials are actually resolved, not merely when the pool
@@ -880,6 +1014,17 @@ class CredentialPool:
                     and entry.source == "device_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # For xai-oauth singleton-seeded entries, identical pattern:
+            # an entry frozen as exhausted may simply be holding stale
+            # tokens that another process (or a fresh `hermes model` ->
+            # xAI Grok OAuth login) has since rotated in auth.json.
+            if (self.provider == "xai-oauth"
+                    and entry.source == "loopback_pkce"
+                    and entry.last_status == STATUS_EXHAUSTED):
+                synced = self._sync_xai_oauth_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -1391,6 +1536,37 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
                     "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                },
+            )
+
+    elif provider == "xai-oauth":
+        # When the user logs in via ``hermes model`` -> xAI Grok OAuth,
+        # tokens are written to the auth.json singleton
+        # (``providers["xai-oauth"]``).  Surface them in the pool too so
+        # ``hermes auth list`` reflects the logged-in state and so the pool
+        # is the single source of truth for refresh during runtime resolution.
+        if _is_suppressed(provider, "loopback_pkce"):
+            return changed, active_sources
+
+        state = _load_provider_state(auth_store, "xai-oauth")
+        tokens = state.get("tokens") if isinstance(state, dict) else None
+        if isinstance(tokens, dict) and tokens.get("access_token"):
+            active_sources.add("loopback_pkce")
+            from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+            base_url = DEFAULT_XAI_OAUTH_BASE_URL
+            changed |= _upsert_entry(
+                entries,
+                provider,
+                "loopback_pkce",
+                {
+                    "source": "loopback_pkce",
+                    "auth_type": AUTH_TYPE_OAUTH,
+                    "access_token": tokens.get("access_token", ""),
+                    "refresh_token": tokens.get("refresh_token"),
+                    "base_url": base_url,
+                    "last_refresh": state.get("last_refresh"),
+                    "label": label_from_token(tokens.get("access_token", ""), "loopback_pkce"),
                 },
             )
 

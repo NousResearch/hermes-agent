@@ -726,7 +726,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers",
+        "extra_headers", "extra_body",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -775,6 +775,19 @@ def _preflight_codex_api_kwargs(
             normalized_headers[key.strip()] = str(value)
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
+
+    extra_body = api_kwargs.get("extra_body")
+    if extra_body is not None:
+        if not isinstance(extra_body, dict):
+            raise ValueError("Codex Responses request 'extra_body' must be an object.")
+        # Pass extra_body through verbatim — used by xAI Responses to
+        # carry `prompt_cache_key` as a body-level field (the documented
+        # cache-routing surface on /v1/responses). The openai SDK
+        # serializes extra_body into the JSON body without per-field
+        # type checks, so it survives Responses.stream() kwarg-signature
+        # changes that would otherwise raise TypeError before the wire.
+        if extra_body:
+            normalized["extra_body"] = dict(extra_body)
 
     if allow_stream:
         stream = api_kwargs.get("stream")

@@ -100,6 +100,49 @@ class TestCodexBuildKwargs:
         )
         assert "prompt_cache_key" not in kw
 
+    def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
+        """xAI's Responses API documents ``prompt_cache_key`` as the
+        body-level cache-routing key (the ``x-grok-conv-id`` header is
+        Chat-Completions-only). Passing it via ``extra_body`` is robust
+        against openai SDK builds whose ``Responses.stream()`` kwarg
+        signature ever drops the field — the body field still serializes
+        and reaches xAI either way. The ``x-grok-conv-id`` header is kept
+        as a belt-and-braces fallback so cache routing survives even
+        when the body field would be stripped by an intermediate proxy.
+        Ref: https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits
+        """
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="conv-xai-1",
+            is_xai_responses=True,
+        )
+        # Top-level prompt_cache_key must NOT be set for xAI — the SDK
+        # signature drop is what motivated the extra_body indirection in
+        # the first place. The cache-routing field must travel in the
+        # body via extra_body.
+        assert "prompt_cache_key" not in kw
+        assert kw.get("extra_body", {}).get("prompt_cache_key") == "conv-xai-1"
+        # Header kept as belt-and-braces.
+        assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-xai-1"
+
+    def test_xai_responses_extra_body_preserves_caller_fields(self, transport):
+        """When the caller already supplies ``extra_body`` (e.g. via
+        request_overrides), the xAI cache-key injection must merge into
+        the existing dict instead of overwriting it. Caller-supplied
+        ``prompt_cache_key`` wins (setdefault semantics) so user overrides
+        aren't silently clobbered by the transport."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="conv-xai-1",
+            is_xai_responses=True,
+            request_overrides={"extra_body": {"prompt_cache_key": "caller-override", "other_field": 42}},
+        )
+        eb = kw.get("extra_body", {})
+        assert eb.get("prompt_cache_key") == "caller-override"
+        assert eb.get("other_field") == 42
+
     def test_max_tokens(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

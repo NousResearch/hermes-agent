@@ -89,18 +89,25 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
+        response_tools = _responses_tools(tools)
         kwargs = {
             "model": model,
             "instructions": instructions,
             "input": _chat_messages_to_responses_input(payload_messages),
-            "tools": _responses_tools(tools),
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
+            "tools": response_tools,
             "store": False,
         }
+        if response_tools:
+            kwargs["tool_choice"] = "auto"
+            kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
-        if not is_github_responses and session_id:
+        # xAI's Responses API uses `prompt_cache_key` (body-level) as the
+        # cache-routing key, not a top-level kwarg — the body-field
+        # injection below survives openai SDK builds whose
+        # Responses.stream() signature drops the kwarg. Everything else
+        # that ISN'T github/xAI keeps using the typed kwarg.
+        if not is_github_responses and not is_xai_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:
@@ -164,6 +171,22 @@ class ResponsesApiTransport(ProviderTransport):
                 )
             merged_extra_headers["x-grok-conv-id"] = session_id
             kwargs["extra_headers"] = merged_extra_headers
+
+            # xAI Responses cache-routing field. Lives in the request body
+            # (per https://docs.x.ai/.../prompt-caching/maximizing-cache-hits),
+            # so we ship it via extra_body — the openai SDK serializes
+            # extra_body fields into the JSON body without per-field type
+            # validation, sidestepping the TypeError that fires on
+            # Responses.stream() builds whose `prompt_cache_key` kwarg has
+            # been dropped. Setdefault preserves a caller-supplied value
+            # (e.g. request_overrides.extra_body.prompt_cache_key) over
+            # the auto-derived session_id.
+            existing_extra_body = kwargs.get("extra_body")
+            merged_extra_body: Dict[str, Any] = {}
+            if isinstance(existing_extra_body, dict):
+                merged_extra_body.update(existing_extra_body)
+            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            kwargs["extra_body"] = merged_extra_body
 
         return kwargs
 

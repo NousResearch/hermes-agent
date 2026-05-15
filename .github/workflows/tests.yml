@@ -41,7 +41,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[dev,acp,web,voice]"
 
       - name: Run tests
         run: |
@@ -74,7 +74,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[dev,acp,web,voice]"
 
       - name: Run e2e tests
         run: |

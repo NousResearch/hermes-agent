@@ -10540,7 +10540,7 @@ class GatewayRunner:
 
         # Read current effective mode for this platform via the resolver
         from gateway.display_config import resolve_display_setting
-        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+        current = resolve_display_setting(user_config, platform_key, "tool_progress", None)
         if current not in cycle:
             current = "all"
         idx = (cycle.index(current) + 1) % len(cycle)

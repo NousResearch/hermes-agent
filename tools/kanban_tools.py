@@ -219,6 +219,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
+        "tags": list(task.tags) if task.tags else [],
     }
 
 
@@ -258,6 +259,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "completed_at": t.completed_at,
                     "result": t.result,
                     "current_run_id": t.current_run_id,
+                    "tags": list(t.tags) if t.tags else [],
                 }
 
             def _run_dict(r):
@@ -585,6 +587,13 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    tags = args.get("tags")
+    if isinstance(tags, str):
+        tags = [tags]
+    if tags is not None and not isinstance(tags, (list, tuple)):
+        return tool_error(
+            f"tags must be a list of strings, got {type(tags).__name__}"
+        )
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -611,6 +620,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                tags=tags,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
@@ -1009,6 +1019,16 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Free-form tags for filtering/grouping. Tags are "
+                    "normalised to lowercase; whitespace inside a tag "
+                    "is rejected (pass each as a separate string). "
+                    "Filter on these later with `hermes kanban list --tag`."
                 ),
             },
         },

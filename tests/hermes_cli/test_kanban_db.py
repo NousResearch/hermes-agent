@@ -1530,3 +1530,278 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
         conn.close()
     age = kb.task_age(task)
     assert age["created_age_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+def test_create_task_with_tags_normalises(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", tags=["Urgent", " refactor ", "URGENT"])
+        t = kb.get_task(conn, tid)
+    assert t.tags == ["refactor", "urgent"]  # sorted, lowercased, deduped
+
+
+def test_create_task_without_tags_leaves_column_null(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        t = kb.get_task(conn, tid)
+    assert t.tags is None
+
+
+def test_add_task_tags_unions_existing(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", tags=["alpha"])
+        result = kb.add_task_tags(conn, tid, ["Beta", "alpha"])
+        t = kb.get_task(conn, tid)
+    assert result == ["alpha", "beta"]
+    assert t.tags == ["alpha", "beta"]
+
+
+def test_remove_task_tags_drops_listed_only(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", tags=["a", "b", "c"])
+        result = kb.remove_task_tags(conn, tid, ["b", "missing"])
+        t = kb.get_task(conn, tid)
+    assert result == ["a", "c"]
+    assert t.tags == ["a", "c"]
+
+
+def test_set_task_tags_replaces_wholesale(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", tags=["a", "b"])
+        result = kb.set_task_tags(conn, tid, ["x", "y"])
+        t = kb.get_task(conn, tid)
+    assert result == ["x", "y"]
+    assert t.tags == ["x", "y"]
+
+
+def test_set_task_tags_empty_clears(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t", tags=["a"])
+        result = kb.set_task_tags(conn, tid, [])
+        t = kb.get_task(conn, tid)
+    assert result == []
+    # Empty list collapses to NULL on disk; from_row returns None for that.
+    assert t.tags is None
+
+
+def test_tag_validation_rejects_whitespace_and_empty(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        with pytest.raises(ValueError, match="whitespace"):
+            kb.add_task_tags(conn, tid, ["bad tag"])
+        with pytest.raises(ValueError, match="cannot be empty"):
+            kb.add_task_tags(conn, tid, ["   "])
+        with pytest.raises(ValueError, match="at least one"):
+            kb.add_task_tags(conn, tid, [])
+
+
+def test_tag_unknown_task_raises(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="unknown task"):
+            kb.add_task_tags(conn, "t_missing", ["x"])
+
+
+def test_tag_events_recorded(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        kb.add_task_tags(conn, tid, ["a"])
+        kb.remove_task_tags(conn, tid, ["a"])
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+    assert "tagged" in kinds
+    assert "untagged" in kinds
+
+
+# ---------------------------------------------------------------------------
+# list_tasks: tag filter + sort
+# ---------------------------------------------------------------------------
+
+def test_list_tasks_tag_filter(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="A", tags=["bug"])
+        b = kb.create_task(conn, title="B", tags=["feature"])
+        c = kb.create_task(conn, title="C", tags=["bug", "feature"])
+        # Case-insensitive match
+        ids = {t.id for t in kb.list_tasks(conn, tag="BUG")}
+    assert ids == {a, c}
+    with kb.connect() as conn:
+        ids = {t.id for t in kb.list_tasks(conn, tag="feature")}
+    assert ids == {b, c}
+
+
+def test_list_tasks_tag_filter_empty_rejected(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="x")
+        with pytest.raises(ValueError):
+            kb.list_tasks(conn, tag="   ")
+
+
+def test_list_tasks_sort_created_at_ascending_default(kanban_home):
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first")
+        # Backdate created_at so sort order is deterministic.
+        conn.execute("UPDATE tasks SET created_at = 1000 WHERE id = ?", (first,))
+        second = kb.create_task(conn, title="second")
+        conn.execute("UPDATE tasks SET created_at = 2000 WHERE id = ?", (second,))
+        ids = [t.id for t in kb.list_tasks(conn, sort_by="created_at")]
+    assert ids == [first, second]
+
+
+def test_list_tasks_sort_created_at_descending(kanban_home):
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first")
+        conn.execute("UPDATE tasks SET created_at = 1000 WHERE id = ?", (first,))
+        second = kb.create_task(conn, title="second")
+        conn.execute("UPDATE tasks SET created_at = 2000 WHERE id = ?", (second,))
+        ids = [t.id for t in kb.list_tasks(conn, sort_by="created_at", descending=True)]
+    assert ids == [second, first]
+
+
+def test_list_tasks_sort_priority_descending_default(kanban_home):
+    with kb.connect() as conn:
+        low = kb.create_task(conn, title="low", priority=1)
+        high = kb.create_task(conn, title="high", priority=10)
+        mid = kb.create_task(conn, title="mid", priority=5)
+        ids = [t.id for t in kb.list_tasks(conn, sort_by="priority")]
+    assert ids[0] == high
+    assert ids[-1] == low
+
+
+def test_list_tasks_sort_updated_uses_most_recent_lifecycle_ts(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="x")
+        b = kb.create_task(conn, title="b", assignee="x")
+        # Backdate creation, then bump b's started_at to be most recent.
+        conn.execute("UPDATE tasks SET created_at = 1000 WHERE id = ?", (a,))
+        conn.execute("UPDATE tasks SET created_at = 1100 WHERE id = ?", (b,))
+        conn.execute("UPDATE tasks SET started_at = 9000 WHERE id = ?", (b,))
+        ids = [t.id for t in kb.list_tasks(conn, sort_by="updated")]
+    assert ids[0] == b
+
+
+def test_list_tasks_invalid_sort_key_raises(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="x")
+        with pytest.raises(ValueError, match="sort_by"):
+            kb.list_tasks(conn, sort_by="nonsense")
+
+
+def test_list_tasks_unchanged_default_order(kanban_home):
+    """Regression guard: default ordering must remain priority DESC, created_at ASC."""
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", priority=1)
+        b = kb.create_task(conn, title="b", priority=5)
+        ids = [t.id for t in kb.list_tasks(conn)]
+    assert ids[0] == b
+    assert ids[1] == a
+
+
+# ---------------------------------------------------------------------------
+# Merge
+# ---------------------------------------------------------------------------
+
+def test_merge_reparents_children_and_archives_dup(kanban_home):
+    with kb.connect() as conn:
+        keep = kb.create_task(conn, title="keep")
+        dup = kb.create_task(conn, title="dup")
+        child_a = kb.create_task(conn, title="ca", parents=[dup])
+        child_b = kb.create_task(conn, title="cb", parents=[dup])
+        result = kb.merge_tasks(conn, keep, dup)
+        keep_children = kb.child_ids(conn, keep)
+        dup_after = kb.get_task(conn, dup)
+    assert result["moved_children"] == 2
+    assert set(keep_children) == {child_a, child_b}
+    assert dup_after.status == "archived"
+
+
+def test_merge_reparents_parents(kanban_home):
+    with kb.connect() as conn:
+        upstream = kb.create_task(conn, title="upstream")
+        keep = kb.create_task(conn, title="keep")
+        dup = kb.create_task(conn, title="dup", parents=[upstream])
+        result = kb.merge_tasks(conn, keep, dup)
+        keep_parents = kb.parent_ids(conn, keep)
+    assert result["moved_parents"] == 1
+    assert keep_parents == [upstream]
+
+
+def test_merge_transfers_comments_with_source_prefix(kanban_home):
+    with kb.connect() as conn:
+        keep = kb.create_task(conn, title="keep")
+        dup = kb.create_task(conn, title="dup")
+        kb.add_comment(conn, dup, "alice", "first thought")
+        kb.add_comment(conn, dup, "bob", "second thought")
+        kb.merge_tasks(conn, keep, dup)
+        keep_comments = kb.list_comments(conn, keep)
+        dup_comments = kb.list_comments(conn, dup)
+    assert len(keep_comments) == 2
+    bodies = [c.body for c in keep_comments]
+    assert any("first thought" in b and dup in b for b in bodies)
+    assert dup_comments == []
+
+
+def test_merge_unions_tags(kanban_home):
+    with kb.connect() as conn:
+        keep = kb.create_task(conn, title="keep", tags=["alpha"])
+        dup = kb.create_task(conn, title="dup", tags=["beta", "alpha"])
+        result = kb.merge_tasks(conn, keep, dup)
+        keep_task = kb.get_task(conn, keep)
+    assert result["tags"] == ["alpha", "beta"]
+    assert keep_task.tags == ["alpha", "beta"]
+
+
+def test_merge_rejects_self_merge(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        with pytest.raises(ValueError, match="itself"):
+            kb.merge_tasks(conn, a, a)
+
+
+def test_merge_rejects_unknown_ids(kanban_home):
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a")
+        with pytest.raises(ValueError, match="unknown task"):
+            kb.merge_tasks(conn, a, "t_missing")
+        with pytest.raises(ValueError, match="unknown task"):
+            kb.merge_tasks(conn, "t_missing", a)
+
+
+def test_merge_skips_cycle_inducing_reparent(kanban_home):
+    """If dup's child is an ancestor of keep, re-parenting would cycle.
+    The link is dropped rather than added."""
+    with kb.connect() as conn:
+        # ancestor -> keep already; dup -> ancestor would put keep under
+        # itself transitively if we re-parented.
+        ancestor = kb.create_task(conn, title="ancestor")
+        keep = kb.create_task(conn, title="keep", parents=[ancestor])
+        dup = kb.create_task(conn, title="dup")
+        # link dup -> ancestor: now if we merged dup into keep, we'd be
+        # adding keep -> ancestor, but ancestor -> keep already exists
+        # which is a direct cycle.
+        kb.link_tasks(conn, dup, ancestor)
+        kb.merge_tasks(conn, keep, dup)
+        # The cycle-inducing edge must NOT have been installed.
+        assert keep not in kb.parent_ids(conn, ancestor)
+
+
+def test_merge_records_events_on_both_sides(kanban_home):
+    with kb.connect() as conn:
+        keep = kb.create_task(conn, title="keep")
+        dup = kb.create_task(conn, title="dup")
+        kb.merge_tasks(conn, keep, dup)
+        keep_kinds = [e.kind for e in kb.list_events(conn, keep)]
+        dup_kinds = [e.kind for e in kb.list_events(conn, dup)]
+    assert "merged_from" in keep_kinds
+    assert "merged_into" in dup_kinds
+    assert "archived" in dup_kinds
+
+
+def test_merge_refuses_when_dup_is_running(kanban_home):
+    with kb.connect() as conn:
+        keep = kb.create_task(conn, title="keep")
+        dup = kb.create_task(conn, title="dup", assignee="x")
+        kb.claim_task(conn, dup)
+        with pytest.raises(ValueError, match="running"):
+            kb.merge_tasks(conn, keep, dup)

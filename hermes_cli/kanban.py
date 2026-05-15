@@ -50,7 +50,8 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    tags = f"  #{' #'.join(t.tags)}" if t.tags else ""
+    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}{tags}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -71,6 +72,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "tags": list(t.tags) if t.tags else [],
     }
 
 
@@ -304,6 +306,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--tag", default=None,
+                        help="Only tasks bearing this tag (case-insensitive)")
+    p_list.add_argument("--sort", dest="sort_by", default=None,
+                        choices=sorted(kb.VALID_LIST_SORT_KEYS),
+                        help="Sort by created_at, priority, or updated "
+                             "(most recent lifecycle timestamp)")
+    sort_dir = p_list.add_mutually_exclusive_group()
+    sort_dir.add_argument("--asc", dest="sort_dir", action="store_const",
+                          const="asc", help="Sort ascending (default for --sort created_at)")
+    sort_dir.add_argument("--desc", dest="sort_dir", action="store_const",
+                          const="desc", help="Sort descending (default for --sort priority/updated)")
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
@@ -385,6 +398,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
+
+    # --- tag ---
+    p_tag = sub.add_parser(
+        "tag",
+        help="Add, remove, or set tags on a task",
+    )
+    p_tag.add_argument("task_id")
+    p_tag.add_argument("tags", nargs="*",
+                       help="Tag names. Each tag is normalised to lowercase. "
+                            "Whitespace inside a tag is rejected.")
+    tag_mode = p_tag.add_mutually_exclusive_group()
+    tag_mode.add_argument("--remove", action="store_true",
+                          help="Remove the listed tags instead of adding them")
+    tag_mode.add_argument("--replace", action="store_true",
+                          help="Replace the entire tag set with the listed tags "
+                               "(pass none to clear)")
+    p_tag.add_argument("--json", action="store_true",
+                       help="Emit the resulting tag list as JSON")
+
+    # --- merge ---
+    p_merge = sub.add_parser(
+        "merge",
+        help="Merge a duplicate task into a kept task (re-parents links, "
+             "transfers comments, archives the duplicate)",
+    )
+    p_merge.add_argument("keep_id", help="Task to keep")
+    p_merge.add_argument("dup_id", help="Duplicate task to merge in and archive")
+    p_merge.add_argument("--json", action="store_true",
+                         help="Emit the merge summary as JSON")
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -721,6 +763,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
         "comment":  _cmd_comment,
+        "tag":      _cmd_tag,
+        "merge":    _cmd_merge,
         "complete": _cmd_complete,
         "edit":     _cmd_edit,
         "block":    _cmd_block,
@@ -1102,17 +1146,32 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+    sort_dir = getattr(args, "sort_dir", None)
+    descending: Optional[bool]
+    if sort_dir == "asc":
+        descending = False
+    elif sort_dir == "desc":
+        descending = True
+    else:
+        descending = None
     with kb.connect() as conn:
         # Cheap "mini-dispatch": recompute ready so list output reflects
         # dependencies that may have cleared since the last dispatcher tick.
         kb.recompute_ready(conn)
-        tasks = kb.list_tasks(
-            conn,
-            assignee=assignee,
-            status=args.status,
-            tenant=args.tenant,
-            include_archived=args.archived,
-        )
+        try:
+            tasks = kb.list_tasks(
+                conn,
+                assignee=assignee,
+                status=args.status,
+                tenant=args.tenant,
+                include_archived=args.archived,
+                tag=getattr(args, "tag", None),
+                sort_by=getattr(args, "sort_by", None),
+                descending=descending,
+            )
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0
@@ -1204,6 +1263,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.tags:
+        print(f"  tags:      {', '.join(task.tags)}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1517,6 +1578,61 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
         kb.add_comment(conn, args.task_id, author, body)
     print(f"Comment added to {args.task_id}")
+    return 0
+
+
+def _cmd_tag(args: argparse.Namespace) -> int:
+    tags = list(args.tags or [])
+    # --replace with no tags is the explicit "clear all" form. Anything
+    # else with an empty tag list is operator error.
+    if not tags and not args.replace:
+        print("kanban tag: at least one tag is required "
+              "(use --replace with no tags to clear)", file=sys.stderr)
+        return 2
+    try:
+        with kb.connect() as conn:
+            if not kb.get_task(conn, args.task_id):
+                print(f"no such task: {args.task_id}", file=sys.stderr)
+                return 1
+            if args.replace:
+                resulting = kb.set_task_tags(conn, args.task_id, tags)
+                verb = "replaced"
+            elif args.remove:
+                resulting = kb.remove_task_tags(conn, args.task_id, tags)
+                verb = "removed"
+            else:
+                resulting = kb.add_task_tags(conn, args.task_id, tags)
+                verb = "added"
+    except ValueError as exc:
+        print(f"kanban tag: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"task_id": args.task_id, "tags": resulting}))
+        return 0
+    label = ", ".join(resulting) if resulting else "(none)"
+    print(f"{verb} tags on {args.task_id}; current: {label}")
+    return 0
+
+
+def _cmd_merge(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect() as conn:
+            summary = kb.merge_tasks(conn, args.keep_id, args.dup_id)
+    except ValueError as exc:
+        print(f"kanban merge: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(summary))
+        return 0
+    print(
+        f"Merged {args.dup_id} into {args.keep_id}: "
+        f"{summary['moved_children']} child link(s), "
+        f"{summary['moved_parents']} parent link(s), "
+        f"{summary['moved_comments']} comment(s) transferred. "
+        f"{args.dup_id} archived."
+    )
+    if summary["tags"]:
+        print(f"Tags now on {args.keep_id}: {', '.join(summary['tags'])}")
     return 0
 
 

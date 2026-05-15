@@ -606,6 +606,11 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # Free-form tags for filtering/grouping. Stored as a JSON array of
+    # normalised lowercase strings. None = no row written; an empty list
+    # is preserved explicitly so callers can distinguish "untagged" from
+    # "tags cleared" in event payloads.
+    tags: Optional[list] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -619,6 +624,15 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        # Parse tags JSON blob if present
+        tags_value: Optional[list] = None
+        if "tags" in keys and row["tags"]:
+            try:
+                parsed_tags = json.loads(row["tags"])
+                if isinstance(parsed_tags, list):
+                    tags_value = [str(t) for t in parsed_tags if t]
+            except Exception:
+                tags_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -670,6 +684,7 @@ class Task:
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
+            tags=tags_value,
         )
 
 
@@ -796,7 +811,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
-    max_retries          INTEGER
+    max_retries          INTEGER,
+    -- Free-form tags for filtering/grouping (JSON array of normalised
+    -- lowercase strings). NULL or empty array = untagged. Filtering and
+    -- the ``hermes kanban tag`` verb expand this column.
+    tags                 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1076,6 +1095,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
+    if "tags" not in cols:
+        # JSON array of normalised lowercase tag strings. NULL is fine for
+        # existing rows — they're treated as untagged by the filter.
+        _add_column_if_missing(conn, "tasks", "tags", "tags TEXT")
+
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
@@ -1244,6 +1268,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    tags: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1324,6 +1349,22 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Normalise + dedupe tags up-front so we never persist mixed case or
+    # whitespace-padded duplicates.
+    tags_list: Optional[list[str]] = None
+    if tags is not None:
+        normalised: list[str] = []
+        seen_tags: set[str] = set()
+        for t in tags:
+            if t is None or not str(t).strip():
+                continue
+            norm = _normalize_tag(t)
+            if norm in seen_tags:
+                continue
+            seen_tags.add(norm)
+            normalised.append(norm)
+        tags_list = sorted(normalised)
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -1377,8 +1418,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         tenant, idempotency_key, max_runtime_seconds, skills,
-                        max_retries
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        max_retries, tags
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1396,6 +1437,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        json.dumps(tags_list) if tags_list else None,
                     ),
                 )
                 for pid in parents:
@@ -1413,6 +1455,7 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
+                        "tags": list(tags_list) if tags_list else None,
                     },
                 )
             return task_id
@@ -1442,6 +1485,9 @@ def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     return Task.from_row(row) if row else None
 
 
+VALID_LIST_SORT_KEYS = {"created_at", "priority", "updated"}
+
+
 def list_tasks(
     conn: sqlite3.Connection,
     *,
@@ -1450,6 +1496,9 @@ def list_tasks(
     tenant: Optional[str] = None,
     include_archived: bool = False,
     limit: Optional[int] = None,
+    tag: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    descending: Optional[bool] = None,
 ) -> list[Task]:
     query = "SELECT * FROM tasks WHERE 1=1"
     params: list[Any] = []
@@ -1464,13 +1513,327 @@ def list_tasks(
     if tenant is not None:
         query += " AND tenant = ?"
         params.append(tenant)
+    if tag is not None:
+        normalised = _normalize_tag(tag)
+        if not normalised:
+            raise ValueError("tag filter cannot be empty")
+        # json_each on a NULL value yields zero rows, so untagged tasks
+        # are correctly excluded without an extra NULL guard.
+        query += (
+            " AND EXISTS (SELECT 1 FROM json_each(tasks.tags) WHERE json_each.value = ?)"
+        )
+        params.append(normalised)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
-    query += " ORDER BY priority DESC, created_at ASC"
+
+    # Sort key mapping. ``updated`` collapses lifecycle timestamps into
+    # one "most recent activity" column via COALESCE so the operator
+    # doesn't have to know which one was last written.
+    if sort_by is not None and sort_by not in VALID_LIST_SORT_KEYS:
+        raise ValueError(
+            f"sort_by must be one of {sorted(VALID_LIST_SORT_KEYS)}, got {sort_by!r}"
+        )
+    if sort_by is None:
+        # Preserve historical default: priority DESC, then oldest first.
+        query += " ORDER BY priority DESC, created_at ASC"
+    else:
+        if sort_by == "created_at":
+            sort_expr = "created_at"
+            default_desc = False
+        elif sort_by == "priority":
+            sort_expr = "priority"
+            default_desc = True
+        else:  # updated
+            sort_expr = (
+                "COALESCE(completed_at, last_heartbeat_at, started_at, created_at)"
+            )
+            default_desc = True
+        if descending is None:
+            descending = default_desc
+        direction = "DESC" if descending else "ASC"
+        # Tiebreaker on id keeps the order stable when many rows share
+        # the primary sort value (e.g. priority).
+        query += f" ORDER BY {sort_expr} {direction}, id ASC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+_TAG_MAX_LEN = 64
+
+
+def _normalize_tag(tag: Any) -> str:
+    """Normalise a tag for storage/comparison.
+
+    Lowercase + strip + collapse whitespace runs. Rejects empties and
+    over-long names so a typo doesn't quietly produce a tag nobody can
+    type again. Returns the normalised form on success, raises
+    ``ValueError`` on bad input.
+    """
+    if tag is None:
+        raise ValueError("tag cannot be None")
+    s = str(tag).strip().lower()
+    if not s:
+        raise ValueError("tag cannot be empty")
+    if len(s) > _TAG_MAX_LEN:
+        raise ValueError(f"tag exceeds {_TAG_MAX_LEN} chars: {s[:_TAG_MAX_LEN]}…")
+    # Whitespace inside a tag almost certainly means the caller meant
+    # two tags. Reject it so they have to split explicitly.
+    if any(c.isspace() for c in s):
+        raise ValueError(
+            f"tag {tag!r} contains whitespace; pass each tag as a separate argument"
+        )
+    return s
+
+
+def _read_tags(conn: sqlite3.Connection, task_id: str) -> tuple[list[str], bool]:
+    """Return ``(tags, exists)``. ``exists=False`` when the task is gone."""
+    row = conn.execute("SELECT tags FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return ([], False)
+    raw = row["tags"]
+    if not raw:
+        return ([], True)
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return ([], True)
+    if not isinstance(parsed, list):
+        return ([], True)
+    return ([str(t) for t in parsed if t], True)
+
+
+def _write_tags(
+    conn: sqlite3.Connection, task_id: str, tags: list[str], kind: str
+) -> list[str]:
+    """Persist the canonical tag list and append an event. Assumes
+    the caller already holds a write transaction."""
+    payload = json.dumps(tags) if tags else None
+    conn.execute("UPDATE tasks SET tags = ? WHERE id = ?", (payload, task_id))
+    _append_event(conn, task_id, kind, {"tags": list(tags)})
+    return list(tags)
+
+
+def add_task_tags(
+    conn: sqlite3.Connection, task_id: str, tags: Iterable[str]
+) -> list[str]:
+    """Union the given tags into the task's tag set.
+
+    Returns the resulting tag list (sorted for stability). Raises
+    ``ValueError`` on unknown task or bad tag.
+    """
+    new = [_normalize_tag(t) for t in tags]
+    if not new:
+        raise ValueError("at least one tag is required")
+    with write_txn(conn):
+        existing, exists = _read_tags(conn, task_id)
+        if not exists:
+            raise ValueError(f"unknown task {task_id}")
+        combined = sorted(set(existing) | set(new))
+        return _write_tags(conn, task_id, combined, "tagged")
+
+
+def remove_task_tags(
+    conn: sqlite3.Connection, task_id: str, tags: Iterable[str]
+) -> list[str]:
+    """Remove the given tags from the task's tag set (no-op for tags
+    that aren't present). Returns the resulting tag list."""
+    drop = {_normalize_tag(t) for t in tags}
+    if not drop:
+        raise ValueError("at least one tag is required")
+    with write_txn(conn):
+        existing, exists = _read_tags(conn, task_id)
+        if not exists:
+            raise ValueError(f"unknown task {task_id}")
+        combined = sorted(set(existing) - drop)
+        return _write_tags(conn, task_id, combined, "untagged")
+
+
+def set_task_tags(
+    conn: sqlite3.Connection, task_id: str, tags: Iterable[str]
+) -> list[str]:
+    """Replace the task's tag set wholesale. An empty iterable clears
+    every tag (sets the column to NULL)."""
+    new = sorted({_normalize_tag(t) for t in tags}) if tags else []
+    with write_txn(conn):
+        _, exists = _read_tags(conn, task_id)
+        if not exists:
+            raise ValueError(f"unknown task {task_id}")
+        return _write_tags(conn, task_id, new, "tagged")
+
+
+def get_task_tags(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return the task's tag list (empty if untagged or unknown)."""
+    tags, _exists = _read_tags(conn, task_id)
+    return tags
+
+
+# ---------------------------------------------------------------------------
+# Merge
+# ---------------------------------------------------------------------------
+
+def merge_tasks(
+    conn: sqlite3.Connection, keep_id: str, dup_id: str
+) -> dict:
+    """Merge ``dup_id`` into ``keep_id``: re-parent links, union tags,
+    transfer comments, archive the duplicate, and record a
+    ``merged_into`` event on both sides.
+
+    Returns a summary dict (counts of moved children/parents/comments,
+    final tag list on ``keep``). Raises ``ValueError`` on unknown ids,
+    self-merge, or cycle-inducing re-parenting that can't be safely
+    rewritten.
+
+    The duplicate is preserved as an archived row so existing references
+    (event log, prior runs, comment-thread URLs) keep resolving — the
+    merge isn't a delete.
+    """
+    if keep_id == dup_id:
+        raise ValueError("cannot merge a task into itself")
+    with write_txn(conn):
+        keep_row = conn.execute(
+            "SELECT id, status, tags FROM tasks WHERE id = ?", (keep_id,)
+        ).fetchone()
+        if keep_row is None:
+            raise ValueError(f"unknown task {keep_id}")
+        dup_row = conn.execute(
+            "SELECT id, status, tags FROM tasks WHERE id = ?", (dup_id,)
+        ).fetchone()
+        if dup_row is None:
+            raise ValueError(f"unknown task {dup_id}")
+        if keep_row["status"] == "archived":
+            raise ValueError(
+                f"cannot merge into archived task {keep_id}; unarchive it first"
+            )
+        if dup_row["status"] == "archived":
+            raise ValueError(
+                f"task {dup_id} is already archived; nothing to merge"
+            )
+        if dup_row["status"] == "running":
+            raise ValueError(
+                f"cannot merge {dup_id}: currently running. Reclaim or wait first."
+            )
+
+        # Re-parent children: any link (dup -> X) becomes (keep -> X).
+        # Skip links that would self-loop or cycle.
+        child_links = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ?", (dup_id,)
+        ).fetchall()
+        moved_children = 0
+        for r in child_links:
+            child = r["child_id"]
+            conn.execute(
+                "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+                (dup_id, child),
+            )
+            if child == keep_id:
+                continue
+            if _would_cycle(conn, keep_id, child):
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (keep_id, child),
+            )
+            if cur.rowcount:
+                moved_children += 1
+
+        # Re-parent parents: any link (X -> dup) becomes (X -> keep).
+        parent_links = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?", (dup_id,)
+        ).fetchall()
+        moved_parents = 0
+        for r in parent_links:
+            parent = r["parent_id"]
+            conn.execute(
+                "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+                (parent, dup_id),
+            )
+            if parent == keep_id:
+                continue
+            if _would_cycle(conn, parent, keep_id):
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent, keep_id),
+            )
+            if cur.rowcount:
+                moved_parents += 1
+
+        # Transfer comments from dup to keep, prefixing each with the
+        # source so the merged thread stays attributable.
+        comment_rows = conn.execute(
+            "SELECT id, author, body, created_at FROM task_comments "
+            "WHERE task_id = ? ORDER BY created_at ASC, id ASC",
+            (dup_id,),
+        ).fetchall()
+        moved_comments = 0
+        for c in comment_rows:
+            prefixed = f"[merged from {dup_id}] {c['body']}"
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (keep_id, c["author"], prefixed, c["created_at"]),
+            )
+            moved_comments += 1
+        # Drop the originals so the dup row's comment thread on the
+        # archived task is empty (the source is recorded in the prefix).
+        if comment_rows:
+            conn.execute("DELETE FROM task_comments WHERE task_id = ?", (dup_id,))
+
+        # Union tags.
+        def _parse_tag_blob(blob):
+            if not blob:
+                return []
+            try:
+                parsed = json.loads(blob)
+            except Exception:
+                return []
+            return [str(t) for t in parsed if t] if isinstance(parsed, list) else []
+
+        merged_tags = sorted(
+            set(_parse_tag_blob(keep_row["tags"]))
+            | set(_parse_tag_blob(dup_row["tags"]))
+        )
+        tags_payload = json.dumps(merged_tags) if merged_tags else None
+        conn.execute(
+            "UPDATE tasks SET tags = ? WHERE id = ?", (tags_payload, keep_id)
+        )
+
+        # Record events on both sides for an auditable trail.
+        _append_event(
+            conn, keep_id, "merged_from",
+            {"dup": dup_id, "moved_children": moved_children,
+             "moved_parents": moved_parents, "moved_comments": moved_comments,
+             "tags": merged_tags},
+        )
+        _append_event(
+            conn, dup_id, "merged_into", {"keep": keep_id},
+        )
+
+        # Finally, archive the dup. ``archive_task`` opens its own write
+        # transaction; we're already inside one, so inline the UPDATE +
+        # event to stay atomic.
+        conn.execute(
+            "UPDATE tasks SET status = 'archived', "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status != 'archived'",
+            (dup_id,),
+        )
+        _append_event(conn, dup_id, "archived", None)
+
+        return {
+            "keep_id": keep_id,
+            "dup_id": dup_id,
+            "moved_children": moved_children,
+            "moved_parents": moved_parents,
+            "moved_comments": moved_comments,
+            "tags": merged_tags,
+        }
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:

@@ -1188,15 +1188,21 @@ def _update_acp_registry_versions(semver: str) -> None:
 def build_release_artifacts(semver: str) -> list[Path]:
     """Build sdist/wheel artifacts for the current release.
 
-    Returns the artifact paths when the local environment has ``python -m build``
-    available. If build tooling is missing or the build fails, returns an empty
-    list and lets the release proceed without attached Python artifacts.
+    Tries ``uv build`` first (matching the CI workflow), falls back to
+    ``python -m build`` if uv is unavailable.
     """
     dist_dir = REPO_ROOT / "dist"
     shutil.rmtree(dist_dir, ignore_errors=True)
 
+    # Prefer uv build (matches CI workflow), fall back to python -m build.
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        cmd = [uv_bin, "build", "--sdist", "--wheel"]
+    else:
+        cmd = [sys.executable, "-m", "build", "--sdist", "--wheel"]
+
     result = subprocess.run(
-        [sys.executable, "-m", "build", "--sdist", "--wheel"],
+        cmd,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
@@ -1209,7 +1215,7 @@ def build_release_artifacts(semver: str) -> list[Path]:
             print(f"    {stderr.splitlines()[-1]}")
         elif stdout:
             print(f"    {stdout.splitlines()[-1]}")
-        print("    Install the 'build' package to attach semver-named sdist/wheel assets.")
+        print("    Install uv or the 'build' package to attach sdist/wheel assets.")
         return []
 
     artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
@@ -1316,11 +1322,11 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject\0body
-    # Using %x00 (null) as separator between subject and body
+    # Format: hash<US>author_name<US>author_email<US>subject\0body
+    # Using %x1f (unit separator) to avoid conflict with | in author names
     log = git(
         "log", range_spec,
-        "--format=%H|%an|%ae|%s%x00%b%x00",
+        "--format=%H%x1f%an%x1f%ae%x1f%s%x00%b%x00",
         "--no-merges",
     )
 
@@ -1334,14 +1340,14 @@ def get_commits(since_tag=None):
         entry = entry.strip()
         if not entry:
             continue
-        # Split on first null to separate "hash|name|email|subject" from "body"
+        # Split on first null to separate "hash<US>name<US>email<US>subject" from "body"
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
         else:
             header = entry
             body = ""
-        parts = header.split("|", 3)
+        parts = header.split("\x1f", 3)
         if len(parts) != 4:
             continue
         sha, name, email, subject = parts
@@ -1361,7 +1367,7 @@ def get_commits(since_tag=None):
     return commits
 
 
-def get_pr_number(subject: str) -> str:
+def get_pr_number(subject: str) -> str | None:
     """Extract PR number from commit subject if present."""
     match = re.search(r"#(\d+)", subject)
     if match:
@@ -1512,6 +1518,7 @@ def main():
         print("No previous tags found. Use --first-release for the initial release.")
         print(f"Would create tag: {tag_name}")
         print(f"Would set version: {new_version}")
+        return
 
     # Get commits
     commits = get_commits(since_tag=prev_tag)
@@ -1556,7 +1563,10 @@ def main():
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
+            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            if ACP_REGISTRY_MANIFEST.exists():
+                add_files.append(str(ACP_REGISTRY_MANIFEST))
+            add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
                 return
@@ -1598,7 +1608,7 @@ def main():
 
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
-        changelog_file.write_text(changelog)
+        changelog_file.write_text(changelog, encoding="utf-8")
 
         gh_cmd = [
             "gh", "release", "create", tag_name,

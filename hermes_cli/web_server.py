@@ -3319,6 +3319,7 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # drops AND the publisher has disconnected.
 _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
+_chat_argv_lock = asyncio.Lock()
 
 
 def _resolve_chat_argv(
@@ -3364,6 +3365,28 @@ def _resolve_chat_argv(
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
+
+
+async def _resolve_chat_argv_async(
+    resume: Optional[str] = None,
+    sidecar_url: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
+    """Resolve chat argv without blocking the dashboard event loop.
+
+    ``_resolve_chat_argv`` may run ``npm install`` / ``npm run build`` through
+    ``_make_tui_argv``.  Keep that synchronous work off the WebSocket event
+    loop so reverse proxies and existing dashboard connections can continue
+    to exchange keepalives while the TUI launch command is prepared.  The
+    async lock preserves the previous one-build-at-a-time behavior when
+    multiple browser tabs connect at once without occupying worker threads
+    while queued connections wait.
+    """
+    async with _chat_argv_lock:
+        return await asyncio.to_thread(
+            _resolve_chat_argv,
+            resume=resume,
+            sidecar_url=sidecar_url,
+        )
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -3438,7 +3461,7 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        argv, cwd, env = await _resolve_chat_argv_async(resume=resume, sidecar_url=sidecar_url)
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")

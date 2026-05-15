@@ -1,7 +1,7 @@
 ---
 name: self-restart
-description: "Trigger a Railway redeploy of the hermes-agent service (container exit + restart on same image)."
-version: 1.1.0
+description: "Trigger a Railway redeploy of the hermes-agent service. Despite the mutation name implying a fast same-image restart, observed 2026-05-15 to take ~8-10 minutes (full rebuild from release-pin), comparable to a release-pin push. Treat as rebuild-class for downtime planning."
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -12,7 +12,9 @@ metadata:
 
 # self-restart
 
-Trigger a Railway redeploy of the hermes-agent service. The container exits and a new container starts on the same image; the entrypoint refreshes `/opt/data/repo`, and daemons + gateway pick up the new code via symlinks.
+Trigger a Railway redeploy of the hermes-agent service. The container exits and a new one starts; the entrypoint refreshes `/opt/data/repo` and re-symlinks workspace skills, and daemons + gateway pick up the new code.
+
+**Observed duration (2026-05-15):** ~8 minutes BUILDING + ~1 minute DEPLOYING ≈ ~10 minutes total. Despite the `serviceInstanceRedeploy` mutation name, Railway appears to perform a full rebuild from `release-pin`, not a fast same-image restart. Either Railway changed behavior or earlier-documented "~30s same-image" claim was always wrong. **Treat as rebuild-class for planning** until proven otherwise: pre-warn the user of ~10 min downtime, don't chain rapid restarts.
 
 ## When to Invoke
 
@@ -29,11 +31,11 @@ Trigger a Railway redeploy of the hermes-agent service. The container exits and 
 
 POST the `serviceInstanceRedeploy` mutation to Railway's GraphQL API.
 
-**Caution:** The gateway process exits when the container is told to redeploy — the current conversation will be cut short mid-reply. **Tell the user "Restarting now — your message will be answered by the new container in ~30s" before triggering.** Matches GordonClaw's pattern: the heads-up gets cut off, but the user knows what to expect; the entrypoint's `"👋 I'm back!"` Telegram message in the next container start is the resumption signal.
+**Caution:** The gateway process exits when the container is told to redeploy — the current conversation will be cut short mid-reply. **Tell the user "Restarting now — the new container will be ready in ~10 minutes (full rebuild)" before triggering.** Matches GordonClaw's pattern: the heads-up gets cut off, but the user knows what to expect; the entrypoint's `"👋 I'm back!"` Telegram message in the next container start is the resumption signal.
 
 Pending uncommitted edits in `/opt/data/repo` survive the restart (entrypoint preserves them); the watcher commits them on next boot. You can trigger restart immediately after editing without waiting for the watcher.
 
-No user confirmation required for the API call itself — restart is cheap (~30s, free, same image).
+User confirmation **IS** required — restart is rebuild-class (~10 min, costs the same as a release-pin push). It is no longer a "cheap" operation worth taking unilaterally.
 
 ## Implementation
 
@@ -121,4 +123,4 @@ GordonClaw uses the identical recipe in its `gordonclaw-self-restart` skill (dif
 
 ## Verification
 
-Print the raw API response verbatim. Tell the user clearly: **"Restarting now — your message will be answered by the new container in ~30s."**
+Print the raw API response verbatim. Tell the user clearly: **"Restarting now — the new container will be ready in ~10 minutes (full rebuild from release-pin)."** Do not promise ~30s; the observed behavior is rebuild-class.

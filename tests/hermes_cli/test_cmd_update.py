@@ -253,6 +253,97 @@ class TestCmdUpdateProfileSkillSync:
         assert default_p.path in synced_paths
 
 
+class TestForkBackupMirrorSync:
+    """Safety checks for mirroring a clean local main to the fork remote."""
+
+    def test_preserves_fork_only_commits_before_force_with_lease(self, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            joined = " ".join(str(c) for c in cmd)
+            if joined == "git status --porcelain":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "git remote get-url fork":
+                return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:me/hermes-agent.git\n", stderr="")
+            if joined == "git fetch fork main --quiet":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "git rev-parse --verify fork/main":
+                return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+            if joined == "git rev-list --count main..fork/main":
+                return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+            if joined == "git rev-list --count fork/main..main":
+                return subprocess.CompletedProcess(cmd, 0, stdout="5\n", stderr="")
+            if joined.startswith("git push fork abc123:refs/heads/backup/hermes-main-"):
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if joined == "git push fork main:main --force-with-lease=refs/heads/main:abc123":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+        hm._sync_local_main_to_backup_fork(
+            ["git"],
+            PROJECT_ROOT,
+            current_branch_before_update="main",
+            auto_stash_ref=None,
+        )
+
+        push_cmds = [" ".join(cmd) for cmd in calls if len(cmd) > 2 and cmd[:2] == ["git", "push"]]
+        assert len(push_cmds) == 2
+        assert push_cmds[0].startswith("git push fork abc123:refs/heads/backup/hermes-main-")
+        assert push_cmds[1] == "git push fork main:main --force-with-lease=refs/heads/main:abc123"
+        captured = capsys.readouterr()
+        assert "Preserved 2 fork-only commit(s)" in captured.out
+        assert "Synced local main to fork/main" in captured.out
+
+    def test_skips_when_worktree_is_dirty(self, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            joined = " ".join(str(c) for c in cmd)
+            if joined == "git status --porcelain":
+                return subprocess.CompletedProcess(cmd, 0, stdout=" M hermes_cli/main.py\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+        hm._sync_local_main_to_backup_fork(
+            ["git"],
+            PROJECT_ROOT,
+            current_branch_before_update="main",
+            auto_stash_ref=None,
+        )
+
+        assert [cmd for cmd in calls if len(cmd) > 2 and cmd[:2] == ["git", "push"]] == []
+        assert "worktree is not clean" in capsys.readouterr().out
+
+    def test_skips_when_update_started_off_main(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
+
+        hm._sync_local_main_to_backup_fork(
+            ["git"],
+            PROJECT_ROOT,
+            current_branch_before_update="feature/work",
+            auto_stash_ref=None,
+        )
+
+        assert calls == []
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

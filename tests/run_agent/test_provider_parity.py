@@ -54,18 +54,12 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
         base_url=base_url,
         provider=provider,
         api_mode=api_mode,
+        model=model or "gpt-5",
         max_iterations=4,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
     )
-    if model:
-        kwargs["model"] = model
-    elif provider == "nous":
-        kwargs["model"] = "gpt-5"
-    base_url="https://openrouter.ai/api/v1",
-    api_key="test-key",
-    base_url="https://openrouter.ai/api/v1",
     return AIAgent(**kwargs)
 
 

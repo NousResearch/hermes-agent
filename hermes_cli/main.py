@@ -6587,14 +6587,19 @@ SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
+    return _get_remote_url(git_cmd, cwd, "origin")
+
+
+def _get_remote_url(git_cmd: list[str], cwd: Path, remote: str) -> Optional[str]:
+    """Get the URL of *remote*, or None if it is missing/empty."""
     try:
         result = subprocess.run(
-            git_cmd + ["remote", "get-url", "origin"],
+            git_cmd + ["remote", "get-url", remote],
             cwd=cwd,
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     except Exception:
         pass
@@ -6808,6 +6813,167 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
+
+
+def _git_ref_exists(git_cmd: list[str], cwd: Path, ref: str) -> bool:
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _git_ref_sha(git_cmd: list[str], cwd: Path, ref: str) -> Optional[str]:
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+def _git_count_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> Optional[int]:
+    result = subprocess.run(
+        git_cmd + ["rev-list", "--count", f"{base}..{head}"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _is_worktree_clean(git_cmd: list[str], cwd: Path) -> bool:
+    result = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and not result.stdout.strip()
+
+
+def _sync_local_main_to_backup_fork(
+    git_cmd: list[str],
+    cwd: Path,
+    *,
+    current_branch_before_update: str,
+    auto_stash_ref: Optional[str],
+    branch: str = "main",
+    remote: str = "fork",
+) -> None:
+    """Mirror local main to a fork remote after a successful update.
+
+    This is intentionally stricter than the legacy "origin is a fork" path:
+    the fork is treated as a backup mirror of the local checkout, so we only
+    write when the update started from a clean main worktree and the remote is
+    explicitly named ``fork``. If the fork has commits that local main does
+    not have, preserve them under ``backup/hermes-main-<timestamp>`` before
+    updating fork/main with ``--force-with-lease``.
+    """
+    if current_branch_before_update != branch:
+        return
+    if auto_stash_ref is not None:
+        print("  ℹ Fork backup sync skipped because local changes were stashed.")
+        return
+    if not _is_worktree_clean(git_cmd, cwd):
+        print("  ℹ Fork backup sync skipped because the worktree is not clean.")
+        return
+
+    remote_url = _get_remote_url(git_cmd, cwd, remote)
+    if not remote_url:
+        return
+
+    print()
+    print(f"→ Syncing {remote}/{branch} backup mirror...")
+    fetch = subprocess.run(
+        git_cmd + ["fetch", remote, branch, "--quiet"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if fetch.returncode != 0:
+        print(f"  ℹ Could not fetch {remote}/{branch}; skipping fork backup sync.")
+        return
+
+    local_ref = branch
+    remote_ref = f"{remote}/{branch}"
+    remote_branch_exists = _git_ref_exists(git_cmd, cwd, remote_ref)
+    if not remote_branch_exists:
+        push = subprocess.run(
+            git_cmd + ["push", remote, f"{local_ref}:{branch}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode == 0:
+            print(f"  ✓ Created {remote}/{branch} from local {branch}")
+        else:
+            print(f"  ℹ Could not create {remote}/{branch}; local update is still complete.")
+        return
+
+    fork_only = _git_count_between(git_cmd, cwd, local_ref, remote_ref)
+    local_only = _git_count_between(git_cmd, cwd, remote_ref, local_ref)
+    fork_sha = _git_ref_sha(git_cmd, cwd, remote_ref)
+    if fork_only is None or local_only is None or not fork_sha:
+        print(f"  ℹ Could not compare {remote}/{branch}; skipping fork backup sync.")
+        return
+
+    if fork_only == 0 and local_only == 0:
+        print(f"  ✓ {remote}/{branch} already matches local {branch}")
+        return
+
+    backup_branch = None
+    if fork_only > 0:
+        from datetime import datetime, timezone
+
+        backup_branch = "backup/hermes-main-" + datetime.now(timezone.utc).strftime(
+            "%Y%m%d-%H%M%SZ"
+        )
+        backup = subprocess.run(
+            git_cmd + ["push", remote, f"{fork_sha}:refs/heads/{backup_branch}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if backup.returncode != 0:
+            print(
+                f"  ℹ {remote}/{branch} has {fork_only} fork-only commit(s), "
+                "but backup branch creation failed; skipping fork backup sync."
+            )
+            return
+        print(
+            f"  ✓ Preserved {fork_only} fork-only commit(s) at {remote}/{backup_branch}"
+        )
+
+    push = subprocess.run(
+        git_cmd
+        + [
+            "push",
+            remote,
+            f"{local_ref}:{branch}",
+            f"--force-with-lease=refs/heads/{branch}:{fork_sha}",
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode == 0:
+        suffix = f" (previous fork state saved at {remote}/{backup_branch})" if backup_branch else ""
+        print(f"  ✓ Synced local {branch} to {remote}/{branch}{suffix}")
+    else:
+        print(
+            f"  ℹ Could not sync {remote}/{branch}; remote changed or push permission is missing."
+        )
 
 
 def _invalidate_update_cache():
@@ -7886,6 +8052,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if commit_count == 0:
             _invalidate_update_cache()
+            # If local main is already current, still keep the optional fork
+            # backup mirror aligned. This intentionally runs before restoring
+            # any stashed local changes so only a clean main checkout is pushed.
+            _sync_local_main_to_backup_fork(
+                git_cmd,
+                PROJECT_ROOT,
+                current_branch_before_update=current_branch,
+                auto_stash_ref=auto_stash_ref,
+                branch=branch,
+            )
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
@@ -7984,9 +8160,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
 
-        # Fork upstream sync logic (only for main branch on forks)
+        # Legacy fork upstream sync logic (only when origin itself is a fork).
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
+        # Local checkout -> fork backup mirror. Some installs track the
+        # official repo as origin and keep a separate `fork` remote as their
+        # backup branch. Keep it aligned after a successful clean main update
+        # without weakening the old fork-origin path above.
+        _sync_local_main_to_backup_fork(
+            git_cmd,
+            PROJECT_ROOT,
+            current_branch_before_update=current_branch,
+            auto_stash_ref=auto_stash_ref,
+            branch=branch,
+        )
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras

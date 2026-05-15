@@ -15102,16 +15102,27 @@ class GatewayRunner:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        cached_agent = cached[0]
+                        cached_session_id = getattr(cached_agent, "session_id", None)
+                        if cached_session_id and cached_session_id != session_id:
+                            logger.info(
+                                "Evicting cached agent for session %s due to session_id mismatch: %s → %s",
+                                session_key,
+                                cached_session_id,
+                                session_id,
+                            )
+                            _cache.pop(session_key, None)
+                        else:
+                            agent = cached_agent
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
+                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
                 # Config changed or first message — create fresh agent

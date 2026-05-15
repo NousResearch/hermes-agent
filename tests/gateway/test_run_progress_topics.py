@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import threading
 import sys
 import time
 import types
@@ -140,6 +141,27 @@ class DelayedInterimAgent:
         }
 
 
+class SessionEchoAgent:
+    def __init__(self, **kwargs):
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.step_callback = None
+        self.stream_delta_callback = None
+        self.interim_assistant_callback = None
+        self.status_callback = None
+        self.reasoning_config = None
+        self.service_tier = None
+        self.request_overrides = {}
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": f"session:{self.session_id}",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -155,6 +177,11 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._session_sources = {}
+    runner._session_sources_max = 512
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -162,6 +189,52 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_cached_agent_is_not_reused_when_session_id_changes(monkeypatch, tmp_path):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = SessionEchoAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {"tool_progress": "off"}})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id="63063",
+    )
+    session_key = "agent:main:telegram:dm:12345:63063"
+
+    first = await runner._run_agent(
+        message="first",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="old-session",
+        session_key=session_key,
+    )
+    second = await runner._run_agent(
+        message="second",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="new-session",
+        session_key=session_key,
+    )
+
+    assert first["final_response"] == "session:old-session"
+    assert second["final_response"] == "session:new-session"
 
 
 @pytest.mark.asyncio

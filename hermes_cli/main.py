@@ -7396,6 +7396,19 @@ def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
+        from hermes_cli.config import detect_install_method, recommended_update_command
+        if detect_install_method(PROJECT_ROOT) == "pip":
+            from hermes_cli.banner import _check_via_pypi
+            result = _check_via_pypi()
+            if result is None:
+                print("✗ Could not reach PyPI to check for updates.")
+                sys.exit(1)
+            elif result == 0:
+                print("✓ Already up to date.")
+            else:
+                print(f"⚕ Update available on PyPI.")
+                print(f"  Run '{recommended_update_command()}' to install.")
+            return
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 

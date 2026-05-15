@@ -87,9 +87,10 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_update_profile_model",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_update_profile_model'}}"
     )
 
 
@@ -317,6 +318,45 @@ def test_list_rejects_bad_limit(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
+
+
+def test_update_profile_model_handler_returns_receipt(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    cfg = home / "profiles" / "coder" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("model:\n  default: old\n  provider: old\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_update_profile_model({
+        "profile": "coder",
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+    })
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    receipt = data["receipt"]
+    assert receipt["changed_file"] == str(cfg)
+    assert receipt["post_values"] == {
+        "model.default": "gpt-5.5",
+        "model.provider": "openai-codex",
+    }
+    assert receipt["rollback_status"] == "not_needed"
+    assert "no_dispatcher_activation" in receipt["non_actions"]
+
+
+def test_update_profile_model_hidden_from_worker_runtime_guard(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_update_profile_model({
+        "profile": "coder",
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+    })
+    assert "orchestrator-only" in json.loads(out).get("error", "")
 
 
 def test_list_parses_include_archived_string_false(monkeypatch, worker_env):

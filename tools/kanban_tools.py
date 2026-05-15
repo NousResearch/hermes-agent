@@ -804,7 +804,6 @@ def _handle_update_profile_model(args: dict, **kw) -> str:
         logger.exception("kanban_update_profile_model failed")
         return tool_error(f"kanban_update_profile_model: {e}")
 
-
 def _handle_rewire_superseding_review(args: dict, **kw) -> str:
     """Explicitly replace a superseded review parent edge with a new review."""
     guard = _require_orchestrator_tool("kanban_rewire_superseding_review")
@@ -864,7 +863,6 @@ def _handle_ensure_needs_revision_fix(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_ensure_needs_revision_fix failed")
         return tool_error(f"kanban_ensure_needs_revision_fix: {e}")
-
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
@@ -1327,7 +1325,6 @@ KANBAN_UPDATE_PROFILE_MODEL_SCHEMA = {
         "required": ["profile", "provider", "model"],
     },
 }
-
 KANBAN_REWIRE_SUPERSEDING_REVIEW_SCHEMA = {
     "name": "kanban_rewire_superseding_review",
     "description": (
@@ -1367,7 +1364,6 @@ KANBAN_ENSURE_NEEDS_REVISION_FIX_SCHEMA = {
         "required": ["source_task", "review_task", "reviewer_metadata", "reason"],
     },
 }
-
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
@@ -1533,7 +1529,6 @@ registry.register(
     check_fn=_check_kanban_orchestrator_mode,
     emoji="🛠",
 )
-
 registry.register(
     name="kanban_link",
     toolset="kanban",

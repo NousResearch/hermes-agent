@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from hermes_cli import kanban_db as kb
 
@@ -79,6 +80,112 @@ def test_create_task_unknown_parent_errors(kanban_home):
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
+
+
+# ---------------------------------------------------------------------------
+# Transactional profile model config primitive
+# ---------------------------------------------------------------------------
+
+
+def _write_profile_config(home: Path, profile: str, text: str) -> Path:
+    if profile == "default":
+        cfg = home / "config.yaml"
+    else:
+        cfg = home / "profiles" / profile / "config.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(text, encoding="utf-8")
+    return cfg
+
+
+def test_kanban_update_profile_model_success_receipt_and_allowed_keys(kanban_home):
+    cfg = _write_profile_config(
+        kanban_home,
+        "coder",
+        "model:\n  default: old-model\n  provider: old-provider\ntoolsets:\n  - kanban\n",
+    )
+
+    receipt = kb.kanban_update_profile_model("coder", "openai-codex", "gpt-5.5")
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+
+    assert parsed["model"] == {"default": "gpt-5.5", "provider": "openai-codex"}
+    assert parsed["toolsets"] == ["kanban"]
+    assert receipt["profile"] == "coder"
+    assert receipt["changed_file"] == str(cfg)
+    assert Path(receipt["backup_path"]).read_text(encoding="utf-8").startswith("model:\n")
+    assert receipt["pre_values"] == {
+        "model.default": "old-model",
+        "model.provider": "old-provider",
+    }
+    assert receipt["post_values"] == {
+        "model.default": "gpt-5.5",
+        "model.provider": "openai-codex",
+    }
+    assert receipt["changed_keys"] == ["model.default", "model.provider"]
+    assert receipt["parse_status"] == {"pre": "ok", "post": "ok"}
+    assert receipt["rollback_status"] == "not_needed"
+    assert "no_gateway_restart" in receipt["non_actions"]
+
+
+def test_kanban_update_profile_model_rejects_unknown_profile(kanban_home):
+    with pytest.raises(ValueError, match="does not exist"):
+        kb.kanban_update_profile_model("ghost", "openrouter", "model-x")
+
+
+def test_kanban_update_profile_model_rejects_symlinked_config_path(kanban_home, tmp_path):
+    profile_dir = kanban_home / "profiles" / "coder"
+    profile_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-config.yaml"
+    outside.write_text("model:\n  default: old\n  provider: old\n", encoding="utf-8")
+    (profile_dir / "config.yaml").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlinked profile config"):
+        kb.kanban_update_profile_model("coder", "openrouter", "new-model")
+    assert outside.read_text(encoding="utf-8") == "model:\n  default: old\n  provider: old\n"
+
+
+def test_kanban_update_profile_model_invalid_yaml_preserves_file_and_writes_backup(kanban_home):
+    cfg = _write_profile_config(kanban_home, "coder", "model: [unterminated\n")
+
+    with pytest.raises(ValueError, match="failed to parse YAML"):
+        kb.kanban_update_profile_model("coder", "openrouter", "new-model")
+
+    assert cfg.read_text(encoding="utf-8") == "model: [unterminated\n"
+    backups = sorted(cfg.parent.glob("config.yaml.bak.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "model: [unterminated\n"
+
+
+def test_transactional_profile_config_update_rejects_unknown_key(kanban_home):
+    _write_profile_config(
+        kanban_home,
+        "coder",
+        "model:\n  default: old\n  provider: old\n",
+    )
+
+    with pytest.raises(ValueError, match="unsupported key"):
+        kb._transactional_update_profile_config(
+            "coder",
+            {"model.temperature": 0.2},
+            allowed_keys=kb.PROFILE_MODEL_CONFIG_KEYS,
+        )
+
+
+def test_kanban_update_profile_model_rolls_back_on_semantic_failure(kanban_home):
+    cfg = _write_profile_config(
+        kanban_home,
+        "coder",
+        "model:\n  default: old\n  provider: old\nextra: keep\n",
+    )
+
+    def fail_postcheck(_post_cfg):
+        raise ValueError("forced semantic failure")
+
+    with pytest.raises(RuntimeError, match="rolled_back"):
+        kb.kanban_update_profile_model(
+            "coder", "openrouter", "new-model", _postcheck=fail_postcheck
+        )
+
+    assert cfg.read_text(encoding="utf-8") == "model:\n  default: old\n  provider: old\nextra: keep\n"
 
 
 def _hub_plan_spec(workflow_id="wf-kernel-gate"):

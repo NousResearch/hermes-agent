@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import re
@@ -78,6 +79,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -6670,6 +6672,267 @@ def list_profiles_on_disk() -> list[str]:
             pass
 
     return sorted(names)
+
+
+# ---------------------------------------------------------------------------
+# Transactional profile config mutation (review-required deadlock recovery)
+# ---------------------------------------------------------------------------
+
+PROFILE_MODEL_CONFIG_KEYS = frozenset({"model.default", "model.provider"})
+
+
+def _nested_get(data: Mapping[str, Any], dotted_key: str) -> Any:
+    cur: Any = data
+    for part in dotted_key.split("."):
+        if not isinstance(cur, Mapping) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _nested_set(data: dict[str, Any], dotted_key: str, value: Any) -> None:
+    cur: dict[str, Any] = data
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if nxt is None:
+            nxt = {}
+            cur[part] = nxt
+        if not isinstance(nxt, dict):
+            raise ValueError(
+                f"cannot set {dotted_key!r}: {part!r} exists but is not a mapping"
+            )
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _flatten_config(data: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, Mapping):
+            out.update(_flatten_config(value, dotted))
+        else:
+            out[dotted] = value
+    return out
+
+
+def _changed_config_keys(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
+    b = _flatten_config(before)
+    a = _flatten_config(after)
+    keys = set(b) | set(a)
+    return sorted(k for k in keys if b.get(k) != a.get(k))
+
+
+def _parse_yaml_mapping(text: str, *, source: Path) -> dict[str, Any]:
+    if yaml is None:  # pragma: no cover - PyYAML is a runtime dependency
+        raise RuntimeError("PyYAML is required to update profile config")
+    try:
+        loaded = yaml.safe_load(text) if text.strip() else {}
+    except Exception as exc:
+        raise ValueError(f"failed to parse YAML in {source}: {exc}") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{source} must contain a YAML mapping at the top level")
+    return loaded
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via temp-file + fsync + atomic replace in the same directory."""
+    from utils import atomic_replace
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _profile_config_path(profile: str) -> tuple[str, Path]:
+    """Resolve and validate the config path for a named Hermes profile."""
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        validate_profile_name,
+    )
+
+    canon = normalize_profile_name(profile)
+    validate_profile_name(canon)
+    profile_dir = get_profile_dir(canon)
+    if canon != "default" and not profile_dir.is_dir():
+        raise ValueError(
+            f"profile {canon!r} does not exist; create it before updating model config"
+        )
+
+    config_path = profile_dir / "config.yaml"
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+    except Exception as exc:  # pragma: no cover - defensive startup fallback
+        raise ValueError(f"could not resolve Hermes profile root: {exc}") from exc
+    expected = (
+        root / "config.yaml"
+        if canon == "default"
+        else root / "profiles" / canon / "config.yaml"
+    )
+    if config_path != expected:
+        raise ValueError(
+            f"refusing to update unexpected profile config path {config_path}; "
+            f"expected {expected}"
+        )
+    if config_path.is_symlink():
+        raise ValueError(
+            f"refusing to update symlinked profile config {config_path}; "
+            "Kanban profile-model updates require an in-profile config.yaml"
+        )
+    return canon, config_path
+
+
+def _transactional_update_profile_config(
+    profile: str,
+    updates: Mapping[str, Any],
+    *,
+    allowed_keys: frozenset[str],
+    postcheck=None,
+) -> dict[str, Any]:
+    """Backup, parse, atomically rewrite, postcheck, and rollback on failure.
+
+    This is intentionally kept narrow and private. Public Kanban callers use
+    :func:`kanban_update_profile_model`, which can only touch
+    ``model.default`` and ``model.provider``.
+    """
+    requested = {str(k): v for k, v in updates.items()}
+    unknown = sorted(set(requested) - set(allowed_keys))
+    if unknown:
+        raise ValueError(
+            "profile config update contains unsupported key(s): "
+            + ", ".join(unknown)
+            + f"; allowed keys: {', '.join(sorted(allowed_keys))}"
+        )
+
+    canon, config_path = _profile_config_path(profile)
+    original_text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    backup_path = config_path.with_name(
+        f"{config_path.name}.bak.{int(time.time())}.{os.getpid()}.{secrets.token_hex(4)}"
+    )
+    _atomic_write_text(backup_path, original_text)
+
+    pre_cfg = _parse_yaml_mapping(original_text, source=config_path)
+    pre_values = {key: _nested_get(pre_cfg, key) for key in sorted(allowed_keys)}
+
+    next_cfg = copy.deepcopy(pre_cfg)
+    for key, value in requested.items():
+        _nested_set(next_cfg, key, value)
+
+    if yaml is None:  # pragma: no cover - guarded above, here for type checkers
+        raise RuntimeError("PyYAML is required to update profile config")
+    next_text = yaml.safe_dump(next_cfg, sort_keys=False, allow_unicode=True)
+
+    rollback_status = "not_needed"
+    wrote_candidate = False
+    try:
+        _atomic_write_text(config_path, next_text)
+        wrote_candidate = True
+        post_text = config_path.read_text(encoding="utf-8")
+        post_cfg = _parse_yaml_mapping(post_text, source=config_path)
+        for key, value in requested.items():
+            actual = _nested_get(post_cfg, key)
+            if actual != value:
+                raise ValueError(
+                    f"postcheck failed for {key}: expected {value!r}, got {actual!r}"
+                )
+        changed_keys = _changed_config_keys(pre_cfg, post_cfg)
+        forbidden_changes = sorted(set(changed_keys) - set(allowed_keys))
+        if forbidden_changes:
+            raise ValueError(
+                "postcheck detected forbidden config key change(s): "
+                + ", ".join(forbidden_changes)
+            )
+        if postcheck is not None:
+            postcheck(post_cfg)
+    except Exception as exc:
+        if wrote_candidate:
+            try:
+                _atomic_write_text(config_path, original_text)
+                rollback_status = "rolled_back"
+            except Exception as rollback_exc:  # pragma: no cover - catastrophic FS failure
+                rollback_status = f"rollback_failed: {rollback_exc}"
+        raise RuntimeError(
+            f"profile config update failed for {canon}; {rollback_status}: {exc}"
+        ) from exc
+
+    post_values = {key: _nested_get(post_cfg, key) for key in sorted(allowed_keys)}
+    return {
+        "profile": canon,
+        "changed_file": str(config_path),
+        "backup_path": str(backup_path),
+        "requested": requested,
+        "allowed_keys": sorted(allowed_keys),
+        "changed_keys": changed_keys,
+        "pre_values": pre_values,
+        "post_values": post_values,
+        "parse_status": {"pre": "ok", "post": "ok"},
+        "rollback_status": rollback_status,
+        "atomic_write": "tempfile_fsync_replace",
+        "non_actions": [
+            "no_gateway_restart",
+            "no_dispatcher_activation",
+            "no_secret_or_env_file_read",
+            "no_profile_other_than_target_mutated",
+        ],
+    }
+
+
+def kanban_update_profile_model(
+    profile: str,
+    provider: str,
+    model: str,
+    *,
+    _postcheck=None,
+) -> dict[str, Any]:
+    """Transactionally update ``model.provider`` and ``model.default``.
+
+    The primitive is deliberately narrower than a generic YAML patcher: Kanban
+    control-plane recovery only needs to switch the assignee profile's routing
+    model/provider, and the narrow shape lets us prove only those two semantic
+    keys changed before returning a receipt.
+    """
+    if not str(provider or "").strip():
+        raise ValueError("provider is required")
+    if not str(model or "").strip():
+        raise ValueError("model is required")
+    return _transactional_update_profile_config(
+        profile,
+        {
+            "model.provider": str(provider).strip(),
+            "model.default": str(model).strip(),
+        },
+        allowed_keys=PROFILE_MODEL_CONFIG_KEYS,
+        postcheck=_postcheck,
+    )
 
 
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:

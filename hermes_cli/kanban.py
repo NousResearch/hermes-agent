@@ -578,6 +578,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_asg.add_argument("--json", action="store_true")
 
+    # --- profile model update (transactional control-plane primitive) ---
+    p_profile_model = sub.add_parser(
+        "update-profile-model",
+        help="Transactionally update a profile's model.provider/model.default",
+    )
+    p_profile_model.add_argument("profile", help="Target Hermes profile name")
+    p_profile_model.add_argument("provider", help="New model.provider value")
+    p_profile_model.add_argument("model", help="New model.default value")
+    p_profile_model.add_argument("--json", action="store_true")
+
     # --- context --- (for spawned workers)
     p_ctx = sub.add_parser(
         "context",
@@ -784,6 +794,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
         "assignees": _cmd_assignees,
+        "update-profile-model": _cmd_update_profile_model,
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
@@ -1092,6 +1103,24 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
         print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+    return 0
+
+
+def _cmd_update_profile_model(args: argparse.Namespace) -> int:
+    receipt = kb.kanban_update_profile_model(args.profile, args.provider, args.model)
+    if getattr(args, "json", False):
+        print(json.dumps(receipt, indent=2, ensure_ascii=False))
+        return 0
+    print("Profile model config updated transactionally.")
+    print(f"  Profile:      {receipt['profile']}")
+    print(f"  Config:       {receipt['changed_file']}")
+    print(f"  Backup:       {receipt['backup_path']}")
+    print(f"  Pre provider: {receipt['pre_values'].get('model.provider')}")
+    print(f"  Pre model:    {receipt['pre_values'].get('model.default')}")
+    print(f"  New provider: {receipt['post_values'].get('model.provider')}")
+    print(f"  New model:    {receipt['post_values'].get('model.default')}")
+    print(f"  Changed keys: {', '.join(receipt['changed_keys'])}")
+    print(f"  Rollback:     {receipt['rollback_status']}")
     return 0
 
 

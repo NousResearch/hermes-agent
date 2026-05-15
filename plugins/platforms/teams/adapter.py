@@ -23,6 +23,7 @@ Configuration in config.yaml:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -687,13 +688,49 @@ _HOSTED_CONTENT_RE = re.compile(
 )
 
 
-# Bot Framework hosts that require an Authorization: Bearer header on GETs.
+# Bot Framework hosts that require an Authorization: Bearer *** on GETs.
 # When an inbound activity references a content_url under one of these hosts
 # (typical shape: https://smba.trafficmanager.net/<region>/<tenant>/v3/
 # attachments/<id>/views/original) the shared cache_*_from_url helpers will
 # 401 because they don't carry per-platform auth. We fetch the bytes here
 # instead, using the SDK-managed bot token, then route to cache_*_from_bytes.
 _BF_ATTACHMENT_HOSTS = {"smba.trafficmanager.net"}
+
+
+def _url_fingerprint(url: Optional[str], *, path_chars: int = 24) -> str:
+    """Return a log-safe fingerprint of ``url`` — host + truncated path + sha8.
+
+    Teams/SharePoint download URLs frequently embed bearer or ``tempauth``
+    material in the query string or path (and sometimes deeper-path tokens
+    like ``/_api/v2.0/drives/<id>/items/<id>/content?tempauth=...``). Logging
+    the raw URL leaks file-access credentials into gateway logs, where a
+    log-aggregator subscriber or anyone reading ``gateway.log`` can replay
+    them until they expire (minutes-to-hours window).
+
+    The fingerprint preserves enough signal to debug routing/dispatch
+    (which host, roughly which path) while stripping query strings, fragments,
+    userinfo, and most of the path. The trailing ``#<sha8>`` lets two log
+    lines referencing the *same* URL be correlated without exposing the URL
+    itself. Output for a malformed/empty URL is the literal ``"<no-url>"``
+    rather than ``None`` so format-string callers can use ``%s`` safely.
+    """
+    if not url or not isinstance(url, str):
+        return "<no-url>"
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = (parsed.hostname or "?").lower()
+        path = parsed.path or ""
+        if len(path) > path_chars:
+            path = path[:path_chars] + "..."
+        # SHA-256 over the *full* original URL so the same URL always
+        # produces the same 8-char tag — useful for grepping log
+        # correlations without exposing token material.
+        digest = hashlib.sha256(url.encode("utf-8", errors="replace")).hexdigest()[:8]
+        return f"{host}{path}#{digest}"
+    except Exception:  # noqa: BLE001 — never raise from a logging helper
+        return "<unparseable-url>"
 
 
 def _is_bf_attachment_url(url: Optional[str]) -> bool:
@@ -1031,12 +1068,12 @@ class TeamsAdapter(BasePlatformAdapter):
                     if resp.status != 200:
                         logger.warning(
                             "[teams][attach] BF GET %s -> status=%s",
-                            url, resp.status,
+                            _url_fingerprint(url), resp.status,
                         )
                         return None
                     return await resp.read()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[teams][attach] BF GET %s raised: %s", url, exc)
+            logger.warning("[teams][attach] BF GET %s raised: %s", _url_fingerprint(url), exc)
             return None
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
@@ -1137,8 +1174,8 @@ class TeamsAdapter(BasePlatformAdapter):
             content_type = (getattr(att, "content_type", None) or getattr(att, "contentType", None) or "").lower()
             att_name = getattr(att, "name", None)
             logger.info(
-                "[teams][attach][%d] content_type=%r name=%r content_url=%r has_content=%s",
-                idx, content_type, att_name, content_url, getattr(att, "content", None) is not None,
+                "[teams][attach][%d] content_type=%r name=%r content_url=%s has_content=%s",
+                idx, content_type, att_name, _url_fingerprint(content_url), getattr(att, "content", None) is not None,
             )
 
             try:
@@ -1279,8 +1316,8 @@ class TeamsAdapter(BasePlatformAdapter):
                     download_url = str(_field(content_block, "download_url", "downloadUrl") or "")
                     filename = str(getattr(att, "name", None) or "").strip() or f"attachment.{file_type or 'bin'}"
                     logger.info(
-                        "[teams][attach][%d] file.download.info parsed: filename=%r file_type=%r download_url=%r",
-                        idx, filename, file_type, download_url,
+                        "[teams][attach][%d] file.download.info parsed: filename=%r file_type=%r download_url=%s",
+                        idx, filename, file_type, _url_fingerprint(download_url),
                     )
 
                     if not download_url or not file_type:
@@ -1374,22 +1411,25 @@ class TeamsAdapter(BasePlatformAdapter):
                         html_text = raw_content.get("text") or raw_content.get("html") or repr(raw_content)
                     else:
                         html_text = repr(raw_content)
-                    snippet = html_text[:8192]
-                    truncated = "...[truncated]" if len(html_text) > 8192 else ""
                     # Pull out any hostedContents URLs explicitly so they're greppable
                     import re as _re
                     hc_urls = _re.findall(
                         r"https?://[^\"'\s>]*?hostedContents/[^\"'\s>]+",
                         html_text,
                     )
+                    # The HTML body itself can carry token-bearing URLs (Teams
+                    # often inlines hostedContents/SharePoint refs as <img src>
+                    # or <a href>), so we deliberately don't log a raw snippet.
+                    # Length + URL count is enough to debug routing; individual
+                    # URL fingerprints are emitted in the loop below.
                     logger.debug(
-                        "[teams][attach][%d] dropped html payload (%d chars, %d hostedContents refs): %s%s",
-                        idx, len(html_text), len(hc_urls), snippet, truncated,
+                        "[teams][attach][%d] dropped html payload (%d chars, %d hostedContents refs)",
+                        idx, len(html_text), len(hc_urls),
                     )
                     for hc_idx, hc_url in enumerate(hc_urls):
                         logger.debug(
                             "[teams][attach][%d] dropped hostedContents[%d]: %s",
-                            idx, hc_idx, hc_url,
+                            idx, hc_idx, _url_fingerprint(hc_url),
                         )
                 logger.info(
                     "[teams][attach][%d] DROP unhandled (content_type=%r, has_url=%s)",

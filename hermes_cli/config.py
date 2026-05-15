@@ -199,9 +199,40 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+def detect_install_method(project_root: Optional[Path] = None) -> str:
+    """Detect how Hermes was installed: 'nixos', 'homebrew', 'git', or 'pip'."""
+    managed = get_managed_system()
+    if managed:
+        return managed.lower().replace(" ", "-")
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
+    if (project_root / ".git").is_dir():
+        return "git"
+    return "pip"
+
+
+def recommended_update_command_for_method(method: str) -> str:
+    """Return the update command for a given install method."""
+    if method == "nixos":
+        return "sudo nixos-rebuild switch"
+    if method == "homebrew":
+        return "brew upgrade hermes-agent"
+    if method == "pip":
+        import shutil
+        uv = shutil.which("uv")
+        if uv:
+            return "uv pip install --upgrade hermes-agent"
+        return "pip install --upgrade hermes-agent"
+    return "hermes update"
+
+
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
-    return get_managed_update_command() or "hermes update"
+    managed_cmd = get_managed_update_command()
+    if managed_cmd:
+        return managed_cmd
+    method = detect_install_method()
+    return recommended_update_command_for_method(method)
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:

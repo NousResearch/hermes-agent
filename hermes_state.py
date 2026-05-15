@@ -1597,10 +1597,10 @@ class SessionDB:
         self._execute_write(_do)
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages for a session, ordered by timestamp."""
+        """Load all messages for a session, ordered by insertion order."""
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp, id",
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
             rows = cursor.fetchall()
@@ -1700,7 +1700,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -1967,7 +1967,7 @@ class SessionDB:
             # Route to LIKE when any non-operator CJK token is <3 CJK chars.
             _tokens_for_check = [
                 t for t in raw_query.split()
-                if t.upper() not in ("AND", "OR", "NOT") and self._contains_cjk(t)
+                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
             ]
             _any_short_cjk = any(
                 self._count_cjk(t) < 3 for t in _tokens_for_check
@@ -1980,7 +1980,7 @@ class SessionDB:
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
-                    if tok.upper() in ("AND", "OR", "NOT"):
+                    if tok.upper() in {"AND", "OR", "NOT"}:
                         parts.append(tok)
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
@@ -2031,7 +2031,7 @@ class SessionDB:
                 # is matched independently (#20494).
                 non_op_tokens = [
                     t for t in raw_query.split()
-                    if t.upper() not in ("AND", "OR", "NOT")
+                    if t.upper() not in {"AND", "OR", "NOT"}
                 ] or [raw_query]
                 token_clauses = []
                 like_params: list = []
@@ -2337,7 +2337,7 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = set(row["id"] for row in cursor.fetchall())
+            session_ids = {row["id"] for row in cursor.fetchall()}
 
             if not session_ids:
                 return 0

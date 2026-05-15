@@ -111,9 +111,33 @@ DINGTALK_TYPE_MAPPING = {
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+    """Check if DingTalk dependencies are available and configured.
+
+    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
+    on first call if not present.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.dingtalk", prompt=False)
+        except Exception:
+            return False
+        try:
+            import dingtalk_stream as _ds
+            from dingtalk_stream import ChatbotMessage as _CM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            import httpx as _httpx
+        except ImportError:
+            return False
+        dingtalk_stream = _ds
+        ChatbotMessage = _CM
+        CallbackMessage = _CBM
+        AckMessage = _AM
+        httpx = _httpx
+        DINGTALK_STREAM_AVAILABLE = True
+        HTTPX_AVAILABLE = True
     if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
@@ -353,9 +377,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _dingtalk_free_response_chats(self) -> Set[str]:
         raw = self.config.extra.get("free_response_chats")

@@ -73,8 +73,29 @@ class _ThreadContextCache:
 
 
 def check_slack_requirements() -> bool:
-    """Check if Slack dependencies are available."""
-    return SLACK_AVAILABLE
+    """Check if Slack dependencies are available.
+
+    Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
+    on first call if not present. Rebinds all module-level globals on success.
+    """
+    if SLACK_AVAILABLE:
+        return True
+
+    def _import():
+        from slack_bolt.async_app import AsyncApp
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+        from slack_sdk.web.async_client import AsyncWebClient
+        import aiohttp
+        return {
+            "AsyncApp": AsyncApp,
+            "AsyncSocketModeHandler": AsyncSocketModeHandler,
+            "AsyncWebClient": AsyncWebClient,
+            "aiohttp": aiohttp,
+            "SLACK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
@@ -935,7 +956,7 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("dm_top_level_threads_as_sessions")
         if raw is None:
             return True  # default: each DM thread is its own session
-        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _resolve_thread_ts(
         self,
@@ -1300,7 +1321,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
@@ -1773,10 +1794,30 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Ignore message edits and deletions
         subtype = event.get("subtype")
-        if subtype in ("message_changed", "message_deleted"):
+        if subtype in {"message_changed", "message_deleted"}:
             return
 
         original_text = event.get("text", "")
+
+        # Slack blocks native slash commands inside threads ("/queue is not
+        # supported in threads. Sorry!").  As a workaround, recognise a
+        # leading ``!`` as an alternate command prefix and rewrite it to
+        # ``/`` so the rest of the pipeline (MessageType.COMMAND tagging,
+        # gateway dispatcher) handles it like a normal slash command.  Only
+        # rewrite when the first token resolves to a known gateway command
+        # so casual messages like "!nice work" pass through unchanged.
+        if original_text.startswith("!"):
+            try:
+                from hermes_cli.commands import is_gateway_known_command
+                first_token = original_text[1:].split(maxsplit=1)[0]
+                # Strip "@suffix" the same way get_command() does, so
+                # forms like ``!stop@hermes`` still resolve.
+                cmd_name = first_token.split("@", 1)[0].lower()
+                if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+                    original_text = "/" + original_text[1:]
+            except Exception:  # pragma: no cover - defensive
+                pass
+
         text = original_text
 
         # Extract quoted/forwarded content from Slack blocks.
@@ -1892,7 +1933,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_type = event.get("channel_type", "")
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
-        is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
+        is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -2033,7 +2074,7 @@ class SlackAdapter(BasePlatformAdapter):
             if mimetype.startswith("image/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
-                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
                     # Slack private URLs require the bot token as auth header
                     cached = await self._download_slack_file(url, ext, team_id=team_id)
@@ -2049,7 +2090,7 @@ class SlackAdapter(BasePlatformAdapter):
             elif mimetype.startswith("audio/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
-                    if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
+                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
                         ext = ".ogg"
                     cached = await self._download_slack_file(url, ext, audio=True, team_id=team_id)
                     media_urls.append(cached)
@@ -2737,14 +2778,17 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in ("hermes", ""):
+        if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
             # with any caller that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map
             subcommand_map = slack_subcommand_map()
             subcommand_map["compact"] = "/compress"
-            first_word = text.split()[0] if text else ""
+            # Guard against whitespace-only text where ``text`` is truthy but
+            # ``text.split()`` returns ``[]`` (e.g. user sends ``/hermes   ``).
+            parts = text.split() if text else []
+            first_word = parts[0] if parts else ""
             if first_word in subcommand_map:
                 rest = text[len(first_word):].strip()
                 text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
@@ -2932,9 +2976,9 @@ class SlackAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
     def _slack_strict_mention(self) -> bool:
         """When true, channel threads require an explicit @-mention on every
@@ -2944,9 +2988,9 @@ class SlackAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("strict_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

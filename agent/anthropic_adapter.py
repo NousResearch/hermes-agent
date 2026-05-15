@@ -36,6 +36,14 @@ def _get_anthropic_sdk():
     global _anthropic_sdk
     if _anthropic_sdk is ...:
         try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("provider.anthropic", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            # FeatureUnavailable — fall through to ImportError handling below
+            pass
+        try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
         except ImportError:
@@ -1289,13 +1297,20 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
-        result.append({
+        anthropic_tool: Dict[str, Any] = {
             "name": name,
             "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
                 fn.get("parameters", {"type": "object", "properties": {}})
             ),
-        })
+        }
+        # Forward cache_control marker when present on the OpenAI-format
+        # tool dict. Anthropic's tools array supports cache_control on the
+        # last tool to cache the entire schema cross-session.
+        cache_control = t.get("cache_control")
+        if isinstance(cache_control, dict):
+            anthropic_tool["cache_control"] = dict(cache_control)
+        result.append(anthropic_tool)
     return result
 
 
@@ -1537,7 +1552,7 @@ def convert_messages_to_anthropic(
             # downgraded to a spurious text block on the last assistant message.
             reasoning_content = m.get("reasoning_content")
             _already_has_thinking = any(
-                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
                 for b in blocks
             )
             if isinstance(reasoning_content, str) and not _already_has_thinking:
@@ -1688,7 +1703,7 @@ def convert_messages_to_anthropic(
                 if isinstance(m["content"], list):
                     m["content"] = [
                         b for b in m["content"]
-                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                        if not (isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"})
                     ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]

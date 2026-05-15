@@ -412,7 +412,7 @@ class CDPSupervisor:
         ``{"ok": False, "error": "..."}`` on a recoverable error (no dialog,
         ambiguous dialog_id, supervisor inactive).
         """
-        if action not in ("accept", "dismiss"):
+        if action not in {"accept", "dismiss"}:
             return {"ok": False, "error": f"action must be 'accept' or 'dismiss', got {action!r}"}
 
         with self._state_lock:
@@ -1206,7 +1206,7 @@ class CDPSupervisor:
         info = params.get("targetInfo") or {}
         sid = params.get("sessionId")
         target_type = info.get("type")
-        if not sid or target_type not in ("iframe", "worker"):
+        if not sid or target_type not in {"iframe", "worker"}:
             return
         self._child_sessions[sid] = {"info": info, "type": target_type}
 
@@ -1290,7 +1290,7 @@ class CDPSupervisor:
             event = ConsoleEvent(ts=time.time(), level="exception", text=text, url=url)
         else:
             raw_level = str(params.get("type") or "log")
-            level = "error" if raw_level in ("error", "assert") else (
+            level = "error" if raw_level in {"error", "assert"} else (
                 "warning" if raw_level == "warning" else "log"
             )
             args = params.get("args") or []

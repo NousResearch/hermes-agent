@@ -6,6 +6,7 @@ don't have to construct a full HermesCLI (which requires extensive setup).
 
 from __future__ import annotations
 
+import queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,10 +18,17 @@ def _bound(fn, instance):
 
 def _make_self(prompt_response):
     """Build a minimal stand-in 'self' for _confirm_destructive_slash."""
-    return SimpleNamespace(
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace(
         _app=None,
         _prompt_text_input=lambda _prompt: prompt_response,
+        _prompt_text_input_modal=lambda **_kw: prompt_response,
     )
+    self_._normalize_slash_confirm_choice = _bound(
+        HermesCLI._normalize_slash_confirm_choice, self_,
+    )
+    return self_
 
 
 def test_gate_off_returns_once_without_prompting():
@@ -117,7 +125,6 @@ def test_gate_on_choice_always_persists_and_returns_always():
     self_ = _make_self(prompt_response="2")
 
     saves = []
-
     def _fake_save(key, value):
         saves.append((key, value))
         return True
@@ -150,3 +157,55 @@ def test_gate_default_true_when_config_missing():
     # treated as on despite the config error.  If the gate had been off
     # this would have returned 'once' without consulting the prompt.
     assert result is None
+
+
+def test_slash_confirm_modal_number_selection_submits_without_raw_input():
+    """Pressing 2 in the TUI modal should resolve to Always Approve directly."""
+    from cli import HermesCLI
+
+    q = queue.Queue()
+    self_ = SimpleNamespace(
+        _slash_confirm_state={
+            "choices": [
+                ("once", "Approve Once", "proceed once"),
+                ("always", "Always Approve", "persist opt-out"),
+                ("cancel", "Cancel", "abort"),
+            ],
+            "selected": 0,
+            "response_queue": q,
+        },
+        _slash_confirm_deadline=123,
+        _invalidate=lambda: None,
+    )
+
+    _bound(HermesCLI._submit_slash_confirm_response, self_)("always")
+
+    assert q.get_nowait() == "always"
+    assert self_._slash_confirm_state is None
+    assert self_._slash_confirm_deadline == 0
+
+
+def test_slash_confirm_display_fragments_include_choice_mapping():
+    """The modal itself must show what 1/2/3 mean, not only 'Choice [1/2/3]'."""
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace(
+        _slash_confirm_state={
+            "title": "⚠️  /new — destroys conversation state",
+            "detail": "This starts a fresh session.",
+            "choices": [
+                ("once", "Approve Once", "proceed once"),
+                ("always", "Always Approve", "persist opt-out"),
+                ("cancel", "Cancel", "abort"),
+            ],
+            "selected": 1,
+        },
+    )
+
+    fragments = _bound(HermesCLI._get_slash_confirm_display_fragments, self_)()
+    rendered = "".join(fragment for _style, fragment in fragments)
+
+    assert "[1] Approve Once" in rendered
+    assert "[2] Always Approve" in rendered
+    assert "[3] Cancel" in rendered
+    assert "Type 1/2/3" in rendered

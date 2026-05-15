@@ -2,7 +2,7 @@
 Gateway configuration management.
 
 Handles loading and validating configuration for:
-- Connected platforms (Telegram, Discord, WhatsApp)
+- Connected platforms (Telegram, Discord, WhatsApp, Weixin, and more)
 - Home channels for each platform
 - Session reset policies
 - Delivery preferences
@@ -28,9 +28,9 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
         return default
     if isinstance(value, str):
         lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes", "on"):
+        if lowered in {"true", "1", "yes", "on"}:
             return True
-        if lowered in ("false", "0", "no", "off"):
+        if lowered in {"false", "0", "no", "off"}:
             return False
         return default
     return is_truthy_value(value, default=default)
@@ -72,6 +72,24 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
         if normalized in {"public", "private"}:
             return normalized
     return default
+
+
+def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
+    """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
+
+    Both slots are coerced to ``{}`` if a non-dict value is encountered, so
+    callers can safely write keys without type-checking.  Returns
+    ``(plat_data, extra)`` for in-place mutation.
+    """
+    plat_data = platforms_data.setdefault(name, {})
+    if not isinstance(plat_data, dict):
+        plat_data = {}
+        platforms_data[name] = plat_data
+    extra = plat_data.setdefault("extra", {})
+    if not isinstance(extra, dict):
+        extra = {}
+        plat_data["extra"] = extra
+    return plat_data, extra
 
 
 # Module-level cache for bundled platform plugin names (lives outside the
@@ -610,8 +628,7 @@ class GatewayConfig:
 
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
-            if session_store_max_age_days < 0:
-                session_store_max_age_days = 0
+            session_store_max_age_days = max(session_store_max_age_days, 0)
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
@@ -718,6 +735,10 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
             streaming_cfg = yaml_cfg.get("streaming")
+            if not isinstance(streaming_cfg, dict):
+                # Fall back to nested gateway.streaming written by
+                # ``hermes config set gateway.streaming.*``
+                streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
@@ -756,7 +777,27 @@ def load_gateway_config() -> GatewayConfig:
                         merged["extra"] = merged_extra
                     platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
-            for plat in Platform:
+            # Iterate built-in platforms plus any registered plugin platforms
+            # so plugin authors get the same shared-key bridging (#24836).
+            try:
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()  # idempotent
+                from gateway.platform_registry import platform_registry as _pr
+            except Exception as e:
+                logger.debug("plugin discovery skipped: %s", e)
+                _pr = None
+
+            _shared_loop_targets: list = list(Platform)
+            if _pr is not None:
+                for _entry in _pr.plugin_entries():
+                    try:
+                        _plat = Platform(_entry.name)
+                    except (ValueError, KeyError):
+                        continue
+                    if _plat not in _shared_loop_targets:
+                        _shared_loop_targets.append(_plat)
+
+            for plat in _shared_loop_targets:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
@@ -800,7 +841,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
+                if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
@@ -811,19 +852,37 @@ def load_gateway_config() -> GatewayConfig:
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
-                plat_data = platforms_data.setdefault(plat.value, {})
-                if not isinstance(plat_data, dict):
-                    plat_data = {}
-                    platforms_data[plat.value] = plat_data
+                plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
-                extra = plat_data.setdefault("extra", {})
-                if not isinstance(extra, dict):
-                    extra = {}
-                    plat_data["extra"] = extra
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
+
+            # Plugin-owned YAML→env config bridges (#24836).  See
+            # ``PlatformEntry.apply_yaml_config_fn`` for the hook contract.
+            # Order: shared-key loop (above) → this dispatch → legacy hardcoded
+            # blocks (below; no-op when a hook already set their env var) →
+            # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
+            if _pr is not None:
+                for entry in _pr.all_entries():
+                    if entry.apply_yaml_config_fn is None:
+                        continue
+                    platform_cfg = yaml_cfg.get(entry.name)
+                    if not isinstance(platform_cfg, dict):
+                        continue
+                    try:
+                        seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+                    except Exception as e:
+                        logger.debug(
+                            "apply_yaml_config_fn for %s raised: %s",
+                            entry.name, e,
+                        )
+                        continue
+                    if not isinstance(seeded, dict) or not seeded:
+                        continue
+                    _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
+                    extra.update(seeded)
 
             # Slack settings → env vars (env vars take precedence)
             slack_cfg = yaml_cfg.get("slack", {})
@@ -853,6 +912,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
+                    os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):
@@ -880,6 +941,14 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # history_backfill: recover missed channel messages for shared sessions
+                # when require_mention is active.  Fetches messages between bot turns
+                # and prepends them to the user message for context.
+                if "history_backfill" in discord_cfg and not os.getenv("DISCORD_HISTORY_BACKFILL"):
+                    os.environ["DISCORD_HISTORY_BACKFILL"] = str(discord_cfg["history_backfill"]).lower()
+                hbl = discord_cfg.get("history_backfill_limit")
+                if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
+                    os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
                 # allow_mentions: granular control over what the bot can ping.
                 # Safe defaults (no @everyone/roles) are applied in the adapter;
                 # these YAML keys only override when set and let users opt back
@@ -1180,7 +1249,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
-    if telegram_reply_mode in ("off", "first", "all"):
+    if telegram_reply_mode in {"off", "first", "all"}:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
@@ -1221,14 +1290,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     
     # Reply threading mode for Discord (off/first/all)
     discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
-    if discord_reply_mode in ("off", "first", "all"):
+    if discord_reply_mode in {"off", "first", "all"}:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
     
     # WhatsApp (typically uses different auth mechanism)
-    whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
-    whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in ("false", "0", "no")
+    whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}
+    whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
     if Platform.WHATSAPP in config.platforms:
         # YAML config exists — respect explicit disable
         wa_cfg = config.platforms[Platform.WHATSAPP]
@@ -1286,7 +1355,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.SIGNAL].extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
+            "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in {"true", "1", "yes"},
         })
     signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:
@@ -1335,7 +1404,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_password = os.getenv("MATRIX_PASSWORD", "")
         if matrix_password:
             config.platforms[Platform.MATRIX].extra["password"] = matrix_password
-        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in {"true", "1", "yes"}
         config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
         matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
         if matrix_device_id:
@@ -1400,7 +1469,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
+    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
     api_server_key = os.getenv("API_SERVER_KEY", "")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
@@ -1427,7 +1496,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
     # Webhook platform
-    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in ("true", "1", "yes")
+    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
     webhook_port = os.getenv("WEBHOOK_PORT")
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
     if webhook_enabled:
@@ -1443,11 +1512,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
-    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in (
+    msgraph_webhook_enabled = os.getenv("MSGRAPH_WEBHOOK_ENABLED", "").lower() in {
         "true",
         "1",
         "yes",
-    )
+    }
     msgraph_webhook_port = os.getenv("MSGRAPH_WEBHOOK_PORT")
     msgraph_webhook_client_state = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "")
     msgraph_webhook_resources = os.getenv("MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES", "")
@@ -1641,7 +1710,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in ("true", "1", "yes"),
+            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
         })
     bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:

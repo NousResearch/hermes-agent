@@ -442,22 +442,21 @@ def _parse_systemd_duration_to_us(raw: str) -> Optional[int]:
             digits += ch
         elif ch.isalpha():
             token += ch
-        else:
-            if digits and token:
-                multiplier = units.get(token.lower())
-                if multiplier is None:
-                    return None
-                try:
-                    total_us += int(float(digits) * multiplier)
-                except ValueError:
-                    return None
-                digits = ""
-                token = ""
-            elif digits and not token:
-                # Bare number = seconds (rare but valid)
-                try:
-                    total_us += int(float(digits) * 1_000_000)
-                except ValueError:
-                    return None
-                digits = ""
+        elif digits and token:
+            multiplier = units.get(token.lower())
+            if multiplier is None:
+                return None
+            try:
+                total_us += int(float(digits) * multiplier)
+            except ValueError:
+                return None
+            digits = ""
+            token = ""
+        elif digits and not token:
+            # Bare number = seconds (rare but valid)
+            try:
+                total_us += int(float(digits) * 1_000_000)
+            except ValueError:
+                return None
+            digits = ""
     return total_us if total_us > 0 else None

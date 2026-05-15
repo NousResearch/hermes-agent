@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -1159,6 +1160,12 @@ def _maybe_wrap_anthropic(
             base_url,
         )
         return client_obj
+
+    # Kimi Coding: strip trailing /v1 so the Anthropic SDK appends
+    # /v1/messages correctly (avoids /coding/v1/v1/messages 404).
+    # Mirrors runtime_provider.py logic.
+    if "api.kimi.com" in base_url and base_url.rstrip("/").endswith("/v1"):
+        base_url = re.sub(r"/v1/?$", "", base_url)
 
     try:
         real_client = build_anthropic_client(api_key, base_url)

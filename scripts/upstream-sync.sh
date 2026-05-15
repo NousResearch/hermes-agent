@@ -74,10 +74,40 @@ if [ "$REMAINING" -gt 0 ]; then
     exit 1
 fi
 
+# === Fork-specific file preservation ===
+# Reference commits with current fork-specific content:
+#   ed5bbc826  - README.md with Autolycus branding
+#   b2c98986f  - scripts/install.sh with FreeBSD detection
+#   f6159a2d2  - scripts/install-autolycus.sh (dedicated installer)
+#   2b2d51f79  - pyproject.toml with LGPL license + lycus entry point
+
 # Restore Autolycus README branding if lost
 if ! grep -q "Autolycus" README.md 2>/dev/null; then
     echo "Restoring Autolycus README branding..."
-    git show 4f1a47282:README.md > README.md
+    git show ed5bbc826:README.md > README.md
+fi
+
+# Preserve FreeBSD OS detection in install.sh
+if ! grep -q "freebsd" scripts/install.sh 2>/dev/null; then
+    echo "Restoring FreeBSD detection in install.sh..."
+    git show b2c98986f:scripts/install.sh > scripts/install.sh
+fi
+
+# Preserve install-autolycus.sh if lost
+if [ ! -f scripts/install-autolycus.sh ]; then
+    echo "Restoring scripts/install-autolycus.sh..."
+    git show f6159a2d2:scripts/install-autolycus.sh > scripts/install-autolycus.sh
+    chmod +x scripts/install-autolycus.sh
+fi
+
+# Preserve pyproject.toml fork-specific settings (LGPL + lycus entry point)
+if ! grep -q "lycus" pyproject.toml 2>/dev/null; then
+    echo "Restoring lycus entry point in pyproject.toml..."
+    git show 2b2d51f79:pyproject.toml > pyproject.toml
+fi
+if ! grep -q "LGPL" pyproject.toml 2>/dev/null; then
+    echo "Restoring LGPL license in pyproject.toml..."
+    git show 2b2d51f79:pyproject.toml > pyproject.toml
 fi
 
 # Preserve our custom build_plan_path function if it was lost during rebase

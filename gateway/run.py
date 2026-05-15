@@ -1685,10 +1685,23 @@ class GatewayRunner:
         return self._exit_code
 
     def _session_key_for_source(self, source: SessionSource) -> str:
-        """Resolve the current session key for a source, honoring gateway config when available."""
+        """Resolve the current session key for a source.
+
+        Multi-agent gateway: the chat's currently bound agent determines
+        which session_key we resolve to.  ``get_chat_agent`` defaults to
+        ``"default"`` when the chat has never run ``/profile <name>``,
+        so single-agent callers see unchanged behaviour.
+        """
+        agent_name = "default"
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
-                session_key = self.session_store._generate_session_key(source)
+                agent_name = self.session_store.get_chat_agent(source) or "default"
+            except Exception:
+                agent_name = "default"
+            try:
+                session_key = self.session_store._generate_session_key(
+                    source, agent_name=agent_name
+                )
                 if isinstance(session_key, str) and session_key:
                     return session_key
             except Exception:
@@ -1698,6 +1711,7 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            agent_name=agent_name,
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -7032,8 +7046,30 @@ class GatewayRunner:
             source.chat_id or "unknown", _msg_preview,
         )
 
-        # Get or create session
-        session_entry = self.session_store.get_or_create_session(source)
+        # ------------------------------------------------------------------
+        # Multi-agent gateway: resolve the agent (Hermes profile) that
+        # owns this turn BEFORE touching the session store, so:
+        #   * get_or_create_session lands the transcript in the right
+        #     (chat, agent) lane
+        #   * @<name> mentions create / reuse the @-target's own session
+        #   * the chat binding (set by /profile <name>) routes the
+        #     unprefixed default case
+        # The resolver also strips the leading ``@<name>`` token from
+        # event.text when present so downstream handlers see only the
+        # actual user message.
+        # ------------------------------------------------------------------
+        _turn_agent_name, _turn_agent_home, _resolved_text = self._resolve_turn_agent(
+            event.text or "", source
+        )
+        if _resolved_text != (event.text or ""):
+            # @<name> stripped — replace event.text so command dispatch
+            # and downstream history seeding don't echo the mention.
+            event.text = _resolved_text
+
+        # Get or create session for THIS turn's agent.
+        session_entry = self.session_store.get_or_create_session(
+            source, agent_name=_turn_agent_name
+        )
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
@@ -7605,7 +7641,8 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Run the agent
+            # Run the agent — pass the resolved (chat, agent) tuple so
+            # _run_agent doesn't have to re-resolve and reload the session.
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -7616,6 +7653,8 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                agent_name=_turn_agent_name,
+                agent_home=_turn_agent_home,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -8295,19 +8334,116 @@ class GatewayRunner:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle ``/profile`` — display, list, or switch the session's profile.
+
+        Forms:
+            /profile               → show the session's active profile + host info
+            /profile ls            → list all available profiles
+            /profile <name>        → bind this session to <name>'s profile
+                                     (memory, skills, soul switch on the next turn)
+            /profile default       → reset to the default profile
+
+        Persistence: the binding is stored on ``SessionEntry.active_agent``
+        so a gateway restart lands the user back on the same profile.  The
+        per-turn ``@<name> <msg>`` mention syntax routes a single turn
+        elsewhere without mutating this binding.
+        """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
+        from gateway.agent_registry import default_registry
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        registry = default_registry()
+        registry.refresh()  # pick up profiles created since gateway start
 
-        lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
-        ]
+        source = event.source
+        current = self.session_store.get_chat_agent(source)
+        host_profile = get_active_profile_name()
+        host_home = display_hermes_home()
 
-        return "\n".join(lines)
+        # Parse argument from "/profile <arg>"
+        text = (event.text or "").strip()
+        arg = ""
+        if text.startswith("/"):
+            parts = text.split(maxsplit=1)
+            if len(parts) > 1:
+                arg = parts[1].strip()
+
+        # Bare /profile → display current binding + host info
+        if not arg:
+            target = registry.get(current) or registry.default()
+            lines = [
+                f"Active profile (this session): {current}",
+            ]
+            if target.description:
+                lines.append(f"  {target.description}")
+            lines.append(f"Home:    {target.home}")
+            if host_profile != current:
+                lines.append("")
+                lines.append(f"Gateway host profile: {host_profile} ({host_home})")
+            lines.append("")
+            lines.append("Use `/profile ls` to list profiles, `/profile <name>` to switch.")
+            return "\n".join(lines)
+
+        # /profile ls (or list) → enumerate available profiles
+        if arg.casefold() in {"ls", "list"}:
+            profiles = registry.list()
+            lines = ["Available profiles:"]
+            for p in profiles:
+                marker = "→" if p.name == current else " "
+                star = " (default)" if p.is_default else ""
+                desc = f" — {p.description}" if p.description else ""
+                lines.append(f"  {marker} {p.name}{star}{desc}")
+            lines.append("")
+            lines.append(f"Active: {current}")
+            lines.append("Switch with: /profile <name>")
+            return "\n".join(lines)
+
+        # /profile <name> → switch
+        target = registry.get(arg)
+        if target is None:
+            available = ", ".join(registry.names()) or "(none)"
+            return (
+                f"Unknown profile {arg!r}. Available: {available}.\n"
+                f"Run /profile ls to see descriptions."
+            )
+
+        if target.name == current:
+            return f"Already on profile {target.name!r}."
+
+        # Bind this chat to the new agent.  No need to touch any
+        # session: the next inbound message resolves the agent via
+        # get_chat_agent, which then drives session_key + session_id
+        # construction for the new (chat, agent) lane in
+        # _handle_message_with_agent.  Switching back to a previously
+        # used agent naturally restores its prior transcript.
+        ok = self.session_store.set_chat_agent(source, target.name)
+        if not ok:
+            return (
+                f"Could not bind chat to profile {target.name!r} "
+                f"(invalid agent name)."
+            )
+
+        # Best-effort: drop any cached AIAgent keyed by the OLD agent's
+        # session_key for this chat so a stale construction doesn't
+        # linger.  The new agent's session_key is different, so its
+        # cache slot is independent and untouched.
+        try:
+            stale_session_key = self.session_store._generate_session_key(
+                source, agent_name=current
+            )
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and cache is not None:
+                with cache_lock:
+                    cache.pop(stale_session_key, None)
+        except Exception as exc:  # noqa: BLE001 — cache eviction is best-effort
+            logger.debug("Agent cache eviction failed on /profile switch: %s", exc)
+
+        suffix = f" — {target.description}" if target.description else ""
+        return (
+            f"Switched profile to: {target.name}{suffix}\n"
+            f"Next message uses this profile's own session, memory, skills, and soul."
+        )
 
 
     def _check_slash_access(
@@ -14320,6 +14456,44 @@ class GatewayRunner:
 
     # ------------------------------------------------------------------
 
+    def _resolve_turn_agent(
+        self, message: str, source: SessionSource
+    ) -> tuple[str, Path, str]:
+        """Resolve which agent (Hermes profile) runs this turn.
+
+        Priority:
+            1. ``@<name>`` mention at the start of ``message`` (per-turn).
+               Returns the message with the mention stripped.
+            2. The chat's persisted binding (set by ``/profile <name>``).
+            3. The default agent (backed by ``~/.hermes``).
+
+        Returns ``(agent_name, agent_home, message_for_agent)``.
+
+        Always returns a usable triple — unknown stored names fall back
+        to the default agent, and an unknown ``@mention`` is treated as
+        plain text per ``parse_agent_mention``'s pass-through semantics.
+
+        NB: session_key is intentionally NOT a parameter here.  Under
+        the multi-agent model, the session_key depends on which agent
+        owns the turn — so it must be COMPUTED from the resolved agent,
+        not consumed as input.
+        """
+        from gateway.agent_mention import parse_agent_mention
+        from gateway.agent_registry import default_registry
+
+        registry = default_registry()
+        parsed = parse_agent_mention(message, registry)
+        if parsed.target_agent is not None:
+            return (
+                parsed.target_agent.name,
+                parsed.target_agent.home,
+                parsed.stripped_text,
+            )
+
+        stored = self.session_store.get_chat_agent(source)
+        resolved = registry.get(stored) or registry.default()
+        return resolved.name, resolved.home, message
+
     async def _run_agent(
         self,
         message: str,
@@ -14332,6 +14506,8 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        agent_home: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14360,6 +14536,25 @@ class GatewayRunner:
 
         from run_agent import AIAgent
         import queue
+
+        # ------------------------------------------------------------------
+        # Multi-agent gateway: agent_name / agent_home come from the caller
+        # (``_handle_message_with_agent`` resolves them at the top so the
+        # right session_key / session_id are loaded before we get here).
+        # As a safety net for legacy callers that don't pass these, fall
+        # back to per-turn resolution on the message itself.
+        # ------------------------------------------------------------------
+        if agent_name is None or agent_home is None:
+            agent_name, agent_home, message = self._resolve_turn_agent(
+                message, source
+            )
+            # Recompute session_key from this agent so transcript I/O
+            # targets the right (chat, agent) lane.
+            session_key = self.session_store._generate_session_key(
+                source, agent_name=agent_name
+            )
+        _turn_agent_name = agent_name
+        _turn_agent_home = agent_home
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -15041,12 +15236,21 @@ class GatewayRunner:
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            #
+            # Bust on agent change: when /agent or @<name> selects a
+            # different Hermes profile for this turn than the one the
+            # cached AIAgent was built under, we MUST rebuild so the
+            # frozen system prompt (memory + soul + skills) reflects the
+            # new profile.  Mixing them into the cache_keys dict keeps
+            # the existing busting plumbing as the single chokepoint.
+            _cache_keys = self._extract_cache_busting_config(user_config)
+            _cache_keys["agent.profile"] = _turn_agent_name
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_cache_keys,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -15508,6 +15712,21 @@ class GatewayRunner:
                     _run_message = message
 
                 result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+
+                # Multi-agent gateway: label the final response with the agent
+                # that produced it so the user can tell who answered when
+                # /agent or @<name> routes a session across profiles.  The
+                # helper is idempotent and respects gateway.show_agent_name.
+                try:
+                    from gateway.agent_response import apply_agent_prefix_to_result
+                    apply_agent_prefix_to_result(
+                        result, _turn_agent_name, user_config
+                    )
+                except Exception as _agent_prefix_exc:  # noqa: BLE001
+                    logger.debug(
+                        "Agent-name prefix application failed: %s",
+                        _agent_prefix_exc,
+                    )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -15842,8 +16061,22 @@ class GatewayRunner:
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
+
+            # Wrap run_sync in agent_home_scope so every get_hermes_home()
+            # call inside the executor thread resolves to the turn's agent
+            # profile.  agent_home_scope must run INSIDE the executor's
+            # copied context — setting it in the async frame here would
+            # leak past _run_agent's return, since the awaiting coroutine
+            # and the executor share the same logical context until the
+            # next copy_context() boundary.
+            from gateway.agent_context import agent_home_scope as _agent_home_scope
+
+            def _scoped_run_sync():
+                with _agent_home_scope(_turn_agent_home):
+                    return run_sync()
+
             _executor_task = asyncio.ensure_future(
-                self._run_in_executor_with_context(run_sync)
+                self._run_in_executor_with_context(_scoped_run_sync)
             )
 
             _inactivity_timeout = False

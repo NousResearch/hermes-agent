@@ -14,7 +14,9 @@ from .session import (
     SessionContext,
     SessionStore,
     SessionResetPolicy,
+    build_chat_key,
     build_session_context_prompt,
+    build_session_key,
 )
 from .delivery import DeliveryRouter, DeliveryTarget
 
@@ -28,7 +30,9 @@ __all__ = [
     "SessionContext",
     "SessionStore",
     "SessionResetPolicy",
+    "build_chat_key",
     "build_session_context_prompt",
+    "build_session_key",
     # Delivery
     "DeliveryRouter",
     "DeliveryTarget",

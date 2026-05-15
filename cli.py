@@ -5408,17 +5408,75 @@ class HermesCLI:
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
+    def _handle_profile_command(self, cmd_original: str = "/profile"):
+        """Display the active profile, list profiles, or hint at switching.
+
+        Forms:
+            /profile               → show active profile + home directory
+            /profile ls            → list every available profile
+            /profile <name>        → CLI cannot switch live (process-wide
+                                     HERMES_HOME is fixed); print the
+                                     correct relaunch command instead
+
+        Live profile switching is a multi-agent **gateway** feature
+        (per-turn ``agent_home_scope``); the CLI process is bound to one
+        profile at startup via ``-p <name>`` so an in-place swap would
+        leave half the agent's state pointing at the old home.
+        """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
+        from gateway.agent_registry import default_registry
 
+        registry = default_registry()
+        registry.refresh()
+        active = get_active_profile_name()
         display = display_hermes_home()
-        profile_name = get_active_profile_name()
 
+        parts = (cmd_original or "/profile").split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not arg:
+            # Bare /profile — show active + home
+            target = registry.get(active) or registry.default()
+            print()
+            print(f"  Profile: {active}")
+            if target.description:
+                print(f"           {target.description}")
+            print(f"  Home:    {display}")
+            print()
+            print("  Use `/profile ls` to list profiles.")
+            print()
+            return
+
+        if arg.casefold() in {"ls", "list"}:
+            profiles = registry.list()
+            print()
+            print("  Available profiles:")
+            for p in profiles:
+                marker = "→" if p.name == active else " "
+                star = " (default)" if p.is_default else ""
+                desc = f" — {p.description}" if p.description else ""
+                print(f"    {marker} {p.name}{star}{desc}")
+            print()
+            print(f"  Active: {active}")
+            print("  Switch in CLI: relaunch with `hermes -p <name>`")
+            print("  Switch in gateway: send `/profile <name>` to the bot")
+            print()
+            return
+
+        # /profile <name> — CLI can't switch live
+        target = registry.get(arg)
         print()
-        print(f"  Profile: {profile_name}")
-        print(f"  Home:    {display}")
+        if target is None:
+            print(f"  Unknown profile {arg!r}.")
+            available = ", ".join(registry.names()) or "(none)"
+            print(f"  Available: {available}")
+        else:
+            print(f"  The CLI is bound to one profile per process.")
+            print(f"  To use profile {target.name!r}, relaunch:")
+            print(f"    hermes -p {target.name}")
+            print()
+            print(f"  (Live switching is a gateway feature: send `/profile {target.name}` to the bot.)")
         print()
 
     def show_config(self):
@@ -7419,7 +7477,7 @@ class HermesCLI:
         elif canonical == "help":
             self.show_help()
         elif canonical == "profile":
-            self._handle_profile_command()
+            self._handle_profile_command(cmd_original)
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

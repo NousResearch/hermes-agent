@@ -14,7 +14,16 @@ _profile_fallback_warned: bool = False
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
-    Reads HERMES_HOME env var, falls back to ~/.hermes.
+    Resolution order:
+
+    1. **Per-turn contextvar override** (``gateway.agent_context``).
+       Set by the multi-agent gateway runtime so a single gateway
+       process can serve multiple profiles in parallel — each turn
+       runs inside an ``agent_home_scope`` that swaps in the active
+       agent's HERMES_HOME without mutating the process env var.
+    2. ``HERMES_HOME`` env var (the historical single-profile mode).
+    3. ``~/.hermes`` fallback.
+
     This is the single source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
@@ -27,6 +36,21 @@ def get_hermes_home() -> Path:
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
     ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
+    # (1) Per-turn agent home override.  Guarded import so cli/subprocess
+    # boot paths that don't pull in the gateway still work (and so the
+    # gateway module itself can import hermes_constants without circular
+    # bootstrap).
+    try:
+        from gateway.agent_context import current_agent_home as _cur
+
+        override = _cur()
+        if override is not None:
+            return override
+    except Exception:
+        # ImportError (gateway not installed in this venv), or any failure
+        # in the contextvar plumbing — must NEVER prevent path resolution.
+        pass
+
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
         return Path(val)

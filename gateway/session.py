@@ -491,6 +491,12 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Multi-agent gateway: name of the agent (= Hermes profile) currently
+    # bound to this session.  Set by ``/agent <name>``; per-turn ``@<name>``
+    # mentions don't mutate this field.  Defaults to ``"default"`` so
+    # legacy sessions and single-profile gateways behave unchanged.
+    active_agent: str = "default"
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -518,6 +524,7 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "active_agent": self.active_agent,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -567,6 +574,7 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            active_agent=str(data.get("active_agent") or "default"),
         )
 
 
@@ -595,10 +603,17 @@ def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    agent_name: str = "default",
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    Multi-agent semantics: the second key component is the agent (Hermes
+    profile) name, so two agents in the same chat get independent
+    sessions / transcripts.  The ``default`` agent keeps the legacy
+    ``agent:main:...`` prefix to preserve zero-migration compatibility
+    with existing ``sessions.json`` and ``state.db`` rows.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -619,6 +634,10 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    # Agent-namespace prefix.  ``default`` keeps the legacy ``agent:main``
+    # prefix so existing on-disk sessions continue to resolve unchanged.
+    prefix = "agent:main" if agent_name == "default" else f"agent:{agent_name}"
+
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -627,11 +646,11 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{prefix}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{prefix}:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{prefix}:{platform}:dm:{source.thread_id}"
+        return f"{prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -639,7 +658,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -659,6 +678,40 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def build_chat_key(source: SessionSource) -> str:
+    """Build a chat-level key (no agent namespace) for binding lookups.
+
+    Two messages with different active agents but same chat origin share
+    the same chat_key — that's the level at which ``SessionStore``
+    tracks "which agent is currently bound to this chat".
+
+    Format: ``chat:{platform}:{chat_type}:{chat_id_or_thread}:{participant}``
+    Stable across agents; **DO NOT** persist gateway sessions under this
+    key — use ``build_session_key`` for that.
+    """
+    platform = source.platform.value
+    if source.chat_type == "dm":
+        dm_chat_id = source.chat_id
+        if source.platform == Platform.WHATSAPP:
+            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+        parts = ["chat", platform, "dm"]
+        if dm_chat_id:
+            parts.append(dm_chat_id)
+        if source.thread_id:
+            parts.append(source.thread_id)
+        return ":".join(parts)
+
+    parts = ["chat", platform, source.chat_type]
+    if source.chat_id:
+        parts.append(source.chat_id)
+    if source.thread_id:
+        parts.append(source.thread_id)
+    participant_id = source.user_id_alt or source.user_id
+    if participant_id:
+        parts.append(str(participant_id))
+    return ":".join(parts)
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -675,6 +728,15 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        # Chat-level agent bindings.  Key: chat_key (no agent namespace).
+        # Value: the agent (Hermes profile) name that ``/profile <name>``
+        # most recently bound to this chat.  Persisted to
+        # ``chat_bindings.json``.  Read at the top of every inbound
+        # message in _handle_message_with_agent to decide which agent
+        # owns the turn (and therefore which session_key + transcript
+        # to use).
+        self._chat_bindings: Dict[str, str] = {}
+        self._chat_bindings_loaded = False
         
         # Initialize SQLite session database
         self._db = None
@@ -735,13 +797,109 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
-    def _generate_session_key(self, source: SessionSource) -> str:
-        """Generate a session key from a source."""
+    def _generate_session_key(
+        self, source: SessionSource, agent_name: str = "default"
+    ) -> str:
+        """Generate a session key from a source + active agent.
+
+        Defaults to the ``"default"`` agent so legacy callers that don't
+        know about multi-agent semantics still resolve to the same
+        ``agent:main:...`` key shape they always have.  Callers that DO
+        care should pass the agent name resolved via
+        :meth:`get_chat_agent` or ``GatewayRunner._resolve_turn_agent``.
+        """
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            agent_name=agent_name,
         )
+
+    # ------------------------------------------------------------------
+    # Chat-level agent bindings (multi-agent gateway)
+    # ------------------------------------------------------------------
+
+    def _chat_bindings_path(self) -> Path:
+        return self.sessions_dir / "chat_bindings.json"
+
+    def _ensure_chat_bindings_loaded_locked(self) -> None:
+        """Load ``chat_bindings.json`` once.  Must hold ``self._lock``."""
+        if self._chat_bindings_loaded:
+            return
+        path = self._chat_bindings_path()
+        if path.is_file():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    self._chat_bindings = {
+                        str(k): str(v) for k, v in raw.items() if v
+                    }
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Failed to load chat_bindings.json: %s", exc)
+        self._chat_bindings_loaded = True
+
+    def _persist_chat_bindings_locked(self) -> None:
+        """Atomically rewrite ``chat_bindings.json``.  Must hold ``self._lock``."""
+        import tempfile
+
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        path = self._chat_bindings_path()
+        fd, tmp = tempfile.mkstemp(
+            dir=str(self.sessions_dir), suffix=".tmp", prefix=".chat_bindings_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._chat_bindings, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def get_chat_agent(self, source: SessionSource) -> str:
+        """Return the agent (Hermes profile) currently bound to ``source``'s chat.
+
+        Defaults to ``"default"`` when no ``/profile`` switch has been
+        made in this chat yet.  ``@<name>`` mentions go through a
+        separate per-turn path and never call this method.
+        """
+        chat_key = build_chat_key(source)
+        with self._lock:
+            self._ensure_chat_bindings_loaded_locked()
+            return self._chat_bindings.get(chat_key, "default")
+
+    def set_chat_agent(self, source: SessionSource, agent_name: str) -> bool:
+        """Bind a chat to a specific agent (Hermes profile).
+
+        Returns True when the binding was written (also when it was
+        already the same value — idempotent).  Returns False only for
+        invalid input (empty / non-string agent name).
+        """
+        if not isinstance(agent_name, str) or not agent_name.strip():
+            return False
+        normalized = agent_name.strip()
+        chat_key = build_chat_key(source)
+        with self._lock:
+            self._ensure_chat_bindings_loaded_locked()
+            current = self._chat_bindings.get(chat_key)
+            if normalized == "default":
+                # Default agent doesn't need a row — remove the binding so
+                # the file stays compact.  get_chat_agent falls back to
+                # ``"default"`` for missing keys.
+                if current is not None:
+                    self._chat_bindings.pop(chat_key, None)
+                    self._persist_chat_bindings_locked()
+                return True
+            if current == normalized:
+                return True
+            self._chat_bindings[chat_key] = normalized
+            self._persist_chat_bindings_locked()
+            return True
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -850,15 +1008,21 @@ class SessionStore:
     def get_or_create_session(
         self,
         source: SessionSource,
-        force_new: bool = False
+        force_new: bool = False,
+        agent_name: str = "default",
     ) -> SessionEntry:
         """
         Get an existing session or create a new one.
 
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
+
+        Multi-agent gateway: the ``agent_name`` argument is folded into
+        the session key so each agent owns an independent transcript per
+        chat.  Defaults to ``"default"`` to preserve single-agent
+        semantics for callers that don't yet pass the active agent.
         """
-        session_key = self._generate_session_key(source)
+        session_key = self._generate_session_key(source, agent_name=agent_name)
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
@@ -923,6 +1087,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                active_agent=agent_name,
             )
 
             self._entries[session_key] = entry
@@ -963,6 +1128,46 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def set_active_agent(self, session_key: str, agent_name: str) -> bool:
+        """Bind a session to a specific agent (Hermes profile).
+
+        Returns True when the session exists and the value was changed (or
+        re-confirmed).  Returns False when the session is unknown — the
+        caller can decide whether to surface that as a user-facing error
+        or create the session first.
+
+        Persisting this lets a gateway restart land users back on the
+        same agent they were chatting with, without a fresh ``/agent``
+        prompt.  ``@<name>`` mentions go through a separate path and
+        never call this method.
+        """
+        if not isinstance(agent_name, str) or not agent_name.strip():
+            return False
+        normalized = agent_name.strip()
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.active_agent = normalized
+            self._save()
+            return True
+
+    def get_active_agent(self, session_key: str) -> str:
+        """Return the agent name bound to ``session_key``.
+
+        Defaults to ``"default"`` for unknown sessions and for legacy
+        sessions persisted before this field existed.  Never raises;
+        callers can treat the return value as a free-floating profile id
+        suitable for ``AgentRegistry.get(...)``.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return "default"
+            return entry.active_agent or "default"
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

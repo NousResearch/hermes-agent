@@ -873,6 +873,97 @@ The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
 `HERMES_HOME` before any module imports. All `get_hermes_home()` references
 automatically scope to the active profile.
 
+### Multi-Agent Gateway (one gateway, many agents)
+
+In addition to the process-wide profile binding above, a single gateway
+process can serve **multiple agents (profiles) in parallel**.  Each turn
+runs inside a per-turn ``HERMES_HOME`` override so memory / skills /
+SOUL.md / config load from the right profile without rebinding the
+process env var.
+
+Layered model:
+
+```
+process-level HERMES_HOME  →  the host profile (gateway config, sessions DB)
+   contextvar override     →  per-turn agent profile (memory, skills, soul)
+```
+
+Resolution order in ``hermes_constants.get_hermes_home()``:
+
+1. ``gateway.agent_context._AGENT_HOME`` contextvar (per-turn).
+2. ``HERMES_HOME`` env var (process-level / legacy).
+3. ``~/.hermes`` fallback.
+
+Switching agents in a chat:
+
+| User input                | Effect                                              |
+|---------------------------|-----------------------------------------------------|
+| ``/profile``              | Show the session's active profile + host info     |
+| ``/profile ls``           | List all available profiles                       |
+| ``/profile coder``        | Bind this session to the ``coder`` profile        |
+| ``/profile default``      | Reset to the default profile                      |
+| ``@coder fix this``       | Route just this turn to ``coder``; binding intact |
+
+``/profile`` is intentionally the single multi-agent entry point —
+naming a separate ``/agent`` command would collide with the existing
+``/agents`` (plural, "list running agent tasks") only by an ``s``.
+
+Persistence: the chat's bound agent is stored in
+``SessionStore._chat_bindings`` (persisted to
+``sessions/chat_bindings.json``) and survives gateway restarts.  Inline
+``@<name>`` mentions are per-turn and never mutate the binding, but
+they DO write into the @-target's own session.
+
+Session isolation: each ``(chat, agent)`` pair owns an independent
+``session_id`` and transcript.  ``/profile coder`` after talking to
+``default`` doesn't extend default's history — it starts (or resumes)
+coder's own session.  Switching back to ``default`` restores its prior
+transcript.  This matches the "two independent Telegram bots" mental
+model rather than "one bot wearing different hats".  The default agent
+keeps the legacy ``agent:main:...`` session_key shape so existing
+``state.db`` rows and ``sessions.json`` entries continue to work with
+zero migration.
+
+Implementation choke points:
+
+* ``gateway/agent_context.py`` — contextvar + ``agent_home_scope``
+* ``gateway/agent_registry.py`` — enumerate available profiles
+* ``gateway/agent_mention.py`` — parse ``@<name> <msg>``
+* ``gateway/agent_response.py`` — prepend ``[<agent_name>] `` to replies
+  (toggle via ``gateway.show_agent_name`` in ``config.yaml``)
+* ``GatewayRunner._resolve_turn_agent`` (in ``gateway/run.py``) —
+  one function decides which profile runs this turn
+* ``GatewayRunner._run_agent`` wraps the executor dispatch in
+  ``agent_home_scope`` so all profile-aware path reads inside the AI
+  agent thread resolve to the right home.
+* ``GatewayRunner._handle_profile_command`` (in ``gateway/run.py``)
+  implements the bare / ``ls`` / ``<name>`` / ``default`` forms.
+
+Cache invariants:
+
+* AIAgent cache signature includes the active profile name (via the
+  ``agent.profile`` cache-bust key), and the cache key (``session_key``)
+  is itself per-agent — so different agents on the same chat occupy
+  distinct cache slots and never reuse each other's frozen system
+  prompt / tool schemas.
+* ``/profile <name>`` evicts the OLD binding agent's cache slot (the
+  new agent's slot is independent and untouched).
+
+What stays profile-bound (NOT lifted to root):
+
+* Gateway config (``gateway:`` section of ``config.yaml``), platform
+  tokens, sessions DB.  These live in the **host** profile — the one
+  the gateway process was started under.  Memory / skills / soul are
+  the only things that swap per-turn.
+
+Authoring tips:
+
+* If you add a code path that reads profile data, use
+  ``get_hermes_home()`` so the contextvar override applies automatically.
+* If you add a slash command that mutates per-session state and that
+  state depends on the active agent, evict the agent cache the same
+  way ``_handle_agent_command`` does.
+
 ### Rules for profile-safe code
 
 1. **Use `get_hermes_home()` for all HERMES_HOME paths.** Import from `hermes_constants`.

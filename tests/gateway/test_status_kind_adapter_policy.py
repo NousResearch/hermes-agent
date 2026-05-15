@@ -178,6 +178,7 @@ def test_kind_is_keyword_only_so_legacy_positional_callers_still_work():
     assert "kind" in names
     assert names.index("kind") > names.index("max_retries")
     assert names.index("kind") > names.index("base_delay")
+    assert sig.parameters["kind"].kind is inspect.Parameter.KEYWORD_ONLY
     assert sig.parameters["kind"].default == "reply"
 
 

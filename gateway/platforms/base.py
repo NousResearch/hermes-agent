@@ -2491,6 +2491,7 @@ class BasePlatformAdapter(ABC):
         metadata: Any = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
+        *,
         kind: str = "reply",
     ) -> "SendResult":
         """

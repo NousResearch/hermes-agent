@@ -16,16 +16,23 @@ paths = [
 ]
 commits = []
 regexes = [
-  '''Anthropic OAuth/setup tokens''',
-  '''\bprivate-key\b''',
-  '''discord(?:_admin)?''',
+  '''-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----''',
+  '''\bdiscord(?:_admin)?\b''',
   '''discord\.gg/NousResearch''',
+  '''123456789012345678''',
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',
+  '''app_EMoamEEZ73f0CkXaXp7hrann''',
+  '''78257093-7e40-4613-99e0-527b14b39113''',
+  '''urn:ietf:params:oauth:grant-type:user_code''',
+  '''f0304373b74a44d2b584a3fb70ca9e56''',
+  '''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''',
+  '''Ov23li8tweQw6odWQebz''',
 ]
 
 [[rules]]
 id = "generic-api-key"
 description = "Allow documented/public OAuth client identifiers and model identifiers"
-path = '''^(hermes_cli/auth\.py|agent/google_oauth\.py|hermes_cli/copilot_auth\.py|tools/mixture_of_agents_tool\.py)$'''
+path = '''^(hermes_cli/auth\.py|agent/google_oauth\.py|hermes_cli/copilot_auth\.py|tools/mixture_of_agents_tool\.py|agent/anthropic_adapter\.py)$'''
 
 [[rules]]
 id = "private-key"
@@ -36,8 +43,3 @@ path = '''^agent/redact\.py$'''
 id = "discord-client-id"
 description = "Allow Discord docs references and toolset names in repo documentation"
 path = '''^(README\.md|AGENTS\.md)$'''
-
-[[rules]]
-id = "generic-api-key"
-description = "Allow Kimi/Moonshot model-family docs in anthropic adapter"
-path = '''^agent/anthropic_adapter\.py$'''

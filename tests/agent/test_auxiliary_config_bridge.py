@@ -26,6 +26,10 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
+        "AUXILIARY_VIDEO_PROVIDER", "AUXILIARY_VIDEO_MODEL",
+        "AUXILIARY_VIDEO_BASE_URL", "AUXILIARY_VIDEO_API_KEY",
+        "AUXILIARY_AUDIO_PROVIDER", "AUXILIARY_AUDIO_MODEL",
+        "AUXILIARY_AUDIO_BASE_URL", "AUXILIARY_AUDIO_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
         "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
     ):
@@ -42,6 +46,18 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
                 "model": "AUXILIARY_VISION_MODEL",
                 "base_url": "AUXILIARY_VISION_BASE_URL",
                 "api_key": "AUXILIARY_VISION_API_KEY",
+            },
+            "video": {
+                "provider": "AUXILIARY_VIDEO_PROVIDER",
+                "model": "AUXILIARY_VIDEO_MODEL",
+                "base_url": "AUXILIARY_VIDEO_BASE_URL",
+                "api_key": "AUXILIARY_VIDEO_API_KEY",
+            },
+            "audio": {
+                "provider": "AUXILIARY_AUDIO_PROVIDER",
+                "model": "AUXILIARY_AUDIO_MODEL",
+                "base_url": "AUXILIARY_AUDIO_BASE_URL",
+                "api_key": "AUXILIARY_AUDIO_API_KEY",
             },
             "web_extract": {
                 "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
@@ -161,6 +177,33 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "custom-llm"
 
+    def test_video_and_audio_bridged(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "video": {
+                    "provider": "custom",
+                    "model": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4",
+                    "base_url": "http://192.168.247.207:18093/v1",
+                    "api_key": "local",
+                },
+                "audio": {
+                    "provider": "custom",
+                    "model": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4",
+                    "base_url": "http://192.168.247.207:18093/v1",
+                    "api_key": "local",
+                },
+            }
+        }
+        _run_auxiliary_bridge(config, monkeypatch)
+        assert os.environ.get("AUXILIARY_VIDEO_PROVIDER") == "custom"
+        assert os.environ.get("AUXILIARY_VIDEO_MODEL") == "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
+        assert os.environ.get("AUXILIARY_VIDEO_BASE_URL") == "http://192.168.247.207:18093/v1"
+        assert os.environ.get("AUXILIARY_VIDEO_API_KEY") == "local"
+        assert os.environ.get("AUXILIARY_AUDIO_PROVIDER") == "custom"
+        assert os.environ.get("AUXILIARY_AUDIO_MODEL") == "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"
+        assert os.environ.get("AUXILIARY_AUDIO_BASE_URL") == "http://192.168.247.207:18093/v1"
+        assert os.environ.get("AUXILIARY_AUDIO_API_KEY") == "local"
+
     def test_all_tasks_with_overrides(self, monkeypatch):
         config = {
             "auxiliary": {
@@ -210,6 +253,14 @@ class TestGatewayBridgeCodeParity:
         assert "AUXILIARY_VISION_MODEL" in content
         assert "AUXILIARY_VISION_BASE_URL" in content
         assert "AUXILIARY_VISION_API_KEY" in content
+        assert "AUXILIARY_VIDEO_PROVIDER" in content
+        assert "AUXILIARY_VIDEO_MODEL" in content
+        assert "AUXILIARY_VIDEO_BASE_URL" in content
+        assert "AUXILIARY_VIDEO_API_KEY" in content
+        assert "AUXILIARY_AUDIO_PROVIDER" in content
+        assert "AUXILIARY_AUDIO_MODEL" in content
+        assert "AUXILIARY_AUDIO_BASE_URL" in content
+        assert "AUXILIARY_AUDIO_API_KEY" in content
         assert "AUXILIARY_WEB_EXTRACT_PROVIDER" in content
         assert "AUXILIARY_WEB_EXTRACT_MODEL" in content
         assert "AUXILIARY_WEB_EXTRACT_BASE_URL" in content
@@ -271,6 +322,21 @@ class TestDefaultConfigShape:
         assert vision["provider"] == "auto"
         assert vision["model"] == ""
 
+    @pytest.mark.parametrize("task", ["video", "audio"])
+    def test_media_task_structure(self, task):
+        from hermes_cli.config import DEFAULT_CONFIG
+        media = DEFAULT_CONFIG["auxiliary"][task]
+        assert "provider" in media
+        assert "model" in media
+        assert "base_url" in media
+        assert "api_key" in media
+        assert "timeout" in media
+        assert "extra_body" in media
+        assert "download_timeout" in media
+        assert media["provider"] == "auto"
+        assert media["model"] == ""
+        assert media["timeout"] == 300
+
     def test_web_extract_task_structure(self):
         from hermes_cli.config import DEFAULT_CONFIG
         web = DEFAULT_CONFIG["auxiliary"]["web_extract"]
@@ -284,16 +350,10 @@ class TestDefaultConfigShape:
 
 
 class TestCLIDefaultsHaveAuxiliaryKeys:
-    """Verify cli.py load_cli_config() defaults dict does NOT include auxiliary
-    (it comes from config.yaml deep merge, not hardcoded defaults)."""
+    """Verify cli.py bridges auxiliary config values to compatibility env vars."""
 
     def test_cli_defaults_can_merge_auxiliary(self):
-        """The load_cli_config deep merge logic handles keys not in defaults.
-        Verify auxiliary would be picked up from config.yaml."""
-        # This is a structural assertion: cli.py's second-pass loop
-        # carries over keys from file_config that aren't in defaults.
-        # So auxiliary config from config.yaml gets merged even though
-        # cli.py's defaults dict doesn't define it.
+        """The load_cli_config deep merge logic handles auxiliary keys."""
         import cli as _cli_mod
         # See note in test_gateway_has_auxiliary_bridge — pin UTF-8 so the
         # test runs on Windows where the default locale is cp1252.
@@ -301,3 +361,7 @@ class TestCLIDefaultsHaveAuxiliaryKeys:
         assert "auxiliary_config = defaults.get(\"auxiliary\"" in source
         assert "AUXILIARY_VISION_PROVIDER" in source
         assert "AUXILIARY_VISION_MODEL" in source
+        assert "AUXILIARY_VIDEO_PROVIDER" in source
+        assert "AUXILIARY_VIDEO_MODEL" in source
+        assert "AUXILIARY_AUDIO_PROVIDER" in source
+        assert "AUXILIARY_AUDIO_MODEL" in source

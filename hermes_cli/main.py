@@ -2049,6 +2049,8 @@ def _clear_stale_openai_base_url():
 # (task_key, display_name, short_description)
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
+    ("video", "Video", "video understanding"),
+    ("audio", "Audio", "audio/sound understanding"),
     ("compression", "Compression", "context summarization"),
     ("web_extract", "Web extract", "web page summarization"),
     ("session_search", "Session search", "past-conversation recall"),

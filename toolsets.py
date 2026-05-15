@@ -100,6 +100,12 @@ TOOLSETS = {
         "tools": ["video_analyze"],
         "includes": []
     },
+
+    "audio": {
+        "description": "Audio and sound analysis tools (opt-in, not in default toolset)",
+        "tools": ["audio_analyze"],
+        "includes": []
+    },
     
     "image_gen": {
         "description": "Creative generation tools (images)",

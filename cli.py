@@ -378,6 +378,18 @@ def load_cli_config() -> Dict[str, Any]:
                 "base_url": "",
                 "api_key": "",
             },
+            "video": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+            "audio": {
+                "provider": "auto",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
             "web_extract": {
                 "provider": "auto",
                 "model": "",
@@ -575,6 +587,18 @@ def load_cli_config() -> Dict[str, Any]:
             "model": "AUXILIARY_VISION_MODEL",
             "base_url": "AUXILIARY_VISION_BASE_URL",
             "api_key": "AUXILIARY_VISION_API_KEY",
+        },
+        "video": {
+            "provider": "AUXILIARY_VIDEO_PROVIDER",
+            "model": "AUXILIARY_VIDEO_MODEL",
+            "base_url": "AUXILIARY_VIDEO_BASE_URL",
+            "api_key": "AUXILIARY_VIDEO_API_KEY",
+        },
+        "audio": {
+            "provider": "AUXILIARY_AUDIO_PROVIDER",
+            "model": "AUXILIARY_AUDIO_MODEL",
+            "base_url": "AUXILIARY_AUDIO_BASE_URL",
+            "api_key": "AUXILIARY_AUDIO_API_KEY",
         },
         "web_extract": {
             "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",

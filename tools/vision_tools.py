@@ -913,15 +913,30 @@ async def vision_analyze_tool(
                 )
 
 
-def check_vision_requirements() -> bool:
-    """Check if the configured runtime vision path can resolve a client."""
+def _check_multimodal_requirements(task: str = "vision") -> bool:
+    """Check if a configured multimodal auxiliary task can resolve a client."""
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
 
-        _provider, client, _model = resolve_vision_provider_client()
+        _provider, client, _model = resolve_vision_provider_client(task=task)
         return client is not None
     except Exception:
         return False
+
+
+def check_vision_requirements() -> bool:
+    """Check if the configured runtime vision path can resolve a client."""
+    return _check_multimodal_requirements("vision")
+
+
+def check_video_requirements() -> bool:
+    """Check if the configured runtime video path can resolve a client."""
+    return _check_multimodal_requirements("video")
+
+
+def check_audio_requirements() -> bool:
+    """Check if the configured runtime audio path can resolve a client."""
+    return _check_multimodal_requirements("audio")
 
 
 
@@ -1076,6 +1091,48 @@ _VIDEO_MIME_TYPES = {
 _MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
 
+_AUDIO_MIME_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+}
+
+_MAX_AUDIO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
+_AUDIO_SIZE_WARN_BYTES = 20 * 1024 * 1024
+
+
+def _resolve_aux_task_float(task: str, key: str, default: float) -> float:
+    """Read a numeric auxiliary.<task> setting, returning default on errors."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        _cfg = load_config()
+        _task_cfg = cfg_get(_cfg, "auxiliary", task, default={})
+        if isinstance(_task_cfg, dict) and _task_cfg.get(key) is not None:
+            return float(_task_cfg[key])
+    except Exception:
+        pass
+    return default
+
+
+def _resolve_media_timeout(task: str, default: float = 300.0, minimum: float = 180.0) -> float:
+    return max(_resolve_aux_task_float(task, "timeout", default), minimum)
+
+
+def _resolve_media_temperature(task: str, default: float = 0.1) -> float:
+    return _resolve_aux_task_float(task, "temperature", default)
+
+
+def _resolve_media_download_timeout(task: str, default: float = 60.0) -> float:
+    return _resolve_aux_task_float(task, "download_timeout", default)
+
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
     """Return a video MIME type based on file extension, or None if unsupported."""
@@ -1089,6 +1146,99 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     encoded = base64.b64encode(data).decode("ascii")
     mime = mime_type or _VIDEO_MIME_TYPES.get(video_path.suffix.lower(), "video/mp4")
     return f"data:{mime};base64,{encoded}"
+
+
+def _detect_audio_mime_type(audio_path: Path) -> Optional[str]:
+    """Return an audio MIME type based on file extension, or None if unsupported."""
+    ext = audio_path.suffix.lower()
+    return _AUDIO_MIME_TYPES.get(ext)
+
+
+def _audio_to_base64_data_url(audio_path: Path, mime_type: Optional[str] = None) -> str:
+    """Convert an audio file to a base64-encoded data URL."""
+    data = audio_path.read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    mime = mime_type or _AUDIO_MIME_TYPES.get(audio_path.suffix.lower(), "audio/mpeg")
+    return f"data:{mime};base64,{encoded}"
+
+
+async def _download_audio(audio_url: str, destination: Path, max_retries: int = 3) -> Path:
+    """Download audio from URL with SSRF protection and retry."""
+    import asyncio
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _ssrf_redirect_guard(response):
+        if response.is_redirect and response.next_request:
+            redirect_url = str(response.next_request.url)
+            from tools.url_safety import is_safe_url
+            if not is_safe_url(redirect_url):
+                raise ValueError(
+                    f"Blocked redirect to private/internal address: {redirect_url}"
+                )
+
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            blocked = check_website_access(audio_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+
+            async with httpx.AsyncClient(
+                timeout=_resolve_media_download_timeout("audio", 60.0),
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            ) as client:
+                async with client.stream(
+                    "GET",
+                    audio_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "audio/*,*/*;q=0.8",
+                    },
+                ) as response:
+                    response.raise_for_status()
+
+                    cl = response.headers.get("content-length")
+                    if cl and int(cl) > _MAX_AUDIO_BASE64_BYTES:
+                        raise ValueError(
+                            f"Audio too large ({int(cl)} bytes, max {_MAX_AUDIO_BASE64_BYTES})"
+                        )
+
+                    final_url = str(response.url)
+                    blocked = check_website_access(final_url)
+                    if blocked:
+                        raise PermissionError(blocked["message"])
+
+                    chunks = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > _MAX_AUDIO_BASE64_BYTES:
+                            raise ValueError(
+                                f"Audio too large ({total} bytes, max {_MAX_AUDIO_BASE64_BYTES})"
+                            )
+                        chunks.append(chunk)
+                    destination.write_bytes(b"".join(chunks))
+
+            return destination
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 2 ** (attempt + 1)
+                logger.warning("Audio download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(
+                    "Audio download failed after %s attempts: %s",
+                    max_retries, str(e)[:100], exc_info=True,
+                )
+
+    if last_error is None:
+        raise RuntimeError(
+            f"_download_audio exited retry loop without attempting (max_retries={max_retries})"
+        )
+    raise last_error
 
 
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -1114,39 +1264,48 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 raise PermissionError(blocked["message"])
 
             async with httpx.AsyncClient(
-                timeout=60.0,
+                timeout=_resolve_media_download_timeout("video", 60.0),
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     video_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "video/*,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
+                ) as response:
+                    response.raise_for_status()
 
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
+                    cl = response.headers.get("content-length")
+                    if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
+                        raise ValueError(
+                            f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                        )
 
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
+                    final_url = str(response.url)
+                    blocked = check_website_access(final_url)
+                    if blocked:
+                        raise PermissionError(blocked["message"])
 
-                body = response.content
-                if len(body) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({len(body)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
-                destination.write_bytes(body)
+                    total = 0
+                    with destination.open("wb") as f:
+                        async for chunk in response.aiter_bytes():
+                            total += len(chunk)
+                            if total > _MAX_VIDEO_BASE64_BYTES:
+                                raise ValueError(
+                                    f"Video too large ({total} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                                )
+                            f.write(chunk)
 
             return destination
         except Exception as e:
+            if destination.exists():
+                try:
+                    destination.unlink()
+                except Exception:
+                    pass
             last_error = e
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)
@@ -1221,6 +1380,10 @@ async def video_analyze_tool(
             )
 
         video_size_bytes = temp_video_path.stat().st_size
+        if video_size_bytes > _MAX_VIDEO_BASE64_BYTES:
+            raise ValueError(
+                f"Video too large ({video_size_bytes} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+            )
         video_size_mb = video_size_bytes / (1024 * 1024)
         logger.info("Video ready (%.1f MB)", video_size_mb)
 
@@ -1264,27 +1427,15 @@ async def video_analyze_tool(
             }
         ]
 
-        vision_timeout = 180.0
-        vision_temperature = 0.1
-        try:
-            from hermes_cli.config import cfg_get, load_config
-            _cfg = load_config()
-            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
-            _vt = _vision_cfg.get("timeout")
-            if _vt is not None:
-                vision_timeout = max(float(_vt), 180.0)
-            _vtemp = _vision_cfg.get("temperature")
-            if _vtemp is not None:
-                vision_temperature = float(_vtemp)
-        except Exception:
-            pass
+        media_timeout = _resolve_media_timeout("video", default=300.0, minimum=180.0)
+        media_temperature = _resolve_media_temperature("video", default=0.1)
 
         call_kwargs = {
-            "task": "vision",
+            "task": "video",
             "messages": messages,
-            "temperature": vision_temperature,
+            "temperature": media_temperature,
             "max_tokens": 4000,
-            "timeout": vision_timeout,
+            "timeout": media_timeout,
         }
         if model:
             call_kwargs["model"] = model
@@ -1406,7 +1557,7 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or None
     return video_analyze_tool(video_url, full_prompt, model)
 
 
@@ -1415,7 +1566,260 @@ registry.register(
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬",
+)
+
+
+# ---------------------------------------------------------------------------
+# Audio Analysis Tool
+# ---------------------------------------------------------------------------
+
+
+async def audio_analyze_tool(
+    audio_url: str,
+    user_prompt: str,
+    model: str = None,
+) -> str:
+    """Analyze an audio file via multimodal LLM. Returns JSON {success, analysis}."""
+    if not isinstance(user_prompt, str):
+        user_prompt = str(user_prompt) if user_prompt is not None else ""
+    debug_call_data = {
+        "parameters": {
+            "audio_url": audio_url,
+            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
+            "model": model,
+        },
+        "error": None,
+        "success": False,
+        "analysis_length": 0,
+        "model_used": model,
+        "audio_size_bytes": 0,
+    }
+
+    temp_audio_path = None
+    should_cleanup = True
+
+    try:
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return tool_error("Interrupted", success=False)
+
+        logger.info("Analyzing audio: %s", audio_url[:60])
+        logger.info("User prompt: %s", user_prompt[:100])
+
+        resolved_url = audio_url
+        if resolved_url.startswith("file://"):
+            resolved_url = resolved_url[len("file://"):]
+        local_path = Path(os.path.expanduser(resolved_url))
+
+        if local_path.is_file():
+            logger.info("Using local audio file: %s", audio_url)
+            temp_audio_path = local_path
+            should_cleanup = False
+        elif _validate_image_url(audio_url):
+            blocked = check_website_access(audio_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+            temp_dir = get_hermes_dir("cache/audio", "temp_audio_files")
+            ext = Path(urlparse(audio_url).path).suffix.lower()
+            if ext not in _AUDIO_MIME_TYPES:
+                ext = ".mp3"
+            temp_audio_path = temp_dir / f"temp_audio_{uuid.uuid4()}{ext}"
+            await _download_audio(audio_url, temp_audio_path)
+            should_cleanup = True
+        else:
+            raise ValueError(
+                "Invalid audio source. Provide an HTTP/HTTPS URL or a valid local file path."
+            )
+
+        audio_size_bytes = temp_audio_path.stat().st_size
+        if audio_size_bytes > _MAX_AUDIO_BASE64_BYTES:
+            raise ValueError(
+                f"Audio too large ({audio_size_bytes} bytes, max {_MAX_AUDIO_BASE64_BYTES})"
+            )
+        audio_size_mb = audio_size_bytes / (1024 * 1024)
+        logger.info("Audio ready (%.1f MB)", audio_size_mb)
+
+        detected_mime = _detect_audio_mime_type(temp_audio_path)
+        if not detected_mime:
+            raise ValueError(
+                f"Unsupported audio format: '{temp_audio_path.suffix}'. "
+                f"Supported: {', '.join(sorted(_AUDIO_MIME_TYPES.keys()))}"
+            )
+
+        if audio_size_bytes > _AUDIO_SIZE_WARN_BYTES:
+            logger.warning("Audio is %.1f MB — may be slow or rejected", audio_size_mb)
+
+        audio_data_url = _audio_to_base64_data_url(temp_audio_path, mime_type=detected_mime)
+        data_size_mb = len(audio_data_url) / (1024 * 1024)
+
+        if len(audio_data_url) > _MAX_AUDIO_BASE64_BYTES:
+            raise ValueError(
+                f"Audio too large for API: base64 payload is {data_size_mb:.1f} MB "
+                f"(limit {_MAX_AUDIO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
+                f"Compress or trim the audio and retry."
+            )
+
+        debug_call_data["audio_size_bytes"] = audio_size_bytes
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": user_prompt,
+                    },
+                    {
+                        "type": "audio_url",
+                        "audio_url": {
+                            "url": audio_data_url,
+                        },
+                    },
+                ],
+            }
+        ]
+
+        media_timeout = _resolve_media_timeout("audio", default=300.0, minimum=180.0)
+        media_temperature = _resolve_media_temperature("audio", default=0.1)
+
+        call_kwargs = {
+            "task": "audio",
+            "messages": messages,
+            "temperature": media_temperature,
+            "max_tokens": 4000,
+            "timeout": media_timeout,
+        }
+        if model:
+            call_kwargs["model"] = model
+
+        response = await async_call_llm(**call_kwargs)
+        analysis = extract_content_or_reasoning(response)
+
+        if not analysis:
+            logger.warning("Empty audio response, retrying once")
+            response = await async_call_llm(**call_kwargs)
+            analysis = extract_content_or_reasoning(response)
+
+        analysis_length = len(analysis) if analysis else 0
+        logger.info("Audio analysis completed (%s characters)", analysis_length)
+
+        result = {
+            "success": True,
+            "analysis": analysis or "There was a problem with the request and the audio could not be analyzed.",
+        }
+
+        debug_call_data["success"] = True
+        debug_call_data["analysis_length"] = analysis_length
+        _debug.log_call("audio_analyze_tool", debug_call_data)
+        _debug.save()
+
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    except Exception as e:
+        error_msg = f"Error analyzing audio: {str(e)}"
+        logger.error("%s", error_msg, exc_info=True)
+
+        err_str = str(e).lower()
+        if any(hint in err_str for hint in (
+            "402", "insufficient", "payment required", "credits", "billing",
+        )):
+            analysis = (
+                "Insufficient credits or payment required. Please top up your "
+                f"API provider account and try again. Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
+            "does not support", "not support audio", "audio input",
+            "content_policy", "multimodal", "unrecognized request argument",
+            "audio_url", "input_audio",
+        )):
+            analysis = (
+                "The model does not support audio analysis or the request was "
+                "rejected. Ensure you're using an audio-capable model "
+                f"(for example a Nemotron/Gemini omni model). Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
+            "too large", "payload", "413", "content_too_large",
+            "request_too_large", "exceeds", "size limit",
+        )):
+            analysis = (
+                "The audio is too large for the API. Try compressing or trimming "
+                f"the audio (max ~50 MB). Error: {e}"
+            )
+        else:
+            analysis = (
+                "There was a problem with the request and the audio could not "
+                f"be analyzed. Error: {e}"
+            )
+
+        result = {
+            "success": False,
+            "error": error_msg,
+            "analysis": analysis,
+        }
+
+        debug_call_data["error"] = error_msg
+        _debug.log_call("audio_analyze_tool", debug_call_data)
+        _debug.save()
+
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    finally:
+        if should_cleanup and temp_audio_path and temp_audio_path.exists():
+            try:
+                temp_audio_path.unlink()
+                logger.debug("Cleaned up temporary audio file")
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Could not delete temporary file: %s", cleanup_error, exc_info=True
+                )
+
+
+AUDIO_ANALYZE_SCHEMA = {
+    "name": "audio_analyze",
+    "description": (
+        "Analyze an audio file from a URL or local file path using a multimodal AI model. "
+        "Use this for sound/music/speech understanding when transcription alone is not enough. "
+        "Supports mp3, wav, m4a, aac, ogg/opus, flac, webm formats. "
+        "Note: large audio files (>20 MB) may be slow; max ~50 MB."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "audio_url": {
+                "type": "string",
+                "description": "Audio URL (http/https) or local file path to analyze.",
+            },
+            "question": {
+                "type": "string",
+                "description": "Your specific question about the audio. The AI will describe what it hears and answer your question.",
+            },
+        },
+        "required": ["audio_url", "question"],
+    },
+}
+
+
+def _handle_audio_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+    audio_url = args.get("audio_url", "")
+    question = args.get("question", "")
+    full_prompt = (
+        "Fully describe and explain everything audible in this audio, including "
+        "speech, music, sound effects, background noise, timing, and any notable "
+        f"audio cues. Then answer the following question:\n\n{question}"
+    )
+    model = os.getenv("AUXILIARY_AUDIO_MODEL", "").strip() or None
+    return audio_analyze_tool(audio_url, full_prompt, model)
+
+
+registry.register(
+    name="audio_analyze",
+    toolset="audio",
+    schema=AUDIO_ANALYZE_SCHEMA,
+    handler=_handle_audio_analyze,
+    check_fn=check_audio_requirements,
+    is_async=True,
+    emoji="🎧",
 )

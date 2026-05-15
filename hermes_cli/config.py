@@ -1251,6 +1251,8 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
+        "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
+        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
@@ -2133,22 +2135,6 @@ OPTIONAL_ENV_VARS = {
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
         "tools": ["image_generate", "video_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "TINKER_API_KEY": {
-        "description": "Tinker API key for RL training",
-        "prompt": "Tinker API key",
-        "url": "https://tinker-console.thinkingmachines.ai/keys",
-        "tools": ["rl_start_training", "rl_check_status", "rl_stop_training"],
-        "password": True,
-        "category": "tool",
-    },
-    "WANDB_API_KEY": {
-        "description": "Weights & Biases API key for experiment tracking",
-        "prompt": "WandB API key",
-        "url": "https://wandb.ai/authorize",
-        "tools": ["rl_get_results", "rl_check_status"],
         "password": True,
         "category": "tool",
     },
@@ -4988,8 +4974,7 @@ def set_config_value(key: str, value: str):
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
-        'TINKER_API_KEY',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):

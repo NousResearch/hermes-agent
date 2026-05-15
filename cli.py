@@ -1415,9 +1415,6 @@ _OUTPUT_HISTORY_REPLAYING = False
 _OUTPUT_HISTORY_SUPPRESSED = False
 _OUTPUT_HISTORY_MAX_LINES = 200
 _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
-_ANSI_CONTROL_RE = re.compile(
-    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
-)
 
 
 def _coerce_output_history_limit(value) -> int:
@@ -1459,10 +1456,10 @@ def _record_output_history_entry(entry) -> None:
 def _record_output_history(text: str) -> None:
     if not _OUTPUT_HISTORY_ENABLED or _OUTPUT_HISTORY_REPLAYING or _OUTPUT_HISTORY_SUPPRESSED:
         return
-    clean = _ANSI_CONTROL_RE.sub("", str(text)).replace("\r", "").rstrip("\n")
-    if not clean:
+    normalized = str(text).replace("\r", "").rstrip("\n")
+    if not normalized:
         return
-    for line in clean.splitlines():
+    for line in normalized.splitlines():
         _record_output_history_entry(line)
 
 
@@ -1473,6 +1470,7 @@ def _replay_output_history() -> None:
         return
     _OUTPUT_HISTORY_REPLAYING = True
     try:
+        rendered_lines = []
         for entry in tuple(_OUTPUT_HISTORY):
             if callable(entry):
                 try:
@@ -1483,8 +1481,15 @@ def _replay_output_history() -> None:
                     lines = lines.splitlines()
             else:
                 lines = [entry]
-            for line in lines:
-                _pt_print(_PT_ANSI(str(line)))
+            rendered_lines.extend(str(line) for line in lines)
+        if rendered_lines:
+            # Replay after resize can contain hundreds of history lines. A
+            # per-line prompt_toolkit print forces one synchronous terminal I/O
+            # and redraw cycle per line, which users perceive as a waterfall of
+            # old output. Keep the existing history contents unchanged, but
+            # emit the replay as one ANSI payload so resize recovery does a
+            # single prompt_toolkit print/redraw.
+            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
     except Exception:
         pass
     finally:
@@ -2639,6 +2644,12 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # When True, the input separator rules and the dynamic status bar are
+        # hidden until the next user input. Set by _recover_after_resize() so a
+        # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
+        # the terminal just reflowed into scrollback — the cause of duplicated
+        # bars / "blank line flooding" reports (#19280, #22976).
+        self._status_bar_suppressed_after_resize = False
         self._resize_recovery_lock = threading.Lock()
         self._resize_recovery_timer = None
         self._resize_recovery_pending = False
@@ -2715,7 +2726,16 @@ class HermesCLI:
         Instead we just reset prompt_toolkit's renderer cache so the next
         incremental redraw starts from a clean slate, then let
         ``original_on_resize`` recalculate layout for the new size.
+
+        We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
+        status bar and input separator rules stay hidden until the next user
+        input.  On column shrink the terminal reflows already-rendered status
+        bar rows into scrollback before prompt_toolkit can erase them; drawing
+        a fresh full-width bar immediately makes the old and new versions
+        look duplicated (#19280, #22976).  Clearing the suppression on the
+        next prompt restores the bar cleanly.
         """
+        self._status_bar_suppressed_after_resize = True
         try:
             app.renderer.reset(leave_alternate_screen=False)
         except Exception:
@@ -2958,10 +2978,34 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
         return width < 64
 
+    @staticmethod
+    def _scrollback_box_width(width: Optional[int] = None) -> int:
+        """Return a resize-safe width for printed scrollback box rules.
+
+        Lines already printed to terminal scrollback are reflowed by the
+        terminal emulator when the column count shrinks. A full-width response
+        border drawn at, say, 200 columns will wrap into two or three rows of
+        dashes after the user resizes to 80 columns, looking like duplicated
+        separator lines (the family of bugs tracked by #18449, #19280, #22976).
+
+        Keep decorative scrollback boxes intentionally narrower than the
+        viewport so a moderate resize never triggers reflow. The live TUI
+        footer (status bar, input rule) still uses the full width — only
+        content that is *stamped into scrollback* needs this clamp.
+        """
+        if width is None:
+            try:
+                width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                width = 80
+        return max(32, min(int(width or 80), 56))
+
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""
         if position not in {"top", "bottom"}:
             raise ValueError(f"Unknown input rule position: {position}")
+        if getattr(self, "_status_bar_suppressed_after_resize", False):
+            return 0
         if position == "top":
             return 1
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
@@ -3471,7 +3515,7 @@ class HermesCLI:
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
@@ -3495,7 +3539,7 @@ class HermesCLI:
             if buf:
                 _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
@@ -3686,7 +3730,7 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
@@ -3787,7 +3831,7 @@ class HermesCLI:
 
         # Close the response box
         if self._stream_box_opened:
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
@@ -5917,6 +5961,38 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_sessions_command(self, cmd_original: str) -> None:
+        """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
+
+        Without arguments, prints the same recent-sessions table that /resume
+        shows when called without a target, and tells the user how to resume.
+        With an explicit subcommand or target, delegates to the resume flow so
+        ``/sessions <id>`` and ``/resume <id>`` behave identically.
+
+        The TUI ships an interactive picker overlay for this command; the
+        classic CLI prints an inline list because there is no equivalent
+        overlay primitive here. Without this handler the canonical name
+        ``sessions`` falls through ``process_command``'s elif chain and
+        prints ``Unknown command: sessions`` even though the command is
+        registered in the central COMMAND_REGISTRY.
+        """
+        parts = cmd_original.split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        sub = arg.lower()
+
+        # Bare /sessions or /sessions list — show recent sessions inline.
+        if not arg or sub in {"list", "ls", "browse"}:
+            if not self._session_db:
+                from hermes_state import format_session_db_unavailable
+                _cprint(f"  {format_session_db_unavailable()}")
+                return
+            if not self._show_recent_sessions(reason="sessions"):
+                _cprint("  (._.) No previous sessions yet.")
+            return
+
+        # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
+        self._handle_resume_command(f"/resume {arg}")
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -7496,6 +7572,8 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
@@ -7885,6 +7963,7 @@ class HermesCLI:
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
+                        width=self._scrollback_box_width(),
                     ))
                 else:
                     _cprint("  (No response generated)")
@@ -9367,7 +9446,7 @@ class HermesCLI:
 
         Updates the TUI spinner widget so the user can see what the agent
         is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        spinner and next response).
 
         On tool.started, records a monotonic timestamp so get_spinner_text()
         can show a live elapsed timer (the TUI poll loop already invalidates
@@ -9445,20 +9524,6 @@ class HermesCLI:
                 function_args if function_args is not None else {}
             )
             self._invalidate()
-
-        if not self._voice_mode:
-            return
-        if not function_name or function_name.startswith("_"):
-            return
-        try:
-            from tools.voice_mode import play_beep
-            threading.Thread(
-                target=play_beep,
-                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
@@ -10064,7 +10129,7 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = 60
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -10558,7 +10623,7 @@ class HermesCLI:
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self.console.width
+                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
                             label = f"{label}{datetime.now().strftime('%H:%M')} "
@@ -10843,7 +10908,7 @@ class HermesCLI:
             if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
-                    w = shutil.get_terminal_size().columns
+                    w = self._scrollback_box_width()
                     r_label = " Reasoning "
                     r_fill = w - 2 - len(r_label)
                     r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
@@ -10874,7 +10939,7 @@ class HermesCLI:
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
-                    w = shutil.get_terminal_size().columns
+                    w = self._scrollback_box_width()
                     _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
@@ -10890,6 +10955,7 @@ class HermesCLI:
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
+                        width=self._scrollback_box_width(),
                     ))
 
 
@@ -12923,7 +12989,10 @@ class HermesCLI:
                 # guard against any future width mismatch.
                 wrap_lines=False,
             ),
-            filter=Condition(lambda: cli_ref._status_bar_visible),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
         )
 
         # Allow wrapper CLIs to register extra keybindings.
@@ -13091,6 +13160,10 @@ class HermesCLI:
                     
                     if not user_input:
                         continue
+
+                    # The user has typed and submitted something, so any
+                    # post-resize transient suppression should end here.
+                    self._status_bar_suppressed_after_resize = False
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
@@ -13328,6 +13401,30 @@ class HermesCLI:
             self._print_exit_summary()
             return
 
+        # On macOS with uv-managed Python, kqueue's selector cannot register
+        # fd 0, raising OSError(EINVAL) from kqueue.control() when prompt_toolkit
+        # calls loop.add_reader (#6393). Probe kqueue and, if it can't watch
+        # stdin, switch to a SelectSelector-backed event loop policy.
+        if sys.platform == "darwin":
+            try:
+                import selectors as _selectors
+                if hasattr(_selectors, "KqueueSelector"):
+                    _kq = _selectors.KqueueSelector()
+                    try:
+                        _kq.register(0, _selectors.EVENT_READ)
+                        _kq.unregister(0)
+                    finally:
+                        _kq.close()
+            except (OSError, ValueError, KeyError):
+                import asyncio as _aio_probe
+                import selectors as _selectors
+
+                class _SelectEventLoopPolicy(_aio_probe.DefaultEventLoopPolicy):
+                    def new_event_loop(self):
+                        return _aio_probe.SelectorEventLoop(_selectors.SelectSelector())
+
+                _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
+
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
@@ -13348,12 +13445,20 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
             # and I/O errors from broken stdout during interrupt (#13710).
-            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
+            _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
+            _msg = str(_stdin_err)
+            if _errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
-            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            elif (
+                _errno in (errno.EINVAL, errno.EBADF)
+                or "is not registered" in _msg
+                or "Bad file descriptor" in _msg
+                or "Invalid argument" in _msg
+            ):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
+                    "where kqueue cannot register fd 0.\n"
                     "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
                 )
             else:

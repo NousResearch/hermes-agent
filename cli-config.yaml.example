@@ -457,7 +457,7 @@ prompt_caching:
 # Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
 # Character limits keep the memory small and focused. The agent manages
 # pruning -- when at the limit, it must consolidate or replace entries.
-# Disabled by default in batch_runner and RL environments.
+# Disabled by default in batch_runner.
 #
 memory:
   # Agent's personal notes: environment facts, conventions, things learned
@@ -681,6 +681,16 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+# Discord-specific settings (config.yaml top-level, not under platforms:):
+#
+# discord:
+#   require_mention: true            # Require @mention in server channels (default: true)
+#   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   reactions: true                  # Show processing reactions (default: true)
+#   history_backfill: true           # Recover missed channel messages on mention (default: true)
+#   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -705,10 +715,9 @@ platform_toolsets:
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
-#   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
 # PRESETS (curated bundles):
-#   hermes-cli       - All of the above except rl + send_message
+#   hermes-cli       - All of the above except send_message
 #   hermes-telegram  - terminal, file, web, vision, image_gen, tts, browser,
 #                      skills, todo, cronjob, send_message
 #   hermes-discord   - Same as hermes-telegram
@@ -734,7 +743,6 @@ platform_toolsets:
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
 #   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax, Mistral)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
-#   rl           - RL training tools (Tinker-Atropos)
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)

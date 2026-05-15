@@ -735,6 +735,10 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
             streaming_cfg = yaml_cfg.get("streaming")
+            if not isinstance(streaming_cfg, dict):
+                # Fall back to nested gateway.streaming written by
+                # ``hermes config set gateway.streaming.*``
+                streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
@@ -937,6 +941,14 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # history_backfill: recover missed channel messages for shared sessions
+                # when require_mention is active.  Fetches messages between bot turns
+                # and prepends them to the user message for context.
+                if "history_backfill" in discord_cfg and not os.getenv("DISCORD_HISTORY_BACKFILL"):
+                    os.environ["DISCORD_HISTORY_BACKFILL"] = str(discord_cfg["history_backfill"]).lower()
+                hbl = discord_cfg.get("history_backfill_limit")
+                if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
+                    os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
                 # allow_mentions: granular control over what the bot can ping.
                 # Safe defaults (no @everyone/roles) are applied in the adapter;
                 # these YAML keys only override when set and let users opt back

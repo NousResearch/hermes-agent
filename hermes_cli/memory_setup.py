@@ -183,88 +183,14 @@ def _get_available_providers() -> list:
 # Setup wizard
 # ---------------------------------------------------------------------------
 
-def cmd_setup_provider(provider_name: str) -> None:
-    """Run memory setup for a specific provider, skipping the picker."""
-    from hermes_cli.config import load_config, save_config
-
-    providers = _get_available_providers()
-    match = None
-    for name, desc, provider in providers:
-        if name == provider_name:
-            match = (name, desc, provider)
-            break
-
-    if not match:
-        print(f"\n  Memory provider '{provider_name}' not found.")
-        print("  Run 'hermes memory setup' to see available providers.\n")
-        return
-
-    name, _, provider = match
-
-    _install_dependencies(name)
-
-    config = load_config()
-    if not isinstance(config.get("memory"), dict):
-        config["memory"] = {}
-
-    if hasattr(provider, "post_setup"):
-        hermes_home = str(get_hermes_home())
-        provider.post_setup(hermes_home, config)
-        return
-
-    # Fallback: generic schema-based setup (same as cmd_setup)
-    config["memory"]["provider"] = name
-    save_config(config)
-    print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
-
-
-def cmd_setup(args) -> None:
-    """Interactive memory provider setup wizard."""
-    from hermes_cli.config import load_config, save_config
-
-    providers = _get_available_providers()
-
-    if not providers:
-        print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
-        return
-
-    # Build picker items
-    items = []
-    for name, desc, _ in providers:
-        items.append((name, f"— {desc}"))
-    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
-
-    builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
-
-    config = load_config()
-    if not isinstance(config.get("memory"), dict):
-        config["memory"] = {}
-
-    # Built-in only
-    if selected >= len(providers) or selected < 0:
-        config["memory"]["provider"] = ""
-        save_config(config)
-        print("\n  ✓ Memory provider: built-in only")
-        print("  Saved to config.yaml\n")
-        return
-
-    name, _, provider = providers[selected]
-
-    # Install pip dependencies if declared in plugin.yaml
-    _install_dependencies(name)
-
-    # If the provider has a post_setup hook, delegate entirely to it.
-    # The hook handles its own config, connection test, and activation.
-    if hasattr(provider, "post_setup"):
-        hermes_home = str(get_hermes_home())
-        provider.post_setup(hermes_home, config)
-        return
+def _activate_schema_provider(name: str, provider, config: dict) -> None:
+    """Prompt for generic provider schema values, persist config, and activate."""
+    from hermes_cli.config import save_config
 
     schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
     provider_config = config["memory"].get(name, {})
     if not isinstance(provider_config, dict):
         provider_config = {}
@@ -354,6 +280,86 @@ def cmd_setup(args) -> None:
     if env_writes:
         print(f"  API keys saved to .env")
     print(f"\n  Start a new session to activate.\n")
+
+
+def cmd_setup_provider(provider_name: str) -> None:
+    """Run memory setup for a specific provider, skipping the picker."""
+    from hermes_cli.config import load_config
+
+    providers = _get_available_providers()
+    match = None
+    for name, desc, provider in providers:
+        if name == provider_name:
+            match = (name, desc, provider)
+            break
+
+    if not match:
+        print(f"\n  Memory provider '{provider_name}' not found.")
+        print("  Run 'hermes memory setup' to see available providers.\n")
+        return
+
+    name, _, provider = match
+
+    _install_dependencies(name)
+
+    config = load_config()
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
+
+    if hasattr(provider, "post_setup"):
+        hermes_home = str(get_hermes_home())
+        provider.post_setup(hermes_home, config)
+        return
+
+    # Fallback: generic schema-based setup (same as cmd_setup)
+    _activate_schema_provider(name, provider, config)
+
+
+def cmd_setup(args) -> None:
+    """Interactive memory provider setup wizard."""
+    from hermes_cli.config import load_config, save_config
+
+    providers = _get_available_providers()
+
+    if not providers:
+        print("\n  No memory provider plugins detected.")
+        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        return
+
+    # Build picker items
+    items = []
+    for name, desc, _ in providers:
+        items.append((name, f"— {desc}"))
+    items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
+
+    builtin_idx = len(items) - 1
+    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
+
+    config = load_config()
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
+
+    # Built-in only
+    if selected >= len(providers) or selected < 0:
+        config["memory"]["provider"] = ""
+        save_config(config)
+        print("\n  ✓ Memory provider: built-in only")
+        print("  Saved to config.yaml\n")
+        return
+
+    name, _, provider = providers[selected]
+
+    # Install pip dependencies if declared in plugin.yaml
+    _install_dependencies(name)
+
+    # If the provider has a post_setup hook, delegate entirely to it.
+    # The hook handles its own config, connection test, and activation.
+    if hasattr(provider, "post_setup"):
+        hermes_home = str(get_hermes_home())
+        provider.post_setup(hermes_home, config)
+        return
+
+    _activate_schema_provider(name, provider, config)
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -457,7 +463,11 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        cmd_setup(args)
+        provider_name = str(getattr(args, "provider_name", "") or "").strip()
+        if provider_name:
+            cmd_setup_provider(provider_name)
+        else:
+            cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

@@ -1,0 +1,6 @@
+name: memory_fragmentation
+version: 0.1.0
+description: "Local key-summary-full conversation memory fragments with key/summary retrieval and full-source references."
+requires_env: []
+hooks:
+  - sync_turn

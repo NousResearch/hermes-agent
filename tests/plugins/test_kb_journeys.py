@@ -358,7 +358,7 @@ def test_kb_root_queue_dashboard_is_text_first(monkeypatch):
     assert "Admit Stanford DAS Lab" in text
     assert "Target: accounts/stanford-das-lab" in text
     assert "Review: /kb queue review 1" in text
-    assert "Batch: /kb queue reject 1,2" in text
+    assert "Then preview a listed action, for example: /kb queue reject 1" in text
     assert adapter.sent[0]["actions"] == []
     assert adapter.sent[0]["reply_to"] == "m1"
 
@@ -398,9 +398,69 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     assert "Queue Item 1" in text
     assert "Keio University" in text
     assert "Target: accounts/keio-university" in text
-    assert "Preview decisions:" in text
+    assert "Available actions:" in text
     assert "/kb queue reject 1" in text
     assert adapter.sent[0]["actions"] == []
+
+
+def test_kbqueue_review_todo_item_shows_todo_native_actions(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "accounts/bankinter",
+                            "title": "Bankinter Innovation Foundation",
+                            "kind": "proposal_entity",
+                            "summary": "Review stale P1->P2 TODO: Respond to Bankinter.",
+                            "raw": {"proposal_ids": ["act_todo"]},
+                            "safe_actions": [
+                                {
+                                    "action_id": "todo_queue.complete",
+                                    "label": "Complete TODO",
+                                    "params": {"proposal_ids": ["act_todo"], "decision": "complete"},
+                                },
+                                {
+                                    "action_id": "todo_queue.keep",
+                                    "label": "Keep unchanged",
+                                    "params": {"proposal_ids": ["act_todo"], "decision": "keep"},
+                                },
+                                {
+                                    "action_id": "todo_queue.demote",
+                                    "label": "Demote priority",
+                                    "params": {"proposal_ids": ["act_todo"], "decision": "demote"},
+                                },
+                                {
+                                    "action_id": "todo_queue.archive",
+                                    "label": "Archive TODO",
+                                    "params": {"proposal_ids": ["act_todo"], "decision": "archive"},
+                                },
+                            ],
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb queue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    text = adapter.sent[0]["text"]
+    assert "Available actions:" in text
+    assert "Complete TODO: /kb queue complete 1" in text
+    assert "Keep unchanged: /kb queue keep 1" in text
+    assert "Demote priority: /kb queue demote 1" in text
+    assert "Archive TODO: /kb queue archive 1" in text
+    assert "/kb queue approve 1" not in text
 
 
 def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeypatch):
@@ -465,6 +525,64 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     assert ctx.calls[-2][1]["proposal_ids"] == ["act_2"]
     assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+
+
+def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "accounts/bankinter",
+                            "title": "Bankinter Innovation Foundation",
+                            "kind": "proposal_entity",
+                            "summary": "Review stale P1->P2 TODO: Respond to Bankinter.",
+                            "raw": {"proposal_ids": ["act_todo"]},
+                            "safe_actions": [
+                                {
+                                    "action_id": "todo_queue.complete",
+                                    "label": "Complete TODO",
+                                    "params": {"proposal_ids": ["act_todo"], "decision": "complete"},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {
+                    "status": "preview",
+                    "ok": True,
+                    "plan": {"summary": "Complete TODO for 1 TODO-backed proposal(s)."},
+                }
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {"status": "applied", "ok": True, "publication": {"status": "manual"}}
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    preview = hook(event=_event("/kb queue complete 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+    confirmed = hook(event=_event("/kb queue complete 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert preview == {"action": "skip", "reason": "kb_journeys"}
+    assert confirmed == {"action": "skip", "reason": "kb_journeys"}
+    assert "Queue complete preview" in adapter.sent[0]["text"]
+    assert "To apply: /kb queue complete 1 confirm" in adapter.sent[0]["text"]
+    assert "Queue Complete Applied" in adapter.sent[1]["text"]
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
+    assert ctx.calls[-2][1]["decision"] == "complete"
+    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
+    assert ctx.calls[-1][1]["decision"] == "complete"
 
 
 def test_kbqueue_decision_supports_batch_text_commands_and_legacy_alias(monkeypatch):

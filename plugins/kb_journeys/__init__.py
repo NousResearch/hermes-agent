@@ -534,6 +534,59 @@ def _item_detail(item: Any) -> str:
     )
 
 
+def _safe_actions_for_item(item: Any) -> list[dict[str, Any]]:
+    if not isinstance(item, dict):
+        return []
+    actions = item.get("safe_actions")
+    if not isinstance(actions, list):
+        return []
+    return [action for action in actions if isinstance(action, dict)]
+
+
+def _queue_action_decisions(item: dict[str, Any]) -> list[tuple[str, str]]:
+    decisions: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for action in _safe_actions_for_item(item):
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        decision = str(params.get("decision") or "").strip().lower()
+        if not decision or decision in seen:
+            continue
+        label = _short(action.get("label") or decision.replace("_", " ").title(), "")
+        if not label:
+            continue
+        seen.add(decision)
+        decisions.append((decision, label))
+    if any(decision in {"complete", "keep", "demote"} for decision, _ in decisions):
+        order = {"complete": 0, "keep": 1, "demote": 2, "archive": 3, "skip": 4}
+    else:
+        order = {"reject": 0, "archive": 1, "approve": 2, "skip": 3}
+    decisions.sort(key=lambda pair: (order.get(pair[0], 99), pair[0]))
+    return decisions
+
+
+def _queue_decision_commands(item: dict[str, Any], *, index: int) -> list[str]:
+    decisions = _queue_action_decisions(item)
+    if not decisions:
+        decisions = [
+            ("reject", "Reject"),
+            ("archive", "Archive"),
+            ("approve", "Approve"),
+        ]
+    lines: list[str] = []
+    for decision, label in decisions:
+        if decision == "approve":
+            label = "Approve proposal"
+        elif decision == "reject":
+            label = "Reject proposal"
+        elif decision == "archive" and not any(d in {"complete", "keep", "demote"} for d, _ in decisions):
+            label = "Archive proposal"
+        lines.append(f"- {label}: /kb queue {decision} {index}")
+    if decisions:
+        example_decision = decisions[0][0]
+        lines.append(f"Confirm after preview: /kb queue {example_decision} {index} confirm")
+    return lines
+
+
 def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     proposal_ids = _proposal_ids_for_item(item)
     lines = [
@@ -553,11 +606,8 @@ def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
     if proposal_ids:
         lines.append("")
         lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
-        lines.append("Preview decisions:")
-        lines.append(f"- /kb queue approve {index}")
-        lines.append(f"- /kb queue reject {index}")
-        lines.append(f"- /kb queue archive {index}")
-        lines.append(f"Apply after preview: /kb queue reject {index} confirm")
+        lines.append("Available actions:")
+        lines.extend(_queue_decision_commands(item, index=index))
     else:
         lines.append("")
         lines.append("This item did not include proposal ids, so Telegram cannot apply a decision yet. Use the KB workbench for details.")
@@ -675,6 +725,10 @@ def _decision_past_tense(decision: str) -> str:
         "approve": "Approved",
         "reject": "Rejected",
         "archive": "Archived",
+        "complete": "Completed",
+        "keep": "Kept unchanged",
+        "demote": "Demoted",
+        "skip": "Skipped",
     }.get(decision, f"{decision.title()}ed")
 
 
@@ -999,7 +1053,7 @@ def _parse_queue_command_args(args: str, *, command: str) -> tuple[str, list[int
     if first in {"review", "show", "detail", "details"}:
         indices = _parse_queue_indices(parts[1:])
         return ("review", indices[:1], None, False) if indices else ("help", [], None, False)
-    if first in {"approve", "reject", "archive"}:
+    if first in {"approve", "reject", "archive", "skip", "complete", "keep", "demote"}:
         confirm = any(part.lower() in {"confirm", "confirmed", "apply"} for part in parts[1:])
         index_tokens = [part for part in parts[1:] if part.lower() not in {"confirm", "confirmed", "apply"}]
         indices = _parse_queue_indices(index_tokens)
@@ -1016,6 +1070,7 @@ def _queue_command_help() -> dict[str, Any]:
                 "Use /kb queue to list proposals.",
                 "Use /kb queue review 1 to inspect one item.",
                 "Use /kb queue reject 1 to preview a decision.",
+                "Use /kb queue complete 1 for a TODO-backed proposal.",
                 "Use /kb queue reject 1 confirm to apply it.",
                 "Use /kb queue reject 1,2 confirm to apply the same decision to multiple items.",
             ]
@@ -1285,8 +1340,8 @@ def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = Non
             lines.append(f"{idx}. {_short(item)}")
     if items:
         lines.append("")
-        lines.append("Decide one: /kb queue reject 1")
-        lines.append("Batch: /kb queue reject 1,2")
+        lines.append("Review one: /kb queue review 1")
+        lines.append("Then preview a listed action, for example: /kb queue reject 1")
         lines.append("Confirm after preview: /kb queue reject 1 confirm")
     return {"title": "KB Queue", "text": "\n".join(lines), "actions": []}
 

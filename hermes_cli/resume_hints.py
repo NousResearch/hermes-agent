@@ -8,26 +8,14 @@ default profile and report ``Session not found``.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Iterable
 
 
-def _shell_double_quote(value: str) -> str:
-    """Return a double-quoted shell token, preserving existing hint style.
-
-    Inside double quotes, POSIX shells still expand ``$...`` and backticks, so
-    escape those too.  Newlines are rendered as spaces to keep the hint a
-    single copy/pasteable command line.
-    """
-    escaped = (
-        value.replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("$", "\\$")
-        .replace("`", "\\`")
-    )
-    return '"' + escaped + '"'
+def _shell_quote(value: str) -> str:
+    """Return a POSIX-shell-safe token for a single-line hint command."""
+    return shlex.quote(value.replace("\r", " ").replace("\n", " "))
 
 
 def _active_profile_name_for_cli_hint() -> str | None:
@@ -54,8 +42,28 @@ def _active_profile_name_for_cli_hint() -> str | None:
     return None
 
 
+def _active_custom_home_for_cli_hint() -> Path | None:
+    """Return HERMES_HOME for non-profile custom homes that need an env hint."""
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _get_default_hermes_home
+
+        hermes_home = get_hermes_home().resolve()
+        default_home = _get_default_hermes_home().resolve()
+        native_default_home = (Path.home() / ".hermes").resolve()
+        if hermes_home == default_home and hermes_home != native_default_home:
+            return hermes_home
+    except Exception:
+        return None
+    return None
+
+
 def _base_command_parts(*, tui: bool = False) -> list[str]:
-    parts = ["hermes"]
+    parts: list[str] = []
+    custom_home = _active_custom_home_for_cli_hint()
+    if custom_home is not None:
+        parts.append(f"HERMES_HOME={_shell_quote(str(custom_home))}")
+    parts.append("hermes")
     profile_name = _active_profile_name_for_cli_hint()
     if profile_name:
         parts.extend(["-p", profile_name])
@@ -75,4 +83,4 @@ def build_resume_command(session_id: str, *, tui: bool = False) -> str:
 
 def build_continue_command(title: str, *, tui: bool = False) -> str:
     """Build a profile-aware resume-by-title command."""
-    return _join_parts([*_base_command_parts(tui=tui), "-c", _shell_double_quote(str(title))])
+    return _join_parts([*_base_command_parts(tui=tui), "-c", _shell_quote(str(title))])

@@ -47,7 +47,7 @@ def test_exit_summary_default_profile_keeps_existing_resume_hint(tmp_path, monke
     out = capsys.readouterr().out
 
     assert "  hermes --resume 20260409_000001_abc123" in out
-    assert '  hermes -c "demo title"' in out
+    assert "  hermes -c 'demo title'" in out
     assert "hermes -p" not in out
 
 
@@ -64,7 +64,7 @@ def test_exit_summary_named_profile_includes_profile_flag(tmp_path, monkeypatch,
     out = capsys.readouterr().out
 
     assert "  hermes -p coder --resume 20260409_000001_abc123" in out
-    assert '  hermes -p coder -c "demo title"' in out
+    assert "  hermes -p coder -c 'demo title'" in out
 
 
 def test_exit_summary_named_custom_profile_is_not_treated_as_unknown_custom_home(
@@ -82,14 +82,14 @@ def test_exit_summary_named_custom_profile_is_not_treated_as_unknown_custom_home
     out = capsys.readouterr().out
 
     assert "  hermes -p custom --resume 20260409_000001_abc123" in out
-    assert '  hermes -p custom -c "demo title"' in out
+    assert "  hermes -p custom -c 'demo title'" in out
 
 
-def test_exit_summary_custom_home_falls_back_to_plain_resume_hint(
+def test_exit_summary_custom_home_includes_hermes_home_env(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    custom_home = tmp_path / "standalone-hermes-home"
+    custom_home = tmp_path / "standalone hermes home"
     custom_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(custom_home))
     _reset_profile_modules()
@@ -99,6 +99,7 @@ def test_exit_summary_custom_home_falls_back_to_plain_resume_hint(
     cli.HermesCLI._print_exit_summary(_stub_cli())
     out = capsys.readouterr().out
 
-    assert "  hermes --resume 20260409_000001_abc123" in out
-    assert '  hermes -c "demo title"' in out
+    env_prefix = f"HERMES_HOME='{custom_home}'"
+    assert f"  {env_prefix} hermes --resume 20260409_000001_abc123" in out
+    assert f"  {env_prefix} hermes -c 'demo title'" in out
     assert "hermes -p" not in out

@@ -553,7 +553,7 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
 
     assert "Resume this session with:" in out
     assert "hermes --tui --resume 20260409_000001_abc123" in out
-    assert 'hermes --tui -c "demo title"' in out
+    assert "hermes --tui -c 'demo title'" in out
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
@@ -633,7 +633,7 @@ def test_print_tui_exit_summary_named_profile_includes_profile_flag(
     out = capsys.readouterr().out
 
     assert "hermes -p coder --tui --resume 20260409_000001_abc123" in out
-    assert 'hermes -p coder --tui -c "demo title"' in out
+    assert "hermes -p coder --tui -c 'demo title'" in out
 
 
 def test_print_tui_exit_summary_custom_profile_includes_profile_flag(
@@ -675,7 +675,7 @@ def test_print_tui_exit_summary_custom_profile_includes_profile_flag(
     assert "hermes -p custom --tui --resume 20260409_000001_abc123" in out
 
 
-def test_print_tui_exit_summary_custom_home_keeps_plain_resume_hint(
+def test_print_tui_exit_summary_custom_home_includes_hermes_home_env(
     monkeypatch, capsys, tmp_path
 ):
     import hermes_cli.main as main_mod
@@ -698,7 +698,7 @@ def test_print_tui_exit_summary_custom_home_keeps_plain_resume_hint(
         def close(self):
             return None
 
-    custom_home = tmp_path / "standalone-hermes-home"
+    custom_home = tmp_path / "standalone hermes home"
     custom_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(custom_home))
@@ -711,5 +711,7 @@ def test_print_tui_exit_summary_custom_home_keeps_plain_resume_hint(
     main_mod._print_tui_exit_summary("20260409_000001_abc123")
     out = capsys.readouterr().out
 
-    assert "hermes --tui --resume 20260409_000001_abc123" in out
+    env_prefix = f"HERMES_HOME='{custom_home}'"
+    assert f"{env_prefix} hermes --tui --resume 20260409_000001_abc123" in out
+    assert f"{env_prefix} hermes --tui -c 'custom home title'" in out
     assert "hermes -p" not in out

@@ -36,8 +36,8 @@ def test_resume_command_named_profile_adds_global_profile_flag(tmp_path, monkeyp
 
     assert build_resume_command("sess123") == "hermes -p coder --resume sess123"
     assert build_resume_command("sess123", tui=True) == "hermes -p coder --tui --resume sess123"
-    assert build_continue_command("demo title") == 'hermes -p coder -c "demo title"'
-    assert build_continue_command("demo title", tui=True) == 'hermes -p coder --tui -c "demo title"'
+    assert build_continue_command("demo title") == "hermes -p coder -c 'demo title'"
+    assert build_continue_command("demo title", tui=True) == "hermes -p coder --tui -c 'demo title'"
 
 
 def test_resume_command_named_custom_profile_is_preserved(tmp_path, monkeypatch):
@@ -52,18 +52,21 @@ def test_resume_command_named_custom_profile_is_preserved(tmp_path, monkeypatch)
     assert build_resume_command("sess123") == "hermes -p custom --resume sess123"
 
 
-def test_resume_command_unrecognized_custom_home_falls_back_to_plain_command(
+def test_resume_command_unrecognized_custom_home_includes_hermes_home_env(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    custom_home = tmp_path / "custom-home"
+    custom_home = tmp_path / "custom home"
     custom_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(custom_home))
     _reset_modules()
 
-    from hermes_cli.resume_hints import build_resume_command
+    from hermes_cli.resume_hints import build_continue_command, build_resume_command
 
-    assert build_resume_command("sess123") == "hermes --resume sess123"
+    env_prefix = f"HERMES_HOME='{custom_home}'"
+    assert build_resume_command("sess123") == f"{env_prefix} hermes --resume sess123"
+    assert build_resume_command("sess123", tui=True) == f"{env_prefix} hermes --tui --resume sess123"
+    assert build_continue_command("demo title") == f"{env_prefix} hermes -c 'demo title'"
 
 
 def test_resume_command_custom_root_named_profile_adds_profile_flag(tmp_path, monkeypatch):
@@ -78,7 +81,7 @@ def test_resume_command_custom_root_named_profile_adds_profile_flag(tmp_path, mo
     assert build_resume_command("sess123") == "hermes -p coder --resume sess123"
 
 
-def test_continue_command_escapes_double_quoted_shell_expansions(tmp_path, monkeypatch):
+def test_continue_command_shell_quotes_expansion_and_history_characters(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     profile_home = tmp_path / ".hermes" / "profiles" / "coder"
     profile_home.mkdir(parents=True)
@@ -87,11 +90,7 @@ def test_continue_command_escapes_double_quoted_shell_expansions(tmp_path, monke
 
     from hermes_cli.resume_hints import build_continue_command
 
-    command = build_continue_command(r'say "hi" \ $HOME `whoami` $(date)')
+    title = "say 'hi' $HOME `whoami` $(date)!\nnext"
+    command = build_continue_command(title)
 
-    assert command.startswith('hermes -p coder -c "')
-    assert r'\"hi\"' in command
-    assert r'\\' in command
-    assert r'\$HOME' in command
-    assert r'\`whoami\`' in command
-    assert r'\$(date)' in command
+    assert command == "hermes -p coder -c 'say '\"'\"'hi'\"'\"' $HOME `whoami` $(date)! next'"

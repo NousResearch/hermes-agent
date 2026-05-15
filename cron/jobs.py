@@ -1137,6 +1137,33 @@ def rewrite_skill_refs(
             job["skill"] = new_skills[0] if new_skills else None
             changed = True
 
+            # Also rewrite skill directory paths in script and workdir fields.
+            # When a skill is consolidated from X into Y, paths like
+            # ~/.hermes/skills/.../X/scripts/foo.py need to become
+            # ~/.hermes/skills/.../Y/scripts/foo.py.  Only rewrite when
+            # the target path actually exists to avoid creating broken refs.
+            script_rewrites: Dict[str, str] = {}
+            for old_name, new_name in mapped.items():
+                for field in ("script", "workdir"):
+                    val = job.get(field)
+                    if not isinstance(val, str) or old_name not in val:
+                        continue
+                    candidate = val.replace(old_name, new_name)
+                    # Only apply if the target path exists (or the field
+                    # is workdir which is validated separately at run time).
+                    _cand_path = os.path.expanduser(candidate) if field == "workdir" else None
+                    if field == "workdir" and _cand_path and os.path.isdir(_cand_path):
+                        job[field] = candidate
+                        script_rewrites[field] = candidate
+                    elif field == "script":
+                        # For script, check if the file part resolves
+                        _script_path = candidate.split()[-1] if candidate else ""
+                        # Resolve ~ and $HOME
+                        _script_path = os.path.expanduser(_script_path)
+                        if os.path.isfile(_script_path):
+                            job[field] = candidate
+                            script_rewrites[field] = candidate
+
             rewrites.append({
                 "job_id": job.get("id"),
                 "job_name": job.get("name") or job.get("id"),
@@ -1144,6 +1171,7 @@ def rewrite_skill_refs(
                 "after": list(new_skills),
                 "mapped": mapped,
                 "dropped": dropped,
+                "path_rewrites": script_rewrites,
             })
 
         if changed:

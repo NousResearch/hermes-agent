@@ -64,6 +64,7 @@ AUTHOR_MAP = {
     "mr@shu.io": "mrshu",
     "adam.manning@gmail.com": "am423",
     "buraysandro9@gmail.com": "ygd58",
+    "108427749+buntingszn@users.noreply.github.com": "buntingszn",
     "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",

@@ -1098,12 +1098,15 @@ class HonchoSessionManager:
                 return False
 
             if target_peer_id == session.assistant_peer_id:
+                observer_peer_id = session.assistant_peer_id
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
             elif self._ai_observe_others:
+                observer_peer_id = session.assistant_peer_id
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
             else:
+                observer_peer_id = target_peer_id
                 target_peer = self._get_or_create_peer(target_peer_id)
                 conclusions_scope = target_peer.conclusions_of(target_peer_id)
 
@@ -1115,7 +1118,29 @@ class HonchoSessionManager:
             return True
         except Exception as e:
             logger.error("Failed to create conclusion: %s", e)
-            return False
+            # Self-hosted Honcho deployments may store/search raw messages but
+            # reject conclusion writes when the backend LLM/OpenAI key is not
+            # configured. In that case, preserve the user's explicit durable
+            # fact by appending it to the peer card as a non-LLM fallback. This
+            # keeps honcho_conclude useful without requiring backend credentials.
+            try:
+                existing_card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+                normalized = [str(item).strip() for item in existing_card if str(item).strip()]
+                fact = content.strip()
+                if fact not in normalized:
+                    normalized.append(fact)
+                observer_peer = self._get_or_create_peer(observer_peer_id)
+                observer_peer.set_card(normalized, target=target_peer_id)
+                logger.warning(
+                    "Stored conclusion for %s as %s peer-card fallback after conclusion API failure: %s",
+                    target_peer_id,
+                    observer_peer_id,
+                    e,
+                )
+                return True
+            except Exception as fallback_error:
+                logger.error("Failed to store conclusion via peer-card fallback: %s", fallback_error)
+                return False
 
     def delete_conclusion(self, session_key: str, conclusion_id: str, peer: str = "user") -> bool:
         """Delete a conclusion by ID. Use only for PII removal.

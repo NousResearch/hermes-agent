@@ -29,6 +29,59 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+def _content_to_text(content: Any) -> str:
+    """Normalize provider message content to text before Honcho ingest.
+
+    Hermes messages can carry multimodal/OpenAI-style content lists, e.g.
+    ``[{"type": "text", "text": "..."}, {"type": "image_url", ...}]``.
+    Honcho's sync path and ``sanitize_context`` operate on strings; passing a
+    list used to raise ``expected string or bytes-like object, got 'list'`` and
+    drop the entire turn. Preserve text parts and represent non-text parts as
+    compact placeholders so memory records the event without storing large
+    binary/media payloads.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    parts.append(part)
+                continue
+            if isinstance(part, dict):
+                ptype = str(part.get("type") or "").strip()
+                if ptype in {"text", "input_text", "output_text"}:
+                    text = part.get("text") or part.get("content") or ""
+                    if text:
+                        parts.append(str(text))
+                    continue
+                if ptype in {"image_url", "input_image"}:
+                    parts.append("[image attachment]")
+                    continue
+                if ptype in {"audio", "input_audio"}:
+                    parts.append("[audio attachment]")
+                    continue
+                if ptype:
+                    parts.append(f"[{ptype} attachment]")
+                    continue
+            try:
+                parts.append(json.dumps(part, ensure_ascii=False, sort_keys=True))
+            except TypeError:
+                parts.append(str(part))
+        return "\n".join(p for p in parts if p)
+    if isinstance(content, dict):
+        if "text" in content:
+            return str(content.get("text") or "")
+        try:
+            return json.dumps(content, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            return str(content)
+    return str(content)
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1129,8 +1182,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        clean_user_content = sanitize_context(_content_to_text(user_content)).strip()
+        clean_assistant_content = sanitize_context(_content_to_text(assistant_content)).strip()
 
         def _sync():
             try:

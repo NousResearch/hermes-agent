@@ -662,6 +662,47 @@ class TestPluginContext:
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
 
+    def test_force_rediscovery_deregisters_disabled_plugin_tools(self, tmp_path, monkeypatch):
+        """Forced rediscovery must remove stale tool registrations for disabled plugins."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "reload_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "reload_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="reload_plugin_tool",\n'
+            '        toolset="plugin_reload_plugin",\n'
+            '        schema={"name": "reload_plugin_tool", "description": "Reload", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["reload_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from tools.registry import registry
+
+        registry.deregister("reload_plugin_tool")
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "reload_plugin_tool" in registry._tools
+        assert "reload_plugin_tool" in mgr._plugin_tool_names
+
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": []}})
+        )
+        mgr.discover_and_load(force=True)
+
+        assert registry.get_entry("reload_plugin_tool") is None
+        assert "reload_plugin_tool" not in mgr._plugin_tool_names
+        assert "reload_plugin" in mgr._plugins
+        assert not mgr._plugins["reload_plugin"].enabled
+
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
 

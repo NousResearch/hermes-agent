@@ -59,6 +59,14 @@ class TestExtractPathWord:
     def test_just_tilde_slash(self):
         assert SlashCommandCompleter._extract_path_word("~/") == "~/"
 
+    def test_path_with_spaces_after_completion(self):
+        text = "edit ./My Documents/"
+        assert SlashCommandCompleter._extract_path_word(text) == "./My Documents/"
+
+    def test_path_with_spaces_and_nested_prefix(self):
+        text = "edit ./My Documents/no"
+        assert SlashCommandCompleter._extract_path_word(text) == "./My Documents/no"
+
 
 class TestPathCompletions:
     def test_lists_current_directory(self, tmp_path):
@@ -162,6 +170,22 @@ class TestIntegration:
         names = _display_names(completions)
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
+
+    def test_completion_continues_inside_directory_with_spaces(self, completer, tmp_path):
+        spaced_dir = tmp_path / "My Documents"
+        spaced_dir.mkdir()
+        (spaced_dir / "notes.txt").touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            doc = Document("edit ./My Documents/no", cursor_position=len("edit ./My Documents/no"))
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+            names = _display_names(completions)
+            assert "notes.txt" in names
+        finally:
+            os.chdir(old_cwd)
 
 
 class TestFileSizeLabel:

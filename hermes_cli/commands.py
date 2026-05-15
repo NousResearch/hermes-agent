@@ -1178,18 +1178,21 @@ class SlashCommandCompleter(Completer):
         """
         if not text:
             return None
-        # Walk backwards to find the start of the current "word".
-        # Words are delimited by spaces, but paths can contain almost anything.
-        i = len(text) - 1
-        while i >= 0 and text[i] != " ":
-            i -= 1
-        word = text[i + 1:]
-        if not word:
+        parts = text.split(" ")
+        candidate = parts[-1]
+        if not candidate:
             return None
-        # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
-            return word
-        return None
+
+        def _is_path_like(word: str) -> bool:
+            return word.startswith(("./", "../", "~/", "/")) or "/" in word
+
+        if not _is_path_like(candidate):
+            return None
+
+        for idx in range(len(parts) - 2, -1, -1):
+            if _is_path_like(parts[idx]):
+                return " ".join(parts[idx:])
+        return candidate
 
     @staticmethod
     def _path_completions(word: str, limit: int = 30):

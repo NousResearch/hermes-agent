@@ -2007,6 +2007,8 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / ".cargo" / "bin"),        # Rust/cargo tools
         str(home / "go" / "bin"),            # Go tools
         str(home / ".npm-global" / "bin"),   # npm global packages
+        str(home / ".nix-profile" / "bin"),  # Nix home-manager / nix profile
+        str(home / ".nix-profile" / "sbin"), # Nix home-manager / nix profile (sbin)
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
@@ -2112,6 +2114,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
+    # NixOS system packages (ffmpeg, curl, kill, etc.)
+    if Path("/etc/NIXOS").exists():
+        path_entries[:0] = ["/run/current-system/sw/bin", "/run/current-system/sw/sbin"]
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -2170,7 +2175,7 @@ RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload=/usr/bin/env kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
@@ -2205,7 +2210,7 @@ RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 $MAINPID
+ExecReload=/usr/bin/env kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal

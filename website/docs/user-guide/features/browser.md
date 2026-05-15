@@ -179,7 +179,14 @@ make down
 # then run the custom docker run command above
 ```
 
-Then set in `~/.hermes/.env`:
+Then enable Camofox in `~/.hermes/config.yaml`:
+
+```yaml
+browser:
+  mode: camofox
+```
+
+Hermes will use `http://localhost:9377` by default. To point at a different host or port, set in `~/.hermes/.env`:
 
 ```bash
 CAMOFOX_URL=http://localhost:9377

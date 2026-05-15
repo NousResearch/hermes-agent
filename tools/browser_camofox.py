@@ -48,9 +48,38 @@ _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
 
 
+def _configured_camofox_mode() -> bool:
+    """Return True when config selects the Camofox browser backend.
+
+    Camofox historically enabled only through ``CAMOFOX_URL``.  For users who
+    expect a config-native switch, accept either ``browser.mode: camofox`` or
+    the existing provider-shaped ``browser.cloud_provider: camofox`` spelling.
+    """
+    try:
+        browser_cfg = (load_config() or {}).get("browser", {})
+    except Exception as exc:
+        logger.debug("camofox mode config check failed: %s", exc)
+        return False
+    if not isinstance(browser_cfg, dict):
+        return False
+    for key in ("mode", "cloud_provider"):
+        if str(browser_cfg.get(key) or "").strip().lower() == "camofox":
+            return True
+    return False
+
+
 def get_camofox_url() -> str:
-    """Return the configured Camofox server URL, or empty string."""
-    return os.getenv("CAMOFOX_URL", "").rstrip("/")
+    """Return the configured Camofox server URL, or empty string.
+
+    ``CAMOFOX_URL`` wins when set.  If config explicitly selects Camofox but no
+    URL is provided, use the local default used by the Docker image.
+    """
+    env_url = os.getenv("CAMOFOX_URL", "").strip().rstrip("/")
+    if env_url:
+        return env_url
+    if _configured_camofox_mode():
+        return "http://localhost:9377"
+    return ""
 
 
 def is_camofox_mode() -> bool:

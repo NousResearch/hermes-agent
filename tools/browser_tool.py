@@ -432,7 +432,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             provider_key = normalize_browser_cloud_provider(
                 browser_cfg.get("cloud_provider")
             )
-            if provider_key == "local":
+            if provider_key in {"local", "camofox"}:
                 _cached_cloud_provider = None
                 _cloud_provider_resolved = True
                 return None

@@ -13,6 +13,7 @@ import pytest
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
+    profile_host_key,
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
@@ -431,6 +432,10 @@ class TestResolveConfigPath:
 
 
 class TestResolveActiveHost:
+    def test_profile_host_key_uses_honcho_safe_separator(self):
+        assert profile_host_key("coder") == "hermes_coder"
+        assert profile_host_key("default") == "hermes"
+
     def test_default_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("HERMES_HONCHO_HOST", None)
@@ -445,7 +450,7 @@ class TestResolveActiveHost:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HONCHO_HOST", None)
             with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
-                assert resolve_active_host() == "hermes.coder"
+                assert resolve_active_host() == "hermes_coder"
 
     def test_default_profile_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -478,10 +483,10 @@ class TestResolveActiveHost:
 class TestProfileScopedConfig:
     def test_from_env_uses_profile_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
-            config = HonchoClientConfig.from_env(host="hermes.coder")
-        assert config.host == "hermes.coder"
+            config = HonchoClientConfig.from_env(host="hermes_coder")
+        assert config.host == "hermes_coder"
         assert config.workspace_id == "hermes"  # shared workspace
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes_coder"
 
     def test_from_env_default_workspace_preserved_for_default_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
@@ -495,19 +500,19 @@ class TestProfileScopedConfig:
             "apiKey": "shared-key",
             "hosts": {
                 "hermes": {"aiPeer": "hermes", "peerName": "alice"},
-                "hermes.coder": {
-                    "aiPeer": "hermes.coder",
+                "hermes_coder": {
+                    "aiPeer": "hermes_coder",
                     "peerName": "alice-coder",
                     "workspace": "coder-ws",
                 },
             },
         }))
         config = HonchoClientConfig.from_global_config(
-            host="hermes.coder", config_path=config_file,
+            host="hermes_coder", config_path=config_file,
         )
-        assert config.host == "hermes.coder"
+        assert config.host == "hermes_coder"
         assert config.workspace_id == "coder-ws"
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes_coder"
         assert config.peer_name == "alice-coder"
 
     def test_from_global_config_auto_resolves_host(self, tmp_path):
@@ -515,13 +520,29 @@ class TestProfileScopedConfig:
         config_file.write_text(json.dumps({
             "apiKey": "key",
             "hosts": {
+                "hermes_dreamer": {"peerName": "dreamer-user"},
+            },
+        }))
+        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes_dreamer"):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.host == "hermes_dreamer"
+        assert config.peer_name == "dreamer-user"
+
+    def test_from_global_config_reads_legacy_dot_profile_host_block(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "hosts": {
                 "hermes.dreamer": {"peerName": "dreamer-user"},
             },
         }))
-        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes.dreamer"):
-            config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.host == "hermes.dreamer"
+        config = HonchoClientConfig.from_global_config(
+            host="hermes_dreamer",
+            config_path=config_file,
+        )
+        assert config.host == "hermes_dreamer"
         assert config.peer_name == "dreamer-user"
+        assert config.workspace_id == "hermes_dreamer"
 
 
 class TestObservationModeMigration:

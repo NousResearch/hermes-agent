@@ -11,7 +11,12 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import (
+    HOST,
+    profile_host_key,
+    resolve_active_host,
+    resolve_config_path,
+)
 from hermes_cli.config import cfg_get
 
 
@@ -36,7 +41,12 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if not default_block and not has_key:
         return False
 
-    new_host = f"{HOST}.{profile_name}"
+    new_host = profile_host_key(profile_name)
+    if _migrate_legacy_host_block(cfg, new_host):
+        _write_config(cfg)
+        _ensure_peer_exists(new_host)
+        return True
+
     if new_host in hosts:
         return False  # already exists
 
@@ -96,6 +106,7 @@ def cmd_enable(args) -> None:
     """Enable Honcho for the active profile."""
     cfg = _read_config()
     host = _host_key()
+    migrated = _migrate_legacy_host_block(cfg, host)
     label = f"[{host}] " if host != "hermes" else ""
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
 
@@ -119,11 +130,13 @@ def cmd_enable(args) -> None:
         if peer_name and "peerName" not in block:
             block["peerName"] = peer_name
         # Use bare profile name as AI peer, not the host key
-        ai_peer = host.split(".", 1)[1] if "." in host else host
+        ai_peer = _profile_name_from_host(host)
         block.setdefault("aiPeer", ai_peer)
         block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
 
     _write_config(cfg)
+    if migrated:
+        print(f"  {label}Migrated legacy Honcho host key.")
     print(f"  {label}Honcho enabled.")
 
     # Create peer eagerly
@@ -139,10 +152,13 @@ def cmd_disable(args) -> None:
     """Disable Honcho for the active profile."""
     cfg = _read_config()
     host = _host_key()
+    migrated = _migrate_legacy_host_block(cfg, host)
     label = f"[{host}] " if host != "hermes" else ""
-    block = cfg_get(cfg, "hosts", host, default={})
+    block = _host_block(cfg, host)
 
     if not block or block.get("enabled") is False:
+        if migrated:
+            _write_config(cfg)
         print(f"  {label}Honcho is already disabled.\n")
         return
 
@@ -184,7 +200,7 @@ def cmd_sync(args) -> None:
         if p.name == "default":
             continue
         if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> hermes.{p.name}")
+            print(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
             skipped += 1
@@ -233,10 +249,48 @@ _profile_override: str | None = None
 def _host_key() -> str:
     """Return the active Honcho host key, derived from the current Hermes profile."""
     if _profile_override:
-        if _profile_override in ("default", "custom"):
-            return HOST
-        return f"{HOST}.{_profile_override}"
+        return profile_host_key(_profile_override)
     return resolve_active_host()
+
+
+def _legacy_host_alias(host: str) -> str | None:
+    prefix = f"{HOST}_"
+    if host.startswith(prefix) and len(host) > len(prefix):
+        return f"{HOST}.{host[len(prefix):]}"
+    return None
+
+
+def _host_block(cfg: dict, host: str) -> dict:
+    hosts = cfg.get("hosts") or {}
+    if not isinstance(hosts, dict):
+        return {}
+    block = hosts.get(host)
+    if isinstance(block, dict):
+        return block
+    legacy = _legacy_host_alias(host)
+    if legacy:
+        legacy_block = hosts.get(legacy)
+        if isinstance(legacy_block, dict):
+            return legacy_block
+    return {}
+
+
+def _migrate_legacy_host_block(cfg: dict, host: str) -> bool:
+    legacy = _legacy_host_alias(host)
+    hosts = cfg.get("hosts")
+    if not legacy or not isinstance(hosts, dict):
+        return False
+    if legacy not in hosts or host in hosts:
+        return False
+    hosts[host] = hosts.pop(legacy)
+    return True
+
+
+def _profile_name_from_host(host: str) -> str:
+    for prefix in (f"{HOST}_", f"{HOST}."):
+        if host.startswith(prefix) and len(host) > len(prefix):
+            return host[len(prefix):]
+    return host
 
 
 def _config_path() -> Path:
@@ -284,7 +338,7 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
+    host_key = _host_block(cfg, _host_key()).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
@@ -357,6 +411,8 @@ def _ensure_sdk_installed() -> bool:
 def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
     cfg = _read_config()
+    host = _host_key()
+    _migrate_legacy_host_block(cfg, host)
 
     write_path = _local_config_path()
     read_path = _config_path()
@@ -371,7 +427,7 @@ def cmd_setup(args) -> None:
         return
 
     hosts = cfg.setdefault("hosts", {})
-    hermes_host = hosts.setdefault(_host_key(), {})
+    hermes_host = hosts.setdefault(host, {})
 
     # --- 1. Cloud or local? ---
     print("  Deployment:")
@@ -618,8 +674,8 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     for p in profiles:
         if p.name == "default":
             continue
-        h = f"{HOST}.{p.name}"
-        results.append((p.name, h, hosts.get(h, {})))
+        h = profile_host_key(p.name)
+        results.append((p.name, h, _host_block(cfg, h)))
 
     return results
 

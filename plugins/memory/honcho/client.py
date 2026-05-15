@@ -32,12 +32,49 @@ logger = logging.getLogger(__name__)
 HOST = "hermes"
 
 
+def profile_host_key(profile: str | None) -> str:
+    """Return the Honcho host key for a Hermes profile.
+
+    Honcho workspace and peer IDs allow letters, numbers, underscores, and
+    hyphens. Keep auto-derived profile host keys in that same safe subset so
+    fallback workspace IDs remain valid.
+    """
+    profile = (profile or "").strip()
+    if not profile or profile in ("default", "custom"):
+        return HOST
+    return f"{HOST}_{profile}"
+
+
+def _legacy_profile_host_alias(host: str) -> str | None:
+    """Return the pre-underscore host alias for a profile-scoped host."""
+    prefix = f"{HOST}_"
+    if host.startswith(prefix) and len(host) > len(prefix):
+        return f"{HOST}.{host[len(prefix):]}"
+    return None
+
+
+def _host_block(raw: dict, host: str) -> dict:
+    """Return host config, accepting legacy dot-form profile host keys."""
+    hosts = raw.get("hosts") or {}
+    if not isinstance(hosts, dict):
+        return {}
+    block = hosts.get(host)
+    if isinstance(block, dict):
+        return block
+    legacy = _legacy_profile_host_alias(host)
+    if legacy:
+        legacy_block = hosts.get(legacy)
+        if isinstance(legacy_block, dict):
+            return legacy_block
+    return {}
+
+
 def resolve_active_host() -> str:
     """Derive the Honcho host key from the active Hermes profile.
 
     Resolution order:
       1. HERMES_HONCHO_HOST env var (explicit override)
-      2. Active profile name via profiles system -> ``hermes.<profile>``
+      2. Active profile name via profiles system -> ``hermes_<profile>``
       3. Fallback: ``"hermes"`` (default profile)
     """
     explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
@@ -47,8 +84,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in ("default", "custom"):
-            return f"{HOST}.{profile}"
+        return profile_host_key(profile)
     except Exception:
         pass
     return HOST
@@ -367,7 +403,7 @@ class HonchoClientConfig:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
-        host_block = (raw.get("hosts") or {}).get(resolved_host, {})
+        host_block = _host_block(raw, resolved_host)
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True

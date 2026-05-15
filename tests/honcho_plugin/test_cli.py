@@ -1,6 +1,37 @@
 """Tests for plugins/memory/honcho/cli.py."""
 
+import copy
 from types import SimpleNamespace
+
+
+class TestHostKeys:
+    def test_profile_override_uses_honcho_safe_host_key(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        monkeypatch.setattr(honcho_cli, "_profile_override", "fundraising")
+
+        assert honcho_cli._host_key() == "hermes_fundraising"
+
+    def test_clone_migrates_legacy_dot_profile_host(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg = {
+            "apiKey": "root-key",
+            "hosts": {
+                "hermes": {"workspace": "hermes"},
+                "hermes.fundraising": {"aiPeer": "fundraising"},
+            },
+        }
+        writes = []
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda new_cfg: writes.append(copy.deepcopy(new_cfg)))
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host: True)
+
+        assert honcho_cli.clone_honcho_for_profile("fundraising") is True
+        assert "hermes_fundraising" in cfg["hosts"]
+        assert "hermes.fundraising" not in cfg["hosts"]
+        assert writes[-1]["hosts"]["hermes_fundraising"]["aiPeer"] == "fundraising"
 
 
 class TestResolveApiKey:
@@ -17,6 +48,13 @@ class TestResolveApiKey:
         monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
         monkeypatch.delenv("HONCHO_API_KEY", raising=False)
         cfg = {"hosts": {"hermes": {"apiKey": "host-key"}}, "apiKey": "root-key"}
+        assert honcho_cli._resolve_api_key(cfg) == "host-key"
+
+    def test_returns_api_key_from_legacy_profile_host_block(self, monkeypatch):
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_fundraising")
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+        cfg = {"hosts": {"hermes.fundraising": {"apiKey": "host-key"}}, "apiKey": "root-key"}
         assert honcho_cli._resolve_api_key(cfg) == "host-key"
 
     def test_returns_local_for_base_url_without_api_key(self, monkeypatch):

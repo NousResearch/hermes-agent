@@ -175,7 +175,11 @@ uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
 
-> **RL Training (optional):** The RL/Atropos integration (`environments/`) — see [`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup) for the full setup.
+**RL Training (optional):** For RL/Tinker-Atropos integration development:
+```bash
+git submodule update --init tinker-atropos
+uv pip install -e "./tinker-atropos"
+```
 
 ---
 

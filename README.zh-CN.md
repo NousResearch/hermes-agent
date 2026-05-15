@@ -158,7 +158,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
 source venv/bin/activate
 uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+scripts/run_tests.sh
 ```
 
 > **RL 训练（可选）：** 如需参与 RL/Tinker-Atropos 集成开发：
@@ -174,7 +174,6 @@ python -m pytest tests/ -q
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [技能中心](https://agentskills.io)
 - 🐛 [问题反馈](https://github.com/NousResearch/hermes-agent/issues)
-- 💡 [讨论区](https://github.com/NousResearch/hermes-agent/discussions)
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — 社区微信桥接：在同一微信账号上运行 Hermes Agent 和 OpenClaw。
 
 ---

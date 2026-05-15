@@ -54,7 +54,7 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
-    base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    base_url: "https://api.openai.com/v1"  # Custom endpoints require VOICE_TOOLS_OPENAI_CUSTOM_KEY
     speed: 1.0                  # 0.25 - 4.0
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo

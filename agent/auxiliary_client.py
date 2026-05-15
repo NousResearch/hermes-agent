@@ -2838,6 +2838,45 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── OpenAI OAuth (direct api.openai.com via external token) ──────
+    if provider == "openai-oauth":
+        if not model:
+            logger.warning(
+                "resolve_provider_client: openai-oauth requested without a "
+                "model; pass model explicitly (e.g. model.default in config.yaml "
+                "or auxiliary.<task>.model for per-task aux routing)."
+            )
+            return None, None
+        try:
+            from hermes_cli.auth import resolve_openai_oauth_runtime_credentials
+
+            creds = resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: openai-oauth requested but credentials "
+                "could not be resolved: %s", exc,
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model, provider)
+        base_url = str(creds.get("base_url") or explicit_base_url or "https://api.openai.com/v1").rstrip("/")
+        api_key = str(creds.get("api_key") or explicit_api_key or "")
+        # Direct OpenAI GPT-5 family calls should use Responses API unless the
+        # user explicitly overrides api_mode. Mirror runtime_provider behavior.
+        effective_mode = api_mode
+        if not effective_mode and base_url_hostname(base_url) == "api.openai.com":
+            lower = final_model.lower()
+            if lower.startswith("gpt-5") or lower.startswith("o") or "codex" in lower:
+                effective_mode = "codex_responses"
+        saved_api_mode = api_mode
+        try:
+            api_mode = effective_mode
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = _wrap_if_needed(client, final_model, base_url, api_key)
+        finally:
+            api_mode = saved_api_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
@@ -3188,6 +3227,15 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "openai-oauth":
+            return resolve_provider_client(
+                "openai-oauth",
+                model,
+                async_mode,
+                explicit_base_url=explicit_base_url,
+                explicit_api_key=explicit_api_key,
+                api_mode=api_mode,
+            )
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

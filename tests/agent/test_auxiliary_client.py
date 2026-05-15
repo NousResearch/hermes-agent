@@ -558,6 +558,30 @@ class TestExplicitProviderRouting:
             for record in caplog.records
         )
 
+    def test_explicit_openai_oauth_uses_direct_client(self, monkeypatch):
+        with patch(
+            "hermes_cli.auth.resolve_openai_oauth_runtime_credentials",
+            return_value={
+                "provider": "openai-oauth",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "oauth-token",
+                "source": "opencode-auth",
+            },
+        ), patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = resolve_provider_client("openai-oauth", "gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "oauth-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+
+    def test_explicit_openai_oauth_requires_model(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            client, model = resolve_provider_client("openai-oauth")
+        assert client is None
+        assert model is None
+        assert any("openai-oauth requested without a model" in record.message for record in caplog.records)
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

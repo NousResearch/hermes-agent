@@ -27,6 +27,10 @@ hermes setup   # interactive wizard — configures your LLM provider and API key
 hermes         # start chatting
 ```
 
+:::tip Optional: install everything upfront
+`hermes postinstall` installs Node.js, browser engines, ripgrep, and ffmpeg in one shot — then runs the setup wizard. Use this if you want the full experience (TUI, browser tools, voice) without waiting for lazy installs on first use.
+:::
+
 :::tip
 If you have [uv](https://docs.astral.sh/uv/) installed, `uv pip install hermes-agent` is faster.
 :::

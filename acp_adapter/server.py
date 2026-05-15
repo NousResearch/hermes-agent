@@ -753,7 +753,7 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True),
+                prompt_capabilities=PromptCapabilities(image=True, embedded_context=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),

@@ -28,26 +28,72 @@ concurrency:
 jobs:
   # ── Auto-fix on main ───────────────────────────────────────────────
   # Fires when a push to main touches package.json or package-lock.json
-  # in ui-tui/ or web/. Runs fix-lockfiles and pushes the hash
-  # update commit directly to main so Nix builds never stay broken.
-  #
-  # Safety invariants:
-  #   1. The fix commit only touches nix/*.nix files, which are NOT in
-  #      the paths filter above, so this cannot re-trigger itself.
-  #   2. An explicit file-whitelist check before commit aborts if
-  #      fix-lockfiles ever modifies unexpected files.
-  #   3. Job-level concurrency with cancel-in-progress: true ensures
-  #      back-to-back pushes collapse to the newest; ref: main checkout
-  #      always operates on the latest branch state.
-  #   4. Uses a GitHub App token (not GITHUB_TOKEN) so the fix commit
-  #      triggers downstream nix.yml verification.
-  auto-fix-main:
+  # in ui-tui/ or web/. Computes the hash updates without write credentials,
+  # then a separate privileged job validates and pushes only the Nix patch.
+  auto-fix-main-compute:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     concurrency:
       group: auto-fix-main
       cancel-in-progress: true
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: ./.github/actions/nix-setup
+        with:
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Apply lockfile hashes
+        id: apply
+        run: nix run .#fix-lockfiles -- --apply
+
+      - name: Validate and stage patch
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.apply.outputs.changed }}" != 'true' ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ensure only Nix hash files were modified before handing a patch to
+          # the privileged push job. This job has read-only repository access,
+          # so repository-controlled setup/Nix code never sees a push token.
+          unexpected="$(git diff --name-only | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
+          git diff -- nix/tui.nix nix/web.nix > nix-lockfile-fix.patch
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload lockfile patch
+        if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: nix-lockfile-fix-patch
+          path: nix-lockfile-fix.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  auto-fix-main-push:
+    if: github.event_name == 'push' && needs.auto-fix-main-compute.outputs.changed == 'true'
+    needs: auto-fix-main-compute
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -61,19 +107,31 @@ jobs:
           ref: main
           token: ${{ steps.app-token.outputs.token }}
 
-      - uses: ./.github/actions/nix-setup
+      - name: Download lockfile patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: nix-lockfile-fix-patch
 
-      - name: Apply lockfile hashes
-        id: apply
-        run: nix run .#fix-lockfiles -- --apply
-
-      - name: Commit & push
-        if: steps.apply.outputs.changed == 'true'
+      - name: Validate patch
         shell: bash
         run: |
           set -euo pipefail
+
+          touched="$(git apply --numstat nix-lockfile-fix.patch | awk 'NF {print $3}')"
+          unexpected="$(printf '%s\n' "$touched" | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Patch touches unexpected files: $unexpected"
+            exit 1
+          fi
+
+          git apply --check nix-lockfile-fix.patch
+
+      - name: Commit & push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git apply nix-lockfile-fix.patch
 
           # Ensure only nix files were modified — prevents accidental
           # self-triggering if fix-lockfiles ever touches package files.

@@ -460,6 +460,38 @@ Generate some audio.
         assert "test-skill" in msg
         assert "do stuff" in msg
 
+    def test_injects_declared_skill_config_values(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n"
+            "  config:\n"
+            "    wiki_path: /tmp/research-wiki\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "config-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    config:\n"
+                    "      - key: wiki_path\n"
+                    "        description: Wiki path\n"
+                    "        default: ~/wiki\n"
+                    "        prompt: Wiki directory path\n"
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/config-skill", "open wiki")
+
+        assert msg is not None
+        assert "[Skill config" in msg
+        assert "wiki_path = /tmp/research-wiki" in msg
+
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

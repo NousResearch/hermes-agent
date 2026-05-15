@@ -10,6 +10,11 @@ metadata:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
     related_skills: [obsidian, arxiv]
+    config:
+      - key: wiki_path
+        description: Path to the LLM Wiki markdown knowledge base directory.
+        default: "~/wiki"
+        prompt: LLM Wiki directory path
 ---
 
 # Karpathy's LLM Wiki
@@ -35,11 +40,25 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
+**Location:** Prefer `skills.config.wiki_path` in `~/.hermes/config.yaml`.
+Hermes setup/status discovers this from `metadata.hermes.config`, and when the
+skill loads Hermes injects the resolved value as `wiki_path = ...` in the
+`[Skill config]` block.
 
-If unset, defaults to `~/wiki`.
+Set it with:
 
 ```bash
+hermes config set skills.config.wiki_path ~/wiki
+```
+
+Legacy `WIKI_PATH` environment variable support is preserved for existing users
+and one-off shell overrides. Resolution order: `WIKI_PATH` env var >
+`skills.config.wiki_path` (`wiki_path` in the injected skill config block) >
+`~/wiki`.
+
+```bash
+# If the injected Skill config says `wiki_path = /path/to/wiki`, use that as
+# the fallback below. The default injected value is ~/wiki.
 WIKI="${WIKI_PATH:-$HOME/wiki}"
 ```
 
@@ -78,6 +97,8 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
+# Prefer WIKI_PATH when set; otherwise use the injected `wiki_path` skill config
+# value (default ~/wiki) as the fallback.
 WIKI="${WIKI_PATH:-$HOME/wiki}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
@@ -98,7 +119,7 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path (from `$WIKI_PATH` env var, then injected `wiki_path` skill config, default `~/wiki`; ask only if the user needs a different location)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)

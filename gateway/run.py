@@ -4929,6 +4929,28 @@ class GatewayRunner:
                 _phase_elapsed(),
             )
 
+            # Interrupt ALL in-flight delegate subagents before draining
+            # parent agents.  Without this, subagents whose parents finish
+            # the drain gracefully continue running on stale API connections
+            # until they hit the 12+ minute provider idle timeout.
+            # (See #26315 — gateway restart orphans delegate subagents.)
+            try:
+                from tools.delegate_tool import interrupt_all_subagents
+                _reason = (
+                    "Gateway restart — interrupting in-flight subagents"
+                    if self._restart_requested
+                    else "Gateway shutdown — interrupting in-flight subagents"
+                )
+                _n_interrupted = interrupt_all_subagents(_reason)
+                if _n_interrupted:
+                    logger.info(
+                        "Shutdown phase: interrupted %d orphan-prone subagent(s) at +%.2fs",
+                        _n_interrupted,
+                        _phase_elapsed(),
+                    )
+            except Exception as _e:
+                logger.debug("interrupt_all_subagents during shutdown: %s", _e)
+
             timeout = self._restart_drain_timeout
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)

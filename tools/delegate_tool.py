@@ -216,6 +216,41 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         ]
 
 
+def interrupt_all_subagents(reason: str = "Gateway shutdown") -> int:
+    """Interrupt ALL currently running subagents.
+
+    Called during gateway shutdown/restart to prevent orphaned subagents
+    that would otherwise time out after 12+ minutes.  Iterates the global
+    _active_subagents registry and sends interrupt() to each child agent,
+    which also cascades into grandchildren via AIAgent.interrupt().
+
+    Returns the number of subagents that were interrupted.
+    Safe to call from any thread.
+    """
+    with _active_subagents_lock:
+        records = list(_active_subagents.values())
+
+    interrupted = 0
+    for record in records:
+        agent = record.get("agent")
+        if agent is None:
+            continue
+        try:
+            agent.interrupt(reason)
+            interrupted += 1
+        except Exception as exc:
+            logger.debug(
+                "interrupt_all_subagents failed for %s: %s",
+                record.get("subagent_id", "?"), exc,
+            )
+    if interrupted:
+        logger.info(
+            "interrupt_all_subagents: sent interrupt to %d subagent(s)",
+            interrupted,
+        )
+    return interrupted
+
+
 def _extract_output_tail(
     result: Dict[str, Any],
     *,

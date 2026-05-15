@@ -13562,6 +13562,7 @@ class GatewayRunner:
         rigor: str,
         *,
         event_message_id: Optional[str] = None,
+        progress_message_id: Optional[str] = None,
     ) -> str:
         """Spawn a manual Telegram research child and return immediately.
 
@@ -13578,8 +13579,7 @@ class GatewayRunner:
             f"-s {shlex.quote(skill_name)} -q {shlex.quote(child_prompt)}"
         )
         adapter = self.adapters.get(source.platform)
-        progress_message_id: Optional[str] = None
-        if adapter:
+        if adapter and not progress_message_id:
             try:
                 result = await adapter.send(
                     source.chat_id,
@@ -13590,6 +13590,15 @@ class GatewayRunner:
                     progress_message_id = str(result.message_id)
             except Exception as exc:
                 logger.warning("Manual Telegram research kickoff bubble failed: %s", exc)
+        elif adapter and progress_message_id:
+            try:
+                await adapter.edit_message(
+                    chat_id=source.chat_id,
+                    message_id=str(progress_message_id),
+                    content="🧠 thinking",
+                )
+            except Exception as exc:
+                logger.warning("Manual Telegram research kickoff edit failed: %s", exc)
         try:
             proc_session = process_registry.spawn_local(
                 command=command,

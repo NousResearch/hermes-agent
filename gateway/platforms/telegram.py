@@ -2724,7 +2724,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     pass
 
                 runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-                if runner is None or not callable(getattr(self, "_message_handler", None)):
+                if runner is None:
                     return
 
                 try:
@@ -2736,20 +2736,32 @@ class TelegramAdapter(BasePlatformAdapter):
                     elif normalized_chat_type == "supergroup":
                         normalized_chat_type = "forum" if query_thread_id is not None else "group"
 
-                    synth_event = MessageEvent(
-                        text=rigor_choice,
-                        message_type=MessageType.TEXT,
-                        source=SessionSource(
-                            platform=Platform.TELEGRAM,
-                            chat_id=str(query_chat_id),
-                            chat_type=normalized_chat_type,
-                            user_id=caller_id or None,
-                            user_name=query_user_name,
-                            thread_id=str(query_thread_id) if query_thread_id is not None else None,
-                        ),
-                        message_id=str(getattr(query_message, "message_id", "") or ""),
+                    source = SessionSource(
+                        platform=Platform.TELEGRAM,
+                        chat_id=str(query_chat_id),
+                        chat_type=normalized_chat_type,
+                        user_id=caller_id or None,
+                        user_name=query_user_name,
+                        thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     )
-                    result_text = await self._message_handler(synth_event)
+                    pending_prompt = getattr(runner, "_pending_research_rigor", {}).pop(session_key, "")
+                    if pending_prompt:
+                        result_text = await runner._start_manual_telegram_research(
+                            source,
+                            session_key,
+                            pending_prompt,
+                            rigor_choice,
+                            event_message_id=str(getattr(query_message, "message_id", "") or ""),
+                            progress_message_id=str(getattr(query_message, "message_id", "") or ""),
+                        )
+                    else:
+                        synth_event = MessageEvent(
+                            text=rigor_choice,
+                            message_type=MessageType.TEXT,
+                            source=source,
+                            message_id=str(getattr(query_message, "message_id", "") or ""),
+                        )
+                        result_text = await self._message_handler(synth_event)
                     if result_text and query.message:
                         thread_id = getattr(query.message, "message_thread_id", None)
                         reply_to_id = getattr(query.message, "message_id", None)

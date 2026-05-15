@@ -2689,6 +2689,42 @@ class TestHandleMaxIterations:
             outcome="success",
         )
 
+    def test_suppress_status_output_keeps_iteration_warning_off_stdout(self, agent, capsys):
+        """Machine-readable mode (-Q/oneshot) must not contaminate stdout (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.suppress_status_output = True
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        captured = capsys.readouterr()
+        assert result == "Summary"
+        assert "Reached maximum iterations" not in captured.out
+
+    def test_plain_quiet_mode_still_prints_iteration_warning(self, agent, capsys):
+        """Interactive CLI runs quiet_mode=True by default — the warning must
+        still show there; only suppress_status_output gates it (#26155)."""
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.quiet_mode = True
+        agent.suppress_status_output = False
+        printed = []
+        agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}],
+            1,
+        )
+
+        assert result == "Summary"
+        combined = "\n".join(printed) + capsys.readouterr().out
+        assert "Reached maximum iterations" in combined
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."

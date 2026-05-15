@@ -634,6 +634,7 @@ async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
     model: str = None,
+    provider: str = None,
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
@@ -797,7 +798,6 @@ async def vision_analyze_tool(
         except Exception:
             pass
         call_kwargs = {
-            "task": "vision",
             "messages": messages,
             "temperature": vision_temperature,
             "max_tokens": 2000,
@@ -805,6 +805,8 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        if provider:
+            call_kwargs["provider"] = provider
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1043,8 +1045,9 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return vision_analyze_tool(image_url, full_prompt, model)
+    model = kw.get("model") or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    provider = kw.get("provider") or None
+    return vision_analyze_tool(image_url, full_prompt, model, provider)
 
 
 registry.register(

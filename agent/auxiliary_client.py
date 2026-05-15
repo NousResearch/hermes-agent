@@ -49,6 +49,7 @@ from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
+import contextvars
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
@@ -304,6 +305,13 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
 })
+
+# Thread-local context for the active provider/model at tool-call time.
+# The agent loop sets these before dispatching a tool so auxiliary LLM
+# calls can follow the thread's runtime choice instead of hardcoded
+# task defaults (#17038).
+_thread_provider = contextvars.ContextVar("_thread_provider", default=None)
+_thread_model = contextvars.ContextVar("_thread_model", default=None)
 
 # OpenRouter app attribution headers (base — always sent).
 # `X-Title` is the canonical attribution header OpenRouter's dashboard
@@ -4513,6 +4521,14 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
+    # If no explicit provider/model were passed, check the thread-local
+    # context set by the active agent thread before the tool call (#17038).
+    if provider is None or model is None:
+        _tp, _tm = _thread_provider.get(), _thread_model.get()
+        if provider is None:
+            provider = _tp
+        if model is None:
+            model = _tm
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)

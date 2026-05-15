@@ -5,6 +5,7 @@ import stat
 import pytest
 
 from agent.frontdesk_store import (
+    JOB_CANCELLED,
     JOB_QUEUED,
     JOB_REVIEWER,
     JOB_RUNNING,
@@ -14,7 +15,7 @@ from agent.frontdesk_store import (
     FrontdeskStore,
 )
 from agent.task_registry import (
-    FRONTDESK_CANCEL_REQUESTED,
+    FRONTDESK_CANCELLED,
     FRONTDESK_DONE_PRESENTED,
     FRONTDESK_ERROR,
     FRONTDESK_QUEUED,
@@ -308,8 +309,32 @@ def test_cancel_request_is_idempotent(tmp_path):
     second = store.request_cancel(task.id, reason="duplicate stop")
     second_events = store.list_events(task_id=task.id)
 
-    assert first.state == second.state == FRONTDESK_CANCEL_REQUESTED
+    assert first.state == second.state == FRONTDESK_CANCELLED
     assert first.cancel_requested_at == second.cancel_requested_at
     assert [event.event_type for event in first_events] == [event.event_type for event in second_events]
     assert [event.event_type for event in second_events].count("task_cancel_requested") == 1
+    assert store.list_jobs(task_id=task.id)[0].state == JOB_CANCELLED
+    store.close()
+
+
+def test_running_cancel_allows_worker_cancel_completion_retry(tmp_path):
+    store = FrontdeskStore(tmp_path / "frontdesk.sqlite3")
+    task, _worker = store.create_task_with_worker_job("cancel running")
+    claimed = store.claim_job(kind=JOB_WORKER, lease_owner="worker-a", lease_seconds=30)
+    assert claimed is not None
+
+    cancelled_task = store.request_cancel(task.id, reason="user stop")
+    assert cancelled_task.state == FRONTDESK_CANCELLED
+
+    completed, reviewer = store.complete_worker_job(
+        claimed.id,
+        success=False,
+        cancelled=True,
+        lease_owner="worker-a",
+        attempt=claimed.attempt,
+    )
+
+    assert completed.state == JOB_CANCELLED
+    assert reviewer is None
+    assert store.get_task(task.id).state == FRONTDESK_CANCELLED
     store.close()

@@ -373,7 +373,11 @@ class FrontdeskStore:
 
         def __enter__(self) -> None:
             self.outer._lock.acquire()
-            self.outer._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.outer._conn.execute("BEGIN IMMEDIATE")
+            except Exception:
+                self.outer._lock.release()
+                raise
 
         def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
             try:
@@ -862,12 +866,13 @@ class FrontdeskStore:
             if job.kind != JOB_WORKER:
                 raise ValueError("job is not a worker job")
             if job.state in TERMINAL_JOB_STATES:
-                self._claim_token_matches(
-                    job,
-                    lease_owner=lease_owner,
-                    attempt=attempt,
-                    require_running=False,
-                )
+                if not (job.state == JOB_CANCELLED and cancelled):
+                    self._claim_token_matches(
+                        job,
+                        lease_owner=lease_owner,
+                        attempt=attempt,
+                        require_running=False,
+                    )
                 reviewer = self._existing_reviewer(job.task_id)
                 return job, reviewer
             self._claim_token_matches(job, lease_owner=lease_owner, attempt=attempt)
@@ -1156,7 +1161,7 @@ class FrontdeskStore:
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (FRONTDESK_CANCEL_REQUESTED, requested_at, requested_at, task_id),
+                (FRONTDESK_CANCELLED, requested_at, requested_at, task_id),
             )
             self._conn.execute(
                 """

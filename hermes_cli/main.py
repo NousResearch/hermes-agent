@@ -7671,6 +7671,29 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
+def _cmd_update_pip(args):
+    """Update Hermes via pip (for PyPI installs)."""
+    import subprocess as _sp
+    from hermes_cli import __version__
+
+    print(f"→ Current version: {__version__}")
+    print("→ Checking PyPI for updates...")
+
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
+
+    print(f"→ Running: {' '.join(cmd)}")
+    result = _sp.run(cmd)
+    if result.returncode != 0:
+        print("✗ Update failed")
+        sys.exit(1)
+
+    print("✓ Update complete! Restart hermes to use the new version.")
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -7698,6 +7721,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
+            from hermes_cli.config import detect_install_method
+            method = detect_install_method(PROJECT_ROOT)
+            if method == "pip":
+                _cmd_update_pip(args)
+                return
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"

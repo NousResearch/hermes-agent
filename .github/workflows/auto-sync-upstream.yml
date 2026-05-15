@@ -2,7 +2,7 @@ name: Auto-sync upstream into feat
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # 每 10 分钟
+    - cron: '0 */4 * * *'     # 每 4 小时
   workflow_dispatch:
 
 permissions:

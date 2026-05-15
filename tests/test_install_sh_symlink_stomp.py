@@ -16,6 +16,7 @@ in ``command_link_dir`` and the venv entry point is left intact.
 from __future__ import annotations
 
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -29,7 +30,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def _extract_setup_path_shim_block() -> str:
     """Return the install.sh shim-write block used by setup_path()."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(
         r"(?P<block>mkdir -p \"\$command_link_dir\".*?chmod \+x \"\$command_link_dir/hermes\")",
         text,
@@ -89,11 +90,18 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
     shim_path.symlink_to(pip_entry)
     assert shim_path.is_symlink()
 
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to exercise the install.sh shim block")
+    probe = subprocess.run([bash, "-c", "true"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("bash is not usable in this environment")
+
     block = _extract_setup_path_shim_block()
     # Drive the block with the real env vars setup_path() sets.
     script = f'set -e\nHERMES_BIN={pip_entry!s}\ncommand_link_dir={command_link_dir!s}\n{block}\n'
     result = subprocess.run(
-        ["bash", "-c", script],
+        [bash, "-c", script],
         capture_output=True,
         text=True,
         cwd=tmp_path,

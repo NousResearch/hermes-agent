@@ -155,7 +155,7 @@ else
         echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
     else
         echo -e "${CYAN}→${NC} Python $PYTHON_VERSION not found, installing via uv..."
-        $UV_CMD python install "$PYTHON_VERSION"
+        $UV_CMD python install --no-bin "$PYTHON_VERSION"
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION installed"

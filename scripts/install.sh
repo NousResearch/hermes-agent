@@ -470,7 +470,7 @@ check_python() {
 
     # Python not found — use uv to install it (no sudo needed!)
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
-    if "$UV_CMD" python install "$PYTHON_VERSION"; then
+    if "$UV_CMD" python install --no-bin "$PYTHON_VERSION"; then
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"

@@ -123,7 +123,7 @@
       # script sets for group access by hostUsers.  Only touch files with
       # wrong ownership so correctly-owned dirs keep their permission bits.
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
-        find "$HERMES_HOME" \! -user "$HERMES_UID" -exec chown "$HERMES_UID:$HERMES_GID" {} +
+        find "$HERMES_HOME" \( \! -user "$HERMES_UID" -o \! -group "$HERMES_GID" \) -exec chown -h "$HERMES_UID:$HERMES_GID" -- {} +
       fi
 
       # ── Provision apt packages (first boot only, cached in writable layer) ──

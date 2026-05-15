@@ -922,6 +922,55 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
+    @patch("hermes_cli.config.load_config")
+    def test_direct_endpoint_uses_named_custom_provider_api_mode(self, mock_load_config):
+        parent = _make_mock_parent(depth=0)
+        mock_load_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "ccr",
+                    "base_url": "https://open.bigmodel.cn/api/anthropic",
+                    "api_mode": "anthropic_messages",
+                }
+            ]
+        }
+        cfg = {
+            "model": "glm-4.6",
+            "provider": "ccr",
+            "base_url": "https://open.bigmodel.cn/api/anthropic",
+            "api_key": "custom-key",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
+    @patch("hermes_cli.config.load_config")
+    def test_direct_endpoint_uses_provider_schema_api_mode_by_base_url(
+        self,
+        mock_load_config,
+    ):
+        parent = _make_mock_parent(depth=0)
+        mock_load_config.return_value = {
+            "providers": {
+                "zhipu-anthropic": {
+                    "base_url": "https://open.bigmodel.cn/api/anthropic",
+                    "transport": "anthropic_messages",
+                }
+            }
+        }
+        cfg = {
+            "model": "glm-4.6",
+            "base_url": "https://open.bigmodel.cn/api/anthropic/",
+            "api_key": "custom-key",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):

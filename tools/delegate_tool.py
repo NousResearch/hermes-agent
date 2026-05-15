@@ -2333,6 +2333,54 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+_DIRECT_ENDPOINT_API_MODES = frozenset(
+    {
+        "chat_completions",
+        "codex_responses",
+        "anthropic_messages",
+        "bedrock_converse",
+        "codex_app_server",
+    }
+)
+
+
+def _configured_direct_endpoint_api_mode(
+    configured_provider: Optional[str],
+    configured_base_url: str,
+) -> Optional[str]:
+    """Return api_mode declared for a matching custom provider, if any."""
+    provider_key = (configured_provider or "").strip().lower()
+    base_url = (configured_base_url or "").strip().rstrip("/").lower()
+    if not provider_key and not base_url:
+        return None
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+
+        providers = get_compatible_custom_providers(load_config())
+    except Exception as exc:
+        logger.debug("Could not inspect custom providers for delegation api_mode: %s", exc)
+        return None
+
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_names = {
+            str(entry.get("provider_key") or "").strip().lower(),
+            str(entry.get("name") or "").strip().lower(),
+        }
+        entry_base_url = str(entry.get("base_url") or "").strip().rstrip("/").lower()
+        provider_matches = provider_key and provider_key in entry_names
+        base_matches = base_url and entry_base_url == base_url
+        if not provider_matches and not base_matches:
+            continue
+
+        api_mode = str(entry.get("api_mode") or "").strip().lower()
+        if api_mode in _DIRECT_ENDPOINT_API_MODES:
+            return api_mode
+    return None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2383,6 +2431,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+        # A configured delegation.base_url is still a direct endpoint, but
+        # users often point it at a named custom provider that already declares
+        # its transport. Honor that explicit api_mode before falling back to
+        # the URL heuristics above.
+        api_mode = (
+            _configured_direct_endpoint_api_mode(
+                configured_provider,
+                configured_base_url,
+            )
+            or api_mode
+        )
 
         return {
             "model": configured_model,

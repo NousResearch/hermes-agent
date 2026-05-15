@@ -121,6 +121,20 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     )
 
 
+def test_dockerfile_preinstalls_gateway_messaging_dependencies(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra messaging" in step for step in sync_steps), (
+        "Published Docker images must preload the [messaging] extra so "
+        "Telegram/Discord gateway adapters do not depend on first-boot "
+        "lazy installation (#24698)."
+    )
+
+
 def test_dockerfile_builds_tui_assets(dockerfile_text):
     assert any(
         "ui-tui" in step and "npm" in step and "run build" in step

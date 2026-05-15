@@ -25,6 +25,17 @@ from .tools import (
 logger = logging.getLogger(__name__)
 
 
+def _json_loads_maybe_prefix(value: str) -> Any:
+    """Parse a JSON object even when Hermes appended a human hint after it."""
+    text = value.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        decoder = json.JSONDecoder()
+        data, _ = decoder.raw_decode(text)
+        return data
+
+
 def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
     """Translate Hermes' todo tool result into ACP's native plan update.
 
@@ -37,12 +48,16 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
         return None
 
     try:
-        data = json.loads(result)
+        data = _json_loads_maybe_prefix(result)
     except Exception:
         return None
 
     if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
         return None
+
+    todos = data["todos"]
+    if not todos:
+        return AgentPlanUpdate(session_update="plan", entries=[])
 
     status_map = {
         "pending": "pending",
@@ -54,7 +69,7 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
         "cancelled": "completed",
     }
     entries: list[PlanEntry] = []
-    for item in data["todos"]:
+    for item in todos:
         if not isinstance(item, dict):
             continue
         content = str(item.get("content") or item.get("id") or "").strip()
@@ -66,8 +81,6 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
             content = f"[cancelled] {content}"
         entries.append(PlanEntry(content=content, priority="medium", status=status))
 
-    if not entries:
-        return None
     return AgentPlanUpdate(session_update="plan", entries=entries)
 
 

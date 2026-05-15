@@ -59,6 +59,7 @@ from acp.schema import (
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
+    _build_plan_update_from_todo_result,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -910,15 +911,20 @@ class HermesACPAgent(acp.Agent):
                 if not tool_call_id or not tool_name:
                     continue
                 result = message.get("content")
+                result_text = result if isinstance(result, str) else None
                 if not await _send(
                     build_tool_complete(
                         tool_call_id,
                         tool_name,
-                        result=result if isinstance(result, str) else None,
+                        result=result_text,
                         function_args=function_args,
                     )
                 ):
                     return
+                if tool_name == "todo":
+                    plan_update = _build_plan_update_from_todo_result(result_text)
+                    if plan_update is not None and not await _send(plan_update):
+                        return
 
     async def new_session(
         self,

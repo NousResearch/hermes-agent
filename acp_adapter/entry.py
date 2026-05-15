@@ -93,11 +93,13 @@ def _setup_logging() -> None:
 
 
 def _load_env() -> None:
-    """Load .env from HERMES_HOME (default ``~/.hermes``)."""
+    """Load .env and bridge config-backed terminal settings."""
+    from hermes_cli.config import apply_terminal_config_env_bridge
     from hermes_cli.env_loader import load_hermes_dotenv
 
     hermes_home = get_hermes_home()
     loaded = load_hermes_dotenv(hermes_home=hermes_home)
+    apply_terminal_config_env_bridge()
     if loaded:
         for env_file in loaded:
             logging.getLogger(__name__).info("Loaded env from %s", env_file)

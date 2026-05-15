@@ -102,6 +102,7 @@ OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -116,6 +117,10 @@ if _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
 else:
     logger.info("No .env file found. Using system environment variables.")
+
+# Keep terminal/code-execution backends aligned with config.yaml for non-CLI
+# entry points without importing the classic interactive CLI.
+apply_terminal_config_env_bridge()
 
 
 # Import our tool system

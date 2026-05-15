@@ -3768,6 +3768,15 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
+        # Not all channel-like objects expose ``history`` — Forum parent
+        # channels, voice channels, and custom proxies in tests can lack it.
+        # Skip rather than raise: the outer ``except`` swallows ``discord.Forbidden``
+        # only when ``discord`` is the real library, so an AttributeError that
+        # leaks past would surface as a TypeError under mocked-discord test
+        # setups (the except clause can't evaluate a MagicMock as an exception).
+        if not hasattr(channel, "history"):
+            return ""
+
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
         include_other_bots = allow_bots_raw != "none"

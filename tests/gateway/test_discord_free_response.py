@@ -802,6 +802,28 @@ async def test_fetch_channel_context_ignores_stale_cache(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_channel_context_returns_empty_when_channel_lacks_history(adapter, monkeypatch):
+    """Channel-like objects without ``.history`` (Forum parents, custom proxies,
+    test mocks) must not raise — backfill quietly returns empty.
+
+    Regression for the discord e2e adapter tests that broke after history
+    backfill defaulted on: the SimpleNamespace channel fixtures have no
+    ``.history`` and the outer ``except discord.Forbidden`` cannot catch the
+    resulting AttributeError under mocked-discord test setups.
+    """
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    channel = SimpleNamespace(id=123, name="general")  # no ``history`` attribute
+
+    result = await adapter._fetch_channel_context(
+        channel, before=SimpleNamespace(id=42),
+    )
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
 async def test_discord_shared_channel_backfill_prepends_context(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)

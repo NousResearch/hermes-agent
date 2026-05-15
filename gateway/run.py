@@ -8242,6 +8242,14 @@ class GatewayRunner:
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
 
+        # Emit session:new hook (session is starting)
+        await self.hooks.emit("session:new", {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "session_key": session_key,
+            "new_session_id": new_entry.session_id if new_entry else None,
+        })
+
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
+import subprocess
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -729,6 +731,59 @@ def _resolve_openrouter_runtime(
     }
 
 
+def _run_azure_foundry_token_command(command: str) -> str:
+    """Run a configured Azure token command and return its stdout token."""
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise AuthError(f"Invalid Azure Foundry token_command: {exc}") from exc
+    if not argv:
+        return ""
+    try:
+        result = subprocess.run(
+            argv,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise AuthError(
+            f"Azure Foundry token_command executable not found: {argv[0]}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise AuthError("Azure Foundry token_command timed out after 30 seconds.") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise AuthError(f"Azure Foundry token_command failed{suffix}") from exc
+    return (result.stdout or "").strip()
+
+
+def _resolve_azure_foundry_bearer_token(model_cfg: Dict[str, Any]) -> str:
+    """Resolve Microsoft Entra/Bearer token auth for Azure Foundry."""
+    configured_token = str(
+        model_cfg.get("bearer_token")
+        or model_cfg.get("access_token")
+        or ""
+    ).strip()
+    if configured_token:
+        return configured_token
+    env_token = os.getenv("AZURE_FOUNDRY_BEARER_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    token_command = str(model_cfg.get("token_command") or "").strip()
+    if not token_command:
+        token_command = (
+            "az account get-access-token --resource https://cognitiveservices.azure.com "
+            "--query accessToken -o tsv"
+        )
+    token = _run_azure_foundry_token_command(token_command)
+    if not token:
+        raise AuthError("Azure Foundry token_command returned an empty bearer token.")
+    return token
+
+
 def _resolve_azure_foundry_runtime(
     *,
     requested_provider: str,
@@ -780,20 +835,25 @@ def _resolve_azure_foundry_runtime(
             "the AZURE_FOUNDRY_BASE_URL environment variable."
         )
 
-    api_key = explicit_api_key
-    if not api_key:
-        try:
-            from hermes_cli.config import get_env_value
-            api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
-        except Exception:
-            api_key = ""
-    if not api_key:
-        api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "").strip()
-    if not api_key:
-        raise AuthError(
-            "Azure Foundry requires an API key. Set AZURE_FOUNDRY_API_KEY in "
-            "~/.hermes/.env or run 'hermes model' to configure."
-        )
+    auth_type = str(model_cfg.get("auth_type") or "api_key").strip().lower().replace("-", "_")
+    if auth_type in {"azure_entra", "entra", "bearer", "bearer_token"}:
+        api_key = _resolve_azure_foundry_bearer_token(model_cfg)
+    else:
+        api_key = explicit_api_key
+        if not api_key:
+            try:
+                from hermes_cli.config import get_env_value
+                api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
+            except Exception:
+                api_key = ""
+        if not api_key:
+            api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "").strip()
+        if not api_key:
+            raise AuthError(
+                "Azure Foundry requires an API key. Set AZURE_FOUNDRY_API_KEY in "
+                "~/.hermes/.env or run 'hermes model' to configure. For Entra ID, "
+                "set model.auth_type to 'azure_entra' or 'bearer'."
+            )
 
     # Anthropic SDK appends /v1/messages itself, so strip any trailing /v1
     # we inherited from the configured base_url to avoid double-/v1 paths.
@@ -806,6 +866,7 @@ def _resolve_azure_foundry_runtime(
         "api_mode": cfg_api_mode,
         "base_url": base_url,
         "api_key": api_key,
+        "auth_type": auth_type,
         "source": source,
         "requested_provider": requested_provider,
     }

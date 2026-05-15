@@ -1821,6 +1821,65 @@ class TestAzureFoundryResolution:
         with pytest.raises(rp.AuthError, match="base URL"):
             rp.resolve_runtime_provider(requested="azure-foundry")
 
+    def test_azure_foundry_entra_auth_uses_default_az_token_command(self, monkeypatch):
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_BEARER_TOKEN", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        captured = {}
+
+        def fake_run(command):
+            captured["command"] = command
+            return "entra-token"
+
+        cfg = self._make_cfg("https://my-resource.openai.azure.com/openai/v1")
+        cfg["auth_type"] = "azure_entra"
+        monkeypatch.setattr(rp, "_get_model_config", lambda: cfg)
+        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", fake_run)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_key"] == "entra-token"
+        assert resolved["auth_type"] == "azure_entra"
+        assert "https://cognitiveservices.azure.com" in captured["command"]
+
+    def test_azure_foundry_bearer_auth_uses_config_token_command(self, monkeypatch):
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_BEARER_TOKEN", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        captured = {}
+
+        def fake_run(command):
+            captured["command"] = command
+            return "configured-token"
+
+        cfg = self._make_cfg("https://my-resource.openai.azure.com/openai/v1")
+        cfg.update({"auth_type": "bearer", "token_command": "az account get-access-token --query accessToken -o tsv"})
+        monkeypatch.setattr(rp, "_get_model_config", lambda: cfg)
+        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", fake_run)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_key"] == "configured-token"
+        assert resolved["auth_type"] == "bearer"
+        assert captured["command"] == "az account get-access-token --query accessToken -o tsv"
+
+    def test_azure_foundry_bearer_auth_prefers_env_token(self, monkeypatch):
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.setenv("AZURE_FOUNDRY_BEARER_TOKEN", "env-bearer-token")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        cfg = self._make_cfg("https://my-resource.openai.azure.com/openai/v1")
+        cfg["auth_type"] = "bearer"
+        monkeypatch.setattr(rp, "_get_model_config", lambda: cfg)
+        monkeypatch.setattr(rp, "_run_azure_foundry_token_command", lambda command: (_ for _ in ()).throw(AssertionError("should not run token command")))
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_key"] == "env-bearer-token"
+        assert resolved["auth_type"] == "bearer"
+
     def test_azure_foundry_missing_api_key_raises(self, monkeypatch):
         monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
         # `get_env_value` reads from ~/.hermes/.env — mock it to return None

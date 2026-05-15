@@ -148,7 +148,8 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
-        if max_tokens is not None and not is_codex_backend:
+        provider_name = str(params.get("provider") or "").strip().lower()
+        if max_tokens is not None and not is_codex_backend and provider_name != "openai-oauth":
             kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:

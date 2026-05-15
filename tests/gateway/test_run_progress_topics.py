@@ -58,6 +58,47 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class SmallLimitProgressAdapter(ProgressCaptureAdapter):
+    """Adapter with a tiny platform limit to exercise progress rollover."""
+
+    MAX_MESSAGE_LENGTH = 180
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._next_id = 0
+        self.oversized_edits = []
+        self.oversized_sends = []
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"progress-{self._next_id}"
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            self.oversized_sends.append(content)
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if len(content) > self.MAX_MESSAGE_LENGTH:
+            self.oversized_edits.append(content)
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -115,6 +156,31 @@ class DelayedProgressAgent:
         self.tool_progress_callback("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ManyProgressLinesAgent:
+    """Emits enough tool-progress lines to exceed a single platform bubble."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "terminal", "first-short", {})
+        # Let the progress task create the first editable bubble, then enqueue
+        # the rest quickly.  The cancellation drain must roll them into fresh
+        # editable bubbles instead of trying to edit the first one past limit.
+        time.sleep(0.35)
+        for idx in range(1, 8):
+            cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -615,6 +681,39 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_rolls_progress_bubble_before_platform_limit(monkeypatch, tmp_path):
+    """Tool progress should start a second editable bubble before Telegram's limit.
+
+    Regression: once the first progress bubble grew past the platform limit,
+    the gateway kept trying to edit that same oversized full transcript.  The
+    Telegram adapter then split-and-sent a fresh continuation on every update,
+    causing a noisy trail of one-line messages instead of a new editable bubble.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ManyProgressLinesAgent,
+        session_id="sess-progress-overflow-rollover",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+                "tool_preview_length": 60,
+            }
+        },
+        adapter_cls=SmallLimitProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert isinstance(adapter, SmallLimitProgressAdapter)
+    assert len(adapter.sent) >= 2, "expected a fresh progress bubble after the first filled"
+    assert adapter.oversized_sends == []
+    assert adapter.oversized_edits == []
+    all_bubbles = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all(len(text) <= adapter.MAX_MESSAGE_LENGTH for text in all_bubbles)
 
 
 @pytest.mark.asyncio

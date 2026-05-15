@@ -656,15 +656,17 @@ def run_doctor(args):
         if fallback_config.exists():
             check_ok("cli-config.yaml exists (in project directory)")
         else:
-            example_config = PROJECT_ROOT / 'cli-config.yaml.example'
-            if should_fix and example_config.exists():
+            if should_fix:
                 config_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(example_config), str(config_path))
-                check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                example_config = PROJECT_ROOT / 'cli-config.yaml.example'
+                if example_config.exists():
+                    shutil.copy2(str(example_config), str(config_path))
+                    check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                else:
+                    from hermes_cli.config import DEFAULT_CONFIG, save_config
+                    save_config(DEFAULT_CONFIG)
+                    check_ok(f"Created {_DHH}/config.yaml from defaults")
                 fixed_count += 1
-            elif should_fix:
-                check_warn("config.yaml not found and no example to copy from")
-                manual_issues.append(f"Create {_DHH}/config.yaml manually")
             else:
                 check_warn("config.yaml not found", "(using defaults)")
 

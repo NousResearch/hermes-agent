@@ -3,7 +3,8 @@ name: CI Self-Hosted Minimal
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, ci/selfhosted-minimal-20260514-1910]
+  workflow_dispatch:
 
 permissions:
   contents: read

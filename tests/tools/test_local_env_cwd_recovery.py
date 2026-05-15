@@ -27,6 +27,15 @@ class TestResolveSafeCwd:
         path = str(tmp_path)
         assert _resolve_safe_cwd(path) == path
 
+    def test_expands_user_and_env_vars_before_isdir_check(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_TEST_CWD", str(project))
+
+        assert _resolve_safe_cwd("~/project") == str(project)
+        assert _resolve_safe_cwd("$HERMES_TEST_CWD") == str(project)
+
     def test_walks_up_to_first_existing_ancestor(self, tmp_path):
         nested = tmp_path / "child" / "grandchild"
         nested.mkdir(parents=True)

@@ -30,9 +30,10 @@ def _resolve_safe_cwd(cwd: str) -> str:
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
     """
-    if cwd and os.path.isdir(cwd):
-        return cwd
-    parent = os.path.dirname(cwd) if cwd else ""
+    expanded = os.path.expandvars(os.path.expanduser(cwd)) if cwd else ""
+    if expanded and os.path.isdir(expanded):
+        return expanded
+    parent = os.path.dirname(expanded) if expanded else ""
     while parent:
         if os.path.isdir(parent):
             return parent

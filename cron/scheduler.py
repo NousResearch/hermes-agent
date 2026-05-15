@@ -694,6 +694,64 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _resolve_home_dir() -> str:
+    """Return a stable HOME for cron-job script subprocesses.
+
+    Mirrors agent.copilot_acp_client._resolve_home_dir so child scripts
+    pick up the correct profile-scoped home (HERMES_HOME) instead of
+    inheriting the gateway's possibly-shadowed $HOME (e.g. when the
+    gateway is launched from a launchd plist that nulls HOME).
+    """
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            return profile_home
+    except Exception:
+        pass
+
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        return home
+
+    expanded = os.path.expanduser("~")
+    if expanded and expanded != "~":
+        return expanded
+
+    try:
+        import pwd
+
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+
+    return "/tmp"
+
+
+def _build_subprocess_env() -> dict[str, str]:
+    """Build env for cron-job script subprocesses with a stable HOME.
+
+    Without this, subprocess.run inherits the gateway's environment as-is.
+    When the gateway is launched from a launchd plist that does not set
+    HOME (a common deploy pattern on macOS), child scripts see HOME='' and
+    fail at the first ~/path.expanduser() call. See
+    agent.copilot_acp_client._build_subprocess_env for the same pattern
+    applied to the Copilot ACP subprocess.
+
+    Note: this helper duplicates the equivalent in agent.copilot_acp_client
+    rather than lifting both to a shared module (e.g. hermes_constants,
+    where get_subprocess_home already lives). Done deliberately to keep
+    this fix minimal-blast-radius; consolidation can land as a follow-up
+    refactor if maintainers prefer.
+    """
+    env = os.environ.copy()
+    env["HOME"] = _resolve_home_dir()
+    return env
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -781,6 +839,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=_build_subprocess_env(),
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()

@@ -175,6 +175,134 @@ class TestRunJobScript:
         assert parsed["new_prs"][0]["number"] == 42
 
 
+class TestRunJobScriptSubprocessEnv:
+    """Test that subprocess.run receives a HOME-aware env.
+
+    Mirrors agent.copilot_acp_client._build_subprocess_env coverage:
+    when the gateway is launched from a launchd plist that nulls HOME,
+    cron-job script subprocesses must still see a usable HOME so any
+    ~/path.expanduser() in the script does not crash.
+    """
+
+    def test_subprocess_run_receives_env_with_home_when_parent_home_empty(
+        self, cron_env, monkeypatch, tmp_path,
+    ):
+        """env= must be passed to subprocess.run with a non-empty HOME, even
+        when the parent's HOME is empty (the production-incident scenario)."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        # Force the bug condition: parent gateway has no HOME (e.g. launchd
+        # plist that did not set Environment HOME=...).  Without the fix,
+        # subprocess.run would inherit HOME='' and child scripts would crash
+        # on Path('~/foo').expanduser().
+        monkeypatch.delenv("HOME", raising=False)
+        # HERMES_HOME points at the cron_env fixture; create the home/
+        # subdir so get_subprocess_home() returns a real path.
+        hermes_home = cron_env  # cron_env IS the temp HERMES_HOME
+        (hermes_home / "home").mkdir(exist_ok=True)
+
+        captured = {}
+        real_run = sched_mod.subprocess.run
+
+        def _capture_run(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", _capture_run)
+
+        script = cron_env / "scripts" / "noop.py"
+        script.write_text("print('ok')\n")
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+
+        assert "env" in captured["kwargs"], (
+            "subprocess.run for cron-job scripts must pass env= so "
+            "child scripts get a stable HOME (matches the fix in "
+            "agent.copilot_acp_client._run_prompt)."
+        )
+        env = captured["kwargs"]["env"]
+        assert env.get("HOME"), (
+            "_build_subprocess_env() must populate HOME from the resolver "
+            "chain even when the parent process has HOME=''. Without this, "
+            "child scripts inherit an empty HOME and crash on expanduser()."
+        )
+
+    def test_resolve_home_dir_prefers_profile_home_subdir_when_present(
+        self, monkeypatch, tmp_path,
+    ):
+        """When HERMES_HOME is set AND {HERMES_HOME}/home/ exists,
+        _resolve_home_dir() returns that subdirectory.
+
+        get_subprocess_home() in hermes_constants only returns a path when
+        the subdirectory exists on disk; otherwise it returns None and
+        _resolve_home_dir falls through to the HOME env var."""
+        from cron.scheduler import _resolve_home_dir
+
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = _resolve_home_dir()
+        assert result == str(profile_home), (
+            f"Expected profile-scoped HOME at {profile_home}, got {result!r}"
+        )
+
+    def test_resolve_home_dir_falls_back_to_home_env_when_no_profile_subdir(
+        self, monkeypatch, tmp_path,
+    ):
+        """When HERMES_HOME is set but {HERMES_HOME}/home/ does NOT exist,
+        _resolve_home_dir() must fall through to $HOME (the common case for
+        most installs that don't use the optional profile-home subdir)."""
+        from cron.scheduler import _resolve_home_dir
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        # Deliberately do NOT create hermes_home / "home" / — exercise the
+        # fall-through path.
+
+        fake_home = tmp_path / "user-home"
+        fake_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = _resolve_home_dir()
+        assert result == str(fake_home), (
+            f"Expected fall-through to $HOME ({fake_home}) when "
+            f"{hermes_home}/home/ is absent, got {result!r}"
+        )
+
+    def test_resolve_home_dir_falls_back_when_env_clean(self, monkeypatch):
+        """No HOME, no HERMES_HOME → _resolve_home_dir still returns a usable dir."""
+        from cron.scheduler import _resolve_home_dir
+
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        result = _resolve_home_dir()
+        assert result, "Fallback chain must return a non-empty path"
+        assert result != "~", "Unexpanded ~ leak from os.path.expanduser fallback"
+
+    def test_build_subprocess_env_does_not_mutate_os_environ(self, monkeypatch, tmp_path):
+        """env dict is a copy — must not mutate process environment."""
+        from cron.scheduler import _build_subprocess_env
+
+        before = dict(os.environ)
+        env = _build_subprocess_env()
+        env["HOME"] = "/tmp/should-not-leak"
+        after = dict(os.environ)
+        assert before == after, (
+            "_build_subprocess_env() must return a copy; mutations should not "
+            "propagate back to os.environ"
+        )
+
+
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 

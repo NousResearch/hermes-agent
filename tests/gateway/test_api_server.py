@@ -705,6 +705,37 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_string_false_returns_json_completion(self, adapter):
+        """Quoted false must not route chat completions into SSE mode."""
+        mock_result = {
+            "final_response": "Hello! How can I help you today?",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            assert "text/event-stream" not in resp.headers.get("Content-Type", "")
+            data = await resp.json()
+            assert data["object"] == "chat.completion"
+            assert data["choices"][0]["message"]["content"] == mock_result["final_response"]
+
+    @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
         """Regression guard for #24451: completion callback must signal SSE EOS."""
         app = _create_app(adapter)
@@ -1656,6 +1687,31 @@ class TestResponsesEndpoint:
             assert adapter._response_store.get(data["id"]) is None
 
     @pytest.mark.asyncio
+    async def test_store_string_false_does_not_store(self, adapter):
+        """Quoted false must preserve ephemeral store=false semantics."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "store": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert adapter._response_store.get(data["id"]) is None
+
+    @pytest.mark.asyncio
     async def test_instructions_inherited_from_previous(self, adapter):
         """If no instructions provided, carry forward from previous response."""
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
@@ -1748,6 +1804,37 @@ class TestResponsesStreaming:
                 assert '"logprobs": []' in body
                 assert "Hello" in body
                 assert " world" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_string_false_returns_json_response(self, adapter):
+        """Quoted false must not route Responses API requests into SSE mode."""
+        mock_result = {
+            "final_response": "Paris is the capital of France.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "What is the capital of France?",
+                        "stream": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            assert "text/event-stream" not in resp.headers.get("Content-Type", "")
+            data = await resp.json()
+            assert data["object"] == "response"
+            assert data["output"][0]["content"][0]["text"] == mock_result["final_response"]
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):

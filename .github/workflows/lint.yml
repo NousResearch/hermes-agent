@@ -24,7 +24,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # needed to post/update PR comments
+  checks: write
+  pull-requests: write # needed to post/update PR comments and checks
 
 concurrency:
   group: lint-${{ github.ref }}

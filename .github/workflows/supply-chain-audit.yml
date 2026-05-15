@@ -13,8 +13,9 @@ on:
       - '**/__init__.pth'
 
 permissions:
-  pull-requests: write
   contents: read
+  checks: write
+  pull-requests: write
 
 # Narrow, high-signal scanner. Only fires on critical indicators of supply
 # chain attacks (e.g. the litellm-style payloads). Low-signal heuristics

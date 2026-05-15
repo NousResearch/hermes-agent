@@ -59,6 +59,8 @@ on:
 
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
 
 concurrency:
   group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}

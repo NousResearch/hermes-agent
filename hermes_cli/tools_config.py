@@ -194,11 +194,10 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "xAI TTS",
-                "tag": "Grok voices - requires xAI API key",
-                "env_vars": [
-                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
-                ],
+                "tag": "Grok voices — uses xAI Grok OAuth or XAI_API_KEY",
+                "env_vars": [],
                 "tts_provider": "xai",
+                "post_setup": "xai_grok",
             },
             {
                 "name": "ElevenLabs",
@@ -925,6 +924,73 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    Restart Hermes for tracing to take effect.")
         _print_info("    Verify: hermes plugins list")
 
+    elif post_setup_key == "xai_grok":
+        # Shared credential bootstrap for any picker entry that talks to xAI
+        # (TTS, Video Gen, future Image Gen, etc.). Accepts either a
+        # SuperGrok-tier OAuth bearer token (preferred — billed against the
+        # user's existing subscription) or a raw XAI_API_KEY from
+        # console.x.ai. The picker entries declare empty env_vars so we
+        # drive the full auth UX here.
+        try:
+            from hermes_cli.auth import get_xai_oauth_auth_status
+            oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
+        except Exception:
+            oauth_logged_in = False
+        existing_api_key = get_env_value("XAI_API_KEY")
+
+        if oauth_logged_in:
+            _print_success(
+                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+            )
+            return
+        if existing_api_key:
+            _print_success("    xAI will use your existing XAI_API_KEY")
+            return
+
+        _print_info("    xAI needs credentials. Choose one:")
+        try:
+            from hermes_cli.setup import (
+                _run_xai_oauth_login_from_setup,
+                prompt_choice,
+                prompt as _setup_prompt,
+            )
+            from hermes_cli.config import save_env_value
+        except Exception as exc:
+            _print_warning(f"    Could not load setup helpers: {exc}")
+            _print_info("    Run later: hermes auth add xai-oauth   (or set XAI_API_KEY)")
+            return
+
+        idx = prompt_choice(
+            "    How do you want xAI to authenticate?",
+            choices=[
+                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Paste an xAI API key (console.x.ai)",
+                "Skip — configure later via `hermes auth add xai-oauth`",
+            ],
+            default=0,
+        )
+        if idx == 0:
+            if _run_xai_oauth_login_from_setup():
+                _print_success(
+                    "    Logged in — xAI will use these OAuth credentials"
+                )
+            else:
+                _print_warning(
+                    "    xAI Grok OAuth login did not complete. "
+                    "Run later: hermes auth add xai-oauth"
+                )
+        elif idx == 1:
+            api_key = _setup_prompt("    xAI API key", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                _print_success("    XAI_API_KEY saved")
+            else:
+                _print_warning(
+                    "    No API key provided. Run later: hermes auth add xai-oauth"
+                )
+        else:
+            _print_info("    xAI will remain inactive until credentials are configured.")
+
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
@@ -1439,15 +1505,16 @@ def _plugin_image_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "image_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "image_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1476,15 +1543,16 @@ def _plugin_video_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "video_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "video_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1747,6 +1815,11 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if plugin_name:
         image_cfg = config.get("image_gen", {})
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
+    video_plugin_name = provider.get("video_gen_plugin_name")
+    if video_plugin_name:
+        video_cfg = config.get("video_gen", {})
+        return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:

@@ -194,6 +194,20 @@ class TestCronTestRun:
         monkeypatch.setattr(cron_mod, "save_job_output", lambda jid, out: "/tmp/x.md")
         cron_mod.cron_test_run(job["id"])
 
+    def test_missing_job_returns_nonzero_without_running_or_saving(self, tmp_cron_dir, monkeypatch, capsys):
+        def should_not_run(*args, **kwargs):
+            raise AssertionError("missing job must not run or save output")
+
+        monkeypatch.setattr(cron_mod, "run_job", should_not_run)
+        monkeypatch.setattr(cron_mod, "save_job_output", should_not_run)
+
+        rc = cron_mod.cron_test_run("missing-job-id")
+        out = capsys.readouterr().out
+
+        assert rc != 0
+        assert "Job not found" in out
+        assert "missing-job-id" in out
+
     def test_success_stdout_includes_evidence(self, tmp_cron_dir, monkeypatch, capsys):
         """Success path stdout must contain job id, success status, output path, and output length."""
         job = create_job(prompt="check", schedule="every 1h")

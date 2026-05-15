@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   sync:
@@ -50,14 +49,4 @@ jobs:
             git merge --abort
           fi
 
-      - name: Report conflict
-        if: failure() || steps.check.outputs.conflict == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '⚠️ Auto-sync conflict — upstream merge into feat',
-              body: 'Merge conflict when syncing upstream/main into feat/tui-i18n-localization.\n\n```bash\ngit checkout feat/tui-i18n-localization\ngit fetch upstream main\ngit merge upstream/main\n# resolve conflicts, then push\n```'
-            });
+# 冲突时 Actions 自动发邮件，无需多余操作

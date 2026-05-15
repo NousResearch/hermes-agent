@@ -1766,14 +1766,31 @@ def _cprint(text: str):
     prompt.  Route those cases through ``run_in_terminal`` via
     ``loop.call_soon_threadsafe``, which pauses the input area, prints
     the line above it, and redraws the prompt cleanly.
+
+    On Windows, detached subprocesses (kanban workers, cron jobs, systemd
+    services) have no console screen buffer, which causes prompt_toolkit's
+    ``Win32Output`` to raise ``NoConsoleScreenBufferError``.  Fall back to
+    plain ``print()`` in that case so the message still reaches the log.
     """
     _record_output_history(text)
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            print(text)
         return
+
+    def _safe_pt_print(formatted_text):
+        try:
+            _pt_print(formatted_text)
+        except Exception:
+            try:
+                print(text)
+            except Exception:
+                pass
 
     app = None
     try:
@@ -1785,7 +1802,7 @@ def _cprint(text: str):
     # direct prompt_toolkit print is safe and matches existing behavior
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(_PT_ANSI(text))
         return
 
     try:
@@ -1793,7 +1810,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(_PT_ANSI(text))
         return
 
     import asyncio as _asyncio
@@ -1809,7 +1826,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _safe_pt_print(_PT_ANSI(text))
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -1820,18 +1837,12 @@ def _cprint(text: str):
         try:
             run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
         except Exception:
-            try:
-                _pt_print(_PT_ANSI(text))
-            except Exception:
-                pass
+            _safe_pt_print(_PT_ANSI(text))
 
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            pass
+        _safe_pt_print(_PT_ANSI(text))
 
 
 # ---------------------------------------------------------------------------

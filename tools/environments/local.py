@@ -54,6 +54,10 @@ def _resolve_safe_cwd(cwd: str) -> str:
     (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
     raises ``FileNotFoundError`` before bash starts, wedging every subsequent
     terminal call until the gateway restarts.
+
+    On Windows, Git Bash ``pwd`` returns paths like ``/c/Users/...`` which
+    ``os.path.isdir`` cannot resolve.  Convert to native form before the
+    existence check so the fallback isn't triggered spuriously.
     """
     cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
     if cwd and os.path.isdir(cwd):
@@ -64,8 +68,6 @@ def _resolve_safe_cwd(cwd: str) -> str:
             return parent
         next_parent = os.path.dirname(parent)
         if next_parent == parent:
-            # Reached the filesystem root and it doesn't exist either —
-            # genuinely nothing to fall back to except the temp dir.
             break
         parent = next_parent
     return tempfile.gettempdir()

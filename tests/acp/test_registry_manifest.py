@@ -39,36 +39,30 @@ def test_agent_json_matches_official_registry_required_fields():
     assert set(data["distribution"]) <= ALLOWED_DISTRIBUTIONS
 
 
-def test_agent_json_uses_npx_distribution_without_local_command_fields():
+def test_agent_json_uses_uvx_distribution_without_local_command_fields():
     data = _manifest()
 
-    assert set(data["distribution"]) == {"npx"}
-    assert set(data["distribution"]["npx"]) == {"package"}
-    assert data["distribution"]["npx"]["package"] == (
-        f"@nousresearch/hermes-agent-acp@{data['version']}"
-    )
+    assert set(data["distribution"]) == {"uvx"}
+    uvx = data["distribution"]["uvx"]
+    # Schema allows {package, args, env}; we use {package, args}.
+    assert set(uvx) <= {"package", "args", "env"}
+    assert "package" in uvx
+    assert uvx["package"] == f"hermes-agent[acp]=={data['version']}"
+    assert uvx["args"] == ["hermes-acp"]
+    # Old command-shape fields must not leak back in.
     assert "type" not in data["distribution"]
     assert "command" not in data["distribution"]
-    assert "args" not in data["distribution"]
 
 
 def test_agent_json_version_matches_pyproject():
     assert _manifest()["version"] == _pyproject_version()
 
 
-def test_npm_launcher_versions_match_pyproject_and_manifest():
-    version = _pyproject_version()
-    package = json.loads(
-        (ROOT / "packages" / "hermes-agent-acp" / "package.json").read_text(encoding="utf-8")
-    )
-    launcher = (ROOT / "packages" / "hermes-agent-acp" / "bin" / "hermes-agent-acp.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert package["version"] == version
-    assert f"const HERMES_AGENT_VERSION = '{version}';" in launcher
-    assert _manifest()["distribution"]["npx"]["package"] == (
-        f"@nousresearch/hermes-agent-acp@{version}"
+def test_agent_json_pins_uvx_package_to_pyproject_version():
+    """The registry CI rejects ``@latest`` and floating pins; the manifest must
+    always reference the exact PyPI version listed in pyproject.toml."""
+    assert _manifest()["distribution"]["uvx"]["package"] == (
+        f"hermes-agent[acp]=={_pyproject_version()}"
     )
 
 

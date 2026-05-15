@@ -16,7 +16,6 @@ import importlib
 import json
 import os
 import secrets
-import stat
 import sys
 import time
 from pathlib import Path
@@ -36,7 +35,7 @@ PENDING_AUTH_PATH = HERMES_HOME / "microsoft_graph_oauth_pending.json"
 DEFAULT_TENANT = "common"
 DEFAULT_REDIRECT_URI = "http://localhost:1"
 AUTHORITY_ROOT = "https://login.microsoftonline.com"
-SCOPES = ["offline_access", "openid", "profile", "User.Read", "Mail.Read"]
+SCOPES = ["offline_access", "User.Read", "Mail.Read"]
 REQUIRED_DELEGATED_SCOPES = ["User.Read", "Mail.Read"]
 
 try:
@@ -142,7 +141,6 @@ def configure_client(client_id: str, tenant: str | None = None, redirect_uri: st
         print("ERROR: Pass the public application client ID, not a client secret.")
         sys.exit(1)
 
-    CLIENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     _write_json(
         CLIENT_CONFIG_PATH,
         {
@@ -161,9 +159,6 @@ def _save_pending_auth(*, state: str, code_verifier: str, config: dict) -> None:
         {
             "state": state,
             "code_verifier": code_verifier,
-            # Snapshot the auth request fields so the token exchange later
-            # matches the authorize call exactly, even if the client config
-            # changes before the callback is pasted back in.
             "client_id": config["client_id"],
             "tenant": config["tenant"],
             "redirect_uri": config["redirect_uri"],
@@ -269,14 +264,20 @@ def _persist_token_response(response: dict, config: dict, previous: dict | None 
             pass
     payload["client_id"] = config["client_id"]
     payload["tenant"] = config["tenant"]
+    payload["redirect_uri"] = config["redirect_uri"]
     _write_json(TOKEN_PATH, payload)
     return payload
 
 
-def exchange_auth_code(auth_response: str) -> None:
+def exchange_auth_code(code: str) -> None:
     config = _load_client_config()
     pending = _load_pending_auth()
-    code, returned_state = _extract_code_and_state(auth_response)
+    effective_config = {
+        "client_id": pending.get("client_id") or config["client_id"],
+        "tenant": pending.get("tenant") or config["tenant"],
+        "redirect_uri": pending.get("redirect_uri") or config["redirect_uri"],
+    }
+    code, returned_state = _extract_code_and_state(code)
     if returned_state is None:
         print("ERROR: Paste the full Microsoft redirect URL so the OAuth state can be validated.")
         sys.exit(1)
@@ -285,12 +286,12 @@ def exchange_auth_code(auth_response: str) -> None:
         sys.exit(1)
 
     token_response = _request_token(
-        pending.get("tenant") or config["tenant"],
+        effective_config["tenant"],
         {
-            "client_id": pending.get("client_id") or config["client_id"],
+            "client_id": effective_config["client_id"],
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": pending.get("redirect_uri") or config["redirect_uri"],
+            "redirect_uri": effective_config["redirect_uri"],
             "code_verifier": pending["code_verifier"],
             "scope": _scope_param(),
         },
@@ -303,7 +304,7 @@ def exchange_auth_code(auth_response: str) -> None:
         print("Update the Entra app permissions or consent, then run --auth-url again.")
         sys.exit(1)
 
-    payload = _persist_token_response(token_response, config)
+    payload = _persist_token_response(token_response, effective_config)
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
     print(f"Profile-scoped token location: {display_hermes_home()}/microsoft_graph_token.json")
@@ -331,7 +332,12 @@ def refresh_token(*, emit_status: bool = True) -> bool:
     if missing:
         print("REFRESH_FAILED: refreshed token missing Mail.Read/User.Read. Run setup again.", file=sys.stderr)
         return False
-    _persist_token_response(token_response, config, previous=current)
+    persisted_config = {
+        "client_id": current.get("client_id") or config["client_id"],
+        "tenant": current.get("tenant") or config["tenant"],
+        "redirect_uri": current.get("redirect_uri") or config["redirect_uri"],
+    }
+    _persist_token_response(token_response, persisted_config, previous=current)
     if emit_status:
         print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
     return True

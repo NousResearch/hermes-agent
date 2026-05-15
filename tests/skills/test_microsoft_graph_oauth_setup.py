@@ -69,7 +69,7 @@ def test_get_auth_url_persists_state_and_pkce(auth_module, monkeypatch, capsys):
     assert params["state"] == ["saved-state"]
     assert params["code_challenge_method"] == ["S256"]
     assert params["code_challenge"] == [auth_module._code_challenge("saved-verifier")]
-    assert "Mail.Read" in params["scope"][0]
+    assert params["scope"] == ["offline_access User.Read Mail.Read"]
 
     pending = json.loads(auth_module.PENDING_AUTH_PATH.read_text())
     assert pending["state"] == "saved-state"
@@ -92,7 +92,7 @@ def test_exchange_auth_code_reuses_pending_pkce_without_secret(auth_module, monk
             "access_token": "access-token",
             "refresh_token": "refresh-token",
             "expires_in": 3600,
-            "scope": "Mail.Read User.Read openid profile",
+            "scope": "Mail.Read User.Read",
         }
 
     monkeypatch.setattr(auth_module, "_request_token", fake_request_token)
@@ -103,6 +103,7 @@ def test_exchange_auth_code_reuses_pending_pkce_without_secret(auth_module, monk
     assert captured["data"]["grant_type"] == "authorization_code"
     assert captured["data"]["code"] == "auth-code"
     assert captured["data"]["code_verifier"] == "saved-verifier"
+    assert captured["data"]["client_id"] == "client-id"
     assert "client_secret" not in captured["data"]
 
     saved = json.loads(auth_module.TOKEN_PATH.read_text())
@@ -110,6 +111,7 @@ def test_exchange_auth_code_reuses_pending_pkce_without_secret(auth_module, monk
     assert saved["refresh_token"] == "refresh-token"
     assert saved["client_id"] == "client-id"
     assert saved["tenant"] == "tenant-id"
+    assert saved["redirect_uri"] == "http://localhost:1"
     assert saved["expires_at"] > 0
     assert not auth_module.PENDING_AUTH_PATH.exists()
 
@@ -152,7 +154,7 @@ def test_exchange_auth_code_rejects_missing_mail_scope(auth_module, monkeypatch,
             "access_token": "access-token",
             "refresh_token": "refresh-token",
             "expires_in": 3600,
-            "scope": "User.Read openid profile",
+            "scope": "User.Read",
         },
     )
 
@@ -210,7 +212,7 @@ def test_exchange_auth_code_writes_token_with_owner_only_permissions(auth_module
             "access_token": "access-token",
             "refresh_token": "refresh-token",
             "expires_in": 3600,
-            "scope": "Mail.Read User.Read openid profile",
+            "scope": "Mail.Read User.Read",
         },
     )
 
@@ -282,7 +284,7 @@ def test_exchange_auth_code_uses_client_id_from_pending_auth(auth_module, monkey
             "access_token": "access-token",
             "refresh_token": "refresh-token",
             "expires_in": 3600,
-            "scope": "Mail.Read User.Read openid profile",
+            "scope": "Mail.Read User.Read",
         }
 
     monkeypatch.setattr(auth_module, "_request_token", fake_request_token)
@@ -291,6 +293,11 @@ def test_exchange_auth_code_uses_client_id_from_pending_auth(auth_module, monkey
 
     assert captured["tenant"] == "original-tenant"
     assert captured["data"]["client_id"] == "original-client-id"
+
+    saved = json.loads(auth_module.TOKEN_PATH.read_text())
+    assert saved["client_id"] == "original-client-id"
+    assert saved["tenant"] == "original-tenant"
+    assert saved["redirect_uri"] == "http://localhost:1"
 
 
 def test_refresh_token_uses_stored_client_id(auth_module, monkeypatch):

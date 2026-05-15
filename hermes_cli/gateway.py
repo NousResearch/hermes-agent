@@ -3005,9 +3005,16 @@ def launchd_restart():
             except (ProcessLookupError, PermissionError, OSError):
                 pid = None
             if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+                # CLI deadline must exceed the gateway-side drain budget by enough
+                # to cover the cleanup tail (adapter disconnect, SessionDB close,
+                # atexit handlers — ~5–15s observed).  If we use drain_timeout
+                # exactly, every drain that runs close to its budget loses the
+                # race and falls through to launchctl kickstart -k mid-cleanup,
+                # leaving sessions falsely marked as auto-resumable. (#25966)
+                cli_deadline = drain_timeout + 15.0
+                exited = _wait_for_gateway_exit(timeout=cli_deadline, force_after=None)
                 if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+                    print(f"⚠ Gateway PID still running after {cli_deadline:.0f}s — forcing launchd restart (SIGKILL)")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:

@@ -239,11 +239,15 @@ jobs:
       # commit gets its own immutable tag); releases use the release tag name.
       - name: Compute tag
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "release" ]; then
+            printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            printf 'tag=sha-%s\n' "$GITHUB_SHA_VALUE" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create manifest list and push

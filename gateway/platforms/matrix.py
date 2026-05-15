@@ -358,6 +358,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._processed_events: deque = deque(maxlen=1000)
         self._processed_events_set: set = set()
+        self._message_text_cache: Dict[str, str] = {}
+        self._message_text_cache_order: deque = deque()
+        self._message_text_cache_limit = 1000
 
         # Buffer for undecrypted events pending key receipt.
         # Each entry: (room_id, event, timestamp)
@@ -456,6 +459,37 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    def _cache_message_text(self, event_id: str, text: str) -> None:
+        """Cache recent Matrix text by event ID for reply context."""
+        event_id = str(event_id or "")
+        text = str(text or "").strip()
+        if not event_id or not text:
+            return
+        if event_id not in self._message_text_cache:
+            self._message_text_cache_order.append(event_id)
+        self._message_text_cache[event_id] = text
+
+        while len(self._message_text_cache_order) > self._message_text_cache_limit:
+            evicted = self._message_text_cache_order.popleft()
+            self._message_text_cache.pop(evicted, None)
+
+    @staticmethod
+    def _reply_to_event_id(relates_to: dict) -> Optional[str]:
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        if isinstance(in_reply_to, dict):
+            reply_to = in_reply_to.get("event_id")
+            if reply_to:
+                return str(reply_to)
+        return None
+
+    def _reply_to_text_for(self, reply_to: Optional[str]) -> Optional[str]:
+        if not reply_to:
+            return None
+        return (
+            self._message_text_cache.get(str(reply_to))
+            or "reply message text unavailable"
+        )
 
     # ------------------------------------------------------------------
     # E2EE helpers
@@ -970,6 +1004,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=45,
                 )
                 last_event_id = str(event_id)
+                self._cache_message_text(last_event_id, chunk)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 # On E2EE errors, retry after sharing keys.
@@ -985,6 +1020,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             timeout=45,
                         )
                         last_event_id = str(event_id)
+                        self._cache_message_text(last_event_id, chunk)
                         logger.info(
                             "Matrix: sent event %s to %s (after key share)",
                             last_event_id,
@@ -1699,10 +1735,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
         # Reply-to detection.
-        reply_to = None
-        in_reply_to = relates_to.get("m.in_reply_to", {})
-        if in_reply_to:
-            reply_to = in_reply_to.get("event_id")
+        reply_to = self._reply_to_event_id(relates_to)
 
         # Strip reply fallback from body.
         if reply_to and body.startswith("> "):
@@ -1720,6 +1753,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
 
+        reply_to_text = self._reply_to_text_for(reply_to)
+        self._cache_message_text(event_id, body)
+
         msg_type = MessageType.TEXT
         if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND
@@ -1731,6 +1767,7 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -1897,6 +1934,9 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
+        reply_to = self._reply_to_event_id(relates_to)
+        reply_to_text = self._reply_to_text_for(reply_to)
+
         allow_http_fallback = bool(http_url) and not is_encrypted_media
         media_urls = (
             [cached_path]
@@ -1911,6 +1951,8 @@ class MatrixAdapter(BasePlatformAdapter):
             source=source,
             raw_message=source_content,
             message_id=event_id,
+            reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
             media_urls=media_urls,
             media_types=media_types,
         )

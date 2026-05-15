@@ -424,6 +424,22 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
+    # Local embedded Hindsight is spawned as a standalone daemon, so environment-only
+    # Hindsight API controls must be materialized into the profile env file. This is
+    # load-bearing for local Ollama stability: Hindsight's package defaults are
+    # cloud-style concurrent, while a local Ollama memory model should usually be
+    # single-lane with a small queue and observations disabled.
+    daemon_env = config.get("daemon_env") or config.get("hindsight_daemon_env") or {}
+    if isinstance(daemon_env, dict):
+        for key, value in daemon_env.items():
+            key_str = str(key).strip()
+            if not key_str.startswith("HINDSIGHT_API_") and not key_str.startswith("HINDSIGHT_EMBED_"):
+                logger.warning("Ignoring unsupported Hindsight daemon env key: %s", key_str)
+                continue
+            if value is None:
+                continue
+            env_values[key_str] = str(value)
+
     idle_timeout = (
         config.get("idle_timeout")
         if config.get("idle_timeout") is not None

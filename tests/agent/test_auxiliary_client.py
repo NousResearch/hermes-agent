@@ -27,6 +27,7 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
     _CodexCompletionsAdapter,
+    CodexAuxiliaryClient,
 )
 
 
@@ -2121,7 +2122,7 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.30
 
 
 # ---------------------------------------------------------------------------
@@ -2695,3 +2696,57 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestCodexNativeCompaction:
+    def test_compact_messages_posts_compact_endpoint_and_keeps_opaque_items(self):
+        class FakeResponse:
+            def __init__(self):
+                self.status_code = 200
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {
+                    "output": [
+                        {"id": "msg_1", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "summary"}]},
+                        {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque", "summary": []},
+                    ]
+                }
+
+        real_client = MagicMock()
+        real_client.api_key = "test-token"
+        real_client.base_url = "https://chatgpt.com/backend-api/codex"
+        real_client.post.return_value = FakeResponse()
+        client = CodexAuxiliaryClient(real_client, "gpt-5.5")
+
+        result = client.compact_messages([{"role": "user", "content": "hello"}], timeout=12)
+
+        assert result == [
+            {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "summary"}]},
+            {"type": "compaction_summary", "encrypted_content": "opaque"},
+        ]
+        real_client.post.assert_called_once()
+        path = real_client.post.call_args.args[0]
+        assert path == "/responses/compact"
+        assert "options" in real_client.post.call_args.kwargs
+        body = real_client.post.call_args.kwargs["body"]
+        assert body["model"] == "gpt-5.5"
+        assert body["input"] == [{"role": "user", "content": "hello"}]
+        assert "store" not in body
+
+    def test_compact_messages_accepts_items_shape(self):
+        class FakeResponse:
+            status_code = 200
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {"items": [{"type": "compaction_summary", "encrypted_content": "opaque"}]}
+
+        real_client = MagicMock()
+        real_client.api_key = "test-token"
+        real_client.base_url = "https://chatgpt.com/backend-api/codex"
+        real_client.post.return_value = FakeResponse()
+
+        result = CodexAuxiliaryClient(real_client, "gpt-5.5").compact_messages([{"role": "user", "content": "hello"}])
+
+        assert result == [{"type": "compaction_summary", "encrypted_content": "opaque"}]

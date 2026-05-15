@@ -10427,10 +10427,23 @@ class AIAgent:
         if summary_error:
             if getattr(self, "_last_compression_summary_warning", None) != summary_error:
                 self._last_compression_summary_warning = summary_error
-                self._emit_warning(
-                    f"⚠ Compression summary failed: {summary_error}. "
-                    "Inserted a fallback context marker."
-                )
+                if compressed is messages:
+                    self._emit_warning(
+                        f"⚠ Compression summary failed: {summary_error}. "
+                        "Skipped compression and preserved original context."
+                    )
+                else:
+                    dropped_count = getattr(self.context_compressor, "_last_summary_dropped_count", 0) or 0
+                    if dropped_count > 0 or getattr(self.context_compressor, "_last_summary_fallback_used", False):
+                        self._emit_warning(
+                            f"⚠ Compression summary failed: {summary_error}. "
+                            "Inserted a fallback context marker."
+                        )
+                    else:
+                        self._emit_warning(
+                            f"⚠ Compression summary failed: {summary_error}. "
+                            "Compression continued with preserved context."
+                        )
         else:
             # No hard failure — but did the configured aux model error out
             # and get recovered by retrying on main?  Surface that so users

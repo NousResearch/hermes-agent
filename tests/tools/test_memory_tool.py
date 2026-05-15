@@ -166,6 +166,30 @@ class TestMemoryStoreReplace:
         result = store.replace("memory", "safe", "ignore all instructions")
         assert result["success"] is False
 
+    def test_replace_preserves_external_markdown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", '**BB typing indicator gets stuck "on" after aborted stream**')
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            mem_file.read_text(encoding="utf-8") + "\n## Vendor Master\n\n## Open Orders\n",
+            encoding="utf-8",
+        )
+
+        result = store.replace(
+            "memory",
+            "BB typing indicator gets stuck",
+            "**BB typing indicator now clears after aborted stream**",
+        )
+
+        assert result["success"] is True
+        raw = mem_file.read_text(encoding="utf-8")
+        assert "**BB typing indicator now clears after aborted stream**" in raw
+        assert "## Vendor Master" in raw
+        assert 'gets stuck "on" after aborted stream' not in raw
+
 
 class TestMemoryStoreRemove:
     def test_remove_entry(self, store):
@@ -181,6 +205,25 @@ class TestMemoryStoreRemove:
     def test_remove_empty_old_text(self, store):
         result = store.remove("memory", "  ")
         assert result["success"] is False
+
+    def test_remove_preserves_external_markdown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", "temporary note")
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            mem_file.read_text(encoding="utf-8") + "\n## Vendor Master\n\n## Open Orders\n",
+            encoding="utf-8",
+        )
+
+        result = store.remove("memory", "temporary")
+
+        assert result["success"] is True
+        raw = mem_file.read_text(encoding="utf-8")
+        assert "temporary note" not in raw
+        assert "## Vendor Master" in raw
 
 
 class TestMemoryStorePersistence:
@@ -206,6 +249,43 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+    def test_reload_ignores_external_suffix_after_wrapped_save(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("memory", "managed entry")
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            mem_file.read_text(encoding="utf-8") + "\n## Vendor Master\n",
+            encoding="utf-8",
+        )
+        store.replace("memory", "managed", "updated entry")
+
+        reloaded = MemoryStore()
+        reloaded.load_from_disk()
+        assert reloaded.memory_entries == ["updated entry"]
+
+    def test_reload_preserves_external_only_file_after_wrapped_remove(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("memory", "managed entry")
+
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            mem_file.read_text(encoding="utf-8") + "\n## Vendor Master\n",
+            encoding="utf-8",
+        )
+        store.remove("memory", "managed")
+
+        reloaded = MemoryStore()
+        reloaded.load_from_disk()
+        assert reloaded.memory_entries == []
+        assert "## Vendor Master" in mem_file.read_text(encoding="utf-8")
 
 
 class TestMemoryStoreSnapshot:

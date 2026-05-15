@@ -57,6 +57,8 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+MANAGED_BLOCK_START = "<!-- HERMES_MEMORY_MANAGED_START -->"
+MANAGED_BLOCK_END = "<!-- HERMES_MEMORY_MANAGED_END -->"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +122,10 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._file_layouts: Dict[str, Dict[str, Any]] = {
+            "memory": {"prefix": "", "suffix": "", "wrapped": False},
+            "user": {"prefix": "", "suffix": "", "wrapped": False},
+        }
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -128,8 +134,8 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.memory_entries, self._file_layouts["memory"] = self._read_target_state(mem_dir / "MEMORY.md")
+        self.user_entries, self._file_layouts["user"] = self._read_target_state(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -190,14 +196,24 @@ class MemoryStore:
 
         Called under file lock to get the latest state before mutating.
         """
-        fresh = self._read_file(self._path_for(target))
+        previous_entries = self._entries_for(target)
+        fresh, self._file_layouts[target] = self._read_target_state(
+            self._path_for(target), previous_entries=previous_entries
+        )
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        layout = self._file_layouts[target]
+        content = self._render_file_content(
+            self._entries_for(target),
+            prefix=layout["prefix"],
+            suffix=layout["suffix"],
+            wrapped=layout["wrapped"],
+        )
+        self._write_raw_file(self._path_for(target), content)
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -409,37 +425,93 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
-
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
-        """
-        if not path.exists():
-            return []
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
-            return []
-
-        if not raw.strip():
-            return []
-
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
+    def _split_entries(raw: str) -> List[str]:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
+    @classmethod
+    def _read_target_state(
+        cls, path: Path, previous_entries: Optional[List[str]] = None
+    ) -> tuple[List[str], Dict[str, Any]]:
+        """Read managed entries plus any preserved external content."""
+        empty_layout = {"prefix": "", "suffix": "", "wrapped": False}
+
+        if not path.exists():
+            return [], empty_layout
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return [], empty_layout
+
+        if not raw.strip():
+            return [], empty_layout
+
+        start_idx = raw.find(MANAGED_BLOCK_START)
+        end_idx = raw.find(MANAGED_BLOCK_END)
+        if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+            prefix = raw[:start_idx]
+            managed_raw = raw[start_idx + len(MANAGED_BLOCK_START):end_idx]
+            if managed_raw.startswith("\n"):
+                managed_raw = managed_raw[1:]
+            if managed_raw.endswith("\n"):
+                managed_raw = managed_raw[:-1]
+            suffix = raw[end_idx + len(MANAGED_BLOCK_END):]
+            return (
+                cls._split_entries(managed_raw) if managed_raw else [],
+                {"prefix": prefix, "suffix": suffix, "wrapped": True},
+            )
+
+        if previous_entries:
+            managed_raw = ENTRY_DELIMITER.join(previous_entries)
+            if managed_raw and raw.count(managed_raw) == 1:
+                start_idx = raw.find(managed_raw)
+                prefix = raw[:start_idx]
+                suffix = raw[start_idx + len(managed_raw):]
+                return (
+                    previous_entries.copy(),
+                    {"prefix": prefix, "suffix": suffix, "wrapped": bool(prefix or suffix)},
+                )
+
+        return cls._split_entries(raw), empty_layout.copy()
+
+    @classmethod
+    def _read_file(cls, path: Path) -> List[str]:
+        """Read the managed entries from a memory file."""
+        entries, _layout = cls._read_target_state(path)
+        return entries
+
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
+        """Write a plain managed-entry file without preserved external content."""
+        content = ENTRY_DELIMITER.join(entries) if entries else ""
+        MemoryStore._write_raw_file(path, content)
+
+    @staticmethod
+    def _render_file_content(entries: List[str], prefix: str, suffix: str, wrapped: bool) -> str:
+        managed = ENTRY_DELIMITER.join(entries) if entries else ""
+        if wrapped or prefix or suffix:
+            parts = [prefix]
+            if prefix and not prefix.endswith("\n"):
+                parts.append("\n")
+            parts.extend([MANAGED_BLOCK_START, "\n"])
+            if managed:
+                parts.extend([managed, "\n"])
+            parts.append(MANAGED_BLOCK_END)
+            if suffix and not suffix.startswith("\n"):
+                parts.append("\n")
+            parts.append(suffix)
+            return "".join(parts)
+        return managed
+
+    @staticmethod
+    def _write_raw_file(path: Path, content: str):
+        """Write file content using atomic temp-file + rename.
 
         Previous implementation used open("w") + flock, but "w" truncates the
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
         """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
@@ -580,7 +652,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

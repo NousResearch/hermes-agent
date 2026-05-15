@@ -1793,6 +1793,8 @@ def _sanitize_kanban_event_payload(kind: str, payload: Optional[dict]) -> dict[s
         "verified_cards",
         "phantom_cards",
         "phantom_refs",
+        "metadata_keys",
+        "pid_present",
         "result_len",
         "len",
         "comment_id",
@@ -1831,7 +1833,14 @@ def _sanitize_kanban_event_payload(kind: str, payload: Optional[dict]) -> dict[s
         elif key in passthrough:
             sanitized[key] = _bounded_jsonish(value)
         else:
-            sanitized[key] = _bounded_jsonish(value)
+            # Fail closed for future payload keys: don't leak arbitrary text or
+            # object reprs just because a new producer forgot to classify the
+            # field for the lifecycle wire schema.
+            sanitized[f"{key}_present"] = value is not None
+            if isinstance(value, str):
+                sanitized[f"{key}_len"] = len(value)
+            elif isinstance(value, (dict, list, tuple, set)):
+                sanitized[f"{key}_count"] = len(value)
 
     if kind in {"timed_out", "crashed", "spawn_failed", "gave_up", "protocol_violation"}:
         sanitized.setdefault("outcome", kind)

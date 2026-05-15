@@ -161,6 +161,13 @@ def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_even
         kb.add_comment(conn, tid, "human", big_comment)
         assert kb.block_task(conn, tid, reason="waiting on reviewer " + "r" * 1000)
         assert kb.complete_task(conn, tid, summary="summary-secret " + "s" * 1000, result=big_result, metadata=metadata)
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                tid,
+                "commented",
+                {"author": "human", "len": 7, "new_future_field": "future-secret"},
+            )
 
     serialized = "\n".join(json.dumps(event, sort_keys=True) for event in captured_events)
     assert "body-secret" not in serialized
@@ -168,6 +175,7 @@ def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_even
     assert "result-secret" not in serialized
     assert "metadata-secret" not in serialized
     assert "summary-secret" not in serialized
+    assert "future-secret" not in serialized
     assert "token" in serialized  # metadata keys are useful; values are not.
     for event in captured_events:
         assert len(json.dumps(event)) < 4096
@@ -182,6 +190,10 @@ def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_even
     assert "summary_preview" not in completed["payload"]
     assert completed["payload"]["result_len"] == len(big_result)
     assert completed["payload"]["metadata_keys"] == ["count", "token"]
+    future = [e for e in captured_events if e["event_type"] == "kanban.comment_added"][-1]
+    assert future["payload"]["new_future_field_present"] is True
+    assert future["payload"]["new_future_field_len"] == len("future-secret")
+    assert "new_future_field" not in future["payload"]
 
 
 def test_assignment_dependency_and_run_events_include_core_ids(

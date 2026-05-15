@@ -1522,14 +1522,18 @@ def cmd_whatsapp(args):
         )
         print(f"\n✓ Mode: {mode_label}")
 
-    # ── Step 2: Enable WhatsApp ──────────────────────────────────────────
+    # ── Step 2: Mode is selected, will enable WhatsApp only after pairing ──
+    # We intentionally don't write WHATSAPP_ENABLED=true here.  If the user
+    # aborts the wizard later (Ctrl+C, failed npm install, missed QR scan),
+    # we'd otherwise leave .env claiming WhatsApp is ready when the bridge
+    # has no creds.json.  Every subsequent `hermes gateway` then paid a 30s
+    # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
+    # Now: aborted setup leaves WHATSAPP_ENABLED unset → gateway skips it.
+    # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
+    # successful pairing) stay enabled — we just don't write it pre-emptively.
     print()
-    current = get_env_value("WHATSAPP_ENABLED")
-    if current and current.lower() == "true":
+    if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
         print("✓ WhatsApp is already enabled")
-    else:
-        save_env_value("WHATSAPP_ENABLED", "true")
-        print("✓ WhatsApp enabled")
 
     # ── Step 3: Allowed users ────────────────────────────────────────────
     current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
@@ -1619,6 +1623,12 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
+            # Existing pairing — ensure WHATSAPP_ENABLED reflects that.
+            # (Older installs may have lost the env var; covers re-runs
+            # where the user picked "no, keep my session" but the var
+            # was never set or got removed.)
+            if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
+                save_env_value("WHATSAPP_ENABLED", "true")
             print("\n✓ WhatsApp is configured and paired!")
             print("  Start the gateway with: hermes gateway")
             return
@@ -1647,6 +1657,11 @@ def cmd_whatsapp(args):
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
     if (session_dir / "creds.json").exists():
+        # Only enable WhatsApp now that pairing actually succeeded.  If the
+        # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
+        # and `hermes gateway` skips it cleanly instead of paying a 30s
+        # bridge timeout + queueing the platform for indefinite retries.
+        save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp paired successfully!")
         print()
         if wa_mode == "bot":

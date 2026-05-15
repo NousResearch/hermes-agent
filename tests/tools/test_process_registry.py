@@ -865,3 +865,57 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# env_ref weakref (#8041)
+# ---------------------------------------------------------------------------
+
+class TestEnvRefWeakref:
+    """Verify env_ref uses weakref and allows GC of environment objects."""
+
+    def test_env_ref_is_weakref(self):
+        """ProcessSession.env_ref should be a weakref when set via spawn_in_env."""
+        import weakref
+
+        class DummyEnv:
+            def execute(self, cmd, timeout=5):
+                return {"output": ""}
+
+        env = DummyEnv()
+        session = ProcessSession(
+            id="proc_weakref_test",
+            command="echo test",
+            started_at=time.time(),
+            env_ref=weakref.ref(env),
+            pid_scope="sandbox",
+        )
+        # Dereferencing the weakref should return the original object
+        assert session.env_ref() is env
+
+        # After deleting the strong reference, weakref should return None
+        del env
+        assert session.env_ref() is None
+
+    def test_kill_handles_dead_weakref(self, registry):
+        """kill_process should handle case where env has been garbage collected."""
+        import weakref
+
+        env = MagicMock()
+        session = ProcessSession(
+            id="proc_dead_env",
+            command="echo test",
+            task_id="t1",
+            started_at=time.time(),
+            env_ref=weakref.ref(env),
+            pid=12345,
+            pid_scope="sandbox",
+        )
+        registry._running["proc_dead_env"] = session
+
+        # Drop the strong reference — env_ref() now returns None
+        del env
+
+        # kill should not crash when the environment is gone
+        result = registry.kill_process("proc_dead_env")
+        assert result is not None

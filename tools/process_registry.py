@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+import weakref
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -627,7 +628,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
-            env_ref=env,
+            env_ref=weakref.ref(env),
             pid_scope="sandbox",
         )
 
@@ -1085,7 +1086,9 @@ class ProcessRegistry:
                     session.process.kill()
             elif session.env_ref and session.pid:
                 # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                env = session.env_ref()
+                if env is not None:
+                    env.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
             elif session.detached and session.pid_scope == "host" and session.pid:
                 if not self._is_host_pid_alive(session.pid):
                     with session._lock:

@@ -157,6 +157,13 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
 
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
+
 ## Do NOT
 
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.

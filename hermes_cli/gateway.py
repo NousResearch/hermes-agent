@@ -2103,15 +2103,41 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
+    """Build PATH directory list for service units, excluding non-existent dirs."""
+    if project_root is None:
+        project_root = PROJECT_ROOT
+
+    candidates = []
+
+    venv_bin = project_root / "venv" / "bin"
+    if venv_bin.is_dir():
+        candidates.append(str(venv_bin))
+    elif sys.prefix != sys.base_prefix:
+        candidates.append(str(Path(sys.prefix) / "bin"))
+
+    node_bin = project_root / "node_modules" / ".bin"
+    if node_bin.is_dir():
+        candidates.append(str(node_bin))
+
+    hermes_home = get_hermes_home()
+    hermes_node = hermes_home / "node" / "bin"
+    if hermes_node.is_dir():
+        candidates.append(str(hermes_node))
+    hermes_nm = hermes_home / "node_modules" / ".bin"
+    if hermes_nm.is_dir():
+        candidates.append(str(hermes_nm))
+
+    return candidates
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
-    path_entries = [venv_bin, node_bin]
+    path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -2138,8 +2164,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         python_path = _remap_path_for_user(python_path, home_dir)
         working_dir = _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
-        venv_bin = _remap_path_for_user(venv_bin, home_dir)
-        node_bin = _remap_path_for_user(node_bin, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2754,12 +2778,10 @@ def generate_launchd_plist() -> str:
     # the systemd unit), then capture the user's full shell PATH so every
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
-    priority_dirs = [venv_bin, node_bin]
+    priority_dirs = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)

@@ -9,6 +9,8 @@ required_credential_files:
     description: Microsoft Entra public-client app metadata for delegated Graph auth
   - path: microsoft_graph_token.json
     description: Microsoft Graph delegated OAuth token for this Hermes profile
+  - path: microsoft_graph_oauth_pending.json
+    description: Temporary OAuth state used between auth-url and auth-code setup steps
 metadata:
   hermes:
     tags: [Microsoft, Graph, Outlook, Email, Mail, OAuth]
@@ -68,7 +70,7 @@ $MSETUP --configure --client-id YOUR_CLIENT_ID --tenant YOUR_TENANT_ID
 If your app uses a redirect URI other than `http://localhost:1`:
 
 ```bash
-$MSETUP --configure --client-id YOUR_CLIENT_ID --tenant YOUR_TENANT_ID --redirect-uri http://localhost:1
+$MSETUP --configure --client-id YOUR_CLIENT_ID --tenant YOUR_TENANT_ID --redirect-uri https://login.example.com/callback
 ```
 
 ### Step 2: Get the authorization URL
@@ -81,7 +83,7 @@ Open the printed URL. The browser will likely fail after approval when it redire
 
 ### Step 3: Exchange the authorization code
 
-Paste the full redirected URL so Hermes can validate the OAuth state before exchanging the code:
+Paste the full redirected URL, or just the `code` value:
 
 ```bash
 $MSETUP --auth-code "http://localhost:1/?code=...&state=..."

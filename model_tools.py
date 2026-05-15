@@ -522,16 +522,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
-        expected = prop_schema.get("type")
+        expected = _schema_expected_type(prop_schema)
 
-        # Wrap bare non-list values when the schema declares ``array``.
-        # Strings still go through _coerce_value first so JSON-encoded
-        # arrays (``'["a","b"]'``) get parsed and nullable ``"null"``
-        # becomes ``None`` rather than ``["null"]``.
+        # Wrap bare non-list values when the schema declares ``array``
+        # (directly or via anyOf/oneOf union). Strings still go through
+        # _coerce_value first so JSON-encoded arrays get parsed and
+        # nullable "null" becomes None rather than ["null"].
         # ``None`` itself is preserved — we don't know whether the model
         # meant "omit" or "empty list", and tools with sensible defaults
         # (e.g. read_file's normalize_read_pagination) already handle it.
-        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+        if _expected_includes_type(expected, "array") and value is not None and not isinstance(value, (list, tuple)):
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
@@ -600,6 +600,69 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if expected_type == "null" and value.strip().lower() == "null":
         return None
     return value
+
+
+def _expected_includes_type(expected_type, schema_type: str) -> bool:
+    """Check whether *expected_type* matches or contains *schema_type*.
+
+    Handles both direct type strings (``"array"``) and union type lists
+    (``["array", "null"]``) so the array-wrapping path works for properties
+    declared via anyOf/oneOf as well as direct ``"type"`` keys.
+    """
+    if isinstance(expected_type, list):
+        return schema_type in expected_type
+    return expected_type == schema_type
+
+
+def _schema_expected_type(schema: dict | None):
+    """Return the expected type(s) from a JSON Schema property.
+
+    Resolution order:
+      1. Direct ``"type"`` key (string or list).
+      2. ``anyOf`` / ``oneOf`` union variants — collects unique types
+         from all variants, filtering out ``"null"`` (handled separately
+         by the nullable check in the coercion path).
+      3. ``allOf`` — returns the type from the first variant that has one.
+
+    Returns a single type string for a one-element union, a list of type
+    strings for multi-type unions, or ``None`` if no types could be derived.
+    """
+    if not isinstance(schema, dict):
+        return None
+
+    # 1. Direct type
+    schema_type = schema.get("type")
+    if schema_type:
+        return schema_type
+
+    # 2. anyOf / oneOf union
+    union_types: list[str] = []
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            t = variant.get("type")
+            if t and t != "null" and t not in union_types:
+                union_types.append(t)
+
+    if len(union_types) == 1:
+        return union_types[0]
+    if len(union_types) > 1:
+        return union_types
+
+    # 3. allOf
+    allof = schema.get("allOf")
+    if isinstance(allof, list):
+        for variant in allof:
+            if isinstance(variant, dict):
+                t = variant.get("type")
+                if t:
+                    return t
+
+    return None
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

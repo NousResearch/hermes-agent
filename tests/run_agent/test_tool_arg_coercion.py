@@ -409,3 +409,205 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    # ── Union schema (anyOf/oneOf) type resolution ─────────────────────────
+
+    def test_schema_expected_type_direct(self):
+        """Direct type key is returned as-is."""
+        from model_tools import _schema_expected_type
+        assert _schema_expected_type({"type": "string"}) == "string"
+        assert _schema_expected_type({"type": "integer"}) == "integer"
+        assert _schema_expected_type({"type": "array"}) == "array"
+
+    def test_schema_expected_type_anyof_single(self):
+        """anyOf with one non-null variant returns a single type string."""
+        from model_tools import _schema_expected_type
+        result = _schema_expected_type({
+            "anyOf": [{"type": "integer"}, {"type": "null"}]
+        })
+        assert result == "integer"
+
+    def test_schema_expected_type_anyof_multi(self):
+        """anyOf with multiple non-null variants returns a list of types."""
+        from model_tools import _schema_expected_type
+        result = _schema_expected_type({
+            "anyOf": [{"type": "string"}, {"type": "array"}]
+        })
+        assert isinstance(result, list)
+        assert set(result) == {"string", "array"}
+
+    def test_schema_expected_type_oneof(self):
+        """oneOf union is handled identically to anyOf."""
+        from model_tools import _schema_expected_type
+        result = _schema_expected_type({
+            "oneOf": [{"type": "boolean"}, {"type": "null"}]
+        })
+        assert result == "boolean"
+
+    def test_schema_expected_type_allof(self):
+        """allOf falls back to the first variant with a type."""
+        from model_tools import _schema_expected_type
+        result = _schema_expected_type({
+            "allOf": [{"type": "string"}]
+        })
+        assert result == "string"
+
+    def test_schema_expected_type_none_for_empty(self):
+        """None/invalid schema returns None."""
+        from model_tools import _schema_expected_type
+        assert _schema_expected_type(None) is None
+        assert _schema_expected_type({}) is None
+        assert _schema_expected_type("not a dict") is None
+
+    def test_expected_includes_type_direct(self):
+        """Direct type match."""
+        from model_tools import _expected_includes_type
+        assert _expected_includes_type("array", "array") is True
+        assert _expected_includes_type("string", "array") is False
+
+    def test_expected_includes_type_list(self):
+        """Union type list containing the target type."""
+        from model_tools import _expected_includes_type
+        assert _expected_includes_type(["array", "null"], "array") is True
+        assert _expected_includes_type(["string", "null"], "array") is False
+
+    # ── Union schema coercion integration ──────────────────────────────────
+
+    def test_coerces_integer_arg_with_anyof_union_schema(self):
+        """String arg coerced to integer when property uses anyOf with integer variant."""
+        schema = self._mock_schema({
+            "limit": {
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"limit": "42"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["limit"] == 42
+            assert isinstance(result["limit"], int)
+
+    def test_coerces_string_arg_with_oneof_union_schema(self):
+        """String arg passes through when property uses oneOf with string variant."""
+        schema = self._mock_schema({
+            "name": {
+                "oneOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"name": "hello"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["name"] == "hello"
+
+    def test_coerces_array_arg_with_anyof_union_schema(self):
+        """JSON array string parsed when property uses anyOf with array variant."""
+        schema = self._mock_schema({
+            "tags": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"tags": '["a", "b"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["tags"] == ["a", "b"]
+
+    def test_bare_string_wrapped_as_array_for_union_schema(self):
+        """Bare string wrapped in list when anyOf includes array + null."""
+        schema = self._mock_schema({
+            "urls": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"urls": "https://a.com"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["urls"] == ["https://a.com"]
+
+    def test_multitype_union_coercion_tries_each_type(self):
+        """Multi-type union (string | array): JSON array string parsed to list."""
+        schema = self._mock_schema({
+            "url": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            # JSON array string should be parsed into an actual list
+            args = {"url": '["https://example.com"]'}
+            result = coerce_tool_args("test_tool", args)
+            assert result["url"] == ["https://example.com"]
+
+    def test_multitype_union_bare_string_wrapped_as_array(self):
+        """Multi-type union (string | array): bare non-JSON string wrapped in list."""
+        schema = self._mock_schema({
+            "url": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            # Bare string that's not a JSON array gets wrapped in a list
+            # (array variant takes precedence in the union type list)
+            args = {"url": "https://example.com"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["url"] == ["https://example.com"]
+
+    def test_null_value_preserved_with_anyof_nullable(self):
+        """null literal is preserved when anyOf includes null variant."""
+        schema = self._mock_schema({
+            "limit": {
+                "anyOf": [
+                    {"type": "integer"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"limit": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["limit"] is None
+
+    def test_coerces_boolean_arg_with_anyof_union_schema(self):
+        """String 'true' coerced to boolean when anyOf includes boolean variant."""
+        schema = self._mock_schema({
+            "enabled": {
+                "anyOf": [
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"enabled": "true"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["enabled"] is True
+
+    def test_coerces_number_arg_with_oneof_union_schema(self):
+        """String number coerced when oneOf includes number variant."""
+        schema = self._mock_schema({
+            "threshold": {
+                "oneOf": [
+                    {"type": "number"},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"threshold": "3.14"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["threshold"] == 3.14

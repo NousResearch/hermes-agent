@@ -540,7 +540,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         results. Older Gemini does NOT.
 
     For unknown / legacy providers we conservatively return False — the
-    caller falls back to the legacy aux-LLM text path.
+    caller falls back to the legacy aux-LLM text path.  The check is relaxed
+    when the provider's ``ProviderProfile`` declares ``supports_vision=True``
+    or when ``get_model_capabilities`` reports vision support for the model.
     """
     if not isinstance(provider, str):
         return False
@@ -576,6 +578,27 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
             return True
         return False
+
+    # Check the provider's registered profile for the supports_vision flag.
+    # This covers vision-capable providers like xiaomi, minimax, etc. that
+    # aren't in the hardcoded list above.
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(p)
+        if profile is not None and profile.supports_vision:
+            return True
+    except Exception:
+        pass
+
+    # Check model capabilities from the models.dev catalog as a final
+    # fallback for custom providers whose models happen to be registered.
+    try:
+        from agent.models_dev import get_model_capabilities
+        caps = get_model_capabilities(provider, model)
+        if caps is not None and bool(getattr(caps, "supports_vision", False)):
+            return True
+    except Exception:
+        pass
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result

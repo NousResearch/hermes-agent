@@ -726,8 +726,8 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
-        or creds.get("base_url")
         or get_env_value("XAI_STT_BASE_URL")
+        or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(

@@ -3626,6 +3626,21 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    @staticmethod
+    def _requested_output_cap_from_api_kwargs(api_kwargs: Any) -> Optional[int]:
+        """Extract the outgoing response token cap from a prepared request."""
+        if not isinstance(api_kwargs, dict):
+            return None
+        for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+            raw = api_kwargs.get(key)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any reasoning/thinking blocks.
@@ -14534,9 +14549,16 @@ class AIAgent:
                 # Progressively boost the output token budget on each retry.
                 # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
                 # Applies to all providers via _ephemeral_max_output_tokens.
+                # If the original request already used a larger provider/model
+                # default budget, keep that floor so continuation retries do
+                # not accidentally downshift to a much smaller cap.
                 _boost_base = self.max_tokens if self.max_tokens else 4096
                 _boost = _boost_base * (length_continue_retries + 1)
-                self._ephemeral_max_output_tokens = min(_boost, 32768)
+                _requested_cap = self._requested_output_cap_from_api_kwargs(api_kwargs)
+                if _requested_cap is not None:
+                    _boost = max(_boost, _requested_cap)
+                _boost_cap = max(32768, _requested_cap or 0)
+                self._ephemeral_max_output_tokens = min(_boost, _boost_cap)
                 continue
 
             # Guard: if all retries exhausted without a successful response

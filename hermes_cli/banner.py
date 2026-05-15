@@ -190,11 +190,10 @@ def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
     """Fetch the latest version of a package from PyPI. Returns None on failure."""
     try:
         import urllib.request
-        import json as _json
         url = f"https://pypi.org/pypi/{package}/json"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as resp:
-            data = _json.loads(resp.read())
+            data = json.loads(resp.read())
             return data.get("info", {}).get("version")
     except Exception:
         return None

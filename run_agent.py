@@ -10711,6 +10711,17 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _hook_profile_name(self) -> str:
+        """Return the active profile name for plugin hook payloads."""
+        cached = getattr(self, "_hook_profile", "")
+        if cached:
+            return cached
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or ""
+        except Exception:
+            return os.getenv("HERMES_PROFILE_NAME") or os.getenv("HERMES_PROFILE") or ""
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10729,7 +10740,7 @@ class AIAgent:
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
-                    profile=_hook_profile,
+                    profile=self._hook_profile_name(),
                 )
             except Exception:
                 pass
@@ -10852,18 +10863,43 @@ class AIAgent:
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
-            # Reset nudge counters
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
-
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+
+            block_result = None
+            blocked_by_guardrail = False
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=effective_task_id or "",
+                    profile=self._hook_profile_name(),
+                )
+            except Exception:
+                block_message = None
+
+            if block_message is not None:
+                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+            else:
+                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    block_result = self._guardrail_block_result(guardrail_decision)
+                    blocked_by_guardrail = True
+
+            if block_result is not None:
+                parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
+                continue
+
+            # Reset nudge counters only when the relevant tool will run.
+            if function_name == "memory":
+                self._turns_since_memory = 0
+            elif function_name == "skill_manage":
+                self._iters_since_skill = 0
 
             # Checkpoint for file-mutating tools
             if function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
@@ -10886,27 +10922,6 @@ class AIAgent:
                         )
                 except Exception:
                     pass
-
-            block_result = None
-            blocked_by_guardrail = False
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name,
-                    function_args,
-                    task_id=effective_task_id or "",
-                    profile=_hook_profile,
-                )
-            except Exception:
-                block_message = None
-
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-            else:
-                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = self._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
 
             parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -11276,7 +11291,7 @@ class AIAgent:
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
-                    profile=_hook_profile,
+                    profile=self._hook_profile_name(),
                 )
             except Exception:
                 pass
@@ -11988,6 +12003,7 @@ class AIAgent:
             _hook_profile = get_active_profile_name() or ""
         except Exception:
             _hook_profile = os.getenv("HERMES_PROFILE_NAME") or os.getenv("HERMES_PROFILE") or ""
+        self._hook_profile = _hook_profile
 
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

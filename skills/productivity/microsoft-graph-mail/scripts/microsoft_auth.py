@@ -269,10 +269,13 @@ def _persist_token_response(response: dict, config: dict, previous: dict | None 
     return payload
 
 
-def exchange_auth_code(code: str) -> None:
+def exchange_auth_code(auth_response: str) -> None:
     config = _load_client_config()
     pending = _load_pending_auth()
-    code, returned_state = _extract_code_and_state(code)
+    code, returned_state = _extract_code_and_state(auth_response)
+    if not returned_state:
+        print("ERROR: Paste the full Microsoft redirect URL so the OAuth state can be validated.")
+        sys.exit(1)
     if returned_state != pending["state"]:
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
         sys.exit(1)

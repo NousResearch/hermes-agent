@@ -13,7 +13,8 @@ Available tools:
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
-- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Gemini: Google Search Grounding API (search, extract)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract)
 
@@ -155,6 +156,11 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+# Backends that only service web_search (their provider's ``supports_extract()``
+# is False). They are skipped during *extract* auto-detect so a search-only
+# credential (e.g. SEARXNG_URL) does not shadow the keyless Parallel free-MCP
+# fallback, which would otherwise leave web_extract broken on a no-key install.
+_SEARCH_ONLY_BACKENDS = frozenset({"searxng", "brave-free", "ddgs", "xai"})
 
 # The built-in web backends whose availability is driven by hardcoded
 # env-var / package / OAuth probes below. Any name NOT in this set is a
@@ -169,7 +175,7 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "gemini", "searxng", "brave-free", "ddgs", "xai"}
 )
 
 
@@ -220,7 +226,7 @@ def _list_registered_web_providers():
         return []
 
 
-def _get_backend() -> str:
+def _get_backend(capability: str = "search") -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
@@ -240,6 +246,7 @@ def _get_backend() -> str:
     # without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
         ("tavily", _has_env("TAVILY_API_KEY")),
+        ("gemini", _has_env("GEMINI_API_KEY") or _has_env("GOOGLE_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
@@ -325,6 +332,8 @@ def _is_backend_available(backend: str) -> bool:
         registered = _registered_web_provider_available(backend)
         if registered is not None:
             return registered
+    if backend == "gemini":
+        return _has_env("GEMINI_API_KEY") or _has_env("GOOGLE_API_KEY")
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -1102,7 +1111,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
+        if backend == "gemini":
+            print("   Using Gemini Google Search Grounding API")
+        elif backend == "exa":
             print("   Using Exa API (https://exa.ai)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")

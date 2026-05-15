@@ -103,9 +103,20 @@ class TestIsLocalEndpoint:
         "https://openrouter.ai/api",
         "https://api.anthropic.com",
         "https://evil.docker.internal.example.com",
+        "https://macmini.local.example.com",
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
+
+    @pytest.mark.parametrize("url", [
+        "http://macmini.local:8000/v1",       # bare bonjour name
+        "http://my-mac.local",                # no port, no path
+        "http://nas.local:11434",             # ollama on a Bonjour-named NAS
+        "https://workstation.local:443/v1",   # https + standard port + path
+    ])
+    def test_mdns_local_names(self, url):
+        """mDNS / Bonjour ``*.local`` hostnames are link-local by RFC 6762."""
+        assert is_local_endpoint(url) is True
 
     @pytest.mark.parametrize("url", [
         "http://100.64.0.0:11434",            # lower bound of CGNAT block

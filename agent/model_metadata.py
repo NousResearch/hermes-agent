@@ -313,6 +313,13 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# mDNS / Bonjour link-local hostnames. RFC 6762 reserves the ``.local``
+# special-use TLD for multicast DNS — any name under it is, by definition,
+# only resolvable on the same broadcast domain. Matching here lets users
+# point Hermes at a self-hosted backend by Bonjour name (``macmini.local``,
+# ``my-mac.local``) and still get the timeout auto-bumps that loopback,
+# RFC-1918, and Tailscale peers already receive.
+_MDNS_LOCAL_SUFFIXES = (".local",)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -408,6 +415,7 @@ def is_local_endpoint(base_url: str) -> bool:
 
     Recognises loopback (``localhost``, ``127.0.0.0/8``, ``::1``),
     container-internal DNS names (``host.docker.internal`` et al.),
+    mDNS / Bonjour link-local hostnames (``*.local``, RFC 6762),
     RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
     link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale CGNAT
     is included so remote-but-trusted Ollama boxes reached over a
@@ -426,6 +434,9 @@ def is_local_endpoint(base_url: str) -> bool:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
+        return True
+    # mDNS / Bonjour link-local names (e.g. macmini.local) — RFC 6762.
+    if any(host.endswith(suffix) for suffix in _MDNS_LOCAL_SUFFIXES):
         return True
     # RFC-1918 private ranges, link-local, and Tailscale CGNAT
     try:

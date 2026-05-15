@@ -358,12 +358,13 @@ class StreamingConfig:
     # Transport selection:
     #   "auto"  — prefer native streaming-draft updates when the platform
     #             supports them (Telegram sendMessageDraft, Bot API 9.5+);
-    #             fall back to edit-based when not.  Recommended.
+    #             fall back to edit-based when not.
     #   "draft" — explicitly request native drafts; falls back to edit when
     #             the platform/chat doesn't support them.
-    #   "edit"  — progressive editMessageText only (legacy behaviour).
+    #   "edit"  — progressive editMessageText only (legacy/default
+    #             behaviour).
     #   "off"   — disable streaming entirely.
-    transport: str = "auto"
+    transport: str = "edit"
     edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
@@ -392,7 +393,7 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "auto"),
+            transport=data.get("transport", "edit"),
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

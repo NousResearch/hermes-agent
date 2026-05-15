@@ -164,6 +164,10 @@ class TestSessionResetPolicy:
 
 
 class TestStreamingConfig:
+    def test_defaults_to_edit_transport(self):
+        restored = StreamingConfig.from_dict({"enabled": "true"})
+        assert restored.transport == "edit"
+
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = StreamingConfig.from_dict({"enabled": "false"})
         assert restored.enabled is False

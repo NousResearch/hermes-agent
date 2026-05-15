@@ -58,6 +58,33 @@ class TestProviderSelectionGate:
         finally:
             importlib.reload(tt)
 
+    def test_xai_resolver_import_after_config_env_patch_uses_restored_dotenv_loader(self):
+        """xAI HTTP auth must not cache a temporarily patched env helper."""
+        import importlib
+        import hermes_cli.config as config_mod
+        from tools import xai_http
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(config_mod, "get_env_value", lambda name, default=None: "")
+            xai_http = importlib.reload(xai_http)
+
+        try:
+            with patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                side_effect=RuntimeError("no oauth"),
+            ), patch(
+                "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+                return_value={},
+            ), patch(
+                "hermes_cli.config.load_env",
+                return_value={"XAI_API_KEY": "dotenv-secret"},
+            ):
+                creds = xai_http.resolve_xai_http_credentials()
+        finally:
+            importlib.reload(xai_http)
+
+        assert creds["api_key"] == "dotenv-secret"
+
     def test_explicit_groq_sees_dotenv(self):
         from tools import transcription_tools as tt
 

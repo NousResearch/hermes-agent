@@ -5,12 +5,6 @@ from __future__ import annotations
 import os
 from typing import Dict
 
-try:
-    from hermes_cli.config import get_env_value as _hermes_get_env_value
-except Exception:
-    _hermes_get_env_value = None
-
-
 def get_env_value(name: str, default=None):
     """Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.
 
@@ -18,10 +12,14 @@ def get_env_value(name: str, default=None):
     ``tools.xai_http.get_env_value`` to inject dotenv-only secrets into the
     xAI credential resolver.
     """
-    if _hermes_get_env_value is not None:
+    try:
+        from hermes_cli.config import get_env_value as _hermes_get_env_value
+
         value = _hermes_get_env_value(name)
         if value is not None:
             return value
+    except Exception:
+        pass
     return os.environ.get(name, default)
 
 

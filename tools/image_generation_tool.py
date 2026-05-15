@@ -24,6 +24,8 @@ import json
 import logging
 import os
 import datetime
+import http.client
+import socket
 import threading
 import uuid
 from typing import Any, Dict, Optional, Union
@@ -73,6 +75,191 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+AGENT_OPS_PROJECT_KEY = "generate-image"
+AGENT_OPS_IMAGE_SOURCE = "hermes-img-bot-image-generate"
+LEGACY_GENERATE_IMAGE_STATUS = "offline-standby"
+LEGACY_GENERATE_IMAGE_NOTE = (
+    "Legacy generate-image service is offline and retained only as standby; "
+    "do not route production image generation through it."
+)
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """Minimal HTTPConnection variant that talks to a Unix domain socket."""
+
+    def __init__(self, socket_path: str, timeout: float = 2.0):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:  # pragma: no cover - exercised by integration/live checks
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.socket_path)
+        self.sock = sock
+
+
+def _session_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read gateway session context with a safe environment fallback."""
+
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env(name, default)
+    except Exception:
+        return os.environ.get(name, default)
+
+
+def _agent_ops_ingest_enabled() -> bool:
+    value = os.environ.get("IMAGE_GEN_AGENT_OPS_INGEST_ENABLED", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_agent_ops_image_ingest_payload(
+    result: Dict[str, Any],
+    *,
+    prompt: str,
+    aspect_ratio: str,
+) -> tuple[Dict[str, Any], str]:
+    """Build the GenericIngest payload for native Hermes image generation.
+
+    The legacy ``generate-image`` service is intentionally represented only as
+    an offline standby in metadata. Hermes/img-bot is the active producer for
+    production image generation, while the project key remains
+    ``generate-image`` so agent-ops-console keeps the historical review lane.
+    """
+
+    session_id = _session_env("HERMES_SESSION_ID") or os.environ.get("HERMES_SESSION_ID")
+    if session_id:
+        run_id = f"hermes-img-bot-{session_id}"
+    else:
+        run_id = f"hermes-img-bot-{uuid.uuid4()}"
+
+    image = result.get("image")
+    external_id = str(result.get("external_id") or result.get("id") or image or run_id)
+    data = {
+        "source": AGENT_OPS_IMAGE_SOURCE,
+        "producer": "hermes-img-bot",
+        "legacyGenerateImageServiceStatus": LEGACY_GENERATE_IMAGE_STATUS,
+        "legacyGenerateImageServiceNote": LEGACY_GENERATE_IMAGE_NOTE,
+        "prompt": prompt,
+        "aspectRatio": aspect_ratio,
+        "image": image,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "platform": _session_env("HERMES_SESSION_PLATFORM"),
+        "chatId": _session_env("HERMES_SESSION_CHAT_ID"),
+        "threadId": _session_env("HERMES_SESSION_THREAD_ID"),
+        "userId": _session_env("HERMES_SESSION_USER_ID"),
+        "sessionId": session_id,
+    }
+    # Preserve optional provider metrics without requiring each backend to emit
+    # the same shape.
+    for key in ("generation_time", "size", "quality", "seed"):
+        if key in result:
+            data[key] = result.get(key)
+
+    item: Dict[str, Any] = {
+        "type": "generated-image",
+        "externalId": external_id,
+        "data": data,
+        "securityReviewStatus": "skipped",
+        "manualReviewStatus": "pending",
+        "thumbnailPath": None,
+        "originalPath": image if isinstance(image, str) and image.startswith("/") else None,
+        "ossUrl": image if isinstance(image, str) and image.startswith(("http://", "https://")) else None,
+    }
+    payload = {
+        "projectKey": AGENT_OPS_PROJECT_KEY,
+        "runId": run_id,
+        "items": [item],
+        "summary": {
+            "source": AGENT_OPS_IMAGE_SOURCE,
+            "producer": "hermes-img-bot",
+            "legacyGenerateImageServiceStatus": LEGACY_GENERATE_IMAGE_STATUS,
+        },
+    }
+    return payload, f"{AGENT_OPS_PROJECT_KEY}:{run_id}"
+
+
+def _post_agent_ops_ingest(
+    payload: Dict[str, Any],
+    *,
+    socket_path: str,
+    token: str,
+    idempotency_key: str,
+) -> None:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    conn = _UnixHTTPConnection(socket_path, timeout=2.0)
+    try:
+        conn.request(
+            "POST",
+            "/api/ingest",
+            body=body,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": idempotency_key,
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        if response.status >= 400:
+            raise RuntimeError(f"agent-ops-console ingest returned HTTP {response.status}")
+    finally:
+        conn.close()
+
+
+def _report_image_success_to_agent_ops(
+    result: Dict[str, Any],
+    *,
+    prompt: str,
+    aspect_ratio: str,
+) -> None:
+    """Best-effort native image-generation ingest for agent-ops-console."""
+
+    if not result.get("success"):
+        return
+    if not _agent_ops_ingest_enabled():
+        return
+
+    socket_path = os.environ.get("OPS_CONSOLE_SOCKET")
+    token = os.environ.get("INGEST_TOKEN")
+    if not socket_path or not token:
+        logger.warning(
+            "Skipping image_generate agent-ops ingest: OPS_CONSOLE_SOCKET or INGEST_TOKEN missing"
+        )
+        return
+
+    payload, idempotency_key = _build_agent_ops_image_ingest_payload(
+        result,
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+    )
+
+    def _send() -> None:
+        try:
+            _post_agent_ops_ingest(
+                payload,
+                socket_path=socket_path,
+                token=token,
+                idempotency_key=idempotency_key,
+            )
+            logger.info(
+                "Reported image_generate success to agent-ops-console: run_id=%s project=%s",
+                payload.get("runId"),
+                AGENT_OPS_PROJECT_KEY,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to report image_generate success to agent-ops-console: run_id=%s error=%s",
+                payload.get("runId"),
+                exc,
+            )
+
+    threading.Thread(target=_send, name="image-generate-agent-ops-ingest", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +963,11 @@ def image_generate_tool(
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
+            "provider": "fal",
+            "model": model_id,
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "generation_time": generation_time,
         }
 
         debug_call_data["success"] = True
@@ -783,6 +975,8 @@ def image_generate_tool(
         debug_call_data["generation_time"] = generation_time
         _debug.log_call("image_generate_tool", debug_call_data)
         _debug.save()
+
+        _report_image_success_to_agent_ops(response_data, prompt=prompt, aspect_ratio=aspect_ratio)
 
         return json.dumps(response_data, indent=2, ensure_ascii=False)
 
@@ -1032,6 +1226,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
             "error": "Provider returned a non-dict result",
             "error_type": "provider_contract",
         })
+    _report_image_success_to_agent_ops(result, prompt=prompt, aspect_ratio=aspect_ratio)
     return json.dumps(result)
 
 

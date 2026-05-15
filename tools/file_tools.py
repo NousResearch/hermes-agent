@@ -18,6 +18,11 @@ from tools.file_operations import (
 from tools import file_state
 from agent.redact import redact_sensitive_text
 
+try:
+    from acp_adapter import filesystem as acp_filesystem
+except Exception:  # pragma: no cover - ACP extra may be unavailable in non-ACP installs
+    acp_filesystem = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -540,8 +545,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        # In ACP editor sessions, prefer the client's filesystem so reads see
+        # unsaved/dirty editor buffers. Non-ACP sessions and ACP clients that
+        # did not advertise fs/read_text_file fall back unchanged.
+        result = acp_filesystem.read_text_file(path, offset, limit) if acp_filesystem else None
+        if result is None:
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -811,8 +821,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
-            file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(path, content)
+            result = acp_filesystem.write_text_file(path, content) if acp_filesystem else None
+            if result is None:
+                file_ops = _get_file_ops(task_id)
+                result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
@@ -827,8 +839,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
             stale_warning = _check_file_staleness(path, task_id)
-            file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(path, content)
+            result = acp_filesystem.write_text_file(path, content) if acp_filesystem else None
+            if result is None:
+                file_ops = _get_file_ops(task_id)
+                result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning
             if effective_warning:

@@ -864,11 +864,17 @@ def _print_tui_exit_summary(
         if db is not None:
             db.close()
 
+    try:
+        from hermes_cli.resume_hints import build_continue_command, build_resume_command
+    except Exception:
+        build_resume_command = lambda session_id, tui=False: f"hermes --tui --resume {session_id}"
+        build_continue_command = lambda title, tui=False: f'hermes --tui -c "{title}"'
+
     print()
     print("Resume this session with:")
-    print(f"  hermes --tui --resume {target}")
+    print(f"  {build_resume_command(target, tui=True)}")
     if title:
-        print(f'  hermes --tui -c "{title}"')
+        print(f"  {build_continue_command(title, tui=True)}")
     print()
     print(f"Session:        {target}")
     if title:

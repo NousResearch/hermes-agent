@@ -6396,7 +6396,12 @@ class HermesCLI:
                 }, f, indent=2, ensure_ascii=False)
             print(f"(^_^)v Conversation snapshot saved to: {path}")
             if self.session_id:
-                print(f"       Resume the live session with: hermes --resume {self.session_id}")
+                try:
+                    from hermes_cli.resume_hints import build_resume_command
+                    resume_hint = build_resume_command(self.session_id)
+                except Exception:
+                    resume_hint = f"hermes --resume {self.session_id}"
+                print(f"       Resume the live session with: {resume_hint}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
     
@@ -11297,10 +11302,16 @@ class HermesCLI:
                 except Exception:
                     pass
 
+            try:
+                from hermes_cli.resume_hints import build_continue_command, build_resume_command
+            except Exception:
+                build_resume_command = lambda session_id: f"hermes --resume {session_id}"
+                build_continue_command = lambda title: f'hermes -c "{title}"'
+
             print("Resume this session with:")
-            print(f"  hermes --resume {self.session_id}")
+            print(f"  {build_resume_command(self.session_id)}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"")
+                print(f"  {build_continue_command(session_title)}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:

@@ -100,3 +100,35 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "No conversation to save" in out
+
+
+def test_save_conversation_named_profile_resume_hint_includes_profile_flag(
+    tmp_path, monkeypatch, capsys
+):
+    profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    for mod in [
+        m
+        for m in sys.modules
+        if m in {"cli", "hermes_constants", "hermes_cli.profiles", "hermes_cli.resume_hints"}
+    ]:
+        sys.modules.pop(mod, None)
+
+    import cli
+
+    stub = _make_stub_cli([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+
+    cli.HermesCLI.save_conversation(stub)
+
+    out = capsys.readouterr().out
+    assert (profile_home / "sessions" / "saved").is_dir()
+    assert "Resume the live session with: hermes -p coder --resume 20260101_120000_abc123" in out

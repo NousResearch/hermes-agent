@@ -589,6 +589,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # In-memory cache of the bot's last message ID per channel, used by
+        # history backfill to skip the full scan on hot paths.  Falls back to
+        # scanning channel.history() on cache miss (cold start / restart).
+        self._last_self_message_id: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1458,6 +1462,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         raise
                 message_ids.append(str(msg.id))
+
+            # Track the last message we sent in this channel for history
+            # backfill — avoids a full channel.history() scan on hot paths.
+            if message_ids:
+                _target_id = thread_id or chat_id
+                self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
                 success=True,
@@ -3596,6 +3606,134 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
+    def _discord_history_backfill(self) -> bool:
+        """Return whether history backfill is enabled for shared sessions."""
+        configured = self.config.extra.get("history_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in ("true", "1", "yes")
+
+    def _discord_history_backfill_limit(self) -> int:
+        """Return the max number of messages to scan backwards for context.
+
+        In practice the scan usually stops much earlier — at the bot's own
+        last message in the channel (the natural partition point).  This
+        limit is a safety cap for cold starts and long gaps where no prior
+        bot message exists in recent history.
+        """
+        configured = self.config.extra.get("history_backfill_limit")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 50
+
+    async def _fetch_channel_context(
+        self,
+        channel: Any,
+        before: "DiscordMessage",
+    ) -> str:
+        """Fetch recent channel messages for conversational context.
+
+        Scans backwards from *before* and collects messages until it hits
+        a message sent by this bot (the natural partition point between
+        bot turns) or reaches ``history_backfill_limit``.
+
+        Returns a formatted block like::
+
+            [Recent channel messages]
+            [Alice] some message
+            [Bob [bot]] another message
+
+        Returns an empty string if no context is available.
+        """
+        limit = self._discord_history_backfill_limit()
+        if limit <= 0:
+            return ""
+
+        # Determine which bot messages to include in context
+        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        include_other_bots = allow_bots_raw != "none"
+
+        # Use the in-memory cache to narrow the fetch window on hot paths.
+        # If we know our last message ID in this channel, pass it as `after`
+        # to avoid scanning the full limit.  Falls back to scanning on cache
+        # miss (cold start / restart).
+        # Guard: only use the cache when it's chronologically before the
+        # trigger — Discord snowflake IDs are monotonically increasing, so
+        # a simple int comparison suffices.
+        channel_id = str(getattr(channel, "id", ""))
+        _cached_id = self._last_self_message_id.get(channel_id)
+        _after_obj = None
+        try:
+            if _cached_id and int(_cached_id) < int(before.id):
+                _after_obj = discord.Object(id=int(_cached_id))
+        except (ValueError, TypeError):
+            pass  # Malformed cache entry — fall back to cold-start scan
+
+        try:
+            collected = []
+            # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
+            # silently flips the default to True when `after=` is supplied,
+            # which would select the *earliest* N messages after our last
+            # response instead of the *latest* N before the trigger.  In
+            # high-traffic windows that returns stale tool traces and drops
+            # the actual final answer.  See the regression test
+            # `test_fetch_channel_context_cache_uses_latest_window_when_after_set`.
+            async for msg in channel.history(
+                limit=limit,
+                before=before,
+                after=_after_obj,
+                oldest_first=False,
+            ):
+                # Stop at our own message — this is the partition point.
+                # Everything before this is already in the session transcript.
+                # (Redundant when _after_obj is set, but needed for cold start.)
+                if msg.author == self._client.user:
+                    break
+
+                # Skip system messages (pins, joins, thread renames, etc.)
+                if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+                    continue
+
+                # Respect DISCORD_ALLOW_BOTS for other bots.
+                # For history context, "mentions" is treated as "all" — we are
+                # deciding what context to show, not whether to respond.
+                if getattr(msg.author, "bot", False) and not include_other_bots:
+                    continue
+
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if not content and msg.attachments:
+                    content = "(attachment)"
+                if not content:
+                    continue
+
+                name = msg.author.display_name
+                if getattr(msg.author, "bot", False):
+                    name = f"{name} [bot]"
+                collected.append(f"[{name}] {content}")
+
+            if not collected:
+                return ""
+
+            # channel.history returns newest-first (oldest_first=False); reverse for chronological order
+            collected.reverse()
+            return "[Recent channel messages]\n" + "\n".join(collected)
+
+        except discord.Forbidden:
+            logger.debug("[%s] Missing permissions to fetch channel history", self.name)
+            return ""
+        except Exception as e:
+            logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
+            return ""
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -4504,9 +4642,50 @@ class DiscordAdapter(BasePlatformAdapter):
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
+        # ── History backfill ─────────────────────────────────────────
+        # When require_mention is active, the bot only processes messages
+        # that @mention it.  Messages in the channel between bot turns are
+        # invisible to the session transcript.  To recover that context,
+        # fetch recent channel history and prepend it to the user message.
+        #
+        # The fetch window is: everything after the bot's last message in
+        # the channel up to (but not including) the current trigger.  On
+        # cold start (no prior bot message found), fetch the last N messages
+        # and stop at the first self-message encountered.
+        #
+        # Threads naturally scope to thread-only history (channel.history()
+        # on a thread returns only that thread's messages).  DMs are skipped
+        # because every DM message triggers the bot — there's no mention gap
+        # to fill; the session transcript already has everything.
+        #
+        # Per-user sessions also benefit: Alice's session is missing the
+        # other-channel-participants' context, and her own messages from
+        # before she mentioned the bot.  Backfill fills that gap.
+        #
+        # Messages that arrive while the bot is processing (between trigger
+        # and response) are not captured — this is an accepted simplification
+        # to keep the partition rule clean.
+        _channel_context = None
+        _is_dm = isinstance(message.channel, discord.DMChannel)
+        if not _is_dm:
+            _needed_mention = (
+                require_mention
+                and not is_free_channel
+                and not in_bot_thread
+            )
+            _backfill_enabled = self._discord_history_backfill()
+            if _needed_mention and _backfill_enabled:
+                _backfill_text = await self._fetch_channel_context(
+                    message.channel, before=message,
+                )
+                if _backfill_text:
+                    _channel_context = _backfill_text
+
         # Defense-in-depth: prevent empty user messages from entering session
-        # (can happen when user sends @mention-only with no other text)
-        if not event_text or not event_text.strip():
+        # (can happen when user sends @mention-only with no other text).
+        # When channel_context is present, a bare mention means "catch me up"
+        # — the context IS the message, so skip the placeholder.
+        if (not event_text or not event_text.strip()) and not _channel_context:
             event_text = "(The user sent a message with no text content)"
 
         _chan = message.channel
@@ -4535,6 +4714,7 @@ class DiscordAdapter(BasePlatformAdapter):
             timestamp=message.created_at,
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
+            channel_context=_channel_context,
         )
 
         # Track thread participation so the bot won't require @mention for

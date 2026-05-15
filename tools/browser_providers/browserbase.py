@@ -92,45 +92,50 @@ class BrowserbaseProvider(CloudBrowserProvider):
             "X-BB-API-Key": config["api_key"],
         }
 
-        response = requests.post(
-            f"{config['base_url']}/v1/sessions",
-            headers=headers,
-            json=session_config,
-            timeout=30,
-        )
+        try:
+            response = requests.post(
+                f"{config['base_url']}/v1/sessions",
+                headers=headers,
+                json=session_config,
+                timeout=30,
+            )
 
-        proxies_fallback = False
-        keepalive_fallback = False
+            proxies_fallback = False
+            keepalive_fallback = False
 
-        # Handle 402 — paid features unavailable
-        if response.status_code == 402:
-            if enable_keep_alive:
-                keepalive_fallback = True
-                logger.warning(
-                    "keepAlive may require paid plan (402), retrying without it. "
-                    "Sessions may timeout during long operations."
-                )
-                session_config.pop("keepAlive", None)
-                response = requests.post(
-                    f"{config['base_url']}/v1/sessions",
-                    headers=headers,
-                    json=session_config,
-                    timeout=30,
-                )
+            # Handle 402 — paid features unavailable
+            if response.status_code == 402:
+                if enable_keep_alive:
+                    keepalive_fallback = True
+                    logger.warning(
+                        "keepAlive may require paid plan (402), retrying without it. "
+                        "Sessions may timeout during long operations."
+                    )
+                    session_config.pop("keepAlive", None)
+                    response = requests.post(
+                        f"{config['base_url']}/v1/sessions",
+                        headers=headers,
+                        json=session_config,
+                        timeout=30,
+                    )
 
-            if response.status_code == 402 and enable_proxies:
-                proxies_fallback = True
-                logger.warning(
-                    "Proxies unavailable (402), retrying without proxies. "
-                    "Bot detection may be less effective."
-                )
-                session_config.pop("proxies", None)
-                response = requests.post(
-                    f"{config['base_url']}/v1/sessions",
-                    headers=headers,
-                    json=session_config,
-                    timeout=30,
-                )
+                if response.status_code == 402 and enable_proxies:
+                    proxies_fallback = True
+                    logger.warning(
+                        "Proxies unavailable (402), retrying without proxies. "
+                        "Bot detection may be less effective."
+                    )
+                    session_config.pop("proxies", None)
+                    response = requests.post(
+                        f"{config['base_url']}/v1/sessions",
+                        headers=headers,
+                        json=session_config,
+                        timeout=30,
+                    )
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                f"Browserbase API connection failed: {exc}"
+            ) from exc
 
         if not response.ok:
             raise RuntimeError(

@@ -97,9 +97,7 @@ def _run_async(coro):
     asyncio.run()'s create-and-destroy lifecycle.
 
     This is the single source of truth for sync->async bridging in tool
-    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
-    outer thread-pool wrapping as defense-in-depth, but each handler is
-    self-protecting via this function.
+    handlers. Each handler is self-protecting via this function.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -231,13 +229,6 @@ _LEGACY_TOOLSET_MAP = {
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
-    "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
-    ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }

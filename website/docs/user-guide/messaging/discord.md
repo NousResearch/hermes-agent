@@ -286,6 +286,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
+| `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
+| `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
@@ -309,6 +311,8 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
+  history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -436,6 +440,47 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.history_backfill`
+
+**Type:** boolean — **Default:** `true`
+
+When enabled, the bot recovers missed channel messages on each `@mention`. With `require_mention: true`, the bot only processes messages that tag it directly — everything else in the channel is invisible to the session transcript. History backfill scans backwards through recent channel history when triggered, collecting messages between the bot's last response and the current mention, and includes them as context.
+
+Behavior by surface:
+
+- **Server channels** (with `require_mention: true`): backfill scans the channel since the bot's last response. Useful when other participants posted while the bot wasn't addressed.
+- **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations.
+- **DMs**: skipped. Every DM message triggers the bot, so the session transcript is already complete — there's no mention gap to fill.
+- **Free-response channels** and **bot's own auto-created threads**: skipped for the same reason — no mention gating means no gap.
+
+Per-user sessions (`group_sessions_per_user: true`, the default) also benefit: a user's session is missing the context posted by other channel participants and the user's own messages from before they tagged the bot. Backfill fills both gaps.
+
+```yaml
+discord:
+  history_backfill: true   # default
+```
+
+To turn it off:
+
+```yaml
+discord:
+  history_backfill: false
+```
+
+> **Note:** Messages that arrive *while* the bot is processing (between a trigger and its response) are not captured. This is an accepted simplification — the user can re-send or tag again.
+
+#### `discord.history_backfill_limit`
+
+**Type:** integer — **Default:** `50`
+
+Maximum number of messages to scan backwards when recovering channel context. In practice the scan usually stops much earlier — at the bot's own last message in the channel, which is the natural boundary between turns. This limit is a safety cap for cold starts and long gaps where no prior bot message exists in recent history.
+
+```yaml
+discord:
+  history_backfill: true
+  history_backfill_limit: 50
+```
 
 #### `group_sessions_per_user`
 

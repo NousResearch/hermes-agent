@@ -231,6 +231,86 @@ class TestRunTurn:
         assert "bad input" in r.error
         assert r.final_text == ""
 
+    def test_turn_start_failure_attaches_redacted_stderr_tail(self):
+        """When codex stderr has content (non-OAuth), the tail gets attached
+        to the user-facing error so config/provider problems are debuggable
+        instead of just 'Internal error'. Secrets in stderr are redacted
+        via agent.redact(force=True)."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "ERROR: provider auth failed",
+            "Authorization: Bearer sk-live-deadbeefdeadbeef",
+            "url=https://api.example.com/v1?token=querysecret12345",
+        ])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "turn/start":
+                raise CodexAppServerError(code=-32603, message="Internal error")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start failed" in r.error
+        assert "Internal error" in r.error
+        # Stderr tail attached
+        assert "codex stderr" in r.error
+        assert "provider auth failed" in r.error
+        # Secrets redacted
+        assert "sk-live-deadbeefdeadbeef" not in r.error
+        assert "querysecret12345" not in r.error
+        # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
+        assert r.should_retire is False
+
+    def test_turn_start_timeout_attaches_redacted_stderr_tail(self):
+        """A non-OAuth TimeoutError on turn/start surfaces with codex stderr
+        context attached and marks the session for retirement."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "WARN: provider request stalled",
+            "Authorization: Bearer sk-stalled-secret-abc123",
+        ])
+
+        def stall(method, params):
+            if method == "turn/start":
+                raise TimeoutError("codex method 'turn/start' timed out after 10s")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = stall
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "turn/start timed out" in r.error
+        assert "provider request stalled" in r.error
+        assert "sk-stalled-secret-abc123" not in r.error
+        assert r.should_retire is True
+
+    def test_startup_failure_returns_error_with_stderr(self):
+        """Codex thread/start failures during ensure_started() used to bubble
+        up as uncaught exceptions. Now they return a TurnResult.error so
+        AIAgent surfaces a clean diagnostic instead of crashing the turn."""
+        client = FakeClient()
+        client.set_stderr_tail([
+            "FATAL: model_provider 'azure_foundry' not configured",
+        ])
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "thread/start":
+                raise CodexAppServerError(code=-32603, message="Internal error")
+            return {}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "startup failed" in r.error
+        assert "model_provider 'azure_foundry' not configured" in r.error
+        assert r.should_retire is True
+        assert r.final_text == ""
+
     def test_interrupt_during_turn_issues_turn_interrupt(self):
         client = FakeClient()
         # Don't queue turn/completed — the loop has to interrupt out

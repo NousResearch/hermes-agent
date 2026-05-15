@@ -402,3 +402,84 @@ def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
     kc.run_slash("--board alpha list")
 
     assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+
+# ---------------------------------------------------------------------------
+# diagnostics --severity filter (regression for #26379)
+#
+# `--severity X` is documented as "at or above X", but the implementation
+# used to be an exact-match equality. That silently dropped higher-severity
+# diagnostics under `--severity warning`, breaking monitoring scripts that
+# treated warning as a catch-all threshold.
+# ---------------------------------------------------------------------------
+
+def _seed_three_severity_diagnostics(kanban_home, monkeypatch):
+    from hermes_cli import kanban_diagnostics as kd
+
+    out = kc.run_slash("create 'noisy task' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    diags = [
+        kd.Diagnostic(kind="x_warn", severity="warning",
+                      title="warn", detail="w"),
+        kd.Diagnostic(kind="x_err", severity="error",
+                      title="err", detail="e"),
+        kd.Diagnostic(kind="x_crit", severity="critical",
+                      title="crit", detail="c"),
+    ]
+
+    def fake_compute(task, events, runs, *, now=None, config=None):
+        if task["id"] == tid:
+            return list(diags)
+        return []
+
+    monkeypatch.setattr(kd, "compute_task_diagnostics", fake_compute)
+    return tid
+
+
+@pytest.mark.parametrize(
+    "flag,expected_severities",
+    [
+        ("",                    {"warning", "error", "critical"}),
+        ("--severity warning",  {"warning", "error", "critical"}),
+        ("--severity error",    {"error", "critical"}),
+        ("--severity critical", {"critical"}),
+    ],
+)
+def test_diagnostics_severity_filter_is_threshold_not_exact_match(
+    kanban_home, monkeypatch, flag, expected_severities,
+):
+    tid = _seed_three_severity_diagnostics(kanban_home, monkeypatch)
+
+    out = kc.run_slash(f"diagnostics {flag} --json".strip())
+    payload = json.loads(out)
+    if not expected_severities:
+        assert payload == []
+        return
+    assert len(payload) == 1
+    assert payload[0]["task_id"] == tid
+    got = {d["severity"] for d in payload[0]["diagnostics"]}
+    assert got == expected_severities
+
+
+def test_diagnostics_severity_filter_drops_task_when_no_match(
+    kanban_home, monkeypatch,
+):
+    from hermes_cli import kanban_diagnostics as kd
+
+    out = kc.run_slash("create 'warning only' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    def fake_compute(task, events, runs, *, now=None, config=None):
+        if task["id"] == tid:
+            return [kd.Diagnostic(kind="x", severity="warning",
+                                  title="w", detail="w")]
+        return []
+
+    monkeypatch.setattr(kd, "compute_task_diagnostics", fake_compute)
+
+    out = kc.run_slash("diagnostics --severity critical --json")
+    payload = json.loads(out)
+    assert payload == []

@@ -1399,11 +1399,19 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     if dl:
                         diags_by_task[tid] = dl
 
-        # Severity filter.
+        # Severity filter. argparse limits ``sev`` to one of
+        # ``SEVERITY_ORDER``; comparing by index implements the
+        # documented "at or above" semantics (a `--severity warning`
+        # request must also surface `error` and `critical`).
         sev = getattr(args, "severity", None)
         if sev:
+            threshold = kd.SEVERITY_ORDER.index(sev)
             for tid in list(diags_by_task.keys()):
-                kept = [d for d in diags_by_task[tid] if d.severity == sev]
+                kept = [
+                    d for d in diags_by_task[tid]
+                    if d.severity in kd.SEVERITY_ORDER
+                    and kd.SEVERITY_ORDER.index(d.severity) >= threshold
+                ]
                 if kept:
                     diags_by_task[tid] = kept
                 else:

@@ -472,6 +472,32 @@ class TestCodexOAuthContextLength:
         )
         assert ctx == 1_000_000, "Non-codex 1M cache entries must be respected"
 
+    def test_openai_oauth_uses_openai_catalog_not_codex_cache(self, tmp_path, monkeypatch):
+        """OpenCode-style OpenAI OAuth should use OpenAI model metadata even when
+        routed through the ChatGPT backend URL, and must invalidate stale Codex-sized
+        cache entries for that URL.
+        """
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://chatgpt.com/backend-api/codex"
+        import yaml as _yaml
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            f"gpt-5.4@{base_url}": 272_000,
+        }}))
+
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=1_050_000):
+            ctx = mm.get_model_context_length(
+                model="gpt-5.4",
+                base_url=base_url,
+                api_key="fake-token",
+                provider="openai-oauth",
+            )
+
+        assert ctx == 1_050_000
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")

@@ -59,8 +59,7 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
         skip_context_files=True,
         skip_memory=True,
     )
-    if model:
-        kwargs["model"] = model
+    kwargs["model"] = model or "openai/gpt-5"
     base_url="https://openrouter.ai/api/v1",
     api_key="test-key",
     base_url="https://openrouter.ai/api/v1",

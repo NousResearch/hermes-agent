@@ -28,7 +28,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -1192,6 +1192,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._child_tasks: Set[asyncio.Task] = set()
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
@@ -1241,6 +1242,15 @@ class WeixinAdapter(BasePlatformAdapter):
         if isinstance(value, (list, tuple, set)):
             return [str(item).strip() for item in value if str(item).strip()]
         return [str(value).strip()] if str(value).strip() else []
+
+    def _track_task(self, task: asyncio.Task) -> None:
+        """Track a fire-and-forget task so it is cancelled on disconnect.
+
+        Removes itself from ``_child_tasks`` on completion to keep the
+        set from growing unboundedly.
+        """
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
 
     async def connect(self) -> bool:
         if not check_weixin_requirements():
@@ -1293,6 +1303,8 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+
+        # Cancel the poll loop first — stops it from spawning new children.
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -1300,6 +1312,16 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+
+        # Cancel any fire-and-forget child tasks still in-flight.
+        child_tasks = list(self._child_tasks)
+        self._child_tasks.clear()
+        for task in child_tasks:
+            if not task.done():
+                task.cancel()
+        if child_tasks:
+            await asyncio.gather(*child_tasks, return_exceptions=True)
+
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -1360,7 +1382,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
 
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._track_task(asyncio.create_task(self._process_message_safe(message)))
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1409,7 +1431,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             self._token_store.set(self._account_id, sender_id, context_token)
-        asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
+        self._track_task(asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None)))
 
         media_paths: List[str] = []
         media_types: List[str] = []
@@ -1899,7 +1921,7 @@ class WeixinAdapter(BasePlatformAdapter):
         force_file_attachment: bool = False,
     ) -> str:
         assert self._send_session is not None and self._token is not None
-        plaintext = Path(path).read_bytes()
+        plaintext = await asyncio.to_thread(Path(path).read_bytes)
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey = secrets.token_hex(16)
         aes_key = secrets.token_bytes(16)

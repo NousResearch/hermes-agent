@@ -29,6 +29,7 @@ from acp.schema import (
     SetSessionModelResponse,
     SetSessionModeResponse,
     SessionInfo,
+    SessionInfoUpdate,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -1140,6 +1141,48 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert callable(mock_title.call_args.kwargs["title_callback"])
+
+    @pytest.mark.asyncio
+    async def test_prompt_sends_session_info_update_after_auto_title(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Done.",
+            "messages": [
+                {"role": "user", "content": "fix zed titles"},
+                {"role": "assistant", "content": "Done."},
+            ],
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        })
+
+        def fake_auto_title(db, session_id, user_text, final_response, history, **kwargs):
+            db.set_session_title(session_id, "Fix Zed titles")
+            kwargs["title_callback"]("Fix Zed titles")
+
+        with patch("agent.title_generator.maybe_auto_title", side_effect=fake_auto_title):
+            mock_conn.session_update.reset_mock()
+            await agent.prompt(
+                session_id=resp.session_id,
+                prompt=[TextContentBlock(type="text", text="fix zed titles")],
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.await_args_list
+        ]
+        info_updates = [u for u in updates if isinstance(u, SessionInfoUpdate)]
+        assert len(info_updates) == 1
+        assert info_updates[0].session_update == "session_info_update"
+        assert info_updates[0].title == "Fix Zed titles"
 
     @pytest.mark.asyncio
     async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):

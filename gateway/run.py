@@ -40,7 +40,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -708,7 +708,7 @@ def _remember_progress_cleanup(platform: Any, chat_id: Any, message_id: Any) -> 
             "platform": platform_s,
             "chat_id": chat_s,
             "message_id": message_s,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "attempts": 0,
             "reason": "tool_progress",
         })
@@ -14968,11 +14968,9 @@ class GatewayRunner:
                 return
 
             # Check config: auto_delete_tool_progress (default: True)
-            try:
-                from hermes_cli.config import load_config as _lc
-                _auto_delete = cfg_get(_lc(), "display", "auto_delete_tool_progress", default=True)
-            except Exception:
-                _auto_delete = True
+            _auto_delete = bool(
+                resolve_display_setting(user_config, platform_key, "auto_delete_tool_progress", True)
+            )
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit

@@ -1,0 +1,116 @@
+name: CI Self-Hosted Minimal
+
+on:
+  pull_request:
+  push:
+    branches: [main, ci/selfhosted-minimal-20260514-1910]
+  workflow_dispatch:
+    inputs:
+      run_broad_diagnostic:
+        description: 'Run broad diagnostic suite on heavy runner'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-selfhosted-minimal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: [self-hosted, linux, x64, hermes-light]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Ruff
+        run: |
+          . .venv/bin/activate
+          ruff check .
+
+  smoke-gate:
+    runs-on: [self-hosted, linux, x64, hermes-heavy]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Preflight Python linkage
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -c "import sys; print(sys.executable)"
+          ldd .venv/bin/python
+      - name: Run smoke gate tests
+        env:
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          PYTEST_ADDOPTS='' python -m pytest -q --tb=short -n 3 -m 'not integration' \
+            tests/gateway/test_status.py \
+            tests/gateway/test_platform_registry.py \
+            tests/agent/test_model_metadata.py
+
+  broad-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_broad_diagnostic == true }}
+    runs-on: [self-hosted, linux, x64, hermes-heavy]
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          . .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+      - name: Preflight Python linkage
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -c "import sys; print(sys.executable)"
+          ldd .venv/bin/python
+      - name: Run broad diagnostic tests
+        env:
+          OPENROUTER_API_KEY: ''
+          OPENAI_API_KEY: ''
+          NOUS_API_KEY: ''
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
+        run: |
+          . .venv/bin/activate
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n 3

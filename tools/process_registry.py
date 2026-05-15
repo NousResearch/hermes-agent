@@ -1388,6 +1388,44 @@ class ProcessRegistry:
 process_registry = ProcessRegistry()
 
 
+def format_process_notification(evt: dict) -> "str | None":
+    """Format a process notification event into a [IMPORTANT: ...] message.
+
+    Handles completion events (notify_on_complete), watch pattern matches,
+    and watch disabled events from the unified completion_queue.
+    """
+    evt_type = evt.get("type", "completion")
+    _sid = evt.get("session_id", "unknown")
+    _cmd = evt.get("command", "unknown")
+
+    if evt_type == "watch_disabled":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
+    if evt_type == "watch_match":
+        _pat = evt.get("pattern", "?")
+        _out = evt.get("output", "")
+        _sup = evt.get("suppressed", 0)
+        text = (
+            f"[IMPORTANT: Background process {_sid} matched "
+            f"watch pattern \"{_pat}\".\n"
+            f"Command: {_cmd}\n"
+            f"Matched output:\n{_out}"
+        )
+        if _sup:
+            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
+        text += "]"
+        return text
+
+    _exit = evt.get("exit_code", "?")
+    _out = evt.get("output", "")
+    return (
+        f"[IMPORTANT: Background process {_sid} completed "
+        f"(exit code {_exit}).\n"
+        f"Command: {_cmd}\n"
+        f"Output:\n{_out}]"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry -- the "process" tool schema + handler
 # ---------------------------------------------------------------------------

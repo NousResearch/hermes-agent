@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,14 @@ def test_version_string_no_v_prefix():
     """__version__ should be bare semver without a 'v' prefix."""
     from hermes_cli import __version__
     assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
+
+
+def test_package_version_matches_cli_version():
+    """The installable package version and visible CLI version must stay in lockstep."""
+    from hermes_cli import __version__
+
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    assert pyproject["project"]["version"] == __version__
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):

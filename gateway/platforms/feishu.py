@@ -3961,21 +3961,21 @@ class FeishuAdapter(BasePlatformAdapter):
             allowlist = self._allowed_group_users
             blacklist = set()
 
-        # Channel locks apply to everyone; allowlist/blacklist only gate humans
-        # (bots were already cleared upstream by FEISHU_ALLOW_BOTS).
+        # Channel locks and explicit deny-lists apply to everyone; admitted
+        # bots only bypass human allowlists after deny checks have run.
         if policy == "disabled":
             return False
         if policy == "open":
             return True
         if policy == "admin_only":
             return False
+        if policy == "blacklist":
+            return bool(sender_ids and not (sender_ids & blacklist))
         if is_bot:
             return True
 
         if policy == "allowlist":
             return bool(sender_ids and (sender_ids & allowlist))
-        if policy == "blacklist":
-            return bool(sender_ids and not (sender_ids & blacklist))
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 

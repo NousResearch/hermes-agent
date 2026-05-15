@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
-SUPPORTED_COMMANDS = {"dashboard", "kb", "today", "kbstatus", "runs", "kbqueue", "review", "run"}
+SUPPORTED_COMMANDS = {"kb", "kbtoday", "kbstatus", "kbruns", "kbqueue", "kbreview", "kbrun"}
 
 
 def _sanitize_component(value: str) -> str:
@@ -166,6 +166,56 @@ def _item_title(item: Any) -> str:
     return _short(item, "item")
 
 
+def _summary_count(summary: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = summary.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _proposal_count_from_summary(summary: dict[str, Any]) -> Any:
+    proposal_count = _summary_count(
+        summary,
+        "proposal_queue_count",
+        "pending_proposal_count",
+        "proposal_count",
+        "review_proposal_count",
+    )
+    if proposal_count is not None:
+        return proposal_count
+    legacy_queue_count = summary.get("queue_item_count")
+    todo_count = _summary_count(summary, "active_todo_count", "triage_todo_count", "task_queue_count")
+    if legacy_queue_count is not None and todo_count is not None and legacy_queue_count != todo_count:
+        return legacy_queue_count
+    return None
+
+
+def _todo_count_from_summary(summary: dict[str, Any]) -> Any:
+    return _summary_count(summary, "active_todo_count", "triage_todo_count", "task_queue_count")
+
+
+def _display_text(value: Any) -> str:
+    text = _short(value, "")
+    if text == "Review prioritized queue items through workbench.queue.":
+        return "Review prioritized TODO items; use /kbqueue for proposal review."
+    return text
+
+
+def _dashboard_section_title(section: dict[str, Any], summary: dict[str, Any]) -> str:
+    title = _short(section.get("title") or section.get("id"), "Section")
+    key = title.strip().lower()
+    section_id = str(section.get("id") or "").strip().lower()
+    if key == "queue" or section_id == "queue":
+        proposal_count = _proposal_count_from_summary(summary)
+        todo_count = _todo_count_from_summary(summary)
+        legacy_queue_count = summary.get("queue_item_count")
+        if proposal_count is None or (todo_count is not None and legacy_queue_count == todo_count):
+            return "TODO Focus"
+        return "Proposal Queue"
+    return title
+
+
 def _items(data: Any, *paths: tuple[str, ...]) -> list[Any]:
     if isinstance(data, list):
         return data
@@ -204,15 +254,13 @@ def _render_today(data: Any) -> dict[str, Any]:
 
     readiness = _short(_readiness_status(data))
     publication = _short(_publication_status(data))
-    queue_count = _count_from(data, "queue", "queues", "proposals")
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    queue_count = _proposal_count_from_summary(summary)
     if queue_count is None:
-        queue_count = _get_path(data, "summary", "queue_item_count")
+        queue_count = _count_from(data, "proposals", "proposal_queue")
     todo_count = _count_from(data, "todo", "todos")
     if todo_count is None:
-        todo_count = (
-            _get_path(data, "summary", "active_todo_count")
-            or _get_path(data, "summary", "triage_todo_count")
-        )
+        todo_count = _todo_count_from_summary(summary)
 
     active_runs = _items(data, ("runs", "active"), ("active_runs",))
     recent_runs = _items(data, ("runs", "recent"), ("recent_runs",))
@@ -235,10 +283,12 @@ def _render_today(data: Any) -> dict[str, Any]:
         f"Publication: {publication}",
     ]
     if queue_count is not None or todo_count is not None:
-        lines.append(
-            "Queue: "
-            f"{_short(queue_count, 'unknown')} · TODOs: {_short(todo_count, 'unknown')}"
-        )
+        count_bits = []
+        if queue_count is not None:
+            count_bits.append(f"Proposals: {_short(queue_count, 'unknown')}")
+        if todo_count is not None:
+            count_bits.append(f"TODOs: {_short(todo_count, 'unknown')}")
+        lines.append(" · ".join(count_bits))
     if run_bits:
         lines.append("Runs: " + " · ".join(run_bits[:3]))
     if next_actions:
@@ -260,8 +310,8 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         or _publication_status(data)
     )
     sections = data.get("sections") if isinstance(data.get("sections"), list) else []
-    queue_count = summary.get("queue_item_count")
-    todo_count = summary.get("active_todo_count") or summary.get("triage_todo_count")
+    queue_count = _proposal_count_from_summary(summary)
+    todo_count = _todo_count_from_summary(summary)
     active_runs = summary.get("active_run_count")
     lines = [
         "KB Dashboard",
@@ -270,7 +320,7 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     ]
     counts: list[str] = []
     if queue_count is not None:
-        counts.append(f"Queue {queue_count}")
+        counts.append(f"Proposals {queue_count}")
     if todo_count is not None:
         counts.append(f"TODOs {todo_count}")
     if active_runs is not None:
@@ -284,13 +334,22 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         if not cards:
             continue
         lines.append("")
-        lines.append(_short(section.get("title") or section.get("id"), "Section"))
+        lines.append(_dashboard_section_title(section, summary))
         for card in cards[:3]:
             if not isinstance(card, dict):
                 continue
-            detail = _short(card.get("detail"), "")
+            detail = _display_text(card.get("detail"))
             suffix = f" — {detail}" if detail else ""
-            lines.append(f"- {_short(card.get('title'), 'item')}{suffix}")
+            lines.append(f"- {_display_text(card.get('title') or 'item')}{suffix}")
+    next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
+    if next_actions and not any(
+        isinstance(section, dict) and str(section.get("id") or "").strip().lower() == "next"
+        for section in sections
+    ):
+        lines.append("")
+        lines.append("Next Actions")
+        for action in next_actions[:3]:
+            lines.append(f"- {_display_text(action)}")
     warnings = data.get("warnings") if isinstance(data.get("warnings"), list) else []
     if warnings:
         lines.append("")
@@ -299,9 +358,9 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if refresh:
         lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
     actions = [
-        _command_card_action(ctx, target, "Refresh", "dashboard"),
+        _command_card_action(ctx, target, "Refresh", "kb"),
         _command_card_action(ctx, target, "Queue", "kbqueue"),
-        _command_card_action(ctx, target, "Runs", "runs"),
+        _command_card_action(ctx, target, "Runs", "kbruns"),
         _command_card_action(ctx, target, "Status", "kbstatus"),
     ]
     return {"title": "KB Dashboard", "text": "\n".join(lines), "actions": actions}
@@ -828,7 +887,7 @@ async def _watch_run_until_terminal(ctx: Any, target: str, run_id: str, adapter:
     await _adapter_send_text(
         adapter,
         callback_ctx,
-        f"KB run {run_id} is still active after the watcher window. Use /runs for the latest status.",
+        f"KB run {run_id} is still active after the watcher window. Use /kbruns for the latest status.",
     )
 
 
@@ -936,7 +995,7 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
         "include_readiness": True,
         "run_limit": 3,
     }
-    if command == "dashboard":
+    if command == "kb":
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -954,13 +1013,13 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             ],
         )
         return _render_error("KB Dashboard", target, errors) if data is None else _render_dashboard(data, ctx=ctx, target=target)
-    if command in {"kb", "today"}:
+    if command == "kbtoday":
         _, data, errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         return _render_error("KB Today", target, errors) if data is None else _render_today(data)
     if command == "kbstatus":
         _, data, _errors = _dispatch_first(ctx, target, [("attention.cockpit", cockpit_args)])
         return _render_status(data, target)
-    if command == "runs":
+    if command == "kbruns":
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -971,7 +1030,7 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             ],
         )
         return _render_error("KB Runs", target, errors) if data is None else _render_runs(data)
-    if command in {"kbqueue", "review"}:
+    if command in {"kbqueue", "kbreview"}:
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -982,12 +1041,12 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             ],
         )
         return _render_error("KB Queue", target, errors) if data is None else _render_queue(data, ctx=ctx, target=target)
-    if command == "run":
+    if command == "kbrun":
         workflow_id, intent = _workflow_id_from_args(args)
         if not workflow_id:
             return {
                 "title": "Workflow",
-                "text": "Workflow\nSend /run kb sync or /run <workflow_id>.",
+                "text": "Workflow\nSend /kbrun kb sync or /kbrun <workflow_id>.",
                 "actions": [],
             }
         _, data, errors = _dispatch_first(

@@ -79,7 +79,7 @@ def _drain_scheduled_tasks():
     asyncio.run(_drain())
 
 
-def test_kb_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
+def test_kbtoday_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
@@ -103,7 +103,7 @@ def test_kb_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/today"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kbtoday"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -128,29 +128,40 @@ def test_kb_command_renders_attention_cockpit_with_native_adapter(monkeypatch):
     assert adapter.sent[0]["reply_to"] == "m1"
 
 
-def test_kb_command_renders_live_attention_summary_shape(monkeypatch):
+def test_kb_command_renders_live_dashboard_without_calling_todo_count_queue(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_attention_cockpit": {
+            "mcp_kb_engine_prod_dashboard_live": {
                 "result": {
+                    "surface": "dashboard.live",
                     "summary": {
                         "active_todo_count": 309,
+                        "active_run_count": 0,
                         "publication_status": "dirty",
                         "queue_item_count": 309,
                         "readiness_status": "degraded",
-                        "recent_run_count": 5,
+                        "recent_run_count": 0,
                     },
-                    "sections": {
-                        "publication": {
-                            "summary": {"ok": True, "status": "dirty"},
-                            "payload": {"git": {"changed_count": 106}},
+                    "sections": [
+                        {"id": "now", "title": "Now", "cards": [{"title": "Readiness: degraded"}]},
+                        {
+                            "id": "queue",
+                            "title": "Queue",
+                            "cards": [
+                                {
+                                    "id": "queue:todo1",
+                                    "kind": "queue",
+                                    "title": "Feature Anthropic Operon",
+                                    "detail": "P0 BIO activation TODO",
+                                }
+                            ],
                         },
-                        "readiness": {"summary": {"ready": True, "status": "degraded"}},
-                    },
+                    ],
                     "next_actions": ["Review prioritized queue items through workbench.queue."],
+                    "refresh": {"ttl_seconds": 60},
                 }
             }
         }
@@ -162,10 +173,15 @@ def test_kb_command_renders_live_attention_summary_shape(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0][0] == "mcp_kb_engine_prod_dashboard_live"
     text = adapter.sent[0]["text"]
+    assert "KB Dashboard" in text
     assert "Readiness: degraded" in text
     assert "Publication: dirty" in text
-    assert "Queue: 309" in text
+    assert "TODOs 309" in text
+    assert "Queue 309" not in text
+    assert "TODO Focus" in text
+    assert "Review prioritized TODO items" in text
 
 
 def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
@@ -207,7 +223,7 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/dashboard"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kb"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
@@ -226,12 +242,12 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
     assert "KB Dashboard" in text
     assert "Readiness: ready" in text
     assert "Publication: clean" in text
-    assert "Queue 2" in text
+    assert "Proposals 2" in text
     assert "Review one proposal" in text
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Refresh", "Queue", "Runs", "Status"]
 
 
-def test_plain_queue_command_is_left_for_system_queue(monkeypatch):
+def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
@@ -239,9 +255,10 @@ def test_plain_queue_command_is_left_for_system_queue(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/queue"), gateway=_authorized_gateway(adapter), session_store=None)
+    for command in ["/queue", "/dashboard", "/today", "/runs", "/run", "/review"]:
+        result = hook(event=_event(command), gateway=_authorized_gateway(adapter), session_store=None)
+        assert result is None
 
-    assert result is None
     assert ctx.calls == []
     assert adapter.sent == []
 
@@ -443,7 +460,7 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/run kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kbrun kb sync"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}

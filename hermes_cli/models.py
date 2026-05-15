@@ -302,7 +302,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
-        "deepseek-chat",
         "deepseek-reasoner",
     ],
     "xiaomi": [
@@ -3446,6 +3445,24 @@ def validate_requested_model(
                 f"{suggestion_text}"
             ),
         }
+
+    # Check if this is a deprecated model with a known redirect
+    try:
+        from hermes_cli.models import _DEPRECATED_MODEL_REDIRECTS
+        _redir = _DEPRECATED_MODEL_REDIRECTS.get(requested)
+        if _redir:
+            _redir_provider, _redir_model = _redir
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"Model `{requested}` has been deprecated and is no longer available. "
+                    f"Use `{_redir_model}` instead (via provider `{_redir_provider}`)."
+                ),
+            }
+    except Exception:
+        pass
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.

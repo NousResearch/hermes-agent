@@ -221,6 +221,7 @@ This clears both the singleton OAuth entry in `auth.json` and any credential-poo
 
 ## See Also
 
+- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — required reading if Hermes is on a different machine than your browser
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)

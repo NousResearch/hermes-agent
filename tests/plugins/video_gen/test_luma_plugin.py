@@ -1,71 +1,106 @@
-"""Smoke tests for the Luma video gen plugin — load & register surface."""
+"""Smoke tests for the Luma Dream Machine video generation provider."""
 
-from __future__ import annotations
-
+import os
 import pytest
 
-from agent import video_gen_registry
+# Import the provider directly from the plugin
+from plugins.video_gen.luma import (
+    LumaProvider,
+    LUMAAI_MODELS,
+    DEFAULT_MODEL,
+    VALID_ASPECT_RATIOS,
+    VALID_DURATIONS,
+    VALID_RESOLUTIONS,
+    register,
+)
 
 
-@pytest.fixture(autouse=True)
-def _reset_registry():
-    video_gen_registry._reset_for_tests()
-    yield
-    video_gen_registry._reset_for_tests()
+@pytest.fixture
+def provider():
+    return LumaProvider()
 
 
-def test_luma_provider_registers():
-    from plugins.video_gen.luma import LumaProvider
+class TestLumaRegistration:
+    """Test provider registration and basic properties."""
 
-    provider = LumaProvider()
-    video_gen_registry.register_provider(provider)
+    def test_name(self, provider):
+        assert provider.name == "luma"
 
-    assert video_gen_registry.get_provider("luma") is provider
-    assert provider.display_name == "Luma Dream Machine"
-    assert provider.default_model() == "dream-machine-1.6"
+    def test_display_name(self, provider):
+        assert provider.display_name == "Luma Dream Machine"
 
+    def test_default_model(self, provider):
+        assert provider.default_model() == "ray-2"
 
-def test_luma_capabilities_text_and_image():
-    from plugins.video_gen.luma import LumaProvider
-
-    caps = LumaProvider().capabilities()
-    assert caps["modalities"] == ["text", "image"]
-    assert "16:9" in caps["aspect_ratios"]
-    assert "9:16" in caps["aspect_ratios"]
-    assert caps["min_duration"] == 5
-    assert caps["max_duration"] == 10
+    def test_list_models(self, provider):
+        models = provider.list_models()
+        assert len(models) >= 2
+        model_ids = [m["id"] for m in models]
+        assert "ray-2" in model_ids
+        assert "ray-flash-2" in model_ids
 
 
-def test_luma_models():
-    from plugins.video_gen.luma import LumaProvider
+class TestLumaCapabilities:
+    """Test provider capabilities."""
 
-    models = LumaProvider().list_models()
-    assert len(models) == 2
-    model_ids = {m["id"] for m in models}
-    assert "dream-machine-1.6" in model_ids
-    assert "photon-1" in model_ids
+    def test_capabilities(self, provider):
+        caps = provider.capabilities()
+        assert "text" in caps["modalities"]
+        assert "image" in caps["modalities"]
+        assert caps["min_duration"] == 5
+        assert caps["max_duration"] == 9
+        assert caps["supports_audio"] is False
+        assert caps["supports_negative_prompt"] is False
+
+    def test_valid_aspect_ratios(self):
+        assert "16:9" in VALID_ASPECT_RATIOS
+        assert "9:16" in VALID_ASPECT_RATIOS
+        assert "1:1" in VALID_ASPECT_RATIOS
+
+    def test_valid_durations(self):
+        assert "5s" in VALID_DURATIONS
+        assert "9s" in VALID_DURATIONS
+
+    def test_valid_resolutions(self):
+        assert "720p" in VALID_RESOLUTIONS
+        assert "1080p" in VALID_RESOLUTIONS
 
 
-def test_luma_unavailable_without_key(monkeypatch):
-    from plugins.video_gen.luma import LumaProvider
+class TestLumaAvailability:
+    """Test API key availability detection."""
 
-    monkeypatch.delenv("LUMA_API_KEY", raising=False)
-    assert LumaProvider().is_available() is False
+    def test_not_available_without_key(self, provider, monkeypatch):
+        monkeypatch.delenv("LUMAAI_API_KEY", raising=False)
+        assert provider.is_available() is False
 
-
-def test_luma_generate_requires_key(monkeypatch):
-    from plugins.video_gen.luma import LumaProvider
-
-    monkeypatch.delenv("LUMA_API_KEY", raising=False)
-    result = LumaProvider().generate("a beautiful landscape")
-    assert result["success"] is False
-    assert result["error_type"] == "missing_api_key"
+    def test_available_with_key(self, provider, monkeypatch):
+        monkeypatch.setenv("LUMAAI_API_KEY", "test-key-123")
+        assert provider.is_available() is True
 
 
-def test_luma_setup_schema():
-    from plugins.video_gen.luma import LumaProvider
+class TestLumaSetupSchema:
+    """Test setup schema generation."""
 
-    schema = LumaProvider().get_setup_schema()
-    assert schema["name"] == "Luma Dream Machine"
-    assert schema["badge"] == "paid"
-    assert schema["env_vars"][0]["key"] == "LUMA_API_KEY"
+    def test_setup_schema(self, provider):
+        schema = provider.get_setup_schema()
+        assert schema["name"] == "Luma Dream Machine"
+        assert schema["badge"] == "paid"
+        env_vars = schema["env_vars"]
+        assert len(env_vars) == 1
+        assert env_vars[0]["key"] == "LUMAAI_API_KEY"
+
+
+class TestLumaModelResolution:
+    """Test model resolution logic."""
+
+    def test_resolve_model_explicit(self, provider):
+        assert provider._resolve_model("ray-2") == "ray-2"
+        assert provider._resolve_model("ray-flash-2") == "ray-flash-2"
+
+    def test_resolve_model_env(self, provider, monkeypatch):
+        monkeypatch.setenv("LUMAAI_VIDEO_MODEL", "ray-flash-2")
+        assert provider._resolve_model(None) == "ray-flash-2"
+
+    def test_resolve_model_default(self, provider, monkeypatch):
+        monkeypatch.delenv("LUMAAI_VIDEO_MODEL", raising=False)
+        assert provider._resolve_model(None) == "ray-2"

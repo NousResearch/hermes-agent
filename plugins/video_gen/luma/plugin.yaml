@@ -1,7 +1,68 @@
+# Luma Dream Machine Video Generation Provider
+# Official Python SDK: https://pypi.org/project/lumaai/
+# SDK Source: https://github.com/lumalabs/lumaai-python
+
 name: luma
+description: "Luma Dream Machine (Ray 2) video generation backend"
+author: 0z1-ghb
 version: 1.0.0
-description: "Luma Dream Machine video generation backend. Photorealistic text-to-video and image-to-video with cinematic quality."
-author: 0z1
-kind: backend
-requires_env:
-  - LUMA_API_KEY
+license: Apache-2.0
+
+# Provider metadata
+category: video_generation
+provider_type: video_gen
+models:
+  - id: ray-2
+    display: "Ray 2"
+    modalities: ["text", "image"]
+    speed: "~1-3 min"
+    price: "$0.10/s"
+  - id: ray-flash-2
+    display: "Ray Flash 2"
+    modalities: ["text", "image"]
+    speed: "~30-60s"
+    price: "$0.05/s"
+
+# Environment variables required
+env_vars:
+  - key: LUMAAI_API_KEY
+    description: "Luma AI API key for authentication"
+    url: "https://lumalabs.ai/dream-machine/api"
+    required: true
+
+# Optional configuration
+config:
+  default_model: "ray-2"
+  default_duration: 5
+  supported_durations:
+    - "5s"
+    - "9s"
+  supported_aspect_ratios:
+    - "1:1"
+    - "16:9"
+    - "9:16"
+    - "4:3"
+    - "3:4"
+    - "21:9"
+    - "9:21"
+  supported_resolutions:
+    - "540p"
+    - "720p"
+    - "1080p"
+    - "4k"
+
+# Capabilities
+capabilities:
+  text_to_video: true
+  image_to_video: true
+  video_to_video: false
+  audio: false
+  negative_prompt: false
+  max_reference_images: 0
+
+# API endpoints (for reference)
+api:
+  base_url: "https://api.lumalabs.ai/dream-machine/v1"
+  generations: "/generations"
+  generation_status: "/generations/{id}"
+  auth: "Bearer token in Authorization header"

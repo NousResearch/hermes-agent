@@ -1,7 +1,60 @@
-name: runway
+# RunwayML Video Generation Provider
+# Official Python SDK: https://pypi.org/project/runwayml/
+# SDK Source: https://github.com/runwayml/sdk-python
+
+name: runwayml
+description: "RunwayML Gen-4.5 video generation backend"
+author: 0z1-ghb
 version: 1.0.0
-description: "RunwayML video generation backend. Gen-3 Alpha — text-to-video and image-to-video with cinematic quality."
-author: 0z1
-kind: backend
-requires_env:
-  - RUNWAY_API_KEY
+license: Apache-2.0
+
+# Provider metadata
+category: video_generation
+provider_type: video_gen
+models:
+  - id: gen4.5
+    display: "Gen-4.5"
+    modalities: ["text", "image"]
+    speed: "~2-5 min"
+    price: "$0.15/s"
+
+# Environment variables required
+env_vars:
+  - key: RUNWAYML_API_KEY
+    description: "RunwayML API key for authentication"
+    url: "https://runwayml.com/settings/api"
+    required: true
+
+# Optional configuration
+config:
+  default_model: "gen4.5"
+  default_duration: 5
+  max_duration: 10
+  min_duration: 2
+  supported_aspect_ratios:
+    - "16:9"
+    - "9:16"
+    - "4:3"
+    - "1:1"
+    - "3:4"
+    - "21:9"
+  supported_resolutions:
+    - "720p"
+
+# Capabilities
+capabilities:
+  text_to_video: true
+  image_to_video: true
+  video_to_video: false
+  audio: false
+  negative_prompt: false
+  max_reference_images: 0
+
+# API endpoints (for reference)
+api:
+  base_url: "https://api.runwayml.com"
+  text_to_video: "/v1/tasks/text_to_video"
+  image_to_video: "/v1/tasks/image_to_video"
+  task_status: "/v1/tasks/{id}"
+  auth: "Bearer token in Authorization header"
+  version_header: "X-Runway-Version: 2024-09-25"

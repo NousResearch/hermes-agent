@@ -308,6 +308,13 @@ class SlackAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
+        # Multi-socket support: parallel lists, one entry per Slack app.
+        # self._app and self._handler remain set to the primary (index 0) for
+        # backward compatibility with code that references them directly.
+        self._apps: List[Any] = []
+        self._handlers: List[Any] = []
+        self._socket_tasks: List[asyncio.Task] = []
+        self._extra_app_tokens: List[str] = []
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
@@ -315,6 +322,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
+        # Multi-app-in-same-team support: when multiple Slack apps share a Slack
+        # workspace (same team_id), team_id alone can't pick the right client.
+        # Track which bot user actually received each event/channel.
+        self._bot_user_clients: Dict[str, Any] = {}    # bot_user_id → WebClient
+        self._channel_bot_user: Dict[str, str] = {}    # channel_id → bot_user_id
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
@@ -503,6 +515,101 @@ class SlackAdapter(BasePlatformAdapter):
         # Non-fatal — the user saw the initial ack already.
         return SendResult(success=True, message_id=None)
 
+    def _register_app_handlers(self, app: Any, bot_user_id: Optional[str] = None) -> None:
+        """Register the standard set of event/command/action handlers on an AsyncApp.
+
+        Factored out so that each Slack app (one per Socket Mode connection in
+        multi-workspace setups) gets the same wiring. When ``bot_user_id`` is
+        provided, it's stamped onto every inbound event as
+        ``_hermes_recipient_bot_user_id`` so downstream code can route the
+        outbound send through the correct workspace WebClient (critical when
+        multiple Slack apps share the same Slack team_id).
+        """
+        def _stamp(event: dict) -> None:
+            if bot_user_id and isinstance(event, dict):
+                event["_hermes_recipient_bot_user_id"] = bot_user_id
+
+        # Generic message event
+        @app.event("message")
+        async def handle_message_event(event, say):
+            _stamp(event)
+            await self._handle_slack_message(event)
+
+        # Handle app_mention explicitly. In some Slack app configurations,
+        # channel mentions arrive only as app_mention events rather than the
+        # generic message event. Forward them into the normal message
+        # pipeline so @mentions reliably produce replies.
+        # NOTE: when Slack fires BOTH message and app_mention for the same
+        # @mention, they share the same event ts — the dedup in
+        # _handle_slack_message (MessageDeduplicator) suppresses the second.
+        @app.event("app_mention")
+        async def handle_app_mention(event, say):
+            _stamp(event)
+            await self._handle_slack_message(event)
+
+        # File lifecycle events can arrive around snippet uploads even when
+        # the actual user message is what we care about. Ack them so Slack
+        # doesn't log noisy 404 "unhandled request" warnings.
+        @app.event("file_shared")
+        async def handle_file_shared(event, say):
+            pass
+
+        @app.event("file_created")
+        async def handle_file_created(event, say):
+            pass
+
+        @app.event("file_change")
+        async def handle_file_change(event, say):
+            pass
+
+        @app.event("assistant_thread_started")
+        async def handle_assistant_thread_started(event, say):
+            _stamp(event)
+            await self._handle_assistant_thread_lifecycle_event(event)
+
+        @app.event("assistant_thread_context_changed")
+        async def handle_assistant_thread_context_changed(event, say):
+            _stamp(event)
+            await self._handle_assistant_thread_lifecycle_event(event)
+
+        # Slash command handler(s)
+        from hermes_cli.commands import slack_native_slashes
+        import re as _re
+
+        _slash_names = [name for name, _d, _h in slack_native_slashes()]
+        if _slash_names:
+            _slash_pattern = _re.compile(
+                r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+            )
+        else:  # pragma: no cover - registry always non-empty
+            _slash_pattern = _re.compile(r"^/hermes$")
+
+        @app.command(_slash_pattern)
+        async def handle_hermes_command(ack, command):
+            slash = (command.get("command") or "").lstrip("/")
+            await ack(
+                response_type="ephemeral",
+                text=f"Running `/{slash}`…",
+            )
+            await self._handle_slash_command(command)
+
+        # Block Kit action handlers for approval buttons
+        for _action_id in (
+            "hermes_approve_once",
+            "hermes_approve_session",
+            "hermes_approve_always",
+            "hermes_deny",
+        ):
+            app.action(_action_id)(self._handle_approval_action)
+
+        # Block Kit action handlers for slash-confirm buttons
+        for _action_id in (
+            "hermes_confirm_once",
+            "hermes_confirm_always",
+            "hermes_confirm_cancel",
+        ):
+            app.action(_action_id)(self._handle_slash_confirm_action)
+
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -549,27 +656,42 @@ class SlackAdapter(BasePlatformAdapter):
                 return False
             lock_acquired = True
 
-            # Close any previous handler before creating a new one so that
+            # Close any previous handlers before creating new ones so that
             # calling connect() a second time (e.g. during a gateway restart or
-            # in-process reconnect attempt) does not leave a zombie Socket Mode
-            # connection alive.  Both the old and new connections would otherwise
+            # in-process reconnect attempt) does not leave zombie Socket Mode
+            # connections alive.  Both the old and new connections would otherwise
             # receive every Slack event and dispatch it twice, producing double
             # responses — the same bug that affected DiscordAdapter (#18187).
-            if self._handler is not None:
+            for prev in list(self._handlers) or ([self._handler] if self._handler else []):
+                if prev is None:
+                    continue
                 try:
-                    await self._handler.close_async()
+                    await prev.close_async()
                 except Exception:
                     logger.debug("[%s] Failed to close previous Slack handler", self.name)
-                finally:
-                    self._handler = None
-                    self._app = None
+            self._handlers = []
+            self._apps = []
+            self._socket_tasks = []
+            self._handler = None
+            self._app = None
 
-            # First token is the primary — used for AsyncApp / Socket Mode
-            primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
-            _apply_slack_proxy(self._app.client, proxy_url)
+            # Parse SLACK_APP_TOKEN as comma-separated, matching SLACK_BOT_TOKEN.
+            # Each Slack app has its own (bot_token, app_token) pair — you can NOT
+            # reuse one app_token across multiple Slack apps. So inbound events
+            # require one Socket Mode connection per app_token.
+            app_tokens = [t.strip() for t in app_token.split(",") if t.strip()]
+            if len(app_tokens) != len(bot_tokens):
+                logger.warning(
+                    "[Slack] Token count mismatch: %d bot token(s), %d app token(s). "
+                    "Will pair index-wise; extra/missing tokens are ignored. "
+                    "Inbound events only work for paired apps.",
+                    len(bot_tokens), len(app_tokens),
+                )
 
-            # Register each bot token and map team_id → client
+            # Register each bot token: build team_id → WebClient map for sends.
+            # Bot user IDs are returned by auth.test and used to disambiguate
+            # multi-app-in-same-team setups.
+            bot_user_id_by_token: Dict[str, str] = {}
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
                 _apply_slack_proxy(client, proxy_url)
@@ -581,6 +703,9 @@ class SlackAdapter(BasePlatformAdapter):
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
+                if bot_user_id:
+                    self._bot_user_clients[bot_user_id] = client
+                    bot_user_id_by_token[token] = bot_user_id
 
                 # First token sets the primary bot_user_id (backward compat)
                 if self._bot_user_id is None:
@@ -591,105 +716,35 @@ class SlackAdapter(BasePlatformAdapter):
                     bot_name, team_name, team_id,
                 )
 
-            # Register message event handler
-            @self._app.event("message")
-            async def handle_message_event(event, say):
-                await self._handle_slack_message(event)
-
-            # Handle app_mention explicitly. In some Slack app configurations,
-            # channel mentions arrive only as app_mention events rather than the
-            # generic message event. Forward them into the normal message
-            # pipeline so @mentions reliably produce replies.
-            # NOTE: when Slack fires BOTH message and app_mention for the same
-            # @mention, they share the same event ts — the dedup in
-            # _handle_slack_message (MessageDeduplicator) suppresses the second.
-            @self._app.event("app_mention")
-            async def handle_app_mention(event, say):
-                await self._handle_slack_message(event)
-
-            # File lifecycle events can arrive around snippet uploads even when
-            # the actual user message is what we care about. Ack them so Slack
-            # doesn't log noisy 404 "unhandled request" warnings.
-            @self._app.event("file_shared")
-            async def handle_file_shared(event, say):
-                pass
-
-            @self._app.event("file_created")
-            async def handle_file_created(event, say):
-                pass
-
-            @self._app.event("file_change")
-            async def handle_file_change(event, say):
-                pass
-
-            @self._app.event("assistant_thread_started")
-            async def handle_assistant_thread_started(event, say):
-                await self._handle_assistant_thread_lifecycle_event(event)
-
-            @self._app.event("assistant_thread_context_changed")
-            async def handle_assistant_thread_context_changed(event, say):
-                await self._handle_assistant_thread_lifecycle_event(event)
-
-            # Register slash command handler(s)
-            #
-            # Every gateway command from COMMAND_REGISTRY is a native Slack
-            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
-            # /model work directly without /hermes prefix). A single regex
-            # matcher dispatches all of them to one handler so we don't need
-            # N identical @app.command() decorators.
-            #
-            # The slash commands must ALSO be declared in the Slack app
-            # manifest (see `hermes slack manifest`). In Socket Mode, Slack
-            # routes the command event through the socket regardless of the
-            # manifest's request URL, but it will not deliver an event for
-            # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
-            import re as _re
-
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
-            if _slash_names:
-                _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+            # Build one AsyncApp + Socket Mode handler per (bot_token, app_token) pair.
+            # First pair is the primary (self._app / self._handler) for backward compat.
+            paired = list(zip(bot_tokens, app_tokens))
+            for idx, (b_token, a_token) in enumerate(paired):
+                app = AsyncApp(token=b_token)
+                _apply_slack_proxy(app.client, proxy_url)
+                self._register_app_handlers(
+                    app, bot_user_id=bot_user_id_by_token.get(b_token),
                 )
-            else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
 
-            @self._app.command(_slash_pattern)
-            async def handle_hermes_command(ack, command):
-                slash = (command.get("command") or "").lstrip("/")
-                await ack(
-                    response_type="ephemeral",
-                    text=f"Running `/{slash}`…",
-                )
-                await self._handle_slash_command(command)
+                handler = AsyncSocketModeHandler(app, a_token, proxy=proxy_url)
+                _apply_slack_proxy(handler.client, proxy_url)
+                task = asyncio.create_task(handler.start_async())
 
-            # Register Block Kit action handlers for approval buttons
-            for _action_id in (
-                "hermes_approve_once",
-                "hermes_approve_session",
-                "hermes_approve_always",
-                "hermes_deny",
-            ):
-                self._app.action(_action_id)(self._handle_approval_action)
+                self._apps.append(app)
+                self._handlers.append(handler)
+                self._socket_tasks.append(task)
 
-            # Register Block Kit action handlers for slash-confirm buttons
-            # (generic three-option prompts; see tools/slash_confirm.py).
-            for _action_id in (
-                "hermes_confirm_once",
-                "hermes_confirm_always",
-                "hermes_confirm_cancel",
-            ):
-                self._app.action(_action_id)(self._handle_slash_confirm_action)
-
-            # Start Socket Mode handler in background
-            self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
-            _apply_slack_proxy(self._handler.client, proxy_url)
-            self._socket_mode_task = asyncio.create_task(self._handler.start_async())
+                if idx == 0:
+                    self._app = app
+                    self._handler = handler
+                    self._socket_mode_task = task
+                else:
+                    self._extra_app_tokens.append(a_token)
 
             self._running = True
             logger.info(
-                "[Slack] Socket Mode connected (%d workspace(s))",
-                len(self._team_clients),
+                "[Slack] Socket Mode connected (%d socket(s), %d workspace(s))",
+                len(self._handlers), len(self._team_clients),
             )
             return True
 
@@ -736,12 +791,24 @@ class SlackAdapter(BasePlatformAdapter):
         return None
 
     async def disconnect(self) -> None:
-        """Disconnect from Slack."""
-        if self._handler:
+        """Disconnect from Slack — close every Socket Mode handler."""
+        handlers_to_close = list(self._handlers) if self._handlers else (
+            [self._handler] if self._handler else []
+        )
+        for handler in handlers_to_close:
+            if handler is None:
+                continue
             try:
-                await self._handler.close_async()
+                await handler.close_async()
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
+        self._handlers = []
+        self._apps = []
+        self._socket_tasks = []
+        self._extra_app_tokens = []
+        self._handler = None
+        self._app = None
+        self._socket_mode_task = None
         self._running = False
 
         self._release_platform_lock()
@@ -749,7 +816,16 @@ class SlackAdapter(BasePlatformAdapter):
         logger.info("[Slack] Disconnected")
 
     def _get_client(self, chat_id: str) -> Any:
-        """Return the workspace-specific WebClient for a channel."""
+        """Return the workspace-specific WebClient for a channel.
+
+        Resolution order:
+        1. Bot-user-specific client (handles multi-app-in-same-team setups).
+        2. Team-specific client (handles single-app-per-team multi-workspace).
+        3. Primary app client as fallback.
+        """
+        bot_user_id = self._channel_bot_user.get(chat_id)
+        if bot_user_id and bot_user_id in self._bot_user_clients:
+            return self._bot_user_clients[bot_user_id]
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
@@ -1766,9 +1842,16 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
-        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777).
+        # In multi-app setups where several Slack apps are members of the same
+        # channel, Slack legitimately delivers the SAME event_ts to each app's
+        # socket — once per app. We must dedup per-recipient, not globally,
+        # otherwise the first arrival wins and the actually-mentioned app's
+        # copy gets silently dropped.
         event_ts = event.get("ts", "")
-        if event_ts and self._dedup.is_duplicate(event_ts):
+        recipient = event.get("_hermes_recipient_bot_user_id", "")
+        dedup_key = f"{recipient}:{event_ts}" if recipient else event_ts
+        if event_ts and self._dedup.is_duplicate(dedup_key):
             return
 
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
@@ -1929,6 +2012,13 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
+        # Track which Slack app (bot user) actually received this event.
+        # Stamping is deferred to AFTER the mention/route check below, so that
+        # in multi-app-in-same-channel setups only the app that's actually
+        # responding claims the channel's WebClient — otherwise a non-mentioned
+        # app clobbers the mapping moments before the correct one would set it.
+        recipient_bot_user_id = event.get("_hermes_recipient_bot_user_id", "")
+
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
         if not channel_type and channel_id.startswith("D"):
@@ -1956,7 +2046,15 @@ class SlackAdapter(BasePlatformAdapter):
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
-        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        # Pick the bot_user_id of the Slack app that actually received this
+        # event. Critical when multiple Slack apps share the same team_id —
+        # using the team_id alone returns whichever bot was registered last
+        # in self._team_bot_user_ids, which can flag a real @mention as
+        # "not mentioned" and silently drop the event.
+        bot_uid = (
+            event.get("_hermes_recipient_bot_user_id")
+            or self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        )
         routing_text = original_text or ""
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
@@ -1993,6 +2091,13 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                     return
+
+        # Routing gate passed — this app IS responding. Now claim the channel
+        # for this bot user so the outbound send picks the correct WebClient.
+        # (Deferred from earlier to avoid non-mentioned apps clobbering the
+        # mapping when multiple apps are members of the same channel.)
+        if recipient_bot_user_id and channel_id:
+            self._channel_bot_user[channel_id] = recipient_bot_user_id
 
         if is_mentioned:
             # Strip the bot mention from the text

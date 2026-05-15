@@ -231,7 +231,22 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
     assert [action.label for action in adapter.sent[0]["actions"]] == ["Refresh", "Queue", "Runs", "Status"]
 
 
-def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypatch):
+def test_plain_queue_command_is_left_for_system_queue(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext({})
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/queue"), gateway=_authorized_gateway(adapter), session_store=None)
+
+    assert result is None
+    assert ctx.calls == []
+    assert adapter.sent == []
+
+
+def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
     from tools.kb_callback_registry import KbCallbackContext
 
@@ -264,26 +279,42 @@ def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypa
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/queue"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kbqueue"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls == [("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})]
     assert adapter.sent
     text = adapter.sent[0]["text"]
-    assert "Queue" in text
+    assert "KB Queue" in text
     assert "9" in text
     assert "Admit Stanford DAS Lab" in text
-    assert "Buttons preview decisions" in text
-    assert [action.label for action in adapter.sent[0]["actions"]] == [
+    assert "Tap Review N" in text
+    assert [action.label for action in adapter.sent[0]["actions"]] == ["Review 1"]
+    assert adapter.sent[0]["reply_to"] == "m1"
+
+    detail = asyncio.run(
+        adapter.sent[0]["actions"][0].handler(
+            KbCallbackContext(
+                callback_id="cb_detail",
+                action_id="queue.item.1",
+                actor_id="777",
+                actor_name="Ada",
+            )
+        )
+    )
+    assert "Queue Item 1" in detail["text"]
+    assert "Admit Stanford DAS Lab" in detail["text"]
+    assert "Would update existing entity." in detail["text"]
+    assert "Decision buttons apply only this item." in detail["text"]
+    assert [action.label for action in detail["actions"]] == [
         "Preview approve",
         "Preview reject",
         "Preview archive",
     ]
-    assert adapter.sent[0]["reply_to"] == "m1"
 
     preview = asyncio.run(
-        adapter.sent[0]["actions"][1].handler(
+        detail["actions"][1].handler(
             KbCallbackContext(
                 callback_id="cb_preview",
                 action_id="queue.preview.reject",
@@ -293,6 +324,7 @@ def test_queue_command_uses_real_queue_summary_and_preview_then_confirm(monkeypa
         )
     )
     assert "Queue reject preview" in preview["text"]
+    assert "Item: Admit Stanford DAS Lab" in preview["text"]
     assert preview["actions"][0].label == "Confirm reject"
 
     confirmed = asyncio.run(
@@ -340,12 +372,22 @@ def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     adapter = FakeKbActionsAdapter()
     hook = build_pre_gateway_dispatch_hook(ctx)
 
-    result = hook(event=_event("/queue"), gateway=_authorized_gateway(adapter), session_store=None)
+    result = hook(event=_event("/kbqueue"), gateway=_authorized_gateway(adapter), session_store=None)
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    preview = asyncio.run(
+    detail = asyncio.run(
         adapter.sent[0]["actions"][0].handler(
+            KbCallbackContext(
+                callback_id="cb_detail",
+                action_id="queue.item.1",
+                actor_id="777",
+                actor_name="Ada",
+            )
+        )
+    )
+    preview = asyncio.run(
+        detail["actions"][0].handler(
             KbCallbackContext(
                 callback_id="cb_preview",
                 action_id="queue.preview.approve",

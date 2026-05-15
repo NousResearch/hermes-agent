@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_TARGET = "kb_engine_prod"
-SUPPORTED_COMMANDS = {"dashboard", "kb", "today", "kbstatus", "runs", "queue", "run"}
+SUPPORTED_COMMANDS = {"dashboard", "kb", "today", "kbstatus", "runs", "kbqueue", "review", "run"}
 
 
 def _sanitize_component(value: str) -> str:
@@ -300,7 +300,7 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
         lines.append(f"Refresh: every {_short(refresh.get('ttl_seconds'), '60')}s target")
     actions = [
         _command_card_action(ctx, target, "Refresh", "dashboard"),
-        _command_card_action(ctx, target, "Queue", "queue"),
+        _command_card_action(ctx, target, "Queue", "kbqueue"),
         _command_card_action(ctx, target, "Runs", "runs"),
         _command_card_action(ctx, target, "Status", "kbstatus"),
     ]
@@ -460,7 +460,76 @@ def _result_payload(raw: Any) -> Any:
     return payload
 
 
-def _preview_text(decision: str, proposal_ids: list[str], payload: Any) -> str:
+def _item_kind(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    return _short(item.get("kind") or item.get("type") or raw.get("kind") or raw.get("type"), "")
+
+
+def _item_target(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    return _short(
+        item.get("entity_path")
+        or item.get("target")
+        or item.get("item_id")
+        or raw.get("entity_path")
+        or raw.get("target")
+        or raw.get("item_id"),
+        "",
+    )
+
+
+def _item_detail(item: Any) -> str:
+    if not isinstance(item, dict):
+        return _short(item, "")
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    return _short(
+        item.get("preview")
+        or item.get("why")
+        or item.get("summary")
+        or item.get("description")
+        or item.get("detail")
+        or raw.get("preview")
+        or raw.get("why")
+        or raw.get("summary")
+        or raw.get("description")
+        or raw.get("detail"),
+        "",
+    )
+
+
+def _queue_item_text(item: dict[str, Any], *, index: int) -> str:
+    proposal_ids = _proposal_ids_for_item(item)
+    lines = [
+        f"Queue Item {index}",
+        f"Title: {_item_title(item)}",
+    ]
+    kind = _item_kind(item)
+    target = _item_target(item)
+    detail = _item_detail(item)
+    if kind:
+        lines.append(f"Type: {kind}")
+    if target:
+        lines.append(f"Target: {target}")
+    if detail:
+        lines.append("")
+        lines.append(detail)
+    if proposal_ids:
+        lines.append("")
+        lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
+        lines.append("Decision buttons apply only this item.")
+    else:
+        lines.append("")
+        lines.append("This item did not include proposal ids, so Telegram cannot apply a decision yet. Use the KB workbench for details.")
+    return "\n".join(lines)
+
+
+def _preview_text(decision: str, proposal_ids: list[str], payload: Any, *, item: dict[str, Any] | None = None) -> str:
+    item_title = _item_title(item) if isinstance(item, dict) else ""
+    item_target = _item_target(item) if isinstance(item, dict) else ""
     if isinstance(payload, dict) and payload.get("error"):
         return f"Queue {decision} preview failed\n{payload['error']}"
     if isinstance(payload, dict):
@@ -472,16 +541,25 @@ def _preview_text(decision: str, proposal_ids: list[str], payload: Any) -> str:
             or _get_path(payload, "plan", "summary")
             or f"{decision.title()} {len(proposal_ids)} proposal(s).",
         )
-        return "\n".join(
+        lines = [f"Queue {decision} preview"]
+        if item_title:
+            lines.append(f"Item: {item_title}")
+        if item_target:
+            lines.append(f"Target: {item_target}")
+        lines.extend(
             [
-                f"Queue {decision} preview",
                 f"Status: {status} · ok: {ok}",
                 f"Proposal ids: {', '.join(proposal_ids[:5])}",
                 summary,
-                "Confirm only if this preview matches what you intend.",
+                "Confirm only if this item and decision match what you intend.",
             ]
         )
-    return f"Queue {decision} preview\nProposal ids: {', '.join(proposal_ids[:5])}"
+        return "\n".join(lines)
+    lines = [f"Queue {decision} preview"]
+    if item_title:
+        lines.append(f"Item: {item_title}")
+    lines.append(f"Proposal ids: {', '.join(proposal_ids[:5])}")
+    return "\n".join(lines)
 
 
 def _preview_allows_confirmation(payload: Any) -> bool:
@@ -520,9 +598,9 @@ def _confirmed_text(decision: str, payload: Any) -> str:
             )
         if git_state:
             lines.append("Git: " + _short(git_state.get("summary") or git_state.get("status") or git_state))
-        lines.append("Use /kb or /queue to refresh.")
+        lines.append("Use /kbqueue to refresh.")
         return "\n".join(lines)
-    return f"Queue {decision} applied\nUse /queue to refresh."
+    return f"Queue {decision} applied\nUse /kbqueue to refresh."
 
 
 def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision: str) -> Any:
@@ -543,7 +621,7 @@ def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision
                     "decision": decision,
                     "actor": actor,
                     "source": source,
-                    "note": f"Previewed from Telegram /queue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
+                    "note": f"Previewed from Telegram /kbqueue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
                 },
             )
         )
@@ -566,7 +644,7 @@ def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision
                             "actor_name": _short(getattr(confirm_ctx, "actor_name", ""), ""),
                             "preview_required": True,
                         },
-                        "note": f"Confirmed from Telegram /queue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
+                        "note": f"Confirmed from Telegram /kbqueue for {item.get('item_id') or item.get('entity_path') or item.get('title')}",
                     },
                 )
             )
@@ -582,13 +660,36 @@ def _queue_decision_action(ctx: Any, target: str, item: dict[str, Any], decision
                     {"proposal_ids": proposal_ids, "decision": decision},
                 )
             )
-        return {"text": _preview_text(decision, proposal_ids, preview_payload), "actions": actions}
+        return {"text": _preview_text(decision, proposal_ids, preview_payload, item=item), "actions": actions}
 
     return _kb_action(
         f"Preview {decision}",
         f"queue.preview.{decision}",
         _preview,
         {"proposal_ids": proposal_ids, "decision": decision},
+    )
+
+
+def _queue_item_action(ctx: Any, target: str, item: dict[str, Any], index: int) -> Any:
+    async def _handler(_callback_ctx: Any) -> dict[str, Any]:
+        actions: list[Any] = []
+        if _proposal_ids_for_item(item):
+            actions = [
+                _queue_decision_action(ctx, target, item, "approve"),
+                _queue_decision_action(ctx, target, item, "reject"),
+                _queue_decision_action(ctx, target, item, "archive"),
+            ]
+        return {"text": _queue_item_text(item, index=index), "actions": actions}
+
+    return _kb_action(
+        f"Review {index}",
+        f"queue.item.{index}",
+        _handler,
+        {
+            "index": index,
+            "item_id": str(item.get("item_id") or item.get("id") or item.get("entity_path") or ""),
+            "proposal_ids": _proposal_ids_for_item(item),
+        },
     )
 
 
@@ -792,20 +893,20 @@ def _render_workflow_plan(data: Any, *, ctx: Any, target: str, adapter: Any) -> 
 
 def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = None) -> dict[str, Any]:
     if isinstance(data, str):
-        return {"title": "Queue", "text": f"Queue\n{data}", "actions": []}
+        return {"title": "KB Queue", "text": f"KB Queue\n{data}", "actions": []}
     count = None
     if isinstance(data, dict):
         count = data.get("total") or data.get("count") or _count_from(data, "queue", "proposals")
     items = _items(data, ("items",), ("proposals",), ("queue", "items"))
-    lines = ["Queue"]
+    lines = ["KB Queue"]
     if count is not None:
         lines.append(f"{count} pending")
     if not items:
         lines.append("No proposal previews returned.")
     for idx, item in enumerate(items[:5], start=1):
         if isinstance(item, dict):
-            meta = _short(item.get("kind") or item.get("type"), "")
-            preview = _short(item.get("preview") or item.get("summary") or item.get("description"), "")
+            meta = _item_kind(item)
+            preview = _item_detail(item)
             line = f"{idx}. {_item_title(item)}"
             if meta:
                 line += f" ({meta})"
@@ -816,18 +917,15 @@ def _render_queue(data: Any, *, ctx: Any | None = None, target: str | None = Non
             lines.append(f"{idx}. {_short(item)}")
     actions: list[Any] = []
     if ctx is not None and target and items:
-        first_proposal = next(
-            (item for item in items if isinstance(item, dict) and _proposal_ids_for_item(item)),
-            None,
-        )
-        if isinstance(first_proposal, dict):
-            actions = [
-                _queue_decision_action(ctx, target, first_proposal, "approve"),
-                _queue_decision_action(ctx, target, first_proposal, "reject"),
-                _queue_decision_action(ctx, target, first_proposal, "archive"),
-            ]
-            lines.append("Buttons preview decisions for the first proposal group only.")
-    return {"title": "Queue", "text": "\n".join(lines), "actions": actions}
+        actions = [
+            _queue_item_action(ctx, target, item, idx)
+            for idx, item in enumerate(items[:5], start=1)
+            if isinstance(item, dict)
+        ]
+        if actions:
+            lines.append("")
+            lines.append("Tap Review N to inspect one item before choosing a decision.")
+    return {"title": "KB Queue", "text": "\n".join(lines), "actions": actions}
 
 
 def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = None) -> dict[str, Any]:
@@ -873,7 +971,7 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
             ],
         )
         return _render_error("KB Runs", target, errors) if data is None else _render_runs(data)
-    if command == "queue":
+    if command in {"kbqueue", "review"}:
         _, data, errors = _dispatch_first(
             ctx,
             target,
@@ -883,7 +981,7 @@ def _card_for_command(ctx: Any, command: str, *, args: str = "", adapter: Any = 
                 ("workbench.queue", {"scope": "proposals", "limit": 5}),
             ],
         )
-        return _render_error("Queue", target, errors) if data is None else _render_queue(data, ctx=ctx, target=target)
+        return _render_error("KB Queue", target, errors) if data is None else _render_queue(data, ctx=ctx, target=target)
     if command == "run":
         workflow_id, intent = _workflow_id_from_args(args)
         if not workflow_id:

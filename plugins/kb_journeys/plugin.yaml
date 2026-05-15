@@ -1,6 +1,6 @@
 name: kb_journeys
 version: 0.1.0
-description: "Telegram-native KB journey cards and live dashboard backed by the configured KB MCP target."
+description: "Telegram-native KB journey cards, /kbqueue review dashboard, and live dashboard backed by the configured KB MCP target."
 author: "Hermes Agent"
 provides_hooks:
   - pre_gateway_dispatch

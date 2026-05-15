@@ -295,18 +295,74 @@ export const missionControlTheme: DashboardTheme = {
       fillerOpacity: "0",
     },
   },
-  // Retarget the bundled "Mondwest" display face (used by sidebar nav
-  // labels via `font-mondwest`) to Inter so the whole UI reads as one
-  // consistent sans face — MC has no display-style headings.
-  // Earlier revisions of this theme also force-disabled `mix-blend-mode:
-  // plus-lighter` on the brand title, but that turned out to make some
-  // labels invisible on the flat-dark canvas (Hermes's brand text relies
-  // on the additive blend to read against the canonical dark teal). Left
-  // the blend mode alone — labels are correctly bright because midground
-  // is high-luminance greyscale.
+  // Aggressive global overrides — Hermes's Tailwind config generates
+  // every `bg-card` / `bg-muted` / `bg-popover` / etc. class with TWO
+  // rules: a fallback `background-color: var(--midground-base)` and a
+  // preferred `color-mix(srgb, midground-base N%, background-base)`.
+  // When midground is a light text-grey (which it MUST be in a dark
+  // theme — body text reads off `color: var(--midground)`), the
+  // fallback resolves to LIGHT and any surface that ends up using it
+  // (e.g. older WebKits, or any cascade quirk) renders near-white.
+  //
+  // Rather than rely on color-mix always winning, we paint every
+  // semantic surface to an explicit hex so a flat-dark look is
+  // guaranteed regardless of how Tailwind resolves the cascade.
   customCSS: `
     :root {
       --font-mondwest: "Inter", system-ui, sans-serif;
+    }
+    /* Semantic surfaces — pinned to MC's palette explicitly. */
+    .bg-card, .bg-card\\/50, .bg-card\\/80, .bg-card\\/95 {
+      background-color: #0e1219 !important;
+    }
+    .bg-muted { background-color: #1c212b !important; }
+    .bg-muted\\/10 { background-color: rgba(28, 33, 43, 0.10) !important; }
+    .bg-muted\\/20 { background-color: rgba(28, 33, 43, 0.30) !important; }
+    .bg-muted\\/30 { background-color: rgba(28, 33, 43, 0.40) !important; }
+    .bg-muted\\/40 { background-color: rgba(28, 33, 43, 0.50) !important; }
+    .bg-muted\\/50 { background-color: rgba(28, 33, 43, 0.65) !important; }
+    .bg-muted\\/60 { background-color: rgba(28, 33, 43, 0.75) !important; }
+    .bg-popover, .bg-popover\\/95 { background-color: #0e1219 !important; }
+    .bg-accent { background-color: #1c212b !important; }
+    .bg-accent\\/50 { background-color: rgba(28, 33, 43, 0.5) !important; }
+    .bg-secondary { background-color: #161c25 !important; }
+    .bg-primary { background-color: #28d2ef !important; }
+    .bg-background, .bg-background\\/85, .bg-background\\/95 {
+      background-color: #080a0e !important;
+    }
+    .bg-background-base, .bg-background-base\\/95 {
+      background-color: rgba(8, 10, 14, 0.95) !important;
+    }
+
+    /* Borders — same problem: cascade derives them from midground at
+       15% over transparent → faint light line on dark bg, fights MC's
+       crisp 1px-border aesthetic. Pin to muted-grey directly. */
+    .border-border { border-color: #1c212b !important; }
+    .border-current\\/10 { border-color: rgba(227, 233, 239, 0.10) !important; }
+    .border-current\\/20 { border-color: rgba(227, 233, 239, 0.20) !important; }
+
+    /* Sidebar inactive nav items use opacity-60 on inherited body color
+       — readable but quite dim against a flat-dark sidebar. Lift them
+       a notch so menu items are easy to scan. Active state keeps full
+       brightness via the existing text-midground class. */
+    aside nav a[href].opacity-60 {
+      opacity: 0.82;
+    }
+    aside nav a[href].opacity-60:hover {
+      opacity: 1;
+    }
+
+    /* Make sure muted-foreground (column subtitles, "5M AGO" badges,
+       hint text) stays visible on the flat-dark canvas. */
+    .text-muted-foreground, .text-muted-foreground\\/70 {
+      color: #94a3b8 !important;
+    }
+
+    /* Primary text — the body color rule (color: var(--midground))
+       already paints text in #e3e9ef, but a handful of places still
+       use the raw --color-foreground token. Force them aligned. */
+    .text-foreground, .text-foreground\\/80, .text-foreground\\/90 {
+      color: #e3e9ef !important;
     }
   `,
   colorOverrides: {

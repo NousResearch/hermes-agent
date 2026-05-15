@@ -2768,6 +2768,15 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+_CONFIG_SET_KEY_ALIASES = {
+    "model": "model.default",
+    "provider": "model.provider",
+    "base_url": "model.base_url",
+    "api_mode": "model.api_mode",
+    "context_length": "model.context_length",
+}
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
@@ -5043,6 +5052,7 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
+    key = _CONFIG_SET_KEY_ALIASES.get(key, key)
     _set_nested(user_config, key, value)
     
     # Write only user config back (not the full merged defaults)

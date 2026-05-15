@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, call
 
 import pytest
+import yaml
 
 from hermes_cli.config import set_config_value, config_command
 
@@ -99,9 +100,21 @@ class TestConfigYamlRouting:
 
     def test_simple_key(self, _isolated_hermes_home):
         set_config_value("model", "gpt-4o")
-        config = _read_config(_isolated_hermes_home)
-        assert "gpt-4o" in config
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["model"]["default"] == "gpt-4o"
         assert "model" not in _read_env(_isolated_hermes_home)
+
+    def test_model_runtime_aliases_write_canonical_model_section(self, _isolated_hermes_home):
+        set_config_value("provider", "openai-codex")
+        set_config_value("model", "gpt-5.5")
+        set_config_value("base_url", "https://api.example.com/v1")
+
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["model"]["provider"] == "openai-codex"
+        assert config["model"]["default"] == "gpt-5.5"
+        assert config["model"]["base_url"] == "https://api.example.com/v1"
+        assert "provider" not in config
+        assert "base_url" not in config
 
     def test_nested_key(self, _isolated_hermes_home):
         set_config_value("terminal.backend", "docker")
@@ -149,8 +162,8 @@ class TestFalsyValues:
     def test_empty_string_routes_to_config(self, _isolated_hermes_home):
         """Blanking a config key should write an empty string to config.yaml."""
         set_config_value("model", "")
-        config = _read_config(_isolated_hermes_home)
-        assert "model: ''" in config or "model: \"\"" in config
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["model"]["default"] == ""
 
     def test_zero_routes_to_config(self, _isolated_hermes_home):
         """Setting a config key to '0' should write 0 to config.yaml."""

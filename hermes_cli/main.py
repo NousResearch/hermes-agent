@@ -7673,20 +7673,19 @@ def cmd_update(args):
 
 def _cmd_update_pip(args):
     """Update Hermes via pip (for PyPI installs)."""
-    import subprocess as _sp
     from hermes_cli import __version__
+    from hermes_cli.config import recommended_update_command_for_method
 
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
-    uv = shutil.which("uv")
-    if uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
-    else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
+    cmd_str = recommended_update_command_for_method("pip")
+    cmd = cmd_str.split()
+    if cmd[0] == "pip":
+        cmd = [sys.executable, "-m", "pip"] + cmd[1:]
 
     print(f"→ Running: {' '.join(cmd)}")
-    result = _sp.run(cmd)
+    result = subprocess.run(cmd)
     if result.returncode != 0:
         print("✗ Update failed")
         sys.exit(1)

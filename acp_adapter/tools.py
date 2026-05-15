@@ -1123,7 +1123,6 @@ def build_tool_start(
         )
 
     # Generic fallback
-    import json
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
     except (TypeError, ValueError):

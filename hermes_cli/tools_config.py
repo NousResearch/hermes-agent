@@ -71,7 +71,6 @@ CONFIGURABLE_TOOLSETS = [
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
-    ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
@@ -87,7 +86,7 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "video_gen"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -421,22 +420,6 @@ TOOL_CATEGORIES = {
                     # optional pin for reproducibility across macOS updates.
                 ],
                 "post_setup": "cua_driver",
-            },
-        ],
-    },
-    "rl": {
-        "name": "RL Training",
-        "icon": "🧪",
-        "requires_python": (3, 11),
-        "providers": [
-            {
-                "name": "Tinker / Atropos",
-                "tag": "RL training platform",
-                "env_vars": [
-                    {"key": "TINKER_API_KEY", "prompt": "Tinker API key", "url": "https://tinker-console.thinkingmachines.ai/keys"},
-                    {"key": "WANDB_API_KEY", "prompt": "WandB API key", "url": "https://wandb.ai/authorize"},
-                ],
-                "post_setup": "rl_training",
             },
         ],
     },
@@ -911,24 +894,6 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
-
-    elif post_setup_key == "rl_training":
-        try:
-            __import__("tinker_atropos")
-        except ImportError:
-            tinker_dir = PROJECT_ROOT / "tinker-atropos"
-            if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
-                _print_info("    Installing tinker-atropos submodule...")
-                result = _pip_install(["-e", str(tinker_dir)])
-                if result.returncode == 0:
-                    _print_success("    tinker-atropos installed")
-                else:
-                    _print_warning("    tinker-atropos install failed - run manually:")
-                    _print_info('      uv pip install -e "./tinker-atropos"')
-            else:
-                _print_warning("    tinker-atropos submodule not found - run:")
-                _print_info("      git submodule update --init --recursive")
-                _print_info('      uv pip install -e "./tinker-atropos"')
 
     elif post_setup_key == "langfuse":
         # Install the langfuse SDK.

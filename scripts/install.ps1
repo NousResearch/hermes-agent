@@ -958,20 +958,6 @@ except Exception:
         }
     }
     
-    # tinker-atropos (RL training) is optional and OFF by default.  Matches the
-    # Linux/macOS install.sh behavior.  Reasons not to auto-install:
-    #   - tinker-atropos/pyproject.toml pulls atroposlib + tinker from git+https
-    #     (NousResearch/atropos + thinking-machines-lab/tinker) which can fail on
-    #     locked-down networks, flaky DNS, or rate-limited github.com and would
-    #     previously kill the whole install mid-flight on Windows.
-    #   - It's an RL training submodule, not part of the default agent surface.
-    #     Users who don't do RL training never need it.
-    # Users who do want it can run the one-liner we print below.
-    if (Test-Path "tinker-atropos\pyproject.toml") {
-        Write-Info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        Write-Info "  To install later: $UvCmd pip install -e `".\tinker-atropos`""
-    }
-    
     Pop-Location
     
     Write-Success "All dependencies installed"

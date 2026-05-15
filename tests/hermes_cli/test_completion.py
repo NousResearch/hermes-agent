@@ -140,6 +140,54 @@ class TestGenerateZsh:
         # gateway has subcommands so a _cmds array must be generated
         assert "gateway_cmds" in out
 
+    def test_registers_compdef_instead_of_invoking_completion_function(self):
+        out = generate_zsh(_make_parser())
+        assert 'compdef _hermes hermes' in out
+        assert '_hermes "$@"' not in out
+
+    def test_preserves_valid_zsh_arguments_alias_syntax(self):
+        out = generate_zsh(_make_parser())
+        assert "'(-)'{-h,--help}'[Show help and exit]'" in out
+        assert "'(-)'{-V,--version}'[Show version and exit]'" in out
+        assert "'(-)'{-p,--profile}'[Profile name]:profile:_hermes_profiles'" in out
+        assert "'(-h --help){-h,--help}[Show help and exit]'" not in out
+        assert '"(-h --help)"{-h,--help}"[Show help and exit]"' not in out
+
+    def test_valid_zsh_syntax(self):
+        if not shutil.which("zsh"):
+            pytest.skip("zsh not installed")
+        out = generate_zsh(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(["zsh", "-n", path], capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+        finally:
+            os.unlink(path)
+
+    def test_zsh_eval_style_source_registers_after_compinit(self):
+        if not shutil.which("zsh"):
+            pytest.skip("zsh not installed")
+        out = generate_zsh(_make_parser())
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".zsh", delete=False) as f:
+            f.write(out)
+            path = f.name
+        try:
+            result = subprocess.run(
+                [
+                    "zsh",
+                    "-fc",
+                    f"autoload -Uz compinit && compinit -D; source {path}; [[ ${{_comps[hermes]}} == _hermes ]]",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stderr == ""
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # 4. Fish output

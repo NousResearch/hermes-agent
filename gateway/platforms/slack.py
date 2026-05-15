@@ -76,27 +76,26 @@ def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
     Lazy-installs slack-bolt/slack-sdk via ``tools.lazy_deps.ensure("platform.slack")``
-    on first call if not present.
+    on first call if not present. Rebinds all module-level globals on success.
     """
-    global SLACK_AVAILABLE, AsyncApp, AsyncSocketModeHandler, AsyncWebClient
     if SLACK_AVAILABLE:
         return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.slack", prompt=False)
-    except Exception:
-        return False
-    try:
-        from slack_bolt.async_app import AsyncApp as _App
-        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler as _Handler
-        from slack_sdk.web.async_client import AsyncWebClient as _Client
-    except ImportError:
-        return False
-    AsyncApp = _App
-    AsyncSocketModeHandler = _Handler
-    AsyncWebClient = _Client
-    SLACK_AVAILABLE = True
-    return True
+
+    def _import():
+        from slack_bolt.async_app import AsyncApp
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+        from slack_sdk.web.async_client import AsyncWebClient
+        import aiohttp
+        return {
+            "AsyncApp": AsyncApp,
+            "AsyncSocketModeHandler": AsyncSocketModeHandler,
+            "AsyncWebClient": AsyncWebClient,
+            "aiohttp": aiohttp,
+            "SLACK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
@@ -1799,6 +1798,26 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+
+        # Slack blocks native slash commands inside threads ("/queue is not
+        # supported in threads. Sorry!").  As a workaround, recognise a
+        # leading ``!`` as an alternate command prefix and rewrite it to
+        # ``/`` so the rest of the pipeline (MessageType.COMMAND tagging,
+        # gateway dispatcher) handles it like a normal slash command.  Only
+        # rewrite when the first token resolves to a known gateway command
+        # so casual messages like "!nice work" pass through unchanged.
+        if original_text.startswith("!"):
+            try:
+                from hermes_cli.commands import is_gateway_known_command
+                first_token = original_text[1:].split(maxsplit=1)[0]
+                # Strip "@suffix" the same way get_command() does, so
+                # forms like ``!stop@hermes`` still resolve.
+                cmd_name = first_token.split("@", 1)[0].lower()
+                if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+                    original_text = "/" + original_text[1:]
+            except Exception:  # pragma: no cover - defensive
+                pass
+
         text = original_text
 
         # Extract quoted/forwarded content from Slack blocks.

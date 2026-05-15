@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -3870,6 +3870,39 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
         return _empty_nous_auth_status()
 
 
+# ── Process-level memo for get_nous_auth_status() ──
+# get_nous_auth_status() validates state by calling resolve_nous_runtime_credentials(),
+# which does a synchronous OAuth refresh POST to portal.nousresearch.com. That can take
+# ~350ms even on the failure path, and read-only UI surfaces (`hermes tools`, status panels,
+# subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
+# was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
+# single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
+# mtime so that `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+_NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
+_nous_auth_status_cache: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+
+
+def _auth_file_mtime() -> Optional[float]:
+    try:
+        return _auth_file_path().stat().st_mtime
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def invalidate_nous_auth_status_cache() -> None:
+    """Clear the get_nous_auth_status() process-level memo.
+
+    Call this from any code path that mutates Nous auth state without going
+    through resolve_nous_runtime_credentials() (e.g. tests). Login/logout
+    flows touch auth.json, so the mtime check below invalidates them
+    automatically — explicit invalidation is the belt-and-braces option.
+    """
+    global _nous_auth_status_cache
+    _nous_auth_status_cache = None
+
+
 def get_nous_auth_status() -> Dict[str, Any]:
     """Status snapshot for Nous auth.
 
@@ -3878,7 +3911,32 @@ def get_nous_auth_status() -> Dict[str, Any]:
     by resolving runtime credentials so revoked refresh sessions do not show up
     as a healthy login. If provider state is absent, fall back to the credential
     pool for the just-logged-in / not-yet-promoted case.
+
+    The returned snapshot is memoised for ~15s keyed on the auth.json mtime,
+    so menu/status surfaces that ask repeatedly don't trigger one refresh POST
+    per call. Login/logout flows write to auth.json and therefore invalidate
+    the cache automatically; tests can also call
+    ``invalidate_nous_auth_status_cache()`` explicitly.
     """
+    global _nous_auth_status_cache
+    now = time.monotonic()
+    mtime = _auth_file_mtime()
+    cached = _nous_auth_status_cache
+    if cached is not None:
+        cached_at, cached_mtime, cached_status = cached
+        if (
+            cached_mtime == mtime
+            and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
+        ):
+            return dict(cached_status)
+
+    status = _compute_nous_auth_status()
+    _nous_auth_status_cache = (now, mtime, dict(status))
+    return status
+
+
+def _compute_nous_auth_status() -> Dict[str, Any]:
+    """Uncached implementation of get_nous_auth_status(). See that function."""
     state = get_provider_auth_state("nous")
     if state:
         base_status = {

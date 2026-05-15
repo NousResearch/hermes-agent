@@ -591,6 +591,67 @@ class TestRunAgentMultimodalHelpers:
             for p in cleaned["content"]
         )
 
+    def test_computer_use_image_result_becomes_error_for_text_only_model(self):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent.provider = "deepseek"
+        agent.model = "deepseek-v4-pro"
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "screen captured"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+            ],
+            "text_summary": "screen captured",
+        }
+
+        with patch.object(agent, "_model_supports_vision", return_value=False):
+            content = agent._tool_result_content_for_active_model("computer_use", result)
+
+        parsed = json.loads(content)
+        assert "computer_use returned screenshot/image content" in parsed["error"]
+        assert parsed["text_summary"] == "screen captured"
+        assert "image_url" not in content
+
+    def test_computer_use_image_result_preserved_for_vision_model(self):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "screen captured"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+            ],
+        }
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("computer_use", result)
+
+        assert content is result["content"]
+        assert any(part.get("type") == "image_url" for part in content)
+
+    def test_other_multimodal_tool_uses_text_summary_for_text_only_model(self):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent.provider = "custom"
+        agent.model = "text-only"
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "analysis text"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+            ],
+            "text_summary": "analysis summary",
+        }
+
+        with patch.object(agent, "_model_supports_vision", return_value=False):
+            content = agent._tool_result_content_for_active_model("vision_analyze", result)
+
+        assert content == "analysis summary"
+
 
 # ---------------------------------------------------------------------------
 # Universality: does the schema work without Anthropic?

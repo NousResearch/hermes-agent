@@ -972,9 +972,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         # Import locally so plugin discovery isn't triggered just by
         # importing this module (tests rely on that).
         from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
 
-        _ensure_plugins_discovered()
         provider = get_provider(configured)
     except Exception as exc:
         logger.debug("image_gen plugin dispatch skipped: %s", exc)
@@ -983,12 +981,15 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     if provider is None:
         try:
             # Long-lived sessions may have discovered plugins before a bundled
-            # backend was patched in or before config changed. Retry once with
-            # a forced refresh before surfacing a missing-provider error.
-            _ensure_plugins_discovered(force=True)
+            # backend was patched in. Refresh only bundled plugins here: this
+            # tool is model-callable, and full discovery can import newly
+            # written user plugins from HERMES_HOME.
+            from hermes_cli.plugins import _ensure_bundled_plugins_discovered
+
+            _ensure_bundled_plugins_discovered()
             provider = get_provider(configured)
         except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+            logger.debug("image_gen bundled plugin refresh skipped: %s", exc)
 
     if provider is None:
         return json.dumps({

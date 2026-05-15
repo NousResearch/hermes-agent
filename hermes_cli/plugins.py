@@ -693,8 +693,10 @@ class PluginManager:
         """Scan all plugin sources and load each plugin found.
 
         When ``force`` is true, clear cached discovery state first so config
-        changes or newly-added bundled backends become visible in long-lived
-        sessions without requiring a full agent restart.
+        changes or newly-added plugins become visible in long-lived sessions
+        without requiring a full agent restart. Only trusted/operator-driven
+        paths should use forced full discovery because user plugin imports run
+        arbitrary Python.
         """
         if self._discovered and not force:
             return
@@ -855,6 +857,29 @@ class PluginManager:
                 len(self._plugins),
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
+
+    def discover_and_load_bundled(self) -> None:
+        """Refresh bundled backend/platform plugins without scanning user paths."""
+        repo_plugins = get_bundled_plugins_dir()
+        manifests = self._scan_directory(
+            repo_plugins,
+            source="bundled",
+            skip_names={"memory", "context_engine", "platforms", "model-providers"},
+        )
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
+        )
+
+        disabled = _get_disabled_plugins()
+        for manifest in manifests:
+            lookup_key = manifest.key or manifest.name
+            if lookup_key in disabled or manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[lookup_key] = loaded
+                continue
+            if manifest.kind in {"backend", "platform"}:
+                self._load_plugin(manifest)
 
     # -----------------------------------------------------------------------
     # Directory scanning
@@ -1358,6 +1383,13 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     """
     manager = get_plugin_manager()
     manager.discover_and_load(force=force)
+    return manager
+
+
+def _ensure_bundled_plugins_discovered() -> PluginManager:
+    """Refresh bundled plugins without loading user/project plugin code."""
+    manager = get_plugin_manager()
+    manager.discover_and_load_bundled()
     return manager
 
 

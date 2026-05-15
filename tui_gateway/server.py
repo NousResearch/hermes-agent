@@ -1696,7 +1696,13 @@ def _persist_model_switch(result) -> None:
     save_config(cfg)
 
 
-def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
+def _apply_model_switch(
+    sid: str,
+    session: dict,
+    raw_input: str,
+    *,
+    confirm_expensive_model: bool = False,
+) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1753,6 +1759,27 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    if not confirm_expensive_model:
+        try:
+            from hermes_cli.model_cost_guard import expensive_model_warning
+
+            warning = expensive_model_warning(
+                result.new_model,
+                provider=result.target_provider,
+                base_url=result.base_url or current_base_url,
+                api_key=result.api_key or current_api_key,
+                model_info=result.model_info,
+            )
+        except Exception:
+            warning = None
+        if warning is not None:
+            return {
+                "value": result.new_model,
+                "warning": warning.message,
+                "confirm_required": True,
+                "confirm_message": warning.message,
+            }
+
     if agent:
         agent.switch_model(
             new_model=result.new_model,
@@ -1787,7 +1814,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         }
     if persist_global:
         _persist_model_switch(result)
-    return {"value": result.new_model, "warning": result.warning_message or ""}
+    return {
+        "value": result.new_model,
+        "warning": result.warning_message or "",
+        "confirm_required": False,
+    }
 
 
 def _compress_session_history(
@@ -6196,13 +6227,31 @@ def _(rid, params: dict) -> dict:
                     if session.get("agent") is None:
                         return _err(rid, 5032, "agent initialization failed")
                 result = _apply_model_switch(
-                    params.get("session_id", ""), session, value
+                    params.get("session_id", ""),
+                    session,
+                    value,
+                    confirm_expensive_model=bool(
+                        params.get("confirm_expensive_model", False)
+                    ),
                 )
             else:
-                result = _apply_model_switch("", {"agent": None}, value)
+                result = _apply_model_switch(
+                    "",
+                    {"agent": None},
+                    value,
+                    confirm_expensive_model=bool(
+                        params.get("confirm_expensive_model", False)
+                    ),
+                )
             return _ok(
                 rid,
-                {"key": key, "value": result["value"], "warning": result["warning"]},
+                {
+                    "key": key,
+                    "value": result["value"],
+                    "warning": result["warning"],
+                    "confirm_required": result.get("confirm_required", False),
+                    "confirm_message": result.get("confirm_message", ""),
+                },
             )
         except Exception as e:
             return _err(rid, 5001, str(e))

@@ -505,12 +505,9 @@ def _is_local_mode() -> bool:
 def _is_local_backend() -> bool:
     """Return True when the browser runs locally (no cloud provider).
 
-    SSRF protection is only meaningful for cloud backends (Browserbase,
-    BrowserUse) where the agent could reach internal resources on a remote
-    machine.  For local backends — Camofox, or the built-in headless
-    Chromium without a cloud provider — the user already has full terminal
-    and network access on the same machine, so the check adds no security
-    value.
+    Local backends include Camofox and the built-in headless Chromium path
+    used when no cloud provider is configured.  This only describes where
+    browser automation runs; URL safety checks are enforced separately.
     """
     return _is_camofox_mode() or _get_cloud_provider() is None
 
@@ -2200,13 +2197,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         })
 
     # SSRF protection — block private/internal addresses before navigating.
-    # Skipped for local backends (Camofox, headless Chromium without a cloud
-    # provider) because the agent already has full local network access via
-    # the terminal tool.  Also skipped when hybrid routing will auto-spawn a
-    # local Chromium sidecar for this URL (cloud provider configured +
-    # private URL + ``browser.auto_local_for_private_urls`` enabled) — the
-    # cloud provider never sees the URL in that case.  Can also be opted
-    # out globally via ``browser.allow_private_urls`` in config.
+    # Local browser backends still enforce this guard by default because
+    # browser_snapshot can return local files and internal service responses
+    # in browser-only or reduced-tool configurations.  Hybrid routing may
+    # still auto-spawn a local Chromium sidecar for ordinary private URLs
+    # (cloud provider configured + private URL +
+    # ``browser.auto_local_for_private_urls`` enabled) so the cloud provider
+    # never sees the URL.  Users can opt out globally via
+    # ``browser.allow_private_urls`` in config.
     effective_task_id = task_id or "default"
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
@@ -2217,15 +2215,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # 169.254.169.254 / metadata.google.internal / ECS task metadata
     # via a browser, and routing those to a local Chromium sidecar
     # on an EC2/GCP/Azure host exfiltrates IAM credentials (#16234).
-    if not _is_local_backend() and _is_always_blocked_url(url):
+    if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
 
     if (
-        not _is_local_backend()
-        and not auto_local_this_nav
+        not auto_local_this_nav
         and not _allow_private_urls()
         and not _is_safe_url(url)
     ):
@@ -2282,15 +2279,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
-        # Skipped for local backends (same rationale as the pre-nav check),
-        # and for the hybrid local sidecar (we're already on a local browser
-        # hitting a private URL by design).
         # Always-blocked floor (cloud metadata / IMDS) is enforced even
-        # when auto_local_this_nav is true — see pre-nav check for
-        # rationale (#16234).
+        # for local browser backends and hybrid local sidecars.
         if (
-            not _is_local_backend()
-            and final_url
+            final_url
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
@@ -2301,8 +2293,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             })
 
         if (
-            not _is_local_backend()
-            and not auto_local_this_nav
+            not auto_local_this_nav
             and not _allow_private_urls()
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):

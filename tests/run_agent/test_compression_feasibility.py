@@ -16,6 +16,16 @@ from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
+@pytest.fixture(autouse=True)
+def _stable_aux_provider_config():
+    """Keep feasibility tests independent from the developer's config.yaml."""
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("auto", None, None, None, None),
+    ):
+        yield
+
+
 def _make_agent(
     *,
     compression_enabled: bool = True,
@@ -41,6 +51,7 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
+    agent._custom_providers = []
     agent.tools = []
 
     compressor = MagicMock(spec=ContextCompressor)
@@ -182,6 +193,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="openrouter",
+        custom_providers=[],
     )
 
 
@@ -205,6 +217,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         api_key="sk-test",
         config_context_length=None,
         provider="openrouter",
+        custom_providers=[],
     )
 
 
@@ -258,6 +271,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         api_key="sk-custom",
         config_context_length=1_000_000,
         provider="",
+        custom_providers=[],
     )
 
 

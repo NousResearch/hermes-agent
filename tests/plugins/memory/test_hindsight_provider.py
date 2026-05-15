@@ -7,12 +7,16 @@ turn counting, tags), and schema completeness.
 
 import json
 import re
+import subprocess
 import sys
+import textwrap
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
+from plugins.memory import hindsight as hindsight_mod
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
@@ -34,14 +38,18 @@ from plugins.memory.hindsight import (
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Ensure no stale env vars leak between tests."""
+    hindsight_mod._reset_shutdown_state_for_tests()
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_LLM_BASE_URL", "HINDSIGHT_API_LLM_BASE_URL",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
+    yield
+    hindsight_mod._reset_shutdown_state_for_tests()
 
 
 def _make_mock_client():
@@ -1548,4 +1556,157 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
+
+
+class TestProcessShutdownLifecycle:
+    def test_run_sync_refuses_work_after_process_shutdown_and_closes_coroutine(self):
+        async def _never_scheduled():
+            return "nope"
+
+        coro = _never_scheduled()
+        hindsight_mod._PROCESS_SHUTTING_DOWN.set()
+
+        with pytest.raises(RuntimeError, match="shutting down"):
+            hindsight_mod._run_sync(coro)
+
+        assert coro.cr_frame is None
+
+    def test_run_sync_closes_coroutine_when_threadsafe_scheduling_fails(self, monkeypatch):
+        async def _never_scheduled():
+            return "nope"
+
+        def _raise(*_args, **_kwargs):
+            raise RuntimeError("interpreter shutdown")
+
+        monkeypatch.setattr(hindsight_mod.asyncio, "run_coroutine_threadsafe", _raise)
+        coro = _never_scheduled()
+
+        with pytest.raises(RuntimeError, match="interpreter shutdown"):
+            hindsight_mod._run_sync(coro)
+
+        assert coro.cr_frame is None
+
+    def test_process_finalizer_sets_flag_drains_providers_and_stops_loop(self, provider_with_config):
+        async def _noop():
+            return 1
+
+        assert hindsight_mod._run_sync(_noop()) == 1
+        p1 = provider_with_config()
+        p2 = provider_with_config()
+        shutdowns = []
+        p1.shutdown = MagicMock(side_effect=lambda: shutdowns.append("p1"))
+        p2.shutdown = MagicMock(side_effect=lambda: shutdowns.append("p2"))
+
+        hindsight_mod._process_atexit_shutdown()
+
+        assert hindsight_mod._PROCESS_SHUTTING_DOWN.is_set()
+        assert sorted(shutdowns) == ["p1", "p2"]
+        assert hindsight_mod._loop is None
+        assert hindsight_mod._loop_thread is None
+
+    def test_sync_turn_skips_after_process_shutdown(self, provider):
+        hindsight_mod._PROCESS_SHUTTING_DOWN.set()
+
+        provider.sync_turn("hello", "hi")
+
+        assert provider._sync_thread is None
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_queue_prefetch_skips_after_process_shutdown(self, provider):
+        hindsight_mod._PROCESS_SHUTTING_DOWN.set()
+
+        provider.queue_prefetch("hello")
+
+        assert provider._prefetch_thread is None
+        provider._client.arecall.assert_not_called()
+
+    def test_prefetch_worker_rechecks_process_shutdown_before_async_call(self, provider, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+        original_event = hindsight_mod._PROCESS_SHUTTING_DOWN
+
+        class GateEvent:
+            def is_set(self):
+                if threading.current_thread().name == "hindsight-prefetch":
+                    started.set()
+                    release.wait(timeout=2.0)
+                    return True
+                return False
+
+        monkeypatch.setattr(hindsight_mod, "_PROCESS_SHUTTING_DOWN", GateEvent())
+        try:
+            provider.queue_prefetch("hello")
+            assert started.wait(timeout=2.0)
+            release.set()
+            provider._prefetch_thread.join(timeout=2.0)
+        finally:
+            monkeypatch.setattr(hindsight_mod, "_PROCESS_SHUTTING_DOWN", original_event)
+
+        provider._client.arecall.assert_not_called()
+
+    def test_tool_calls_fail_closed_after_process_shutdown(self, provider):
+        hindsight_mod._PROCESS_SHUTTING_DOWN.set()
+
+        result = json.loads(provider.handle_tool_call("hindsight_recall", {"query": "x"}))
+
+        assert "error" in result
+        assert "shutting down" in result["error"]
+        provider._client.arecall.assert_not_called()
+
+    def test_on_session_switch_does_not_resolve_or_enqueue_flush_after_process_shutdown(self, provider, monkeypatch):
+        provider._session_turns = ["old-turn"]
+        resolve = MagicMock(return_value=("doc", None))
+        monkeypatch.setattr(provider, "_resolve_retain_target", resolve)
+        hindsight_mod._PROCESS_SHUTTING_DOWN.set()
+
+        provider.on_session_switch("new-session")
+
+        resolve.assert_not_called()
+        assert provider._sync_thread is None
+        assert provider._retain_queue.empty()
+        assert provider._session_id == "new-session"
+
+    def test_child_process_exit_has_no_hindsight_shutdown_warnings(self, tmp_path):
+        repo_root = str(Path(__file__).resolve().parents[3])
+        script = tmp_path / "hindsight_exit_smoke.py"
+        script.write_text(textwrap.dedent(
+            f"""
+            import json
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, {repo_root!r})
+            from plugins.memory.hindsight import HindsightMemoryProvider
+
+            home = Path({str(tmp_path)!r}) / "home"
+            cfg_dir = home / "hindsight"
+            cfg_dir.mkdir(parents=True)
+            (cfg_dir / "config.json").write_text(json.dumps({{
+                "mode": "cloud",
+                "apiKey": "test-key",
+                "api_url": "http://localhost:9",
+                "bank_id": "test-bank",
+                "memory_mode": "hybrid",
+                "timeout": 0.01,
+            }}))
+            p = HindsightMemoryProvider()
+            p.initialize(session_id="child", hermes_home=str(home), platform="cli")
+            p.sync_turn("user", "assistant")
+            # Deliberately no explicit shutdown: process atexit must own cleanup.
+            """
+        ))
+
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert proc.returncode == 0
+        stderr = proc.stderr
+        assert "cannot schedule new futures" not in stderr
+        assert "coroutine was never awaited" not in stderr
+        assert "Unclosed client session" not in stderr
 

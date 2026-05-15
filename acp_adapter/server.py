@@ -1243,6 +1243,7 @@ class HermesACPAgent(acp.Agent):
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
+        edit_approval_requester = None
 
         streamed_message = False
 
@@ -1259,6 +1260,16 @@ class HermesACPAgent(acp.Agent):
                 message_cb(text)
 
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+            try:
+                from acp_adapter.edit_approval import make_acp_edit_approval_requester
+
+                edit_approval_requester = make_acp_edit_approval_requester(
+                    conn.request_permission,
+                    loop,
+                    session_id,
+                )
+            except Exception:
+                logger.debug("Could not create ACP edit approval requester", exc_info=True)
         else:
             tool_progress_cb = None
             reasoning_cb = None
@@ -1288,9 +1299,10 @@ class HermesACPAgent(acp.Agent):
         # which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
         previous_interactive = None
+        edit_approval_token = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
+            nonlocal previous_approval_cb, previous_interactive, edit_approval_token
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1314,6 +1326,13 @@ class HermesACPAgent(acp.Agent):
                     _terminal_tool.set_approval_callback(approval_cb)
                 except Exception:
                     logger.debug("Could not set ACP approval callback", exc_info=True)
+            if edit_approval_requester:
+                try:
+                    from acp_adapter.edit_approval import set_edit_approval_requester
+
+                    edit_approval_token = set_edit_approval_requester(edit_approval_requester)
+                except Exception:
+                    logger.debug("Could not set ACP edit approval requester", exc_info=True)
             # Signal to tools.approval that we have an interactive callback
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("HERMES_INTERACTIVE")
@@ -1341,6 +1360,13 @@ class HermesACPAgent(acp.Agent):
                         _terminal_tool.set_approval_callback(previous_approval_cb)
                     except Exception:
                         logger.debug("Could not restore approval callback", exc_info=True)
+                if edit_approval_token is not None:
+                    try:
+                        from acp_adapter.edit_approval import reset_edit_approval_requester
+
+                        reset_edit_approval_requester(edit_approval_token)
+                    except Exception:
+                        logger.debug("Could not restore ACP edit approval requester", exc_info=True)
                 if session_tokens is not None and clear_session_vars is not None:
                     try:
                         clear_session_vars(session_tokens)

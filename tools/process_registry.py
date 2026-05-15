@@ -850,7 +850,9 @@ class ProcessRegistry:
         """Get a session by ID (running or finished)."""
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
-        return self._refresh_detached_session(session)
+        session = self._refresh_detached_session(session)
+        self._reconcile_local_exit(session)
+        return session
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile session.exited against the real child process state.
@@ -880,6 +882,8 @@ class ProcessRegistry:
         try:
             rc = proc.poll()
         except Exception:
+            return
+        if rc is not None and not isinstance(rc, int):
             return
         if rc is None:
             return  # Direct child still running — reader block is legitimate.

@@ -13644,6 +13644,10 @@ class GatewayRunner:
             proc_session.watcher_thread_id = source.thread_id or ""
             proc_session.notify_on_complete = True
             proc_session.watcher_interval = 5
+            try:
+                process_registry._write_checkpoint()
+            except Exception:
+                pass
             watcher = {
                 "session_id": proc_session.id,
                 "check_interval": 5,
@@ -13658,10 +13662,6 @@ class GatewayRunner:
                 "progress_message_id": progress_message_id,
             }
             process_registry.pending_watchers.append(watcher)
-            try:
-                process_registry._write_checkpoint()  # persist watcher metadata for crash recovery
-            except Exception:
-                pass
             _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
             self._background_tasks.add(_watch_task)
             _watch_task.add_done_callback(self._background_tasks.discard)

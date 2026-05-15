@@ -813,6 +813,14 @@ function Install-Dependencies {
         #                  needs `make` to build from sdist) and the
         #                  install fails.
         #   --extra all  = just the [all] extra's contents (curated).
+        #
+        # UV_PROJECT_ENVIRONMENT pins the sync target to our venv\.
+        # Without it, modern uv (>=0.5) ignores VIRTUAL_ENV for `sync`
+        # and creates a sibling .venv\ inside the repo — leaving venv\
+        # empty and producing the broken state where `hermes.exe` exists
+        # in the wrong directory and imports fail with ModuleNotFoundError.
+        # (Mirrors the same flag in scripts/install.sh::install_deps.)
+        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
         & $UvCmd sync --extra all --locked
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
@@ -902,6 +910,31 @@ except Exception:
         throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
     }
 
+    # Baseline-import gate. Even if a tier reported success above, the
+    # actual deps may have landed somewhere other than $InstallDir\venv\
+    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
+    # isn't set, leaving venv\ empty and hermes.exe broken with
+    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
+    # We probe via the venv's own python so a misdirected sync is caught
+    # here, not 30 seconds later when the user runs `hermes`.
+    if (-not $NoVenv) {
+        $venvPython = "$InstallDir\venv\Scripts\python.exe"
+        if (-not (Test-Path $venvPython)) {
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        }
+        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            $sibling = "$InstallDir\.venv"
+            $hint = if (Test-Path $sibling) {
+                "Detected sibling .venv\ at $sibling — uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+            } else {
+                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            }
+            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+        }
+        Write-Success "Baseline imports verified in venv"
+    }
+
     # Verify the dashboard deps specifically — they're the most common thing
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
     # If tier 1 failed (the common case), [web] was still picked up by tiers
@@ -923,20 +956,6 @@ except Exception:
                 Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
             }
         }
-    }
-    
-    # tinker-atropos (RL training) is optional and OFF by default.  Matches the
-    # Linux/macOS install.sh behavior.  Reasons not to auto-install:
-    #   - tinker-atropos/pyproject.toml pulls atroposlib + tinker from git+https
-    #     (NousResearch/atropos + thinking-machines-lab/tinker) which can fail on
-    #     locked-down networks, flaky DNS, or rate-limited github.com and would
-    #     previously kill the whole install mid-flight on Windows.
-    #   - It's an RL training submodule, not part of the default agent surface.
-    #     Users who don't do RL training never need it.
-    # Users who do want it can run the one-liner we print below.
-    if (Test-Path "tinker-atropos\pyproject.toml") {
-        Write-Info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        Write-Info "  To install later: $UvCmd pip install -e `".\tinker-atropos`""
     }
     
     Pop-Location

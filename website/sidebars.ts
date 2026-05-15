@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/cron',
             'user-guide/features/delegation',
             'user-guide/features/kanban',
+            'user-guide/features/codex-app-server-runtime',
             'user-guide/features/kanban-tutorial',
             'user-guide/features/kanban-worker-lanes',
             'user-guide/features/goals',
@@ -95,13 +96,13 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/web-dashboard',
             'user-guide/features/extending-the-dashboard',
+            'user-guide/features/subscription-proxy',
           ],
         },
         {
           type: 'category',
           label: 'Advanced',
           items: [
-            'user-guide/features/rl-training',
             'user-guide/features/spotify',
           ],
         },
@@ -223,6 +224,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/context-engine-plugin',
             'developer-guide/model-provider-plugin',
             'developer-guide/image-gen-provider-plugin',
+            'developer-guide/video-gen-provider-plugin',
             'developer-guide/plugin-llm-access',
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
@@ -235,7 +237,6 @@ const sidebars: SidebarsConfig = {
             'developer-guide/tools-runtime',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
-            'developer-guide/environments',
             'developer-guide/trajectory-format',
           ],
         },

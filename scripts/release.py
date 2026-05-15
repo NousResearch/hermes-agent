@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -33,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
+# ACP Registry manifest must stay version-locked with pyproject.toml.
+# tests/acp/test_registry_manifest.py enforces this lockstep so the release
+# bump touches both files atomically.
+ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -41,27 +47,48 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
+    "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
+    "anadi.jaggia@gmail.com": "Jaggia",
+    "32201324+simpolism@users.noreply.github.com": "simpolism",
+    "simpolism@gmail.com": "simpolism",
+    "jake@nousresearch.com": "simpolism",
+    "mgongzai@gmail.com": "vKongv",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "oleksii.lisikh@gmail.com": "olisikh",
+    "jeremy@geocaching.com": "outdoorsea",
     "leone.parise@gmail.com": "leoneparise",
+    "mr@shu.io": "mrshu",
+    "adam.manning@gmail.com": "am423",
     "buraysandro9@gmail.com": "ygd58",
+    "yanglongwei06@gmail.com": "Alex-yang00",
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "421774554@qq.com": "wuli666",
     "harish.kukreja@gmail.com": "counterposition",
+    "korkyzer@gmail.com": "Korkyzer",
     "1046611633@qq.com": "zhengyn0001",
+    "1095245867@qq.com": "littlewwwhite",
     "db@project-aeon.com": "db-aeon",
     "ahmed@abadr.net": "ahmedbadr3",
     "cleo@edaphic.xyz": "curiouscleo",
     "hirokazu.ogawa@kwansei.ac.jp": "hrkzogw",
     "datapod.k@gmail.com": "dandacompany",
     "treydong.zh@gmail.com": "TreyDong",
+    "phil.thomas@gametime.co": "explainanalyze",
     "kyanam.preetham@gmail.com": "pkyanam",
+    "zhizhong.xu@shopee.com": "1000Delta",
+    "30397170+1000Delta@users.noreply.github.com": "1000Delta",
+    "szymonclawd@mac.home": "szymonclawd",
+    "257759490+szymonclawd@users.noreply.github.com": "szymonclawd",
+    "zhanganzhe@tenclass.com": "luoyuctl",
+    "51604064+luoyuctl@users.noreply.github.com": "luoyuctl",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "147827411+EloquentBrush@users.noreply.github.com": "AhmetArif0",
+    "97489706+purzbeats@users.noreply.github.com": "purzbeats",
     "hugosequier@gmail.com": "Hugo-SEQUIER",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
@@ -79,6 +106,7 @@ AUTHOR_MAP = {
     "62420081+kjames2001@users.noreply.github.com": "kjames2001",
     "132184373+wilsen0@users.noreply.github.com": "wilsen0",
     "ra2157218@gmail.com": "Abd0r",
+    "oswaldb22@users.noreply.github.com": "oswaldb22",
     "abdielv@proton.me": "AJV20",
     "mason@growagainorchids.com": "masonjames",
     "ytchen0719@gmail.com": "liquidchen",
@@ -133,6 +161,7 @@ AUTHOR_MAP = {
     "sandrohub013@gmail.com": "SandroHub013",
     "maciekczech@users.noreply.github.com": "maciekczech",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
+    "cine.dreamer.one@gmail.com": "LeonSGP43",
     "zjtan1@gmail.com": "zeejaytan",
     "asslaenn5@gmail.com": "Aslaaen",
     "trae.anderson17@icloud.com": "Tkander1715",
@@ -221,6 +250,7 @@ AUTHOR_MAP = {
     "hitesh@gmail.com": "htsh",
     "pty819@outlook.com": "pty819",
     "pty819@users.noreply.github.com": "pty819",
+    "14341805+pty819@users.noreply.github.com": "pty819",
     "517024110@qq.com": "chennest",
     # Curator fixes (Apr 30 2026)
     "yuxiangl490@gmail.com": "y0shua1ee",
@@ -598,6 +628,7 @@ AUTHOR_MAP = {
     "iacobs@m0n5t3r.info": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
     "jonny@nousresearch.com": "jquesnelle",
+    "jake@nousresearch.com": "simpolism",
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
@@ -704,6 +735,7 @@ AUTHOR_MAP = {
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "harryplusplus@gmail.com": "harryplusplus",
     "anthhub@163.com": "anthhub",
+    "vmphuongit@gmail.com": "phuongvm",
     "allard.quek@singtel.com": "AllardQuek",
     "shenuu@gmail.com": "shenuu",
     "xiayh17@gmail.com": "xiayh0107",
@@ -746,6 +778,8 @@ AUTHOR_MAP = {
     "chayton@sina.com": "ycbai",
     "longsizhuo@gmail.com": "longsizhuo",
     "chenb19870707@gmail.com": "ms-alan",
+    "agorgianitisj@hotmail.com": "johnisag",
+    "phil.thomas@gametime.co": "explainanalyze",
     "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
     "22549957+li0near@users.noreply.github.com": "li0near",
     "guoyu801@gmail.com": "li0near",
@@ -844,6 +878,8 @@ AUTHOR_MAP = {
     "dpaluy@users.noreply.github.com": "dpaluy",
     "psikonetik@gmail.com": "el-analista",
     "chenb19870707@gmail.com": "ms-alan",
+    "agorgianitisj@hotmail.com": "johnisag",
+    "phil.thomas@gametime.co": "explainanalyze",
     "hex-clawd@users.noreply.github.com": "hex-clawd",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "barteq@hacknotes.local": "barteqpl",
@@ -1003,6 +1039,27 @@ AUTHOR_MAP = {
     "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
     "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
+    "anton.kuenzi@gmail.com": "ZeterMordio",  # PR #11754 salvage (zsh completion compdef + _arguments syntax)
+    "23yntong@stu.edu.cn": "iuyup",  # PR #6155 salvage (shell=True hardening)
+    "86501179+1RB@users.noreply.github.com": "1RB",  # PR #25462 salvage (discord forwarded messages)
+    "44045943+ayushere@users.noreply.github.com": "ayushere",  # PR #25342 salvage (memory teardown leak)
+    "15791290+domtriola@users.noreply.github.com": "domtriola",  # PR #25424 salvage (docs tirith link)
+    "284216128+ephron-ren@users.noreply.github.com": "ephron-ren",  # PR #25358 salvage (MiMo reasoning echo-back)
+    "96843562+freqyfreqy@users.noreply.github.com": "freqyfreqy",  # PR #25423 salvage (docs LSP worktree -> repo)
+    "54306477+fu576@users.noreply.github.com": "fu576",  # PR #25369 salvage (api_mode not inherited cross-provider)
+    "258095375+kfa-ai@users.noreply.github.com": "kfa-ai",  # PR #25398 salvage (whatsapp quoted reply metadata)
+    "99181308+magic524@users.noreply.github.com": "magic524",  # PR #25361 salvage (QQBot reconnect loop)
+    "9150277+PaTTeeL@users.noreply.github.com": "PaTTeeL",  # PR #25359 salvage (custom_providers in compression length)
+    "1700913+pearjelly@users.noreply.github.com": "pearjelly",  # PR #25388 salvage (feishu ws connect override sync)
+    "100820567+raymaylee@users.noreply.github.com": "raymaylee",  # PR #25394 salvage (context compaction status)
+    "122434621+Tianyu199509@users.noreply.github.com": "Tianyu199509",  # PR #25421 salvage (gateway PID Windows)
+    "58224596+HxT9@users.noreply.github.com": "HxT9",  # PR #25760 salvage (web sync-assets cross-platform)
+    "120411712+evgyur@users.noreply.github.com": "evgyur",  # PR #25651 salvage (docs media session context)
+    "36507055+AsoTora@users.noreply.github.com": "AsoTora",  # PR #25624 salvage (MCP auth no-retry)
+    "98992931+oxngon@users.noreply.github.com": "oxngon",  # PR #25603 salvage (forward image attachments to bg tasks)
+    "37467487+yifengingit@users.noreply.github.com": "yifengingit",  # PR #25589 salvage (AUTOINCREMENT id ordering)
+    "89525629+vanthinh6886@users.noreply.github.com": "vanthinh6886",  # PR #25562 salvage (.env 0600 perms)
+    "16034932+Arkmusn@users.noreply.github.com": "Arkmusn",  # PR #25559 salvage (approvals.timeout from config)
 }
 
 
@@ -1103,6 +1160,29 @@ def update_version_files(semver: str, calver_date: str):
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject)
+
+    # Update ACP Registry manifest + npm launcher (must stay version-locked
+    # with pyproject — enforced by tests/acp/test_registry_manifest.py).
+    _update_acp_registry_versions(semver)
+
+
+def _update_acp_registry_versions(semver: str) -> None:
+    """Bump the ACP Registry manifest's version + uvx package pin in lockstep
+    with pyproject.
+
+    Skips silently if the manifest is missing — older release branches predate
+    the ACP Registry assets.
+    """
+    if ACP_REGISTRY_MANIFEST.exists():
+        manifest = json.loads(ACP_REGISTRY_MANIFEST.read_text(encoding="utf-8"))
+        manifest["version"] = semver
+        uvx = manifest.get("distribution", {}).get("uvx", {})
+        if "package" in uvx:
+            uvx["package"] = f"hermes-agent[acp]=={semver}"
+        # Preserve trailing newline + 2-space indent the file already uses.
+        ACP_REGISTRY_MANIFEST.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
 
 
 def build_release_artifacts(semver: str) -> list[Path]:

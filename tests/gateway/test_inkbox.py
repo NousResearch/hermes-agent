@@ -379,6 +379,19 @@ def test_inkbox_in_platforms_registry():
 
 class TestSend:
     @pytest.mark.asyncio
+    async def test_send_suppresses_todo_tool_progress_sms(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+155****0101",
+            '📋 todo: "planning 3 task(s)"',
+            metadata={"mode": "sms", "to_phone": "+155****0101"},
+        )
+        assert result.success is True
+        assert result.message_id == "suppressed-admin-notice"
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_sms_uses_e164_chat_id_directly(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         result = await adapter.send(

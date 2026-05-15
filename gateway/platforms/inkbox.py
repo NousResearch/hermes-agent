@@ -134,6 +134,7 @@ _ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
     "📖",  # read
     "📝",  # write / edit
     "📚",  # skill load
+    "📋",  # todo / task planning
     "🐍",  # exec / python
     "🌐",  # web fetch
     "🧠",  # thinking / reasoning

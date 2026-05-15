@@ -103,14 +103,17 @@ jobs:
           echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
 
       - name: Generate diff summary
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          HEAD_REF: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
         run: |
           python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
-            --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --base-ref  "$BASE_REF" \
+            --head-ref  "$HEAD_REF" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 

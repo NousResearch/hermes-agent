@@ -19,6 +19,7 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -44,6 +45,7 @@ jobs:
   deploy-with-index:
     needs: build-index
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       pages: write
       id-token: write

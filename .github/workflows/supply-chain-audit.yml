@@ -30,6 +30,7 @@ jobs:
   scan:
     name: Scan PR for critical supply chain risks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4

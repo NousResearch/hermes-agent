@@ -24,6 +24,7 @@ jobs:
   deploy-vercel:
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Trigger Vercel Deploy
         run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
@@ -31,6 +32,7 @@ jobs:
   deploy-docs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

@@ -2081,12 +2081,12 @@ def _xai_validate_loopback_redirect_uri(redirect_uri: str) -> tuple[str, int, st
 
 
 def _xai_callback_cors_origin(origin: Optional[str]) -> str:
+    # CORS allowlist for the loopback callback.  Only xAI's own auth origins
+    # are accepted; the redirect_uri itself is bound to 127.0.0.1 and gated by
+    # PKCE+state, so additional dev/3p origins are not needed here.
     allowed = {
         "https://accounts.x.ai",
         "https://auth.x.ai",
-        "https://accounts.mouseion.dev",
-        "http://localhost:20000",
-        "http://127.0.0.1:20000",
     }
     return origin if origin in allowed else ""
 

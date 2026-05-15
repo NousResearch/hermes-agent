@@ -14,20 +14,28 @@ the user gets full Hermes capability inside a Codex turn.
 Scope (what we expose):
   - web_search, web_extract              — Firecrawl, no codex equivalent
   - browser_navigate / _click / _type /  — Camofox/Browserbase automation
-    _snapshot / _screenshot / _scroll / _back / _press / _vision
-  - delegate_task                        — Hermes subagents
+    _snapshot / _scroll / _back / _press /
+    _get_images / _console / _vision
   - vision_analyze                       — image inspection by vision model
   - image_generate                       — image generation
-  - memory                               — Hermes' persistent memory store
   - skill_view, skills_list              — Hermes' skill library
-  - session_search                       — cross-session search
   - text_to_speech                       — TTS
+  - kanban_* (complete/block/comment/    — kanban worker + orchestrator
+    heartbeat/show/list/create/            handoff (stateless: read env var,
+    unblock/link)                          write ~/.hermes/kanban.db)
 
-What we DO NOT expose (codex has equivalents):
+What we DO NOT expose:
   - terminal / shell                     — codex's own shell tool
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
-  - clarify, todo                        — codex's own UX
+  - clarify                              — codex's own UX
+  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
+    session_search / todo                  (model_tools.py). They require
+                                           the running AIAgent context to
+                                           dispatch (mid-loop state), so a
+                                           stateless MCP callback can't
+                                           drive them. See the inline
+                                           comment on EXPOSED_TOOLS below.
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
 Spawned by: CodexAppServerSession.ensure_started() when the runtime is

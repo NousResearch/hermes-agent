@@ -39,6 +39,11 @@ The branch also adds reproducible startup/runtime benchmark harnesses, visual
 PR documentation, and focused regression tests for the new cache, batch,
 fingerprint, and endpoint-fast-path behavior.
 
+Image rule for this PR: every generated or diagrammed image used in the README
+and PR documentation must show or be mapped to old behavior, new behavior, and
+the measured gain for that item. The canonical mapping is documented in
+`docs/hermes-agent-10x-fast-pr.md` under "Image Comparison Contract".
+
 ## Problem
 
 Several hot paths were doing repeated work:

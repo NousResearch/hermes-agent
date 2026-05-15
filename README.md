@@ -46,6 +46,23 @@ Full PR documentation:
 
 ![Hermes Agent 10x Fast performance dashboard](docs/assets/10x-fast/perf-summary-dashboard.svg)
 
+### Image Comparison Map
+
+Every performance image in this branch is meant to compare old vs new behavior.
+When a gain is numeric, the measured local Windows result is listed here so the
+visuals do not become vague marketing art.
+
+| Image | Old | New | Gain |
+| --- | ---: | ---: | ---: |
+| `perf-startup-model-tools.svg` | `import_model_tools` 2.0847s | 0.8419s | 2.48x |
+| `perf-tool-definitions-startup.svg` | `import_and_get_tool_definitions` 1.8782s | 0.8741s | 2.15x |
+| `perf-plugin-discovery.svg` | full platform discovery 0.5571s | deferred fast path 0.1930s | 2.89x |
+| `perf-session-batch-writes.svg` | per-message loop 0.6329s | batched write 0.0240s | 24.21x |
+| `runtime-local-endpoint-fast-path.svg` | dead local endpoint 51.4181s | TCP fast-fail 5.5563s | 9.25x |
+| `runtime-benchmark-suite.svg` | mixed runtime hot paths before this branch | latest measured medians | up to 22.10x |
+| `phase-7-delegate-parallel-guard.svg` | guard 6.9878s / 0.7465ms per batch | 1.6403s / 0.1673ms per batch | 4.26x |
+| `generated/parallel-runtime.png` | sequential independent tool work 0.3036s | parallel batch 0.0590s | 5.14x |
+
 ![Phase 1 before and after summary](docs/assets/hermes-agent-10x-fast-before-after.svg)
 
 ![Generated 10x Fast visual](docs/assets/10x-fast/hermes-agent-10x-fast-phase-1.png)

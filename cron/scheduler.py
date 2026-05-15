@@ -1315,8 +1315,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        from agent.text_verbosity import parse_text_verbosity
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
+        effort = str(agent_cfg.get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
+        text_verbosity = parse_text_verbosity(agent_cfg.get("text_verbosity", ""))
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
@@ -1433,6 +1436,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
+            text_verbosity=text_verbosity,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,

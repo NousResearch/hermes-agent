@@ -1207,6 +1207,7 @@ class GatewayRunner:
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._text_verbosity = self._load_text_verbosity()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -1927,15 +1928,22 @@ class GatewayRunner:
         }
 
         service_tier = getattr(self, "_service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = {}
-            return route
+        overrides = None
+        if service_tier:
+            try:
+                overrides = resolve_fast_mode_overrides(route["model"])
+            except Exception:
+                overrides = None
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
+        from agent.text_verbosity import merge_text_verbosity_override
+
+        route["request_overrides"] = merge_text_verbosity_override(
+            overrides,
+            getattr(self, "_text_verbosity", None),
+            provider=runtime["provider"],
+            api_mode=runtime["api_mode"],
+            base_url=runtime["base_url"],
+        )
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
@@ -2348,6 +2356,26 @@ class GatewayRunner:
             return "priority"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
+
+    @staticmethod
+    def _load_text_verbosity() -> str | None:
+        """Load OpenAI Responses API text verbosity from config.yaml."""
+        from agent.text_verbosity import parse_text_verbosity
+
+        raw = ""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                raw = str(cfg_get(cfg, "agent", "text_verbosity", default="") or "").strip()
+        except Exception:
+            pass
+        result = parse_text_verbosity(raw)
+        if raw and result is None:
+            logger.warning("Unknown text_verbosity '%s', ignoring", raw)
+        return result
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -10460,6 +10488,7 @@ class GatewayRunner:
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    text_verbosity=self._text_verbosity,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -15080,6 +15109,7 @@ class GatewayRunner:
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    text_verbosity=self._text_verbosity,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -15114,6 +15144,7 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
+            agent.text_verbosity = self._text_verbosity
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()

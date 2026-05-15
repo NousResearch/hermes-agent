@@ -69,6 +69,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from agent.text_verbosity import merge_text_verbosity_override
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -1161,6 +1162,7 @@ class AIAgent:
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
+        text_verbosity: str = None,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -1440,7 +1442,14 @@ class AIAgent:
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
-        self.request_overrides = dict(request_overrides or {})
+        self.text_verbosity = text_verbosity
+        self.request_overrides = merge_text_verbosity_override(
+            request_overrides,
+            text_verbosity,
+            provider=self.provider,
+            api_mode=self.api_mode,
+            base_url=self.base_url,
+        )
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         

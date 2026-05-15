@@ -878,6 +878,13 @@ def _load_service_tier() -> str | None:
     return None
 
 
+def _load_text_verbosity() -> str | None:
+    from agent.text_verbosity import parse_text_verbosity
+
+    raw = str((_load_cfg().get("agent") or {}).get("text_verbosity", "") or "").strip()
+    return parse_text_verbosity(raw)
+
+
 def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
 
@@ -1822,6 +1829,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
+        "text_verbosity": getattr(agent, "text_verbosity", None) or _load_text_verbosity(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
@@ -1894,6 +1902,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         verbose_logging=_load_tool_progress_mode() == "verbose",
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
+        text_verbosity=_load_text_verbosity(),
         enabled_toolsets=_load_enabled_toolsets(),
         platform="tui",
         session_id=session_id or key,

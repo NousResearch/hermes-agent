@@ -1093,6 +1093,17 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+## OpenAI Responses Text Verbosity
+
+For OpenAI GPT models using the Responses API, control how terse or detailed final natural-language answers should be without changing reasoning depth or Hermes UI logging:
+
+```yaml
+agent:
+  text_verbosity: ""   # empty = provider default. Options: low, medium, high
+```
+
+Hermes only sends this as top-level `text: {"verbosity": ...}` for OpenAI Responses runtimes. It is not sent to Anthropic, xAI/Grok, chat-completions-only providers, or other non-supporting backends.
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

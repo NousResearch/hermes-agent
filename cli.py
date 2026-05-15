@@ -268,6 +268,17 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+def _parse_text_verbosity_config(raw: str) -> str | None:
+    """Parse agent.text_verbosity for OpenAI Responses API requests."""
+    from agent.text_verbosity import parse_text_verbosity
+
+    result = parse_text_verbosity(raw)
+    if raw and str(raw).strip() and result is None:
+        logger.warning("Unknown text_verbosity '%s', ignoring", raw)
+    return result
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -2508,6 +2519,9 @@ class HermesCLI:
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        self.text_verbosity = _parse_text_verbosity_config(
+            CLI_CONFIG["agent"].get("text_verbosity", "")
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -4098,15 +4112,22 @@ class HermesCLI:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = None
-            return route
+        overrides = None
+        if service_tier:
+            try:
+                overrides = resolve_fast_mode_overrides(route["model"])
+            except Exception:
+                overrides = None
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+        from agent.text_verbosity import merge_text_verbosity_override
+
+        route["request_overrides"] = merge_text_verbosity_override(
+            overrides,
+            getattr(self, "text_verbosity", None),
+            provider=runtime["provider"],
+            api_mode=runtime["api_mode"],
+            base_url=runtime["base_url"],
+        )
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
@@ -4215,6 +4236,7 @@ class HermesCLI:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                text_verbosity=self.text_verbosity,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
@@ -7900,6 +7922,7 @@ class HermesCLI:
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
+                    text_verbosity=self.text_verbosity,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,

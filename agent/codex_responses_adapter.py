@@ -726,7 +726,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers",
+        "text", "extra_headers",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -747,6 +747,25 @@ def _preflight_codex_api_kwargs(
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
+    text = api_kwargs.get("text")
+    if text is not None:
+        if not isinstance(text, dict):
+            raise ValueError("Codex Responses request 'text' must be an object.")
+        normalized_text: Dict[str, Any] = {}
+        verbosity = text.get("verbosity")
+        if verbosity is not None:
+            verbosity_value = str(verbosity).strip().lower()
+            if verbosity_value not in {"low", "medium", "high"}:
+                raise ValueError("Codex Responses request 'text.verbosity' must be low, medium, or high.")
+            normalized_text["verbosity"] = verbosity_value
+        for key, value in text.items():
+            if key == "verbosity" or value is None:
+                continue
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError("Codex Responses request 'text' keys must be non-empty strings.")
+            normalized_text[key.strip()] = value
+        if normalized_text:
+            normalized["text"] = normalized_text
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

@@ -6,8 +6,8 @@ Covers:
   - jobs.update_job: set, clear, re-validate
   - tools.cronjob_tools.cronjob: create + update JSON round-trip, schema
     includes workdir, _format_job exposes it when set
-  - scheduler.tick(): partitions workdir jobs off the thread pool, restores
-    TERMINAL_CWD in finally, honours the env override during run_job
+  - scheduler.tick(): partitions workdir jobs off the thread pool and applies
+    TERMINAL_CWD through session-scoped context during run_job
 """
 
 from __future__ import annotations
@@ -199,10 +199,10 @@ class TestCronjobToolWorkdir:
 
 class TestTickWorkdirPartition:
     """
-    tick() must run workdir jobs sequentially (outside the ThreadPoolExecutor)
-    because run_job mutates os.environ["TERMINAL_CWD"], which is process-global.
-    We verify the partition without booting the real scheduler by patching the
-    pieces tick() calls.
+    tick() keeps workdir jobs in a sequential pass for stable scheduling while
+    run_job applies their cwd through session-scoped context. We verify the
+    partition without booting the real scheduler by patching the pieces tick()
+    calls.
     """
 
     def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
@@ -245,13 +245,13 @@ class TestTickWorkdirPartition:
 
 
 # ---------------------------------------------------------------------------
-# scheduler.run_job: TERMINAL_CWD + skip_context_files wiring
+# scheduler.run_job: session-scoped TERMINAL_CWD + skip_context_files wiring
 # ---------------------------------------------------------------------------
 
 class TestRunJobTerminalCwd:
     """
-    run_job sets TERMINAL_CWD + flips skip_context_files=False when workdir
-    is set, and restores the prior TERMINAL_CWD in finally — even on error.
+    run_job sets session-scoped TERMINAL_CWD + flips skip_context_files=False
+    when workdir is set, and restores it in finally — even on error.
     We stub AIAgent so no real API call happens.
     """
 
@@ -266,14 +266,14 @@ class TestRunJobTerminalCwd:
             def __init__(self, **kwargs):
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
                 observed["load_soul_identity"] = kwargs.get("load_soul_identity")
-                observed["terminal_cwd_during_init"] = os.environ.get(
-                    "TERMINAL_CWD", "_UNSET_"
-                )
+                from gateway.session_context import get_terminal_cwd
+
+                observed["terminal_cwd_during_init"] = get_terminal_cwd("_UNSET_")
 
             def run_conversation(self, *_a, **_kw):
-                observed["terminal_cwd_during_run"] = os.environ.get(
-                    "TERMINAL_CWD", "_UNSET_"
-                )
+                from gateway.session_context import get_terminal_cwd
+
+                observed["terminal_cwd_during_run"] = get_terminal_cwd("_UNSET_")
                 return {"final_response": "done", "messages": []}
 
             def get_activity_summary(self):
@@ -337,12 +337,91 @@ class TestRunJobTerminalCwd:
         # AIAgent was built with skip_context_files=False (feature ON).
         assert observed["skip_context_files"] is False
         assert observed["load_soul_identity"] is True
-        # TERMINAL_CWD was pointing at the job workdir while the agent ran.
+        # Session-scoped TERMINAL_CWD pointed at the job workdir while the agent ran.
         assert observed["terminal_cwd_during_init"] == str(tmp_path.resolve())
         assert observed["terminal_cwd_during_run"] == str(tmp_path.resolve())
 
-        # And it was restored to the original value in finally.
+        # Process-global TERMINAL_CWD was never clobbered.
         assert os.environ["TERMINAL_CWD"] == "/original/cwd"
+
+
+    def test_workdir_terminal_cwd_is_thread_isolated_during_run(self, tmp_path, monkeypatch):
+        """A workdir cron run must not expose its cwd to concurrent sessions."""
+        import os
+        import sys
+        import threading
+        import cron.scheduler as sched
+        from gateway.session_context import get_terminal_cwd
+
+        monkeypatch.setenv("TERMINAL_CWD", "/gateway/default")
+        running = threading.Event()
+        release = threading.Event()
+        observed: dict = {}
+
+        class BlockingAgent:
+            def __init__(self, **kwargs):
+                observed["skip_context_files"] = kwargs.get("skip_context_files")
+
+            def run_conversation(self, *_a, **_kw):
+                observed["cron_thread_cwd"] = get_terminal_cwd("_UNSET_")
+                running.set()
+                assert release.wait(5), "test timed out waiting to release cron run"
+                return {"final_response": "done", "messages": []}
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+        fake_mod = type(sys)("run_agent")
+        fake_mod.AIAgent = BlockingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+
+        from hermes_cli import runtime_provider as _rtp
+        monkeypatch.setattr(
+            _rtp,
+            "resolve_runtime_provider",
+            lambda **_kw: {
+                "provider": "test",
+                "api_key": "k",
+                "base_url": "http://test.local",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        import dotenv
+        monkeypatch.setattr(dotenv, "load_dotenv", lambda *_a, **_kw: True)
+
+        job = {
+            "id": "iso",
+            "name": "isolated-wd-job",
+            "workdir": str(tmp_path),
+            "schedule_display": "manual",
+        }
+
+        result_holder = {}
+
+        def _run():
+            result_holder["result"] = sched.run_job(job)
+
+        t = threading.Thread(target=_run, name="cron-workdir-isolation-test")
+        t.start()
+        try:
+            assert running.wait(5), "cron run did not start"
+            assert observed["cron_thread_cwd"] == str(tmp_path.resolve())
+            assert get_terminal_cwd("_UNSET_") == "/gateway/default"
+            assert os.environ["TERMINAL_CWD"] == "/gateway/default"
+        finally:
+            release.set()
+            t.join(5)
+
+        assert not t.is_alive()
+        success, _output, response, error = result_holder["result"]
+        assert success is True, f"run_job failed: error={error!r} response={response!r}"
+        assert observed["skip_context_files"] is False
+        assert get_terminal_cwd("_UNSET_") == "/gateway/default"
 
     def test_no_workdir_leaves_terminal_cwd_untouched(self, monkeypatch):
         """When workdir is absent, run_job must not touch TERMINAL_CWD at all —

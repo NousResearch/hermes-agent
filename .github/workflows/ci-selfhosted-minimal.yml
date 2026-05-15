@@ -74,10 +74,10 @@ jobs:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib:${{ env.LD_LIBRARY_PATH }}
         run: |
           . .venv/bin/activate
-          python -m pytest -q --tb=short -n 3 \
-            tests/gateway/test_telegram_send_locks.py \
-            tests/gateway/test_telegram_retry_backoff.py \
-            tests/test_run_agent_kanban_lifecycle_guard.py
+          PYTEST_ADDOPTS='' python -m pytest -q --tb=short -n 3 -m 'not integration' \
+            tests/gateway/test_status.py \
+            tests/gateway/test_platform_registry.py \
+            tests/agent/test_model_metadata.py
 
   broad-diagnostic:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_broad_diagnostic == true }}

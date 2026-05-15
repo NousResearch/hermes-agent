@@ -1580,11 +1580,9 @@
 /* ---- Card trash button + delete-confirm dialog ----------------------- */
 
 /* Pinned to the far-right of the first card row via margin-left: auto.
- * Always visible (so users discover it) but at reduced opacity so it
- * doesn't fight the title for attention. Bumps to full opacity + red
- * tint on hover/focus to make the destructive intent obvious when the
- * user is about to commit to the click. Earlier version was opacity:0
- * until card-hover but that hid the affordance from non-hovering users. */
+ * Always RED so it's immediately recognisable as "destructive" — a grey
+ * version proved too easy to overlook (user feedback). Bumps to a more
+ * saturated red + scale + bg tint on hover/focus. */
 .hermes-kanban-trash-btn {
   margin-left: auto;
   display: inline-flex;
@@ -1596,27 +1594,21 @@
   border: 0;
   border-radius: 0.25rem;
   background: transparent;
-  color: var(--color-muted-foreground);
+  color: var(--color-destructive, #d14a4a);
   cursor: pointer;
-  opacity: 0.45;
+  opacity: 0.85;
   transition: opacity 0.12s ease-out, color 0.12s, background 0.12s, transform 0.12s;
 }
 .hermes-kanban-trash-btn:focus-visible {
   opacity: 1;
-  outline: 2px solid var(--color-ring, currentColor);
+  outline: 2px solid var(--color-destructive, #d14a4a);
   outline-offset: 1px;
 }
-.hermes-kanban-card:hover .hermes-kanban-trash-btn,
-.hermes-kanban-card:focus-within .hermes-kanban-trash-btn {
-  opacity: 0.75;
-}
-.hermes-kanban-trash-btn:hover,
-.hermes-kanban-card .hermes-kanban-trash-btn:hover,
-.hermes-kanban-card:focus-within .hermes-kanban-trash-btn:hover {
+.hermes-kanban-trash-btn:hover {
   opacity: 1;
   color: var(--color-destructive, #d14a4a);
-  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 14%, transparent);
-  transform: scale(1.05);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 18%, transparent);
+  transform: scale(1.08);
 }
 
 /* Modal shade — fixed full-viewport overlay above everything, including

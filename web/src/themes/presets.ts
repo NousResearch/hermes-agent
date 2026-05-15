@@ -207,29 +207,50 @@ export const roseTheme: DashboardTheme = {
  *
  * Palette borrowed verbatim from MC's globals.css `.dark` block.
  */
+/**
+ * Mission Control — palette ported verbatim from
+ * github.com/builderz-labs/mission-control's `globals.css` `.dark` block,
+ * with the HSL values mechanically converted to hex so the Hermes theme
+ * system (which expects hex + alpha) can apply them.
+ *
+ * Mapping of MC's tokens to Hermes's three-layer model:
+ *
+ *   MC --background  (215 27% 4%)  → palette.background.hex  = #080a0e
+ *   MC --foreground  (210 20% 92%) → palette.midground.hex   = #e3e9ef
+ *      (Hermes drives the global `color: var(--midground)` rule off
+ *       this — so it MUST be a readable greyscale, not the accent,
+ *       or every label across the dashboard turns cyan.)
+ *   palette.foreground stays at white+α0 (Hermes convention: the
+ *       foreground layer is an invisible overlay slot, NOT the text).
+ *
+ * The remaining MC tokens are pinned exactly via `colorOverrides`. The
+ * Hermes DS cascade would otherwise derive surface stops as 4%/8%/15%
+ * midground mixes, which on a flat-dark canvas comes out almost
+ * indistinguishable from the background — MC's hand-tuned surface
+ * hierarchy reads much better.
+ *
+ * The decorative chrome (clip-path notches on sidebar/header/card,
+ * warm-glow vignette, SVG noise grain, filler-bg jpeg) is killed via
+ * `componentStyles` + `warmGlow: "transparent"` + `noiseOpacity: 0` —
+ * MC is a flat-design dashboard with crisp 1px borders and no overlay
+ * effects.
+ *
+ * Inter (sans) + JetBrains Mono (mono) match MC's Next.js stack; the
+ * font file is pulled from Google Fonts on first apply.
+ */
 export const missionControlTheme: DashboardTheme = {
   name: "mission-control",
   label: "Mission Control",
-  description: "Flat dark — copies the Mission Control look (no glow, no grain, no chrome)",
+  description: "Flat dark — palette and chrome copied from Mission Control",
   palette: {
-    // MC --background (215 27% 4%)
-    background: { hex: "#080b10", alpha: 1 },
-    // MC's body text colour (--foreground, 210 20% 92%). Hermes drives
-    // `--color-foreground` off `--midground`, so this MUST be a readable
-    // greyscale — not the accent — or every label turns cyan.
-    midground: { hex: "#e6ebf0", alpha: 1 },
+    background: { hex: "#080a0e", alpha: 1 },
+    midground: { hex: "#e3e9ef", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    // No warm vignette. Backdrop still renders the z-99 div but a
-    // transparent gradient means there's nothing to see.
     warmGlow: "transparent",
-    // Backdrop's SVG noise layer reads this multiplier; 0 disables.
     noiseOpacity: 0,
   },
   typography: {
     ...DEFAULT_TYPOGRAPHY,
-    // MC's Next.js stack defaults to Inter; JetBrains Mono is its
-    // canonical mono face. Both pulled from Google Fonts on demand —
-    // fontUrl is injected as a <link> by ThemeProvider.
     fontSans: `"Inter", ${SYSTEM_SANS}`,
     fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     fontDisplay: `"Inter", ${SYSTEM_SANS}`,
@@ -244,11 +265,9 @@ export const missionControlTheme: DashboardTheme = {
     radius: "0.5rem",
     density: "comfortable",
   },
-  // Kill every Hermes-DS decorative override. `clip-path: none` /
-  // `border-image: none` resolve cleanly through the inline styles on
-  // App.tsx's sidebar/header and Card. Background overrides pin flat
-  // shades so we don't inherit teal-tinted cascade defaults.
   componentStyles: {
+    // Sidebar + header are flat dark panels with a single border-bottom;
+    // none of Hermes's clip-path / border-image flourishes.
     sidebar: {
       background: "#0a0d12",
       clipPath: "none",
@@ -259,8 +278,9 @@ export const missionControlTheme: DashboardTheme = {
       clipPath: "none",
       borderImage: "none",
     },
+    // Cards: explicit fill matching MC's --card; no shadow, no clip.
     card: {
-      background: "#10141c",
+      background: "#0e1219",
       clipPath: "none",
       borderImage: "none",
       boxShadow: "none",
@@ -268,54 +288,55 @@ export const missionControlTheme: DashboardTheme = {
     tab: {
       clipPath: "none",
     },
+    // Kill the filler-bg jpeg layer (z-2 in <Backdrop />); combined with
+    // warmGlow=transparent and noiseOpacity=0 the canvas collapses to a
+    // single flat --background-base fill.
     backdrop: {
-      // Hide the filler jpeg by zeroing its z-2 div opacity. Combined
-      // with warmGlow: "transparent" and noiseOpacity: 0, the canvas
-      // reduces to a single flat `--background-base` fill underneath.
       fillerOpacity: "0",
     },
   },
-  // Mondwest is the retro display face Hermes uses for nav/section labels.
-  // Retarget the CSS var to Inter so MC theme reads as one consistent face.
-  // Also force the active-state nav indicator (a 1px column) into the
-  // shadcn ring color so it picks up the cyan accent instead of the
-  // greyscale midground.
+  // Retarget the bundled "Mondwest" display face (used by sidebar nav
+  // labels via `font-mondwest`) to Inter so the whole UI reads as one
+  // consistent sans face — MC has no display-style headings.
+  // Earlier revisions of this theme also force-disabled `mix-blend-mode:
+  // plus-lighter` on the brand title, but that turned out to make some
+  // labels invisible on the flat-dark canvas (Hermes's brand text relies
+  // on the additive blend to read against the canonical dark teal). Left
+  // the blend mode alone — labels are correctly bright because midground
+  // is high-luminance greyscale.
   customCSS: `
     :root {
       --font-mondwest: "Inter", system-ui, sans-serif;
     }
-    /* The default theme uses mix-blend-mode: plus-lighter on the brand
-       title; against a flat dark fill that washes the cyan glow away —
-       remove it so the heading reads as plain greyscale Inter. */
-    aside [style*="mix-blend-mode"] {
-      mix-blend-mode: normal !important;
-    }
   `,
   colorOverrides: {
-    // The cyan accent — every focus ring, primary button, active tab
-    // indicator. Matches MC's --void-cyan (187 82% 53%).
-    ring: "#22d3ee",
-    primary: "#22d3ee",
-    primaryForeground: "#04141a",
-    accent: "#1e3a44",
-    accentForeground: "#22d3ee",
-    secondary: "#162028",
-    secondaryForeground: "#e6ebf0",
-    // Card / surface tones — pinned because the cascade would derive
-    // them as a 4% midground mix, which against a flat-dark background
-    // gives a barely-visible separation. MC's --card (220 30% 8%) is
-    // explicitly cooler than the surrounding background.
-    card: "#10141c",
-    cardForeground: "#e6ebf0",
-    popover: "#10141c",
-    popoverForeground: "#e6ebf0",
-    muted: "#161b25",
-    mutedForeground: "#94a3b8",
-    border: "#1c2230",
-    input: "#1c2230",
-    destructive: "#ef4444",
-    destructiveForeground: "#ffffff",
-    success: "#22c55e",
+    // MC --primary / --ring / --void-cyan (187 82% 53%).
+    ring: "#28d2ef",
+    primary: "#28d2ef",
+    primaryForeground: "#0a0e14",
+    // MC --accent (220 20% 14%) + --accent-foreground (210 20% 92%).
+    accent: "#1c212b",
+    accentForeground: "#e3e9ef",
+    // MC --secondary (220 25% 11%) + --secondary-foreground (210 20% 92%).
+    secondary: "#161c25",
+    secondaryForeground: "#e3e9ef",
+    // MC --card (220 30% 8%) + --card-foreground (210 20% 92%).
+    card: "#0e1219",
+    cardForeground: "#e3e9ef",
+    // MC --popover same as card.
+    popover: "#0e1219",
+    popoverForeground: "#e3e9ef",
+    // MC --muted (220 20% 14%) + --muted-foreground (220 15% 50%).
+    muted: "#1c212b",
+    mutedForeground: "#717d8e",
+    // MC --border / --input (220 20% 14%).
+    border: "#1c212b",
+    input: "#1c212b",
+    // MC --destructive (0 72% 51%).
+    destructive: "#dc2828",
+    destructiveForeground: "#fafafa",
+    // MC --success (160 60% 52%) + --warning (38 92% 50%).
+    success: "#37c298",
     warning: "#f59e0b",
   },
 };

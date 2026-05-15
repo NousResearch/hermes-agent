@@ -47,6 +47,21 @@ from gateway.platforms.slack import SlackAdapter
 from gateway.config import Platform, PlatformConfig
 
 
+class _AuthRunner:
+    """Minimal runner shim for callback auth tests."""
+
+    def __init__(self, authorized: bool):
+        self.authorized = authorized
+        self.last_source = None
+
+    async def _handle_message(self, event):
+        return None
+
+    def _is_user_authorized(self, source):
+        self.last_source = source
+        return self.authorized
+
+
 def _make_adapter():
     """Create a SlackAdapter instance with mocked internals."""
     config = PlatformConfig(enabled=True, token="xoxb-test-token")
@@ -167,7 +182,7 @@ class TestSlackApprovalAction:
                 ],
             },
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"id": "UOWNER", "name": "norbert"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -197,7 +212,7 @@ class TestSlackApprovalAction:
         body = {
             "message": {"ts": "1234.5678", "blocks": []},
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"id": "UOWNER", "name": "norbert"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -212,6 +227,39 @@ class TestSlackApprovalAction:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_rejects_user_blocked_by_gateway_auth(self):
+        adapter = _make_adapter()
+        adapter._approval_resolved["1234.5678"] = False
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1234.5678", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"id": "UATTACKER", "name": "mallory"},
+        }
+        action = {
+            "action_id": "hermes_approve_once",
+            "value": "agent:main:slack:group:C1:1111",
+        }
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+        mock_client.chat_update.assert_not_called()
+        assert adapter._approval_resolved["1234.5678"] is False
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.SLACK
+        assert runner.last_source.user_id == "UATTACKER"
+        assert runner.last_source.chat_id == "C1"
+
+    @pytest.mark.asyncio
     async def test_deny_action(self):
         adapter = _make_adapter()
         adapter._approval_resolved["1.2"] = False
@@ -222,7 +270,7 @@ class TestSlackApprovalAction:
                 {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
             ]},
             "channel": {"id": "C1"},
-            "user": {"name": "alice"},
+            "user": {"id": "UOWNER", "name": "alice"},
         }
         action = {"action_id": "hermes_deny", "value": "session-key"}
 

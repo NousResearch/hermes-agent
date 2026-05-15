@@ -15,6 +15,8 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _prepare_login_shell_command,
+    _prepend_runtime_path,
     _prepend_shell_init,
     _read_terminal_shell_init_config,
     _resolve_shell_init_files,
@@ -183,6 +185,36 @@ class TestPrependShellInit:
         # The path must survive as the shell receives it; embedded single
         # quote is escaped as '\'' rather than breaking the outer quoting.
         assert "o'\\''malley" in wrapped
+
+
+class TestLoginShellBootstrap:
+    def test_prepend_runtime_path_adds_python_and_hermes_bins(self, tmp_path, monkeypatch):
+        fake_venv_bin = tmp_path / "venv" / "bin"
+        fake_venv_bin.mkdir(parents=True)
+        fake_python = fake_venv_bin / "python"
+        fake_python.symlink_to("/usr/bin/python3")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        wrapped = _prepend_runtime_path("echo hi")
+
+        assert wrapped.startswith(
+            f'export PATH="{fake_venv_bin}:{tmp_path / "hermes-home" / ".local" / "bin"}:$PATH"\n'
+        )
+        assert wrapped.endswith("echo hi")
+
+    def test_prepare_login_shell_command_sources_files_then_readds_path(self, tmp_path, monkeypatch):
+        fake_venv_bin = tmp_path / "venv" / "bin"
+        fake_venv_bin.mkdir(parents=True)
+        fake_python = fake_venv_bin / "python"
+        fake_python.symlink_to("/usr/bin/python3")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        wrapped = _prepare_login_shell_command("echo hi", ["/tmp/a.sh"])
+
+        assert "[ -r '/tmp/a.sh' ] && . '/tmp/a.sh' 2>/dev/null || true" in wrapped
+        assert f'export PATH="{fake_venv_bin}:{tmp_path / "hermes-home" / ".local" / "bin"}:$PATH"' in wrapped
 
 
 @pytest.mark.skipif(

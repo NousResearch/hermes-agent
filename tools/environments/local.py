@@ -369,10 +369,12 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
 
-    # Preserve Hermes-managed PATH entries after user shell init files run.
-    # Some dotfiles rebuild PATH from scratch, which drops the active Python
-    # environment and makes console entry points like `hermes` disappear in
-    # terminal-tool subprocesses.
+    prelude = "\n".join(prelude_parts) + "\n"
+    return prelude + cmd_string
+
+
+def _prepend_runtime_path(cmd_string: str) -> str:
+    """Prepend Hermes-managed PATH entries to a shell script."""
     critical_bins: list[str] = []
     current_python_bin = str(Path(sys.executable).parent)
     if current_python_bin:
@@ -382,11 +384,20 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         critical_bins.append(str(Path(hermes_home) / ".local" / "bin"))
     seen: set[str] = set()
     ordered_bins = [b for b in critical_bins if b and not (b in seen or seen.add(b))]
-    if ordered_bins:
-        joined = ":".join(path.replace('"', '\\"') for path in ordered_bins)
-        prelude_parts.append(f'export PATH="{joined}:$PATH"')
-    prelude = "\n".join(prelude_parts) + "\n"
-    return prelude + cmd_string
+    if not ordered_bins:
+        return cmd_string
+    joined = ":".join(path.replace('"', '\\"') for path in ordered_bins)
+    return f'export PATH="{joined}:$PATH"\n' + cmd_string
+
+
+def _prepare_login_shell_command(cmd_string: str, files: list[str] | None = None) -> str:
+    """Build login-shell bootstrap with rc sourcing and PATH preservation."""
+    prepared = _prepend_runtime_path(cmd_string)
+    if files is None:
+        files = _resolve_shell_init_files()
+    if files:
+        prepared = _prepend_shell_init(prepared, files)
+    return prepared
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -462,9 +473,7 @@ class LocalEnvironment(BaseEnvironment):
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
         if login:
-            init_files = _resolve_shell_init_files()
-            if init_files:
-                cmd_string = _prepend_shell_init(cmd_string, init_files)
+            cmd_string = _prepare_login_shell_command(cmd_string)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 

@@ -24,7 +24,10 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
-        return _chat_messages_to_responses_input(messages)
+        return _chat_messages_to_responses_input(
+            messages,
+            is_xai_responses=bool(kwargs.get("is_xai_responses")),
+        )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
@@ -93,7 +96,10 @@ class ResponsesApiTransport(ProviderTransport):
         kwargs = {
             "model": model,
             "instructions": instructions,
-            "input": _chat_messages_to_responses_input(payload_messages),
+            "input": _chat_messages_to_responses_input(
+                payload_messages,
+                is_xai_responses=is_xai_responses,
+            ),
             "tools": response_tools,
             "store": False,
         }
@@ -110,7 +116,14 @@ class ResponsesApiTransport(ProviderTransport):
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
-            kwargs["include"] = ["reasoning.encrypted_content"]
+            # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
+            # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
+            # replayed encrypted reasoning items on turn 2+ — see
+            # _chat_messages_to_responses_input docstring.  Requesting the field
+            # back would just have us cache something we then must strip.  Grok
+            # still reasons natively each turn; coherence across turns rides on
+            # the visible message text alone.
+            kwargs["include"] = []
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when

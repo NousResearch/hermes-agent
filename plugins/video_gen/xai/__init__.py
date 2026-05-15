@@ -10,8 +10,12 @@ Originally salvaged from PR #10600 by @Jaaneek; reshaped into the
 :class:`VideoGenProvider` plugin interface and trimmed to the
 generate-only surface.
 
-Authentication via ``XAI_API_KEY``. Output is an HTTPS URL from xAI's
-CDN; the gateway downloads and delivers it.
+Authentication: xAI Grok OAuth tokens (preferred — billed against the
+user's SuperGrok subscription) or ``XAI_API_KEY``. Both routes are
+resolved through ``tools.xai_http.resolve_xai_http_credentials`` so a
+single login covers chat + TTS + image gen + video gen + transcription.
+Output is an HTTPS URL from xAI's CDN; the gateway downloads and
+delivers it.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -66,24 +70,44 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
-def _xai_base_url() -> str:
-    return (os.getenv("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
+def _resolve_xai_credentials() -> Tuple[str, str]:
+    """Return ``(api_key, base_url)`` from the shared xAI credential resolver.
+
+    Order: runtime provider (xai-oauth pool entry) → singleton ``auth.json``
+    OAuth tokens → ``XAI_API_KEY`` env var. ``api_key`` is empty when no
+    credential source is available; callers must check before using it.
+    """
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        creds = resolve_xai_http_credentials() or {}
+    except Exception as exc:
+        logger.debug("xAI credential resolver failed: %s", exc)
+        creds = {}
+
+    api_key = str(creds.get("api_key") or os.getenv("XAI_API_KEY", "")).strip()
+    base_url = str(
+        creds.get("base_url")
+        or os.getenv("XAI_BASE_URL")
+        or DEFAULT_XAI_BASE_URL
+    ).strip().rstrip("/")
+    return api_key, base_url
 
 
-def _xai_headers() -> Dict[str, str]:
-    api_key = os.getenv("XAI_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("XAI_API_KEY not set. Get one at https://console.x.ai/")
+def _xai_user_agent() -> str:
     try:
         from tools.xai_http import hermes_xai_user_agent
 
-        ua = hermes_xai_user_agent()
+        return hermes_xai_user_agent()
     except Exception:
-        ua = "hermes-agent/video_gen"
+        return "hermes-agent/video_gen"
+
+
+def _xai_headers(api_key: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "User-Agent": ua,
+        "User-Agent": _xai_user_agent(),
     }
 
 
@@ -110,12 +134,15 @@ def _clamp_duration(duration: Optional[int], has_reference_images: bool) -> int:
 async def _submit(
     client: httpx.AsyncClient,
     payload: Dict[str, Any],
+    *,
+    api_key: str,
+    base_url: str,
 ) -> str:
     """POST to /videos/generations — xAI's only public endpoint for our
     text-to-video and image-to-video surface."""
     response = await client.post(
-        f"{_xai_base_url()}/videos/generations",
-        headers={**_xai_headers(), "x-idempotency-key": str(uuid.uuid4())},
+        f"{base_url}/videos/generations",
+        headers={**_xai_headers(api_key), "x-idempotency-key": str(uuid.uuid4())},
         json=payload,
         timeout=60,
     )
@@ -131,6 +158,8 @@ async def _poll(
     client: httpx.AsyncClient,
     request_id: str,
     *,
+    api_key: str,
+    base_url: str,
     timeout_seconds: int,
     poll_interval: int,
 ) -> Dict[str, Any]:
@@ -138,8 +167,8 @@ async def _poll(
     last_status = "queued"
     while elapsed < timeout_seconds:
         response = await client.get(
-            f"{_xai_base_url()}/videos/{request_id}",
-            headers=_xai_headers(),
+            f"{base_url}/videos/{request_id}",
+            headers=_xai_headers(api_key),
             timeout=30,
         )
         response.raise_for_status()
@@ -174,7 +203,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         return "xAI"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("XAI_API_KEY", "").strip())
+        api_key, _ = _resolve_xai_credentials()
+        return bool(api_key)
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [{"id": mid, **meta} for mid, meta in _MODELS.items()]
@@ -183,17 +213,18 @@ class XAIVideoGenProvider(VideoGenProvider):
         return DEFAULT_MODEL
 
     def get_setup_schema(self) -> Dict[str, Any]:
+        # Auth resolution lives entirely in the shared ``xai_grok`` post_setup
+        # hook (``hermes_cli/tools_config.py``) so the picker doesn't blindly
+        # prompt for an API key when the user is already signed in via xAI
+        # Grok OAuth (SuperGrok Subscription) — TTS / image gen / video gen
+        # all share the same credential resolver. The hook offers an
+        # OAuth-vs-API-key choice when neither is configured.
         return {
-            "name": "xAI",
+            "name": "xAI Grok Imagine",
             "badge": "paid",
-            "tag": "grok-imagine-video — text-to-video & image-to-video with reference images",
-            "env_vars": [
-                {
-                    "key": "XAI_API_KEY",
-                    "prompt": "xAI API key",
-                    "url": "https://console.x.ai/",
-                },
-            ],
+            "tag": "grok-imagine-video — text-to-video & image-to-video; uses xAI Grok OAuth or XAI_API_KEY",
+            "env_vars": [],
+            "post_setup": "xai_grok",
         }
 
     def capabilities(self) -> Dict[str, Any]:
@@ -259,9 +290,14 @@ class XAIVideoGenProvider(VideoGenProvider):
         aspect_ratio: str,
         resolution: str,
     ) -> Dict[str, Any]:
-        if not os.environ.get("XAI_API_KEY", "").strip():
+        api_key, base_url = _resolve_xai_credentials()
+        if not api_key:
             return error_response(
-                error="XAI_API_KEY not set. Get one at https://console.x.ai/",
+                error=(
+                    "No xAI credentials found. Sign in via `hermes auth add xai-oauth` "
+                    "(SuperGrok subscription) or set XAI_API_KEY from "
+                    "https://console.x.ai/."
+                ),
                 error_type="auth_required",
                 provider="xai", prompt=prompt,
             )
@@ -317,7 +353,9 @@ class XAIVideoGenProvider(VideoGenProvider):
 
         async with httpx.AsyncClient() as client:
             try:
-                request_id = await _submit(client, payload)
+                request_id = await _submit(
+                    client, payload, api_key=api_key, base_url=base_url
+                )
             except httpx.HTTPStatusError as exc:
                 detail = ""
                 try:
@@ -334,6 +372,7 @@ class XAIVideoGenProvider(VideoGenProvider):
 
             poll_result = await _poll(
                 client, request_id,
+                api_key=api_key, base_url=base_url,
                 timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
                 poll_interval=DEFAULT_POLL_INTERVAL_SECONDS,
             )

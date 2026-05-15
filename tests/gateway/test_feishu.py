@@ -1895,7 +1895,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_reply_context = AsyncMock(return_value=("父消息内容", [], []))
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,

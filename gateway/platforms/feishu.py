@@ -2994,7 +2994,11 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text: Optional[str] = None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            reply_to_text, reply_media_urls, reply_media_types = await self._fetch_reply_context(reply_to_message_id)
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3033,8 +3037,8 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=message_id,
-            media_urls=media_urls,
-            media_types=media_types,
+            media_urls=media_urls + reply_media_urls,
+            media_types=media_types + reply_media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
@@ -3884,10 +3888,23 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
     async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        text, _, _ = await self._fetch_reply_context(message_id)
+        return text
+
+    async def _fetch_reply_context(
+        self, message_id: str
+    ) -> tuple[Optional[str], List[str], List[str]]:
+        """Fetch text, media_urls, and media_types from a replied-to message.
+
+        Returns (text, media_urls, media_types).  If the parent message contains
+        file/image/audio attachments they are downloaded and cached so the agent
+        can access them directly without needing lark-cli.
+        """
         if not self._client or not message_id:
-            return None
+            return None, [], []
         if message_id in self._message_text_cache:
-            return self._message_text_cache[message_id]
+            # text-only fast path (attachments already injected on first call)
+            return self._message_text_cache[message_id], [], []
         try:
             request = self._build_get_message_request(message_id)
             response = await asyncio.to_thread(self._client.im.v1.message.get, request)
@@ -3895,23 +3912,59 @@ class FeishuAdapter(BasePlatformAdapter):
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
                 logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
-                return None
+                return None, [], []
             items = getattr(getattr(response, "data", None), "items", None) or []
             parent = items[0] if items else None
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
             parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+                bot=self._bot_identity(),
             )
+            text: Optional[str] = normalized.text_content or None
+            if not text:
+                placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
+                text = str(placeholder).strip() or None
             self._message_text_cache[message_id] = text
-            return text
+
+            # Download any attachments from the parent message so the agent can
+            # use them directly (avoids needing lark-cli for reply-to-file flows).
+            media_urls: List[str] = []
+            media_types: List[str] = []
+            if normalized.media_refs:
+                logger.info(
+                    "[Feishu] Downloading %d attachment(s) from replied-to message %s",
+                    len(normalized.media_refs),
+                    message_id,
+                )
+                for media_ref in normalized.media_refs:
+                    cached_path, media_type = await self._download_feishu_message_resource(
+                        message_id=message_id,
+                        file_key=media_ref.file_key,
+                        resource_type=media_ref.resource_type,
+                        fallback_filename=media_ref.file_name,
+                    )
+                    if cached_path:
+                        media_urls.append(cached_path)
+                        media_types.append(media_type)
+            if normalized.image_keys:
+                for image_key in normalized.image_keys:
+                    cached_path, media_type = await self._download_feishu_image(
+                        message_id=message_id,
+                        image_key=image_key,
+                    )
+                    if cached_path:
+                        media_urls.append(cached_path)
+                        media_types.append(media_type)
+
+            return text, media_urls, media_types
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
-            return None
+            return None, [], []
 
     def _extract_text_from_raw_content(
         self,

@@ -4649,3 +4649,81 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+
+def test_activity_create_list_mark_read_and_artifact_roundtrip(tmp_path, monkeypatch):
+    from tui_gateway.activity_store import ActivityStore
+
+    store = ActivityStore(tmp_path / "activity")
+    monkeypatch.setattr(server, "_activity_store", store)
+
+    create_resp = server.dispatch({
+        "jsonrpc": "2.0",
+        "id": 101,
+        "method": "activity.create",
+        "params": {
+            "kind": "report.generated",
+            "title": "Benchmark report ready",
+            "summary": "DFlash run finished",
+            "severity": "info",
+            "source": "cron",
+            "session_id": "sid123",
+            "artifacts": [
+                {
+                    "name": "report.html",
+                    "mime_type": "text/html",
+                    "content": "<html><body>ok</body></html>",
+                }
+            ],
+        },
+    })
+
+    item = create_resp["result"]["activity"]
+    assert item["id"].startswith("act_")
+    assert item["artifacts"][0]["id"].startswith("art_")
+
+    list_resp = server.dispatch({"jsonrpc": "2.0", "id": 102, "method": "activity.list", "params": {}})
+    assert list_resp["result"]["count"] == 1
+    assert list_resp["result"]["items"][0]["title"] == "Benchmark report ready"
+
+    read_resp = server.dispatch({
+        "jsonrpc": "2.0",
+        "id": 103,
+        "method": "activity.mark_read",
+        "params": {"activity_id": item["id"]},
+    })
+    assert read_resp["result"]["activity"]["read"] is True
+
+    artifact_id = item["artifacts"][0]["id"]
+    artifact_resp = server.dispatch({
+        "jsonrpc": "2.0",
+        "id": 104,
+        "method": "activity.artifacts.get",
+        "params": {"artifact_id": artifact_id},
+    })
+    artifact = artifact_resp["result"]["artifact"]
+    assert artifact["name"] == "report.html"
+    assert artifact["content"] == "<html><body>ok</body></html>"
+    assert artifact["encoding"] == "utf-8"
+
+
+def test_emit_mirrors_high_signal_events_to_activity_store(tmp_path, monkeypatch):
+    from tui_gateway.activity_store import ActivityStore
+
+    store = ActivityStore(tmp_path / "activity")
+    monkeypatch.setattr(server, "_activity_store", store)
+
+    frames = []
+    monkeypatch.setattr(server, "write_json", lambda obj: frames.append(obj) or True)
+
+    server._emit("approval.request", "sid999", {"command": "rm -rf build"})
+
+    items = store.list()
+    assert len(items) == 1
+    assert items[0]["kind"] == "approval.request"
+    assert items[0]["summary"] == "rm -rf build"
+    assert any(
+        f.get("params", {}).get("type") == "activity.created"
+        for f in frames
+    )

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from tui_gateway.activity_store import ActivityStore, activity_from_gateway_event
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
@@ -32,6 +33,7 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+_activity_store = ActivityStore()
 
 
 # ── Panic logger ─────────────────────────────────────────────────────
@@ -384,6 +386,26 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+    # Mirror high-signal gateway events into the durable Activity Inbox so
+    # clients can show a notification list without scraping chat history.
+    try:
+        mapped = activity_from_gateway_event(event, sid, payload or {})
+        if mapped:
+            item = _activity_store.create(
+                session_id=sid,
+                payload=payload or {},
+                actions=([{"type": "open_session", "label": "Open session", "session_id": sid}] if sid else []),
+                **mapped,
+            )
+            activity_params = {
+                "type": "activity.created",
+                "session_id": sid,
+                "payload": {"activity": item},
+            }
+            write_json({"jsonrpc": "2.0", "method": "event", "params": activity_params})
+    except Exception as exc:
+        logger.debug("activity inbox mirror failed for %s: %s", event, exc)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -6339,6 +6361,122 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5033, str(e))
+
+
+
+# ── Methods: activity inbox ───────────────────────────────────────────
+
+
+@method("activity.list")
+def _(rid, params: dict) -> dict:
+    try:
+        items = _activity_store.list(
+            limit=int(params.get("limit", 100) or 100),
+            include_read=bool(params.get("include_read", True)),
+            include_dismissed=bool(params.get("include_dismissed", False)),
+        )
+        return _ok(rid, {"success": True, "count": len(items), "items": items})
+    except Exception as e:
+        return _err(rid, 5036, str(e))
+
+
+@method("activity.get")
+def _(rid, params: dict) -> dict:
+    activity_id = str(params.get("activity_id") or params.get("id") or "")
+    if not activity_id:
+        return _err(rid, 4028, "activity_id required")
+    item = _activity_store.get(activity_id)
+    if item is None:
+        return _err(rid, 4040, "activity not found")
+    return _ok(rid, {"success": True, "activity": item})
+
+
+@method("activity.create")
+def _(rid, params: dict) -> dict:
+    try:
+        item = _activity_store.create(
+            kind=str(params.get("kind") or "manual"),
+            title=str(params.get("title") or "Activity"),
+            summary=str(params.get("summary") or ""),
+            severity=str(params.get("severity") or "info"),
+            source=str(params.get("source") or "gateway"),
+            session_id=str(params.get("session_id") or ""),
+            payload=params.get("payload") if isinstance(params.get("payload"), dict) else {},
+            actions=params.get("actions") if isinstance(params.get("actions"), list) else [],
+            external_refs=params.get("external_refs") if isinstance(params.get("external_refs"), list) else [],
+            artifacts=params.get("artifacts") if isinstance(params.get("artifacts"), list) else [],
+        )
+        write_json({
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "activity.created",
+                "session_id": item.get("session_id", ""),
+                "payload": {"activity": item},
+            },
+        })
+        return _ok(rid, {"success": True, "activity": item})
+    except Exception as e:
+        return _err(rid, 5037, str(e))
+
+
+@method("activity.mark_read")
+def _(rid, params: dict) -> dict:
+    activity_id = str(params.get("activity_id") or params.get("id") or "")
+    if not activity_id:
+        return _err(rid, 4029, "activity_id required")
+    item = _activity_store.mark_read(activity_id, bool(params.get("read", True)))
+    if item is None:
+        return _err(rid, 4041, "activity not found")
+    write_json({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": "activity.updated",
+            "session_id": item.get("session_id", ""),
+            "payload": {"activity": item},
+        },
+    })
+    return _ok(rid, {"success": True, "activity": item})
+
+
+@method("activity.dismiss")
+def _(rid, params: dict) -> dict:
+    activity_id = str(params.get("activity_id") or params.get("id") or "")
+    if not activity_id:
+        return _err(rid, 4030, "activity_id required")
+    item = _activity_store.dismiss(activity_id, bool(params.get("dismissed", True)))
+    if item is None:
+        return _err(rid, 4042, "activity not found")
+    write_json({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": "activity.updated",
+            "session_id": item.get("session_id", ""),
+            "payload": {"activity": item},
+        },
+    })
+    return _ok(rid, {"success": True, "activity": item})
+
+
+@method("activity.artifacts.list")
+def _(rid, params: dict) -> dict:
+    activity_id = str(params.get("activity_id") or params.get("id") or "")
+    if not activity_id:
+        return _err(rid, 4031, "activity_id required")
+    return _ok(rid, {"success": True, "artifacts": _activity_store.list_artifacts(activity_id)})
+
+
+@method("activity.artifacts.get")
+def _(rid, params: dict) -> dict:
+    artifact_id = str(params.get("artifact_id") or params.get("id") or "")
+    if not artifact_id:
+        return _err(rid, 4032, "artifact_id required")
+    artifact = _activity_store.get_artifact(artifact_id)
+    if artifact is None:
+        return _err(rid, 4043, "artifact not found")
+    return _ok(rid, {"success": True, "artifact": artifact})
 
 
 @method("cron.manage")

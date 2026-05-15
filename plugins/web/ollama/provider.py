@@ -86,7 +86,8 @@ class OllamaWebSearchProvider(WebSearchProvider):
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
-            payload = {"query": query, "max_results": min(limit, 20)}
+            # Ollama API caps max_results at 10 (default 5)
+            payload = {"query": query, "max_results": min(limit, 10)}
 
             logger.info("Ollama search: '%s' (limit=%d)", query, limit)
             response = httpx.post(url, json=payload, headers=headers, timeout=60)

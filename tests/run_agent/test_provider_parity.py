@@ -49,6 +49,10 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+    # Provider-parity tests validate request shaping, not live endpoint
+    # metadata. Keep AIAgent construction deterministic and above the
+    # runtime minimum context guard even when CI has empty credentials.
+    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **kw: 128_000)
     kwargs = dict(
         api_key="test-key",
         base_url=base_url,

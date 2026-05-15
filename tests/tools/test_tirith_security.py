@@ -1007,3 +1007,290 @@ class TestHermesHomeIsolation:
             expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Windows target detection + install path (#26044)
+# ---------------------------------------------------------------------------
+# Tirith ships an ``x86_64-pc-windows-msvc`` build packaged as a ``.zip``
+# archive (other targets are ``.tar.gz``). Before the #26044 fix,
+# ``_detect_target`` returned ``None`` on Windows and auto-install bailed
+# out with "unsupported_platform" even though the binary is published.
+
+class TestWindowsTargetDetection:
+    """``_detect_target`` returns ``x86_64-pc-windows-msvc`` on Windows."""
+
+    @patch("tools.tirith_security.platform.machine", return_value="AMD64")
+    @patch("tools.tirith_security.platform.system", return_value="Windows")
+    def test_windows_x86_64_returns_msvc_triple(self, _sys, _mach):
+        from tools.tirith_security import _detect_target
+        assert _detect_target() == "x86_64-pc-windows-msvc"
+
+    @patch("tools.tirith_security.platform.machine", return_value="x86_64")
+    @patch("tools.tirith_security.platform.system", return_value="Windows")
+    def test_windows_lowercase_x86_64_returns_msvc_triple(self, _sys, _mach):
+        """``platform.machine()`` lowercases differently across Windows
+        Python builds — verify both spellings normalise correctly."""
+        from tools.tirith_security import _detect_target
+        assert _detect_target() == "x86_64-pc-windows-msvc"
+
+    @patch("tools.tirith_security.platform.machine", return_value="ARM64")
+    @patch("tools.tirith_security.platform.system", return_value="Windows")
+    def test_windows_aarch64_returns_none_until_upstream_ships(self, _sys, _mach):
+        """Tirith does not currently publish a Windows aarch64 build. Refuse
+        rather than 404 the download. When upstream adds the artifact, the
+        ``return None`` branch should be flipped (and this test updated)."""
+        from tools.tirith_security import _detect_target
+        assert _detect_target() is None
+
+    @patch("tools.tirith_security.platform.machine", return_value="x86_64")
+    @patch("tools.tirith_security.platform.system", return_value="FreeBSD")
+    def test_unsupported_system_still_returns_none(self, _sys, _mach):
+        """Regression: the Windows branch addition shouldn't accidentally
+        match other systems."""
+        from tools.tirith_security import _detect_target
+        assert _detect_target() is None
+
+
+class TestPlatformHelpers:
+    """``_binary_name`` / ``_archive_extension`` / ``_is_windows_target``."""
+
+    def test_binary_name_windows(self):
+        from tools.tirith_security import _binary_name
+        assert _binary_name("x86_64-pc-windows-msvc") == "tirith.exe"
+
+    def test_binary_name_linux(self):
+        from tools.tirith_security import _binary_name
+        assert _binary_name("x86_64-unknown-linux-gnu") == "tirith"
+
+    def test_binary_name_macos(self):
+        from tools.tirith_security import _binary_name
+        assert _binary_name("aarch64-apple-darwin") == "tirith"
+
+    def test_binary_name_none_falls_back_to_host_detection(self):
+        """When target isn't passed, derive from current host. We don't
+        assert a specific name here (depends on test host) — just that it
+        returns *some* string ending in ``tirith`` (with or without .exe)."""
+        from tools.tirith_security import _binary_name
+        name = _binary_name(None)
+        assert name in {"tirith", "tirith.exe"}
+
+    def test_archive_extension_windows_is_zip(self):
+        from tools.tirith_security import _archive_extension
+        assert _archive_extension("x86_64-pc-windows-msvc") == ".zip"
+
+    def test_archive_extension_non_windows_is_tar_gz(self):
+        from tools.tirith_security import _archive_extension
+        assert _archive_extension("aarch64-apple-darwin") == ".tar.gz"
+        assert _archive_extension("x86_64-unknown-linux-gnu") == ".tar.gz"
+
+    def test_is_windows_target_matches_only_windows_triples(self):
+        from tools.tirith_security import _is_windows_target
+        assert _is_windows_target("x86_64-pc-windows-msvc") is True
+        assert _is_windows_target("aarch64-pc-windows-msvc") is True
+        assert _is_windows_target("x86_64-unknown-linux-gnu") is False
+        assert _is_windows_target("aarch64-apple-darwin") is False
+        assert _is_windows_target(None) is False
+        assert _is_windows_target("") is False
+
+
+class TestWindowsInstallFlow:
+    """End-to-end install with mocked download/cosign on a Windows target.
+
+    Verifies the install path correctly:
+    1. Resolves to ``tirith-<target>.zip`` instead of ``.tar.gz``
+    2. Extracts ``tirith.exe`` (not ``tirith``) from the zip
+    3. Writes to ``<hermes_bin>/tirith.exe``
+    4. Does NOT call ``os.chmod`` (Windows derives executability from
+       extension + ACLs, not POSIX bits)
+    """
+
+    @pytest.fixture
+    def windows_target(self):
+        with patch(
+            "tools.tirith_security._detect_target",
+            return_value="x86_64-pc-windows-msvc",
+        ):
+            yield "x86_64-pc-windows-msvc"
+
+    def _make_zip(self, tmpdir, binary_name="tirith.exe", payload=b"#!/fake-tirith\n"):
+        """Build a one-file zip archive simulating a Tirith Windows release."""
+        archive_path = os.path.join(tmpdir, f"tirith-x86_64-pc-windows-msvc.zip")
+        import zipfile as _zip
+        with _zip.ZipFile(archive_path, "w") as zf:
+            zf.writestr(binary_name, payload)
+        return archive_path
+
+    def test_install_uses_zip_archive_name_for_windows(self, windows_target, tmp_path, monkeypatch):
+        """The downloader is asked for ``tirith-<target>.zip``, not ``.tar.gz``."""
+        from tools import tirith_security as t
+
+        downloaded_urls: list[str] = []
+
+        def _fake_download(url, dest, timeout=10):
+            downloaded_urls.append(url)
+            # Produce a valid-looking zip + checksums so the flow reaches
+            # extraction; tests below cover the actual extraction.
+            if url.endswith(".zip"):
+                import zipfile as _zip
+                with _zip.ZipFile(dest, "w") as zf:
+                    zf.writestr("tirith.exe", b"#!/fake\n")
+            elif url.endswith("checksums.txt"):
+                # Build a checksum matching the zip we'll write
+                sha = hashlib.sha256(open(downloaded_urls[0].replace("https://github.com/sheeki03/tirith/releases/latest/download/", str(tmp_path) + "/"), "rb").read()).hexdigest() if False else "deadbeef"
+                with open(dest, "w") as f:
+                    f.write(f"deadbeef  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        # Short-circuit checksum + cosign so the test focuses on extension
+        # selection.
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)  # cosign absent
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == "", f"install failed unexpectedly: {reason}"
+        assert dest is not None
+        # The first URL the installer requested must be the .zip variant
+        assert any(u.endswith("tirith-x86_64-pc-windows-msvc.zip") for u in downloaded_urls)
+        # And NOT the tar.gz variant
+        assert not any(u.endswith(".tar.gz") for u in downloaded_urls)
+
+    def test_install_writes_tirith_exe_to_hermes_bin(self, windows_target, tmp_path, monkeypatch):
+        """The installed binary path is ``<hermes_bin>/tirith.exe``."""
+        from tools import tirith_security as t
+
+        def _fake_download(url, dest, timeout=10):
+            if url.endswith(".zip"):
+                import zipfile as _zip
+                with _zip.ZipFile(dest, "w") as zf:
+                    zf.writestr("tirith.exe", b"fake-windows-binary")
+            elif url.endswith("checksums.txt"):
+                with open(dest, "w") as f:
+                    f.write("dummy  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == ""
+        assert dest is not None
+        assert os.path.basename(dest) == "tirith.exe", (
+            f"expected destination to end in tirith.exe, got {dest!r}"
+        )
+        assert os.path.isfile(dest)
+        with open(dest, "rb") as f:
+            assert f.read() == b"fake-windows-binary"
+
+    def test_install_skips_chmod_on_windows(self, windows_target, tmp_path, monkeypatch):
+        """``os.chmod`` should not be called on Windows targets — Windows
+        derives executability from file extension + ACLs, not the POSIX
+        user/group/other-execute bits."""
+        from tools import tirith_security as t
+
+        chmod_calls: list = []
+
+        def _fake_download(url, dest, timeout=10):
+            if url.endswith(".zip"):
+                import zipfile as _zip
+                with _zip.ZipFile(dest, "w") as zf:
+                    zf.writestr("tirith.exe", b"fake")
+            elif url.endswith("checksums.txt"):
+                with open(dest, "w") as f:
+                    f.write("dummy  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        real_chmod = os.chmod
+
+        def _record_chmod(path, mode, *args, **kwargs):
+            chmod_calls.append((path, mode))
+            return real_chmod(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)
+        monkeypatch.setattr(t.os, "chmod", _record_chmod)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == ""
+        # The installer must not chmod the destination binary on Windows.
+        # (Other chmod calls on temp files / dirs are fine — assert only
+        # that the destination isn't among them.)
+        assert all(call[0] != dest for call in chmod_calls), (
+            f"chmod was called on Windows destination {dest!r}: {chmod_calls}"
+        )
+
+    def test_install_rejects_zip_with_path_traversal(self, windows_target, tmp_path, monkeypatch):
+        """Defense in depth: a malicious zip entry like ``../tirith.exe``
+        must be rejected even though the loop iterates by basename. The
+        traversal-check in the install path is the second line of defence
+        after the checksum/cosign verifications upstream."""
+        from tools import tirith_security as t
+
+        def _fake_download(url, dest, timeout=10):
+            if url.endswith(".zip"):
+                import zipfile as _zip
+                with _zip.ZipFile(dest, "w") as zf:
+                    # Path-traversal attempt — basename matches but path
+                    # walks out of the extract dir.
+                    zf.writestr("../tirith.exe", b"evil")
+            elif url.endswith("checksums.txt"):
+                with open(dest, "w") as f:
+                    f.write("dummy  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == "binary_not_in_archive"
+        assert dest is None
+
+    def test_install_rejects_zip_missing_binary(self, windows_target, tmp_path, monkeypatch):
+        """Zip with no ``tirith.exe`` entry surfaces the existing
+        ``binary_not_in_archive`` failure reason (parity with tarball
+        behaviour on other platforms)."""
+        from tools import tirith_security as t
+
+        def _fake_download(url, dest, timeout=10):
+            if url.endswith(".zip"):
+                import zipfile as _zip
+                with _zip.ZipFile(dest, "w") as zf:
+                    zf.writestr("README.md", b"not the binary")
+            elif url.endswith("checksums.txt"):
+                with open(dest, "w") as f:
+                    f.write("dummy  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == "binary_not_in_archive"
+        assert dest is None
+
+    def test_install_handles_corrupt_zip(self, windows_target, tmp_path, monkeypatch):
+        """A malformed zip (not a real archive) surfaces an
+        ``archive_extract_failed`` reason rather than crashing."""
+        from tools import tirith_security as t
+
+        def _fake_download(url, dest, timeout=10):
+            if url.endswith(".zip"):
+                with open(dest, "wb") as f:
+                    f.write(b"not actually a zip file")
+            elif url.endswith("checksums.txt"):
+                with open(dest, "w") as f:
+                    f.write("dummy  tirith-x86_64-pc-windows-msvc.zip\n")
+
+        monkeypatch.setattr(t, "_download_file", _fake_download)
+        monkeypatch.setattr(t, "_verify_checksum", lambda *a, **kw: True)
+        monkeypatch.setattr(t.shutil, "which", lambda name: None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        dest, reason = t._install_tirith(log_failures=False)
+        assert reason == "archive_extract_failed"
+        assert dest is None

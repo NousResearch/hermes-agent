@@ -28,11 +28,13 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
 import time
 import urllib.request
+import zipfile
 
 from hermes_constants import get_hermes_home
 
@@ -182,7 +184,13 @@ def _hermes_bin_dir() -> str:
 
 
 def _detect_target() -> str | None:
-    """Return the Rust target triple for the current platform, or None."""
+    """Return the Rust target triple for the current platform, or None.
+
+    Windows note: Tirith ships an ``x86_64-pc-windows-msvc`` build packaged as a
+    ``.zip`` archive (other targets are ``.tar.gz``). MSYS / git-bash / Cygwin
+    on Windows all report ``platform.system() == "Windows"`` to Python, so the
+    same target triple is correct regardless of the shell environment.
+    """
     system = platform.system()
     machine = platform.machine().lower()
 
@@ -191,17 +199,48 @@ def _detect_target() -> str | None:
         plat = "apple-darwin"
     elif system in {"Linux", "Android"}:
         plat = "unknown-linux-gnu"
+    elif system == "Windows":
+        plat = "pc-windows-msvc"
     else:
         return None
 
     if machine in {"x86_64", "amd64"}:
         arch = "x86_64"
     elif machine in {"aarch64", "arm64"}:
+        # Tirith does not ship an aarch64-windows build yet. If the
+        # registry adds one later, the existing target string will start
+        # resolving naturally; until then, refuse with the same signal
+        # callers already expect ("unsupported_platform").
+        if system == "Windows":
+            return None
         arch = "aarch64"
     else:
         return None
 
     return f"{arch}-{plat}"
+
+
+def _is_windows_target(target: str | None) -> bool:
+    """True when *target* refers to a Tirith build packaged for Windows."""
+    return target is not None and "windows" in target
+
+
+def _binary_name(target: str | None = None) -> str:
+    """Return the on-disk binary name for the given target (or current host).
+
+    Windows uses ``tirith.exe``; every other supported target uses ``tirith``.
+    Passing *target* explicitly is used by the installer (where the target
+    is already known from the release URL); callers without that context
+    fall back to ``_detect_target()``.
+    """
+    if target is None:
+        target = _detect_target()
+    return "tirith.exe" if _is_windows_target(target) else "tirith"
+
+
+def _archive_extension(target: str | None) -> str:
+    """Return the release-archive extension for *target* (``.zip`` / ``.tar.gz``)."""
+    return ".zip" if _is_windows_target(target) else ".tar.gz"
 
 
 def _download_file(url: str, dest: str, timeout: int = 10):
@@ -295,7 +334,9 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                      platform.system(), platform.machine())
         return None, "unsupported_platform"
 
-    archive_name = f"tirith-{target}.tar.gz"
+    archive_ext = _archive_extension(target)
+    archive_name = f"tirith-{target}{archive_ext}"
+    binary_name = _binary_name(target)
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
     tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -346,21 +387,53 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         if not _verify_checksum(archive_path, checksums_path, archive_name):
             return None, "checksum_failed"
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
-                log("tirith binary not found in archive")
-                return None, "binary_not_in_archive"
+        if _is_windows_target(target):
+            # Windows release ships as ``tirith-<target>.zip`` containing
+            # ``tirith.exe``. Reject any member with path-traversal or
+            # absolute paths up front; only accept the single expected name.
+            try:
+                with zipfile.ZipFile(archive_path) as zf:
+                    extracted = False
+                    for entry_name in zf.namelist():
+                        # ZipFile.namelist returns posix-style separators on
+                        # both POSIX and Windows hosts.
+                        basename = entry_name.rsplit("/", 1)[-1]
+                        if basename != binary_name:
+                            continue
+                        if ".." in entry_name or entry_name.startswith(("/", "\\")):
+                            continue
+                        # Extract to a fixed name regardless of any nested
+                        # directory prefix in the archive.
+                        with zf.open(entry_name) as src_f, \
+                                open(os.path.join(tmpdir, binary_name), "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        extracted = True
+                        break
+                    if not extracted:
+                        log("tirith binary not found in archive")
+                        return None, "binary_not_in_archive"
+            except zipfile.BadZipFile as exc:
+                log("tirith zip extraction failed: %s", exc)
+                return None, "archive_extract_failed"
+        else:
+            # Non-Windows targets always ship the binary as literal "tirith"
+            # inside the tarball, so we keep the literal here (binary_name
+            # would always equal "tirith" on this branch anyway).
+            with tarfile.open(archive_path, "r:gz") as tar:
+                # Extract only the tirith binary (safety: reject paths with ..)
+                for member in tar.getmembers():
+                    if member.name == "tirith" or member.name.endswith("/tirith"):
+                        if ".." in member.name:
+                            continue
+                        member.name = "tirith"
+                        tar.extract(member, tmpdir)
+                        break
+                else:
+                    log("tirith binary not found in archive")
+                    return None, "binary_not_in_archive"
 
-        src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_hermes_bin_dir(), "tirith")
+        src = os.path.join(tmpdir, binary_name)
+        dest = os.path.join(_hermes_bin_dir(), binary_name)
         try:
             shutil.move(src, dest)
         except OSError:
@@ -376,7 +449,14 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
                 except OSError:
                     pass
                 return None, "cross_device_copy_failed"
-        os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        # Windows derives executability from file extension + ACLs, not the
+        # POSIX user/group/other-execute bits — skip chmod entirely there.
+        # POSIX/macOS still needs the explicit +x.
+        if not _is_windows_target(target):
+            os.chmod(
+                dest,
+                os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+            )
 
         verification = "cosign + SHA-256" if cosign_verified else "SHA-256 only"
         logger.info("tirith installed to %s (%s)", dest, verification)
@@ -433,15 +513,18 @@ def _resolve_tirith_path(configured_path: str) -> str:
 
     # Default "tirith" — always re-run cheap local checks so a manual
     # install is picked up even after a previous network failure (P2 fix:
-    # long-lived gateway/CLI recovers without restart).
-    found = shutil.which("tirith")
+    # long-lived gateway/CLI recovers without restart). On Windows the
+    # binary is ``tirith.exe`` — ``shutil.which`` resolves PATHEXT when a
+    # bare name is given, but we ask for the correct name explicitly so
+    # the call mirrors the rest of the module.
+    found = shutil.which(_binary_name())
     if found:
         _resolved_path = found
         _install_failure_reason = ""
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
+    hermes_bin = os.path.join(_hermes_bin_dir(), _binary_name())
     if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
         _resolved_path = hermes_bin
         _install_failure_reason = ""
@@ -499,13 +582,13 @@ def _background_install(*, log_failures: bool = True):
             return
 
         # Re-check local paths (may have been installed by another process)
-        found = shutil.which("tirith")
+        found = shutil.which(_binary_name())
         if found:
             _resolved_path = found
             _install_failure_reason = ""
             return
 
-        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
+        hermes_bin = os.path.join(_hermes_bin_dir(), _binary_name())
         if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
             _resolved_path = hermes_bin
             _install_failure_reason = ""
@@ -560,14 +643,14 @@ def ensure_installed(*, log_failures: bool = True):
         return None
 
     # Default "tirith" — quick local checks first (no network)
-    found = shutil.which("tirith")
+    found = shutil.which(_binary_name())
     if found:
         _resolved_path = found
         _install_failure_reason = ""
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
+    hermes_bin = os.path.join(_hermes_bin_dir(), _binary_name())
     if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
         _resolved_path = hermes_bin
         _install_failure_reason = ""

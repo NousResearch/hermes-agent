@@ -1832,15 +1832,18 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _close_cardkit_siblings(self, chat_id: str) -> None:
-        # There is no gateway-level "turn is definitely done with all interim
-        # bubbles" signal.  Following the DingTalk AI Card pattern, every new
-        # CardKit send best-effort closes older open cards in the same chat so
-        # tool-progress/commentary cards do not remain visibly generating.
+        # Only tool-progress cards lack an explicit gateway finalization signal.
+        # Assistant response cards are owned by GatewayStreamConsumer and must
+        # remain tracked until their own edit_message(finalize=True) arrives;
+        # closing them here truncates the visible reply and makes the later
+        # final edit fall back to the ordinary Feishu update path.
         sessions = dict(self._cardkit_open_by_chat.get(chat_id) or {})
         if not sessions:
             return
 
         for message_id, session in list(sessions.items()):
+            if getattr(session, "profile", None) != CARDKIT_TOOL_PROGRESS_PROFILE:
+                continue
             try:
                 result = await session.close(getattr(session, "current_text", None))
             except Exception as exc:

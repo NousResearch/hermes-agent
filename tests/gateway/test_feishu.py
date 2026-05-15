@@ -5072,18 +5072,26 @@ class TestFeishuCardKitSendLifecycle(unittest.TestCase):
         )
 
     @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)
-    def test_streaming_card_auto_closes_open_sibling_before_new_streaming_card(self):
+    def test_tool_progress_does_not_close_open_assistant_streaming_card(self):
         adapter = self._adapter()
-        metadata = {"cardkit_streaming": True}
 
-        first = asyncio.run(adapter.send("oc_chat", "tool progress", metadata=metadata))
+        first = asyncio.run(
+            adapter.send("oc_chat", "assistant prefix", metadata={"cardkit_streaming": True})
+        )
         first_session = adapter._cardkit_sessions[first.message_id]
-        second = asyncio.run(adapter.send("oc_chat", "assistant commentary", metadata=metadata))
+        second = asyncio.run(
+            adapter.send("oc_chat", "Using terminal", metadata={"message_kind": "tool_progress"})
+        )
+        final = asyncio.run(
+            adapter.edit_message("oc_chat", first.message_id, "assistant complete", finalize=True)
+        )
 
         self.assertTrue(second.success)
-        self.assertEqual(first_session.closed_with, ["tool progress"])
+        self.assertTrue(final.success)
+        self.assertEqual(first_session.closed_with, ["assistant complete"])
         self.assertNotIn(first.message_id, adapter._cardkit_sessions)
         self.assertIn(second.message_id, adapter._cardkit_sessions)
+        self.assertEqual(FakeCardSession.instances[-1].profile, "tool_progress")
 
     @patch("gateway.platforms.feishu.FeishuCardKitClient", FakeCardKitClient)
     @patch("gateway.platforms.feishu.FeishuStreamingCardSession", FakeCardSession)

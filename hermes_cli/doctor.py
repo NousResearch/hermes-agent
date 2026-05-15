@@ -651,31 +651,41 @@ def run_doctor(args):
 
             # Check credentials for the configured provider.
             # Limit to API-key providers in PROVIDER_REGISTRY — other provider
-            # types (OAuth, SDK, openrouter/anthropic/custom/auto) have their
-            # own env-var checks elsewhere in doctor, and get_auth_status()
-            # returns a bare {logged_in: False} for anything it doesn't
-            # explicitly dispatch, which would produce false positives.
-            if runtime_provider and runtime_provider not in {"auto", "custom", "openrouter"}:
+            # types (OAuth, SDK, anthropic/custom/auto) have their own env-var
+            # checks elsewhere in doctor, and get_auth_status() returns a bare
+            # {logged_in: False} for anything it doesn't explicitly dispatch,
+            # which would produce false positives.
+            if runtime_provider and runtime_provider not in ("auto", "custom"):
                 try:
-                    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
-                    pconfig = PROVIDER_REGISTRY.get(runtime_provider)
-                    if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
-                        status = get_auth_status(runtime_provider) or {}
+                    if runtime_provider == "openrouter":
+                        from hermes_cli.config import get_env_value
+
                         configured = bool(
-                            status.get("configured")
-                            or status.get("logged_in")
-                            or status.get("api_key")
+                            str(get_env_value("OPENROUTER_API_KEY") or "").strip()
+                            or str(get_env_value("OPENAI_API_KEY") or "").strip()
                         )
-                        if not configured:
-                            check_fail(
-                                f"model.provider '{runtime_provider}' is set but no API key is configured",
-                                "(check ~/.hermes/.env or run 'hermes setup')",
+                    else:
+                        from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+
+                        pconfig = PROVIDER_REGISTRY.get(runtime_provider)
+                        configured = True
+                        if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
+                            status = get_auth_status(runtime_provider) or {}
+                            configured = bool(
+                                status.get("configured")
+                                or status.get("logged_in")
+                                or status.get("api_key")
                             )
-                            issues.append(
-                                f"No credentials found for provider '{runtime_provider}'. "
-                                f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
-                                f"or switch providers with 'hermes config set model.provider <name>'"
-                            )
+                    if not configured:
+                        check_fail(
+                            f"model.provider '{runtime_provider}' is set but no API key is configured",
+                            "(check ~/.hermes/.env or run 'hermes setup')",
+                        )
+                        issues.append(
+                            f"No credentials found for provider '{runtime_provider}'. "
+                            f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
+                            f"or switch providers with 'hermes config set model.provider <name>'"
+                        )
                 except Exception:
                     pass
 

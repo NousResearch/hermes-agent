@@ -1,7 +1,9 @@
 from gateway.run import (
     _extract_research_progress_lines,
+    _format_direct_research_progress,
     _looks_like_manual_research_request,
     _normalize_research_rigor,
+    _research_subject,
     _tool_progress_label,
 )
 
@@ -41,3 +43,15 @@ def test_extract_research_progress_lines_returns_last_three_labels():
         "🌐 browsing",
         "🛠️ tinkering",
     ]
+
+
+def test_research_subject_truncates_long_prompt():
+    subject = _research_subject("Research " + "x" * 100)
+    assert subject.startswith("Research ")
+    assert subject.endswith("...")
+
+
+def test_format_direct_research_progress_prefixes_subject():
+    text = _format_direct_research_progress("the best browser", ["📚 skimming", "🌐 browsing", "🛠️ tinkering"])
+    assert text.startswith("Researching the best browser:\n")
+    assert text.endswith("🛠️ tinkering")

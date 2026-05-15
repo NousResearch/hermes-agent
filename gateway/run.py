@@ -140,6 +140,18 @@ def _build_manual_research_child_prompt(text: str, rigor: str) -> str:
     )
 
 
+def _research_subject(text: str, limit: int = 72) -> str:
+    subject = (text or "").strip().splitlines()[0].strip()
+    if len(subject) > limit:
+        subject = subject[: limit - 3].rstrip() + "..."
+    return subject or "research"
+
+
+def _format_direct_research_progress(subject: str, labels: list[str]) -> str:
+    visible = labels[-3:] if labels else ["🧠 thinking"]
+    return "Researching " + subject + ":\n" + "\n".join(visible)
+
+
 def _extract_public_research_url(text: str) -> str:
     if not text:
         return ""
@@ -13602,6 +13614,7 @@ class GatewayRunner:
 
         skill_name = _manual_research_skill_for_prompt(prompt_text)
         child_prompt = _build_manual_research_child_prompt(prompt_text, rigor)
+        subject = _research_subject(prompt_text)
         hermes_bin = "/opt/hermes/.venv/bin/hermes"
         command = (
             f"{hermes_bin} -p research chat --accept-hooks --source tool "
@@ -13612,7 +13625,7 @@ class GatewayRunner:
             try:
                 result = await adapter.send(
                     source.chat_id,
-                    "🧠 thinking",
+                    _format_direct_research_progress(subject, ["🧠 thinking"]),
                     metadata=self._thread_metadata_for_source(source, event_message_id),
                 )
                 if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -13624,7 +13637,7 @@ class GatewayRunner:
                 await adapter.edit_message(
                     chat_id=source.chat_id,
                     message_id=str(progress_message_id),
-                    content="🧠 thinking",
+                    content=_format_direct_research_progress(subject, ["🧠 thinking"]),
                 )
             except Exception as exc:
                 logger.warning("Manual Telegram research kickoff edit failed: %s", exc)
@@ -13643,14 +13656,14 @@ class GatewayRunner:
             proc_session.watcher_user_name = source.user_name or ""
             proc_session.watcher_thread_id = source.thread_id or ""
             proc_session.notify_on_complete = True
-            proc_session.watcher_interval = 1
+            proc_session.watcher_interval = 5
             try:
                 process_registry._write_checkpoint()
             except Exception:
                 pass
             watcher = {
                 "session_id": proc_session.id,
-                "check_interval": 1,
+                "check_interval": 5,
                 "session_key": session_key or "",
                 "platform": source.platform.value,
                 "chat_id": source.chat_id,
@@ -13660,6 +13673,7 @@ class GatewayRunner:
                 "notify_on_complete": True,
                 "direct_research_delivery": True,
                 "progress_message_id": progress_message_id,
+                "progress_subject": subject,
             }
             process_registry.pending_watchers.append(watcher)
             _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
@@ -13704,6 +13718,7 @@ class GatewayRunner:
         notify_mode = self._load_background_notifications_mode()
         direct_research_delivery = bool(watcher.get("direct_research_delivery"))
         progress_message_id = watcher.get("progress_message_id")
+        progress_subject = str(watcher.get("progress_subject") or "research")
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
@@ -13735,7 +13750,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = f"✅ done\n{final_url}"
+                        final_text = final_url
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None
@@ -13871,7 +13886,10 @@ class GatewayRunner:
                 if adapter and chat_id:
                     try:
                         send_meta = {"thread_id": thread_id} if thread_id else None
-                        label = "\n".join(_extract_research_progress_lines(session.output_buffer, limit=3))
+                        label = _format_direct_research_progress(
+                            progress_subject,
+                            _extract_research_progress_lines(session.output_buffer, limit=3),
+                        )
                         if progress_message_id and type(adapter).edit_message is not BasePlatformAdapter.edit_message:
                             await adapter.edit_message(
                                 chat_id=chat_id,
@@ -13880,6 +13898,11 @@ class GatewayRunner:
                             )
                         else:
                             await adapter.send(chat_id, label, metadata=send_meta)
+                        logger.info(
+                            "Direct research progress update for %s -> %r",
+                            session_id,
+                            label,
+                        )
                     except Exception as e:
                         logger.error("Direct research progress error: %s", e)
 

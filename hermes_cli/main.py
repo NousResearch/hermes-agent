@@ -1713,6 +1713,24 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
+def cmd_postinstall(args):
+    """One-shot bootstrap for pip users: install non-Python deps + run setup."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    print("⚕ Hermes post-install bootstrap")
+    print()
+
+    for dep in ("node", "browser", "ripgrep", "ffmpeg"):
+        ensure_dependency(dep)
+
+    if not _has_any_provider_configured():
+        print()
+        cmd_setup(args)
+    else:
+        print()
+        print("✓ Post-install complete.")
+
+
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
@@ -9583,7 +9601,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
+        "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10021,6 +10039,17 @@ def main():
         "or unset, instead of running the full reconfigure wizard.",
     )
     setup_parser.set_defaults(func=cmd_setup)
+
+    # =========================================================================
+    # postinstall command
+    # =========================================================================
+    postinstall_parser = subparsers.add_parser(
+        "postinstall",
+        help="Bootstrap non-Python deps for pip installs (node, browser, ripgrep, ffmpeg)",
+        description="One-shot post-install for pip users. Installs system "
+        "dependencies that pip cannot provide, then runs setup if needed.",
+    )
+    postinstall_parser.set_defaults(func=cmd_postinstall)
 
     # =========================================================================
     # whatsapp command

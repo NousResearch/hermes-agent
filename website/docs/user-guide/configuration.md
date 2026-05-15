@@ -1403,6 +1403,21 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
 
+## Per-Message Timestamps
+
+Prepend an ISO-8601 timestamp to each inbound user message before it enters the agent loop:
+
+```yaml
+timestamp_messages: false  # default
+```
+
+When `true`, every incoming user message is rewritten from `hello` to `[2026-05-15T19:25:00+01:00] hello` before the agent sees it. This is useful for long-running sessions (e.g. an always-on Telegram chat that spans many hours or days) where the only built-in clock signal is the "session start" line in the system prompt — without timestamps the model has no way to tell whether your last message arrived 30 seconds ago or three hours ago.
+
+- Timestamps come from the platform's own message timestamp (e.g. Telegram's `date` field), not the gateway's wall clock when the message is processed.
+- Rendered in the gateway host's local timezone. Override with the standard `TZ` environment variable when running the gateway.
+- Off by default to avoid surprising downstream consumers that grep the transcript text.
+- Currently wired up for Telegram. Other platforms still pass `event.timestamp` through, so this flag will work everywhere `MessageEvent.timestamp` is populated.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

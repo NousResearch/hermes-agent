@@ -6809,6 +6809,26 @@ class GatewayRunner:
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        # Optional per-message timestamp prefix. Off by default. Renders the
+        # platform-supplied event timestamp as ISO-8601 with a numeric offset
+        # in the gateway host's local timezone. Applied before any context
+        # backfill or media enrichment so the timestamp brackets the trigger
+        # message only.
+        if getattr(self.config, "timestamp_messages", False):
+            _ts = getattr(event, "timestamp", None)
+            if _ts is not None:
+                try:
+                    # `astimezone()` with no argument converts to local time;
+                    # for naive datetimes it assumes the value is local already,
+                    # which matches our datetime.now() fallback in MessageEvent.
+                    _ts_local = _ts.astimezone()
+                    # ISO 8601, second precision, with numeric offset.
+                    _stamp = _ts_local.replace(microsecond=0).isoformat()
+                    message_text = f"[{_stamp}] {message_text}"
+                except Exception:
+                    # Bad timestamps must never block message delivery.
+                    logger.debug("timestamp_messages: failed to format event.timestamp", exc_info=True)
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.

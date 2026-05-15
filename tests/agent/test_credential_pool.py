@@ -194,6 +194,27 @@ def test_pool_strategy_prefers_new_pool_strategies_alias(tmp_path, monkeypatch):
     assert get_pool_strategy("openai-codex") == "adaptive"
 
 
+def test_pool_policy_supports_legacy_credential_pool_policies_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {"openai-codex": []}})
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(
+        "credential_pool_strategies:\n"
+        "  openai-codex: adaptive\n"
+        "credential_pool_policies:\n"
+        "  openai-codex:\n"
+        "    max_transient_pool_failovers: 7\n"
+        "    transient_cooldown_seconds: 45\n"
+    )
+
+    from agent.credential_pool import get_pool_policy
+
+    policy = get_pool_policy("openai-codex")
+    assert policy.same_provider_failover_first is True
+    assert policy.max_transient_pool_failovers == 7
+    assert policy.transient_cooldown_seconds == 45
+
+
 def test_adaptive_strategy_hard_skips_fresh_high_weekly_quota(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     now = time.time()

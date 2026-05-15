@@ -445,6 +445,14 @@ def get_pool_policy(provider: str) -> AdaptivePoolPolicy:
     policies = config.get("pool_policies")
     raw = policies.get(provider) if isinstance(policies, dict) else None
     if not isinstance(raw, dict):
+        # Backward-/operator-compatible alias matching the legacy
+        # ``credential_pool_strategies`` config surface.  ``pool_policies``
+        # remains the preferred shorter name, but existing runbooks and manual
+        # snippets may reasonably pair ``credential_pool_policies`` with
+        # ``credential_pool_strategies``.
+        legacy_policies = config.get("credential_pool_policies")
+        raw = legacy_policies.get(provider) if isinstance(legacy_policies, dict) else None
+    if not isinstance(raw, dict):
         return defaults
 
     breaker_raw = raw.get("circuit_breaker")

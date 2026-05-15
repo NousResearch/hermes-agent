@@ -220,6 +220,21 @@ class TestAdaptivePoolConfigValidation:
         assert issues == []
 
 
+    def test_legacy_credential_pool_policy_alias_is_known_root_key(self):
+        issues = validate_config_structure({
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+            "credential_pool_strategies": {"openai-codex": "adaptive"},
+            "credential_pool_policies": {
+                "openai-codex": {
+                    "same_provider_failover_first": True,
+                    "max_transient_pool_failovers": 3,
+                },
+            },
+        })
+
+        assert issues == []
+
+
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""
 

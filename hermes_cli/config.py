@@ -475,6 +475,7 @@ DEFAULT_CONFIG = {
     "pool_strategies": {},
     "pool_policies": {},
     "credential_pool_strategies": {},
+    "credential_pool_policies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -3138,7 +3139,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "pool_strategies", "pool_policies",
-    "credential_pool_strategies", "toolsets",
+    "credential_pool_strategies", "credential_pool_policies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",

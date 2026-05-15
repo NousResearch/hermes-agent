@@ -320,6 +320,32 @@ class TestStdinHelpers:
         finally:
             registry.kill_process(session.id)
 
+    def test_spawn_local_expands_user_workdir(self, registry, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        session = registry.spawn_local(
+            'python3 -c "import os; print(os.getcwd())"',
+            cwd="~/project",
+            use_pty=False,
+        )
+
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                poll = registry.poll(session.id)
+                if poll["status"] == "exited":
+                    assert poll["exit_code"] == 0
+                    assert str(project) in poll["output_preview"]
+                    assert session.cwd == str(project)
+                    return
+                time.sleep(0.2)
+
+            pytest.fail("process did not exit after expanded-home cwd spawn")
+        finally:
+            registry.kill_process(session.id)
+
 
 # =========================================================================
 # List sessions

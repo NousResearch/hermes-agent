@@ -10,7 +10,7 @@ import os
 import re
 import stat
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -322,6 +322,77 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_local_embedded_initialize_restores_profile_env_after_ensure_started_rewrites_it(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        config = {
+            "mode": "local_embedded",
+            "profile": "hermes-seed",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_base_url": "http://127.0.0.1:8080/v1",
+            "llm_model": "gpt-test",
+            "idle_timeout": 0,
+            "bank_id": "hermes",
+        }
+        config_path = hermes_home / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+
+        class ImmediateThread:
+            def __init__(self, target, **kwargs):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        class FakeManager:
+            def is_running(self, profile):
+                return False
+
+            def stop(self, profile):  # pragma: no cover - should not be called
+                raise AssertionError("should not try to stop an already-compatible daemon")
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                self._manager = FakeManager()
+
+            def _ensure_started(self):
+                profile_env = user_home / ".hindsight" / "profiles" / "hermes-seed.env"
+                profile_env.parent.mkdir(parents=True, exist_ok=True)
+                profile_env.write_text(
+                    "HINDSIGHT_API_LLM_PROVIDER=openai\n"
+                    "HINDSIGHT_API_LLM_API_KEY=test-key\n"
+                    "HINDSIGHT_API_LLM_MODEL=gpt-test\n"
+                    "HINDSIGHT_API_LOG_LEVEL=info\n"
+                    "HINDSIGHT_API_LLM_BASE_URL=http://127.0.0.1:8080/v1\n"
+                )
+
+        fake_dem = ModuleType("hindsight_embed.daemon_embed_manager")
+        fake_parent = ModuleType("hindsight_embed")
+        monkeypatch.setitem(sys.modules, "hindsight_embed", fake_parent)
+        monkeypatch.setitem(sys.modules, "hindsight_embed.daemon_embed_manager", fake_dem)
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight.threading.Thread", ImmediateThread)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(hermes_home), platform="cli")
+
+        profile_env = user_home / ".hindsight" / "profiles" / "hermes-seed.env"
+        assert profile_env.read_text() == (
+            "HINDSIGHT_API_LLM_PROVIDER=openai\n"
+            "HINDSIGHT_API_LLM_API_KEY=test-key\n"
+            "HINDSIGHT_API_LLM_MODEL=gpt-test\n"
+            "HINDSIGHT_API_LOG_LEVEL=info\n"
+            "HINDSIGHT_API_LLM_BASE_URL=http://127.0.0.1:8080/v1\n"
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=0\n"
+        )
 
 
 class TestPostSetup:

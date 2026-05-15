@@ -1273,6 +1273,11 @@ class HindsightMemoryProvider(MemoryProvider):
                             client._manager.stop(profile)
 
                     client._ensure_started()
+                    # Hindsight's embedded profile registration can rewrite the
+                    # profile env with only HINDSIGHT_API_* keys. Restore the
+                    # Hermes-managed daemon keys afterward so the next provider
+                    # init does not see a false config drift and restart.
+                    _materialize_embedded_profile_env(self._config)
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:

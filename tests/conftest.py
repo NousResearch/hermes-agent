@@ -431,6 +431,7 @@ def _reset_module_state():
             _sc_mod._SESSION_USER_ID,
             _sc_mod._SESSION_USER_NAME,
             _sc_mod._SESSION_KEY,
+            _sc_mod._SESSION_ID,
             _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
             _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
             _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,

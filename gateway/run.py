@@ -458,6 +458,7 @@ if _config_path.exists():
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+                "container_isolation": "TERMINAL_CONTAINER_ISOLATION",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
                 "docker_env": "TERMINAL_DOCKER_ENV",
                 "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",

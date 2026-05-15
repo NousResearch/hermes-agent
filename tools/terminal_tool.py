@@ -962,17 +962,47 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 
+def _container_isolation_scope() -> str:
+    """Return the configured sandbox reuse scope for container backends.
+
+    ``shared`` preserves the historical behavior: all ordinary agent and
+    subagent tool calls reuse one long-lived container keyed as ``default``.
+    ``session`` keys containers by the active Hermes session/task id so two
+    Slack/TUI/CLI sessions cannot share a Docker filesystem or background shell.
+    """
+    raw = os.getenv("TERMINAL_CONTAINER_ISOLATION", "shared").strip().lower()
+    if raw in {"session", "per_session", "per-session", "isolated"}:
+        return "session"
+    if raw not in {"", "shared", "default"}:
+        logger.warning(
+            "Invalid TERMINAL_CONTAINER_ISOLATION=%r; expected 'shared' or 'session'. Falling back to 'shared'.",
+            raw,
+        )
+    return "shared"
+
+
+def _active_session_task_id() -> str:
+    """Best-effort active session id for tool calls that omitted task_id."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_id = get_session_env("HERMES_SESSION_ID", "")
+        if session_id:
+            return session_id
+    except Exception:
+        pass
+    return os.getenv("HERMES_SESSION_ID", "")
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
+    By default, ordinary agents collapse to ``"default"`` so a process has one
+    reusable container.  Set ``TERMINAL_CONTAINER_ISOLATION=session`` (or
+    ``terminal.container_isolation: session`` in config.yaml) to key containers
+    by the active session/task id instead.
 
     Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
     call ``register_task_env_overrides(task_id, {...})`` to request a
@@ -983,6 +1013,8 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     if task_id and task_id in _task_env_overrides:
         return task_id
+    if _container_isolation_scope() == "session":
+        return task_id or _active_session_task_id() or "default"
     return "default"
 
 
@@ -1085,6 +1117,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_isolation": _container_isolation_scope(),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},

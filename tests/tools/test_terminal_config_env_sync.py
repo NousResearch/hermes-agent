@@ -175,6 +175,7 @@ def test_save_config_set_supports_critical_bridged_keys():
         "container_memory",
         "container_disk",
         "container_persistent",
+        "container_isolation",
     }
     missing = required - save_keys
     assert not missing, (
@@ -224,3 +225,16 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_container_isolation_is_bridged_everywhere():
+    """terminal.container_isolation controls shared vs per-session containers.
+
+    It must be bridged across CLI, gateway, and `hermes config set` paths;
+    otherwise a user can set Docker session isolation in config.yaml but still
+    end up with all sessions collapsed into the historical default sandbox.
+    """
+    assert "container_isolation" in _cli_env_map_keys()
+    assert "container_isolation" in _gateway_env_map_keys()
+    assert "container_isolation" in _save_config_env_sync_keys()
+    assert "TERMINAL_CONTAINER_ISOLATION" in _terminal_tool_env_var_names()

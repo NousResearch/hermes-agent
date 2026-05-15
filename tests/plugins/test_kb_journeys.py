@@ -362,6 +362,99 @@ def test_kbqueue_dashboard_reviews_one_item_before_preview_and_confirm(monkeypat
     assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
 
 
+def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 2,
+                    "items": [
+                        {
+                            "id": "p1",
+                            "item_id": "accounts/keio-university",
+                            "title": "Keio University",
+                            "kind": "proposal_entity",
+                            "preview": "Admission: Keio is tied to a healthcare AI PoC.",
+                            "raw": {"proposal_ids": ["act_1"]},
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kbqueue review 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert adapter.sent
+    text = adapter.sent[0]["text"]
+    assert "Queue Item 1" in text
+    assert "Keio University" in text
+    assert "Text:" in text
+    assert "/kbqueue reject 1" in text
+    assert [action.label for action in adapter.sent[0]["actions"]] == [
+        "Preview approve",
+        "Preview reject",
+        "Preview archive",
+    ]
+
+
+def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [
+                        {
+                            "item_id": "accounts/mistral",
+                            "title": "Mistral",
+                            "kind": "proposal_entity",
+                            "preview": "Admission: Mistral has Nemotron Coalition licensing coordination.",
+                            "raw": {"proposal_ids": ["act_2"]},
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {"status": "preview", "ok": True, "plan": {"summary": "Reject 1 proposal."}}
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {"status": "applied", "ok": True, "publication": {"status": "manual"}}
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    preview = hook(event=_event("/kbqueue reject 1"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert preview == {"action": "skip", "reason": "kb_journeys"}
+    assert "Queue reject preview" in adapter.sent[0]["text"]
+    assert "To apply: /kbqueue reject 1 confirm" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["actions"] == []
+
+    applied = hook(event=_event("/kbqueue reject 1 confirm"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert applied == {"action": "skip", "reason": "kb_journeys"}
+    assert "Queue reject applied" in adapter.sent[1]["text"]
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_queue_decision_preview"
+    assert ctx.calls[-2][1]["proposal_ids"] == ["act_2"]
+    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
+    assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+
+
 def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
     from tools.kb_callback_registry import KbCallbackContext

@@ -3015,14 +3015,69 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="⛔ You are not authorized to run this action.")
                 return
 
+            def _kb_callback_send_metadata() -> Dict[str, Any]:
+                thread_id = getattr(query.message, "message_thread_id", None)
+                chat = getattr(query.message, "chat", None)
+                chat_type = getattr(chat, "type", None)
+                prompt_message_id = getattr(query.message, "message_id", None)
+                send_metadata: Dict[str, Any] = {}
+                chat_type_value = getattr(chat_type, "value", chat_type)
+                is_private_chat = str(chat_type_value).lower() in {
+                    "private",
+                    str(ChatType.PRIVATE).lower(),
+                    str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
+                }
+                if thread_id is not None and is_private_chat and prompt_message_id is not None:
+                    reply_to_id = int(prompt_message_id)
+                    send_metadata = {
+                        "thread_id": str(thread_id),
+                        "telegram_dm_topic_reply_fallback": True,
+                        "reply_to_message_id": str(reply_to_id),
+                    }
+                elif thread_id is not None:
+                    send_metadata = {"thread_id": str(thread_id)}
+                return send_metadata
+
+            async def _send_visible_kb_callback_text(text: str) -> None:
+                if not text or not query.message:
+                    return
+                thread_id = getattr(query.message, "message_thread_id", None)
+                send_metadata = _kb_callback_send_metadata()
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(query.message.chat_id),
+                    "text": self.format_message(str(text)),
+                    "parse_mode": ParseMode.MARKDOWN_V2,
+                    **self._link_preview_kwargs(),
+                }
+                reply_to_id = None
+                if send_metadata.get("reply_to_message_id"):
+                    reply_to_id = int(str(send_metadata["reply_to_message_id"]))
+                    send_kwargs["reply_to_message_id"] = reply_to_id
+                send_kwargs.update(
+                    self._thread_kwargs_for_send(
+                        str(query.message.chat_id),
+                        str(thread_id) if thread_id is not None else None,
+                        send_metadata,
+                        reply_to_message_id=reply_to_id,
+                    )
+                )
+                send_kwargs.update(self._notification_kwargs(send_metadata))
+                await self._send_message_with_thread_fallback(**send_kwargs)
+
             try:
                 from tools import kb_callback_registry as kb_callbacks
 
                 pending = kb_callbacks.get_pending(callback_id)
                 if not pending:
-                    await query.answer(text="This action has already been resolved.")
+                    await query.answer(text="Action expired. Use /kbqueue to refresh.")
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                    await _send_visible_kb_callback_text("KB action expired\nUse /kbqueue to refresh.")
                     return
 
+                await query.answer(text="Opening KB action...")
                 result = await kb_callbacks.resolve(
                     callback_id,
                     actor_id=caller_id,
@@ -3030,7 +3085,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=str(query_chat_id) if query_chat_id is not None else None,
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                 )
-                await query.answer(text="Action received.")
 
                 try:
                     await query.edit_message_reply_markup(reply_markup=None)
@@ -3051,54 +3105,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     result_actions = actions_value if isinstance(actions_value, list) else []
 
                 if (result_text or result_actions) and query.message:
-                    thread_id = getattr(query.message, "message_thread_id", None)
-                    chat = getattr(query.message, "chat", None)
-                    chat_type = getattr(chat, "type", None)
-                    prompt_message_id = getattr(query.message, "message_id", None)
-                    send_metadata: Dict[str, Any] = {}
-                    chat_type_value = getattr(chat_type, "value", chat_type)
-                    is_private_chat = str(chat_type_value).lower() in {
-                        "private",
-                        str(ChatType.PRIVATE).lower(),
-                        str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
-                    }
-                    if thread_id is not None and is_private_chat and prompt_message_id is not None:
-                        reply_to_id = int(prompt_message_id)
-                        send_metadata = {
-                            "thread_id": str(thread_id),
-                            "telegram_dm_topic_reply_fallback": True,
-                            "reply_to_message_id": str(reply_to_id),
-                        }
-                    elif thread_id is not None:
-                        send_metadata = {"thread_id": str(thread_id)}
                     if result_actions:
-                        await self.send_kb_actions(
+                        send_result = await self.send_kb_actions(
                             str(query.message.chat_id),
                             str(result_text or "KB action"),
                             result_actions,
-                            metadata=send_metadata,
+                            metadata=_kb_callback_send_metadata(),
                         )
-                    elif result_text:
-                        send_kwargs: Dict[str, Any] = {
-                            "chat_id": int(query.message.chat_id),
-                            "text": self.format_message(str(result_text)),
-                            "parse_mode": ParseMode.MARKDOWN_V2,
-                            **self._link_preview_kwargs(),
-                        }
-                        reply_to_id = None
-                        if send_metadata.get("reply_to_message_id"):
-                            reply_to_id = int(str(send_metadata["reply_to_message_id"]))
-                            send_kwargs["reply_to_message_id"] = reply_to_id
-                        send_kwargs.update(
-                            self._thread_kwargs_for_send(
-                                str(query.message.chat_id),
-                                str(thread_id) if thread_id is not None else None,
-                                send_metadata,
-                                reply_to_message_id=reply_to_id,
+                        if not getattr(send_result, "success", False) and result_text:
+                            logger.warning(
+                                "[%s] KB action-card send failed, falling back to text: %s",
+                                self.name,
+                                getattr(send_result, "error", "unknown"),
                             )
-                        )
-                        send_kwargs.update(self._notification_kwargs(send_metadata))
-                        await self._send_message_with_thread_fallback(**send_kwargs)
+                            await _send_visible_kb_callback_text(str(result_text))
+                    elif result_text:
+                        await _send_visible_kb_callback_text(str(result_text))
             except Exception as exc:
                 logger.error("[%s] KB callback failed: %s", self.name, exc, exc_info=True)
                 try:

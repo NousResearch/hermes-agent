@@ -150,6 +150,7 @@ async def test_kb_callback_resolves_removes_buttons_and_sends_followup_in_topic(
         await adapter._handle_callback_query(update, MagicMock())
 
     query.answer.assert_called_once()
+    assert "opening" in query.answer.call_args[1]["text"].lower()
     query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
     assert kb_callbacks.get_pending(callback_id) is None
 
@@ -231,6 +232,38 @@ async def test_kb_callback_dispatch_errors_are_redacted_to_user():
     with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
         await adapter._handle_callback_query(update, MagicMock())
 
-    query.answer.assert_any_call(text="Action received.")
+    query.answer.assert_any_call(text="Opening KB action...")
     query.answer.assert_any_call(text="KB action failed. Check gateway logs for details.")
     assert "secret" not in query.answer.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_kb_callback_expired_button_sends_visible_refresh_hint():
+    adapter = _make_adapter()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=88))
+
+    query = AsyncMock()
+    query.data = "kb:missing-token"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.message_id = 44
+    query.message.message_thread_id = None
+    query.message.chat.type = "private"
+    query.from_user = MagicMock()
+    query.from_user.id = "777"
+    query.from_user.first_name = "Ada"
+    query.answer = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+        await adapter._handle_callback_query(update, MagicMock())
+
+    query.answer.assert_called_once()
+    assert "expired" in query.answer.call_args[1]["text"].lower()
+    query.edit_message_reply_markup.assert_called_once_with(reply_markup=None)
+    sent = adapter._bot.send_message.call_args[1]
+    assert "expired" in sent["text"].lower()
+    assert "/kbqueue" in sent["text"]

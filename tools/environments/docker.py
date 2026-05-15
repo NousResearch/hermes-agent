@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -31,6 +32,8 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12,64}$")
+_GENERIC_DOCKER_SANDBOX_IMAGE = "nikolaik/python-nodejs:python3.11-nodejs20"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -96,6 +99,97 @@ def _load_hermes_env_vars() -> dict[str, str]:
         return load_env() or {}
     except Exception:
         return {}
+
+
+def _prepend_runtime_path(cmd_string: str) -> str:
+    """Re-prepend Hermes-managed PATH entries after login-shell init.
+
+    Some images/profile scripts rebuild PATH inside ``bash -l`` and discard the
+    container env's PATH additions. That breaks console entry points like
+    ``hermes`` even when they exist in the image. Re-prepend the active Python
+    bin and ``{HERMES_HOME}/.local/bin`` before the snapshot bootstrap runs.
+    """
+    critical_bins: list[str] = []
+    current_python_bin = str(Path(sys.executable).resolve().parent)
+    if current_python_bin:
+        critical_bins.append(current_python_bin)
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        critical_bins.append(str(Path(hermes_home) / ".local" / "bin"))
+
+    seen: set[str] = set()
+    ordered_bins = [b for b in critical_bins if b and not (b in seen or seen.add(b))]
+    if not ordered_bins:
+        return cmd_string
+
+    joined = ":".join(path.replace('"', '\\"') for path in ordered_bins)
+    return f'export PATH="{joined}:$PATH"\n' + cmd_string
+
+
+def _current_container_id() -> Optional[str]:
+    """Return current container id when running inside Docker, else None."""
+    if not Path("/.dockerenv").exists():
+        return None
+
+    candidates = [
+        os.getenv("HOSTNAME", "").strip(),
+        getattr(os.uname(), "nodename", "") if hasattr(os, "uname") else "",
+    ]
+    try:
+        candidates.append(Path("/etc/hostname").read_text(encoding="utf-8").strip())
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate and _CONTAINER_ID_RE.fullmatch(candidate):
+            return candidate
+    return None
+
+
+def _resolve_self_image_sandbox(
+    requested_image: str,
+    docker_exe: str,
+) -> tuple[str, list[str]]:
+    """Prefer current Hermes image over generic sandbox image when possible.
+
+    When Hermes itself is running inside Docker, the default generic sandbox
+    image lacks the Hermes CLI and Python package. Reusing the current Hermes
+    image gives nested research/task spawns a working `hermes` binary plus the
+    same runtime dependencies. We also inherit the current container's mounted
+    volumes so ``/opt/data`` remains available inside the child sandbox.
+    """
+    if requested_image != _GENERIC_DOCKER_SANDBOX_IMAGE:
+        return requested_image, []
+
+    current_python_bin = Path(sys.executable).resolve().parent
+    if not (current_python_bin / "hermes").exists():
+        return requested_image, []
+
+    container_id = _current_container_id()
+    if not container_id:
+        return requested_image, []
+
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", container_id, "--format", "{{.Config.Image}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("Docker: could not inspect current container image: %s", exc)
+        return requested_image, []
+
+    current_image = result.stdout.strip() if result.returncode == 0 else ""
+    if not current_image:
+        return requested_image, []
+
+    logger.info(
+        "Docker: using current Hermes image %s instead of generic sandbox image %s",
+        current_image,
+        requested_image,
+    )
+    return current_image, ["--volumes-from", container_id, "--entrypoint", "sleep"]
 
 
 def find_docker() -> Optional[str]:
@@ -318,6 +412,12 @@ class DockerEnvironment(BaseEnvironment):
 
         # Fail fast if Docker is not available.
         _ensure_docker_available()
+        self._docker_exe = find_docker() or "docker"
+
+        image, self_image_args = _resolve_self_image_sandbox(image, self._docker_exe)
+        container_command = ["sleep", "infinity"]
+        if "--entrypoint" in self_image_args:
+            container_command = ["infinity"]
 
         # Build resource limit args
         resource_args = []
@@ -493,13 +593,10 @@ class DockerEnvironment(BaseEnvironment):
             + resource_args
             + volume_args
             + env_args
+            + self_image_args
             + validated_extra
         )
         logger.info(f"Docker run_args: {all_run_args}")
-
-        # Resolve the docker executable once so it works even when
-        # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        self._docker_exe = find_docker() or "docker"
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
@@ -510,7 +607,7 @@ class DockerEnvironment(BaseEnvironment):
             "-w", cwd,
             *all_run_args,
             image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+            *container_command,  # no fixed lifetime — idle reaper handles cleanup
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
         result = subprocess.run(
@@ -580,6 +677,7 @@ class DockerEnvironment(BaseEnvironment):
         cmd.extend([self._container_id])
 
         if login:
+            cmd_string = _prepend_runtime_path(cmd_string)
             cmd.extend(["bash", "-l", "-c", cmd_string])
         else:
             cmd.extend(["bash", "-c", cmd_string])

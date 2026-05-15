@@ -286,6 +286,81 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     assert "value_from_dotenv" not in args_str
 
 
+def test_prepend_runtime_path_readds_hermes_bins(monkeypatch, tmp_path):
+    """Login-shell bootstrap should restore Hermes-managed PATH entries."""
+    fake_venv_bin = tmp_path / "venv" / "bin"
+    fake_venv_bin.mkdir(parents=True)
+    fake_python = fake_venv_bin / "python"
+    fake_python.write_text("#!/bin/sh\n")
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setattr(docker_env.sys, "executable", str(fake_python))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    wrapped = docker_env._prepend_runtime_path("echo hi")
+
+    assert f'export PATH="{fake_venv_bin}:{hermes_home / ".local" / "bin"}:$PATH"' in wrapped
+    assert wrapped.endswith("echo hi")
+
+
+def test_resolve_self_image_sandbox_uses_current_container_image(monkeypatch, tmp_path):
+    """Generic sandbox image should inherit the current Hermes container image."""
+    fake_venv_bin = tmp_path / "venv" / "bin"
+    fake_venv_bin.mkdir(parents=True)
+    fake_python = fake_venv_bin / "python"
+    fake_python.write_text("#!/bin/sh\n")
+    (fake_venv_bin / "hermes").write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(docker_env.sys, "executable", str(fake_python))
+    monkeypatch.setattr(docker_env, "_current_container_id", lambda: "abc123def456")
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="hermes-local:latest\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    image, extra_args = docker_env._resolve_self_image_sandbox(
+        docker_env._GENERIC_DOCKER_SANDBOX_IMAGE,
+        "/usr/bin/docker",
+    )
+
+    assert image == "hermes-local:latest"
+    assert extra_args == ["--volumes-from", "abc123def456", "--entrypoint", "sleep"]
+    assert calls == [
+        (["/usr/bin/docker", "inspect", "abc123def456", "--format", "{{.Config.Image}}"], {
+            "capture_output": True,
+            "text": True,
+            "timeout": 10,
+        })
+    ]
+
+
+def test_self_image_run_uses_volumes_from_and_single_sleep_arg(monkeypatch):
+    """Self-image sandboxes should inherit volumes and pass only `infinity` to sleep."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_resolve_self_image_sandbox",
+        lambda image, docker_exe: (
+            "hermes-local:latest",
+            ["--volumes-from", "abc123def456", "--entrypoint", "sleep"],
+        ),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(image=docker_env._GENERIC_DOCKER_SANDBOX_IMAGE)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert "--volumes-from" in run_args
+    assert "abc123def456" in run_args
+    assert run_args[-2:] == ["hermes-local:latest", "infinity"]
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(fallback_model=None, **kwargs):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -24,6 +24,7 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            **kwargs,
         )
         agent.client = MagicMock()
         return agent
@@ -181,6 +182,70 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_fallback_extra_body_overrides_openrouter_provider_routing(self):
+        fbs = [
+            {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "extra_body": {
+                    "provider": {
+                        "order": ["baidu/fp8", "gmicloud/fp8"],
+                        "allow_fallbacks": False,
+                    },
+                    "metadata": {"route": "fallback"},
+                },
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            providers_order=["global/provider"],
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "z-ai/glm-5.1"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hello"}])
+        assert kwargs["extra_body"]["provider"] == {
+            "order": ["baidu/fp8", "gmicloud/fp8"],
+            "allow_fallbacks": False,
+        }
+        assert kwargs["extra_body"]["metadata"] == {"route": "fallback"}
+        assert agent.providers_order == ["global/provider"]
+
+    def test_fallback_request_metadata_clears_after_primary_restore(self):
+        fbs = [
+            {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "extra_body": {"provider": {"order": ["baidu/fp8"]}},
+                "request_overrides": {"speed": "fast"},
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            request_overrides={"trace": "primary"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "z-ai/glm-5.1"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent._active_fallback_extra_body == {
+            "provider": {"order": ["baidu/fp8"]}
+        }
+        assert agent.request_overrides == {"trace": "primary", "speed": "fast"}
+
+        with patch.object(agent, "_create_openai_client", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent._active_fallback_extra_body == {}
+        assert agent.request_overrides == {"trace": "primary"}
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

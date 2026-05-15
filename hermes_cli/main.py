@@ -1042,6 +1042,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
         path = shutil.which(bin)
+        if not path and bin == "node":
+            try:
+                from hermes_cli.dep_ensure import ensure_dependency
+                if ensure_dependency("node"):
+                    path = shutil.which("node")
+            except Exception:
+                pass
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)

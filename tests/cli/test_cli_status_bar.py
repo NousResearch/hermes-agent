@@ -350,27 +350,38 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("top", width=90) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
 
-    def test_scrollback_box_width_returns_viewport_width(self):
-        """Decorative scrollback boxes use the full viewport width.
-
-        The previous clamp (max 56 cols) was reverted in favour of the
-        prompt_toolkit ``_output_screen_diff`` monkey-patch landed in
-        #26137, which keeps chrome out of scrollback at the source.
-        We accept that an aggressive column-shrink may visually reflow
-        already printed Panel borders — that's a cosmetic artifact of
-        stamped scrollback history, not a live-render bug.
-        """
+    def test_scrollback_box_width_keeps_one_column_safety_margin(self):
+        """Decorative scrollback boxes leave room for emulator wrap quirks."""
         from cli import HermesCLI
 
         # Floor at 32 — narrow terminals still get something usable
         # (avoids negative ``'─' * (w - 2)`` math).
         assert HermesCLI._scrollback_box_width(20) == 32
         assert HermesCLI._scrollback_box_width(32) == 32
-        # Above the floor, return the actual viewport width — no cap.
-        assert HermesCLI._scrollback_box_width(48) == 48
-        assert HermesCLI._scrollback_box_width(80) == 80
-        assert HermesCLI._scrollback_box_width(120) == 120
-        assert HermesCLI._scrollback_box_width(200) == 200
+        # Above the floor, use almost the full viewport but avoid the last
+        # terminal column so the right border does not wrap past the prompt.
+        assert HermesCLI._scrollback_box_width(48) == 47
+        assert HermesCLI._scrollback_box_width(80) == 79
+        assert HermesCLI._scrollback_box_width(120) == 119
+        assert HermesCLI._scrollback_box_width(200) == 199
+
+    def test_scrollback_title_border_fits_display_width(self):
+        from cli import HermesCLI
+
+        border = HermesCLI._scrollback_title_border(" ⚕ Hermes " + "很长" * 20, width=40)
+
+        assert border.startswith("╭─")
+        assert border.endswith("╮")
+        assert HermesCLI._status_bar_display_width(border) == HermesCLI._scrollback_box_width(40)
+
+    def test_scrollback_square_title_border_fits_display_width(self):
+        from cli import HermesCLI
+
+        border = HermesCLI._scrollback_title_border(" Reasoning " + "x" * 80, width=48, style="square")
+
+        assert border.startswith("┌─")
+        assert border.endswith("┐")
+        assert HermesCLI._status_bar_display_width(border) == HermesCLI._scrollback_box_width(48)
 
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()

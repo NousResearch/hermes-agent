@@ -77,6 +77,7 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
 
         def call_soon_threadsafe(self, cb, *args):
             scheduled.append(cb)
+            cb(*args)
 
     fake_loop = FakeLoop()
 
@@ -113,12 +114,50 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
     # call_soon_threadsafe must have been called with a scheduling cb.
     assert len(scheduled) == 1
 
-    # Invoking the scheduled callback should hit run_in_terminal.
-    scheduled[0]()
     assert len(run_in_terminal_calls) == 1
 
     # And run_in_terminal's inner func should have emitted a pt_print.
     assert direct_prints == ["💾 Self-improvement review: Skill updated"]
+
+
+def test_cprint_bg_thread_waits_for_terminal_print(monkeypatch):
+    """Cross-thread _cprint waits for run_in_terminal to finish before returning."""
+    events = []
+    monkeypatch.setattr(cli, "_pt_print", lambda x: events.append(("pt_print", x)))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            events.append(("scheduled",))
+            cb(*args)
+
+    class FakeFuture:
+        def add_done_callback(self, cb):
+            events.append(("done_callback",))
+            cb(self)
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: SimpleNamespace(_is_running=True, loop=FakeLoop())
+
+    def _fake_run_in_terminal(func, **kw):
+        events.append(("run_in_terminal",))
+        func()
+        return FakeFuture()
+
+    fake_pt_app.run_in_terminal = _fake_run_in_terminal
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("ordered")
+
+    assert events == [
+        ("scheduled",),
+        ("run_in_terminal",),
+        ("pt_print", "ordered"),
+        ("done_callback",),
+    ]
 
 
 def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):

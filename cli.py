@@ -1814,19 +1814,33 @@ def _cprint(text: str):
 
     # Cross-thread emission: ask the app's event loop to schedule a
     # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
-    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
-    # fails we fall back to a direct print so the line isn't lost.
+    # prompt, prints, and redraws.  Wait briefly for the scheduled
+    # terminal print to complete so the next prompt_toolkit redraw cannot
+    # expose an empty prompt before the Hermes scrollback box lands.
+    import threading as _threading
+    done = _threading.Event()
+
     def _schedule():
         try:
-            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            future = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            if hasattr(future, "add_done_callback"):
+                future.add_done_callback(lambda _f: done.set())
+            else:
+                done.set()
         except Exception:
             try:
                 _pt_print(_PT_ANSI(text))
             except Exception:
                 pass
+            finally:
+                done.set()
 
     try:
         loop.call_soon_threadsafe(_schedule)
+        # The callback itself is very small.  If the app loop is wedged,
+        # do not block the agent/tool thread indefinitely; the scheduled
+        # print may still run later, and direct fallback would duplicate it.
+        done.wait(timeout=1.0)
     except Exception:
         try:
             _pt_print(_PT_ANSI(text))
@@ -3250,17 +3264,14 @@ class HermesCLI:
 
     @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
-        """Return the full viewport width for printed scrollback box rules.
+        """Return the target width for scrollback boxes.
 
-        Previously this clamped to ``max(32, min(width, 56))`` as a defense
-        against terminal-emulator reflow on column-shrink (#25975, salvaging
-        #24403).  That clamp made response/reasoning borders look stubby on
-        any modern wide terminal.  We now trust the prompt_toolkit
-        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
-        #25981) to keep chrome out of scrollback in the first place, and
-        accept that an aggressive column-shrink may visually reflow already
-        printed Panel borders — that's a cosmetic artifact of stamped
-        scrollback history, not a live-render bug.
+        Classic CLI scrollback is printed in prompt_toolkit's non-fullscreen
+        mode.  A box that occupies the exact terminal width can hit the last
+        column and trigger an emulator wrap before prompt_toolkit redraws the
+        live input chrome, making the right border look like it overflowed.
+        Keep a one-column safety margin while still using the viewport width
+        instead of the old 56-column cap.
 
         A small floor (32 cols) is kept so the box still renders on tiny
         terminals without negative ``'─' * (w - 2)`` math.
@@ -3270,7 +3281,41 @@ class HermesCLI:
                 width = shutil.get_terminal_size((80, 24)).columns
             except Exception:
                 width = 80
-        return max(32, int(width or 80))
+        return max(32, int(width or 80) - 1)
+
+    @staticmethod
+    def _truncate_display_width(text: str, max_width: int) -> str:
+        """Truncate *text* so its terminal display width is at most max_width."""
+        if max_width <= 0:
+            return ""
+        out = []
+        used = 0
+        for ch in str(text):
+            ch_width = HermesCLI._status_bar_display_width(ch)
+            if used + ch_width > max_width:
+                break
+            out.append(ch)
+            used += ch_width
+        return "".join(out)
+
+    @staticmethod
+    def _scrollback_title_border(label: str, *, width: Optional[int] = None, style: str = "rounded") -> str:
+        """Return a display-width-safe top border with an inline title."""
+        w = HermesCLI._scrollback_box_width(width)
+        left, right = ("┌", "┐") if style == "square" else ("╭", "╮")
+        # Border layout: left + "─" + label + fill + right.
+        label_budget = max(0, w - 4)
+        safe_label = HermesCLI._truncate_display_width(label, label_budget)
+        label_width = HermesCLI._status_bar_display_width(safe_label)
+        fill = max(0, w - 3 - label_width)
+        return f"{left}─{safe_label}{'─' * fill}{right}"
+
+    @staticmethod
+    def _scrollback_bottom_border(*, width: Optional[int] = None, style: str = "rounded") -> str:
+        """Return a display-width-safe bottom border."""
+        w = HermesCLI._scrollback_box_width(width)
+        left, right = ("└", "┘") if style == "square" else ("╰", "╯")
+        return f"{left}{'─' * max(w - 2, 0)}{right}"
 
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""
@@ -3804,10 +3849,8 @@ class HermesCLI:
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
-            w = self._scrollback_box_width()
             r_label = " Reasoning "
-            r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            _cprint(f"\n{_DIM}{self._scrollback_title_border(r_label, style='square')}{_RST}")
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
@@ -3828,8 +3871,7 @@ class HermesCLI:
             if buf:
                 _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
-            w = self._scrollback_box_width()
-            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
+            _cprint(f"{_DIM}{self._scrollback_bottom_border(style='square')}{_RST}")
             self._reasoning_box_opened = False
 
             # Flush any content that was deferred while reasoning was rendering.
@@ -4019,9 +4061,7 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{_ACCENT}{self._scrollback_title_border(label)}{_RST}")
 
         self._stream_buf += text
 
@@ -4120,8 +4160,7 @@ class HermesCLI:
 
         # Close the response box
         if self._stream_box_opened:
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+            _cprint(f"{_ACCENT}{self._scrollback_bottom_border()}{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -10933,12 +10972,14 @@ class HermesCLI:
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
                             label = f"{label}{datetime.now().strftime('%H:%M')} "
-                        fill = w - 2 - HermesCLI._status_bar_display_width(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(
+                            f"\n{_ACCENT}"
+                            f"{self._scrollback_title_border(label, width=getattr(self.console, 'width', 80))}"
+                            f"{_RST}"
+                        )
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
@@ -11218,11 +11259,9 @@ class HermesCLI:
             if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
-                    w = self._scrollback_box_width()
                     r_label = " Reasoning "
-                    r_fill = w - 2 - len(r_label)
-                    r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
-                    r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
+                    r_top = f"{_DIM}{self._scrollback_title_border(r_label, style='square')}{_RST}"
+                    r_bot = f"{_DIM}{self._scrollback_bottom_border(style='square')}{_RST}"
                     # Collapse long reasoning: show first 10 lines
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
@@ -11249,8 +11288,7 @@ class HermesCLI:
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
-                    w = self._scrollback_box_width()
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+                    _cprint(f"\n{_ACCENT}{self._scrollback_bottom_border()}{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.

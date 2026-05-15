@@ -3811,7 +3811,18 @@ def _get_cached_client(
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
                 client, default_model, _ = _client_cache[cache_key]
-    return client, model or default_model
+    # Re-apply model name normalization on the raw caller-passed `model` so
+    # the caller's explicit override still wins (preserving existing
+    # caller-wins semantics) but the namespace-stripping that
+    # `resolve_provider_client` performed via `_normalize_resolved_model`
+    # isn't silently bypassed. Without this, namespaced model names like
+    # "my-provider/claude-haiku-4-5" leak past the resolver's normalization
+    # and arrive at the wire unstripped — the Anthropic API rejects them
+    # with a 404 "model not found". `default_model` is the resolver's
+    # already-normalized `final_model`, so any normalization failure falls
+    # back to it safely.
+    normalized_caller_model = _normalize_resolved_model(model, provider) if model else None
+    return client, normalized_caller_model or default_model
 
 
 def _resolve_task_provider_model(
@@ -3847,8 +3858,38 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
+    # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
+    # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`
+    # propagates the literal string "auto" to the wire, where the provider returns
+    # a 200 OK with an error-text body (e.g. "the model 'auto' does not exist"),
+    # which downstream consumers like ContextCompressor accept as the task output.
+    # The provider-side 'auto' is handled in _resolve_auto() via main_runtime
+    # fallback, so dropping cfg_model to None here lets that path do its job.
+    if cfg_model and cfg_model.lower() == "auto":
+        cfg_model = None
+
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
+
+    # When an explicit provider is given and no task-config api_mode override,
+    # fall back to the provider profile's declared api_mode. Without this,
+    # plugin providers that declare api_mode="anthropic_messages" (i.e. their
+    # upstream speaks the Anthropic Messages API, not OpenAI Chat Completions)
+    # silently land on the OpenAI-wire transport and 404 from
+    # `chat/completions` calls. The URL-suffix detection in
+    # `_endpoint_speaks_anthropic_messages` only catches /anthropic-suffixed
+    # gateways; it misses plain-base-URL Anthropic-API endpoints (e.g. local
+    # proxies on 127.0.0.1:PORT). Reading the profile here closes the gap so
+    # any provider plugin can declare api_mode and have it honored regardless
+    # of upstream URL shape.
+    if provider and not resolved_api_mode:
+        try:
+            from providers import get_provider_profile as _gpf_resolve
+            _profile = _gpf_resolve(provider)
+            if _profile and getattr(_profile, "api_mode", None):
+                resolved_api_mode = _profile.api_mode
+        except Exception:
+            pass
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode

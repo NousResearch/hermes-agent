@@ -2061,7 +2061,7 @@ class AIAgent:
             try:
                 _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
-                if _mem_provider_name:
+                if _mem_provider_name and _mem_provider_name.strip():
                     from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()

@@ -7,6 +7,7 @@ from types import ModuleType
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from gateway import run as gateway_run
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from plugins.teams_pipeline.runtime import (
@@ -50,6 +51,31 @@ def test_gateway_runner_skips_wiring_without_msgraph_adapter(monkeypatch):
         called = True
         return True
 
+    monkeypatch.setattr("plugins.teams_pipeline.runtime.bind_gateway_runtime", _bind)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"plugins": {"enabled": ["teams_pipeline"]}},
+    )
+
+    GatewayRunner._wire_teams_pipeline_runtime(runner)
+
+    assert called is False
+
+
+def test_gateway_runner_skips_wiring_when_platform_lacks_msgraph(monkeypatch):
+    """Legacy gateway.config without MSGRAPH_WEBHOOK must still start."""
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.adapters = {object(): MagicMock()}
+    runner._teams_pipeline_runtime_error = None
+
+    called = False
+
+    def _bind(_gateway_runner):
+        nonlocal called
+        called = True
+        return True
+
+    monkeypatch.setattr(gateway_run, "Platform", SimpleNamespace(TELEGRAM=object()))
     monkeypatch.setattr("plugins.teams_pipeline.runtime.bind_gateway_runtime", _bind)
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",

@@ -1406,7 +1406,8 @@ class GatewayRunner:
         teams_pipeline plugin isn't enabled — lets the gateway start cleanly
         whether or not the user has opted into the pipeline.
         """
-        if Platform.MSGRAPH_WEBHOOK not in self.adapters:
+        msgraph_platform = getattr(Platform, "MSGRAPH_WEBHOOK", None)
+        if msgraph_platform is None or msgraph_platform not in self.adapters:
             return
         if not _teams_pipeline_plugin_enabled():
             logger.debug("Teams pipeline plugin is disabled; skipping runtime wiring")

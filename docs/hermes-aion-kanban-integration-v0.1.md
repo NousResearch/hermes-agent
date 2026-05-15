@@ -17,6 +17,20 @@ Hermes 原生 Web Kanban 不重造、不替代 GitHub、不替代 AION Factory R
 | refresh | 刷新战报 | 只读刷新当前聚合状态。 |
 | nudge dispatcher | 催动调度器 | v0.1 只读模式禁用；Phase 3 才允许门禁化启用。 |
 
+### 1.1 Hermes 原生调用机制理解
+
+Hermes Kanban 背后不是普通页面列表，而是一套“任务队列 + 调度器 + 多 Profile Worker”的调用机制：
+
+- 任务、评论、运行记录、状态变化都写入 SQLite Kanban 数据库。
+- 人和脚本可以通过 `hermes kanban ...`、Dashboard、slash command 操作。
+- AI Worker 不靠 shell 调 `hermes kanban`，而是通过 `kanban_*` 工具读写任务，例如 `kanban_show`、`kanban_comment`、`kanban_complete`、`kanban_block`。
+- Dispatcher 默认跑在 Hermes Gateway 里，每轮扫描 ready 任务，按 assignee/profile 拉起对应 Hermes profile。
+- Worker 被拉起后会拿到当前 task、board、workspace、run_id、claim_lock 等环境变量。
+- 每个 Worker 必须用 `kanban_complete` 或 `kanban_block` 收尾；否则会被视为 crash / timeout / gave_up。
+- Dashboard API 是薄封装，读写最终还是走同一套 `kanban_db`，并通过 task_events / WebSocket 做实时更新。
+
+因此 AION v0.1 只在 Dashboard 读层增加中文解释和总控摘要，不改变原生调度器、worker、claim、complete/block 的生命周期真相。
+
 ## 2. 三个数据源的职责
 
 ### 2.1 GitHub：任务正本
@@ -82,6 +96,23 @@ Kanban 顶部摘要应读取或复用 Factory Report 的关键指标：
 - 通过拖拽或 nudge dispatcher 让 v0.1 产生执行/写回副作用。
 
 ## 4. 页面结构
+
+### 4.0 中文更新简报
+
+顶部必须先给君主一段大白话中文简报，原则是“短、准、能判断是否要拍板”：
+
+```text
+过去一段时间发生了什么？
+做了哪些工作？
+AION 无人值守工厂是否正常运作？
+运作过程中出现了哪些问题？
+有没有 AAR / 复盘？
+现在正在做什么？
+未来计划做什么？
+现有 AION 已经能实现哪些功能？
+```
+
+这段简报只放结论，不堆长细节；详细任务、负责人、证据、审计、AAR、归档状态全部交给 Kanban 卡片和详情页展示。
 
 ### 4.1 顶部君主摘要条
 

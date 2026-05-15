@@ -285,6 +285,12 @@ def _aion_summary(columns: dict[str, list[dict[str, Any]]], now: int) -> dict[st
     else:
         overall = "运转中"
     score = max(0, min(100, 85 - 8 * waiting_audit - 10 * blocked - 12 * needs_monarch))
+    if overall == "运转中":
+        brief = "过去一段时间工厂在正常运转：有任务在推进，暂未发现必须君主拍板的阻塞。详细任务、证据和审计记录请看 Kanban 卡片。"
+    elif overall == "等君主拍板":
+        brief = "过去一段时间工厂有高风险事项进入待君主拍板；低风险任务仍可继续推进。详细风险、证据和停手条件请看 Kanban 卡片。"
+    else:
+        brief = "过去一段时间工厂有部分任务卡住或等待审计；不是全局停摆。详细阻塞原因、负责人和下一关口请看 Kanban 卡片。"
     return {
         "title": "AION 帝国工厂驾驶舱",
         "overall_status": overall,
@@ -297,6 +303,8 @@ def _aion_summary(columns: dict[str, list[dict[str, Any]]], now: int) -> dict[st
         "needs_monarch": needs_monarch,
         "done_today": done_today,
         "current_bottleneck": current_bottleneck,
+        "briefing_cn": brief,
+        "briefing_detail_surface": "Kanban cards carry detailed task state, evidence, audit trail, AAR, and archive status.",
         "phase": "Phase 1 只读集成：展示为主，不反写 GitHub，不自动 merge/close",
     }
 

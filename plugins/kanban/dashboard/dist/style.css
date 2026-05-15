@@ -1511,6 +1511,15 @@
   font-size: 0.76rem;
   color: var(--color-muted-foreground);
 }
+.hermes-kanban-aion-brief {
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-ring) 8%, transparent);
+  color: var(--color-foreground);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
 .hermes-kanban-aion-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));

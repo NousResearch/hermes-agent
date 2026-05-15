@@ -1848,4 +1848,6 @@ def test_aion_readonly_board_maps_factory_cockpit_columns(client):
     assert summary["waiting_audit"] >= 1
     assert summary["blocked"] >= 1
     assert summary["needs_monarch"] >= 1
+    assert summary["briefing_cn"]
+    assert "Kanban" in summary["briefing_detail_surface"]
     assert "只读" in summary["phase"]

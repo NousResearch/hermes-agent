@@ -1015,6 +1015,7 @@
     return h("div", { className: "hermes-kanban-aion-summary" },
       h("div", { className: "hermes-kanban-aion-title" }, summary.title || "AION 帝国工厂驾驶舱"),
       h("div", { className: "hermes-kanban-aion-phase" }, summary.phase || "Phase 1 只读集成"),
+      h("div", { className: "hermes-kanban-aion-brief" }, summary.briefing_cn || "中文简报：详细任务状态请看下方 Kanban 卡片。"),
       h("div", { className: "hermes-kanban-aion-grid" },
         h("div", null, h("span", null, "总体状态"), h("strong", null, summary.overall_status || "未知")),
         h("div", null, h("span", null, "无人值守成熟度"), h("strong", null, summary.unattended_maturity || "半自动")),

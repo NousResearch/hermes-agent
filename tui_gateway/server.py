@@ -2319,7 +2319,7 @@ def _(rid, params: dict) -> dict:
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
-    sessions_dir = get_hermes_home() / "sessions"
+    sessions_dir = Path(get_hermes_home()) / "sessions"
     try:
         deleted = db.delete_session(target, sessions_dir=sessions_dir)
     except Exception as e:
@@ -6002,9 +6002,22 @@ def _normalize_cdp_url(parsed) -> str:
 
 
 def _failure_messages(url: str, port: int, system: str) -> list[str]:
-    from hermes_cli.browser_connect import manual_chrome_debug_command
+    from hermes_cli.browser_connect import (
+        get_chrome_debug_candidates,
+        manual_chrome_debug_command,
+    )
 
-    command = manual_chrome_debug_command(port, system)
+    # Keep the failure copy aligned with the attempted launch path.  On macOS
+    # manual_chrome_debug_command() can synthesize an `open -a "Google Chrome"`
+    # command even when no launchable executable was found; after an automatic
+    # launch attempt has already failed, that reads like a concrete command for
+    # an executable we did not find.  Treat the empty-candidate case as a clear
+    # install/start hint instead.
+    command = (
+        manual_chrome_debug_command(port, system)
+        if get_chrome_debug_candidates(system)
+        else None
+    )
     hint = (
         ["Start Chrome with remote debugging, then retry /browser connect:", command]
         if command
@@ -6212,7 +6225,7 @@ def _(rid, params: dict) -> dict:
                 "title": "Environment",
                 "rows": [
                     ["Working Dir", os.getcwd()],
-                    ["Config File", str(_hermes_home / "config.yaml")],
+                    ["Config File", str(Path(_hermes_home) / "config.yaml")],
                 ],
             },
         ]

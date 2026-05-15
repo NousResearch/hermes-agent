@@ -1,0 +1,18 @@
+{
+  "name": "Hermes Mobile Cockpit",
+  "short_name": "Hermes",
+  "description": "Mobile truck cockpit for voice-driven Hermes Agent control.",
+  "start_url": "/cockpit",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

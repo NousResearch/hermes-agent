@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleStop,
+  Download,
   Mic,
   MicOff,
   Radio,
@@ -9,6 +10,7 @@ import {
   Send,
   Settings2,
   ShieldCheck,
+  Smartphone,
   Volume2,
   VolumeX,
   XCircle,
@@ -22,6 +24,7 @@ import { cn } from "@/lib/utils";
 type CockpitStatus =
   | "idle"
   | "listening"
+  | "transcribing"
   | "ready"
   | "thinking"
   | "working"
@@ -40,48 +43,17 @@ type RunEvent = {
   tool?: string;
   preview?: string;
   duration?: number;
+  choice?: string;
   choices?: string[];
   [key: string]: unknown;
-};
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onend: (() => void) | null;
-  onerror: ((event: { error?: string }) => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-};
-
-type SpeechRecognitionEventLike = {
-  resultIndex: number;
-  results: ArrayLike<{
-    isFinal: boolean;
-    0: { transcript: string };
-  }>;
-};
-
-type SpeechWindow = Window & {
-  SpeechRecognition?: SpeechRecognitionConstructor;
-  webkitSpeechRecognition?: SpeechRecognitionConstructor;
 };
 
 const API_BASE_KEY = "hermes.cockpit.apiBase";
 const API_KEY_KEY = "hermes.cockpit.apiKey";
 const SESSION_KEY = "hermes.cockpit.sessionKey";
+const HANDS_FREE_SECONDS = 8;
 
 const DEFAULT_INSTRUCTIONS = `You are Hermes in Dalton's mobile truck cockpit. Be concise, mobile-friendly, and action-oriented. If Dalton asks you to send texts, emails, spend money, modify customer-facing systems, or take risky actions, draft first and require explicit approval unless a trusted rule already exists. Narrate blockers clearly.`;
-
-function getSpeechRecognition(): SpeechRecognitionConstructor | null {
-  if (typeof window === "undefined") return null;
-  const w = window as SpeechWindow;
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
 
 function storageValue(key: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -95,26 +67,30 @@ function generateSessionKey(): string {
   return `cockpit:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
 }
 
+function isSecureMicContext(): boolean {
+  return typeof window !== "undefined" && (window.isSecureContext || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+}
+
+function pickAudioMimeType(): string | undefined {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return undefined;
+  for (const type of ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return undefined;
+}
+
 function statusLabel(status: CockpitStatus): string {
   switch (status) {
-    case "idle":
-      return "Idle";
-    case "listening":
-      return "Listening";
-    case "ready":
-      return "Ready";
-    case "thinking":
-      return "Thinking";
-    case "working":
-      return "Working";
-    case "waiting_for_approval":
-      return "Needs approval";
-    case "done":
-      return "Done";
-    case "blocked":
-      return "Blocked";
-    case "error":
-      return "Error";
+    case "idle": return "Idle";
+    case "listening": return "Listening";
+    case "transcribing": return "Transcribing";
+    case "ready": return "Ready";
+    case "thinking": return "Thinking";
+    case "working": return "Working";
+    case "waiting_for_approval": return "Needs approval";
+    case "done": return "Done";
+    case "blocked": return "Blocked";
+    case "error": return "Error";
   }
 }
 
@@ -139,10 +115,13 @@ function compactForSpeech(text: string): string {
 }
 
 export default function CockpitPage() {
-  const recognitionCtor = useMemo(() => getSpeechRecognition(), []);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const eventStreamAbortRef = useRef<AbortController | null>(null);
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handsFreeRef = useRef(false);
+  const statusRef = useRef<CockpitStatus>("idle");
 
   const [apiBase, setApiBase] = useState(() => storageValue(API_BASE_KEY, window.location.origin));
   const [apiKey, setApiKey] = useState(() => storageValue(API_KEY_KEY, ""));
@@ -151,9 +130,8 @@ export default function CockpitPage() {
   const [status, setStatus] = useState<CockpitStatus>("idle");
   const [handsFree, setHandsFree] = useState(false);
   const [voiceReplies, setVoiceReplies] = useState(true);
-  const [isListening, setIsListening] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
-  const [interimTranscript, setInterimTranscript] = useState("");
   const [typedInput, setTypedInput] = useState("");
   const [runId, setRunId] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -161,202 +139,205 @@ export default function CockpitPage() {
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [approvalEvent, setApprovalEvent] = useState<RunEvent | null>(null);
+  const [lastTranscript, setLastTranscript] = useState("");
+  const [installPrompt, setInstallPrompt] = useState<Event | null>(null);
+
+  useEffect(() => { window.localStorage.setItem(API_BASE_KEY, apiBase); }, [apiBase]);
+  useEffect(() => { window.localStorage.setItem(API_KEY_KEY, apiKey); }, [apiKey]);
+  useEffect(() => { window.localStorage.setItem(SESSION_KEY, sessionKey); }, [sessionKey]);
+  useEffect(() => { handsFreeRef.current = handsFree; }, [handsFree]);
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
-    window.localStorage.setItem(API_BASE_KEY, apiBase);
-  }, [apiBase]);
+    const handler = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
 
-  useEffect(() => {
-    window.localStorage.setItem(API_KEY_KEY, apiKey);
-  }, [apiKey]);
+  const speak = useCallback((text: string) => {
+    if (!voiceReplies || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const utterance = new SpeechSynthesisUtterance(compactForSpeech(text));
+    utterance.rate = 1.02;
+    utterance.pitch = 1;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [voiceReplies]);
 
-  useEffect(() => {
-    window.localStorage.setItem(SESSION_KEY, sessionKey);
-  }, [sessionKey]);
+  const updateStatus = useCallback((next: CockpitStatus, announce?: string) => {
+    setStatus(next);
+    statusRef.current = next;
+    if (handsFreeRef.current && announce) speak(announce);
+  }, [speak]);
 
-  const speak = useCallback(
-    (text: string) => {
-      if (!voiceReplies || typeof window === "undefined" || !("speechSynthesis" in window)) return;
-      const utterance = new SpeechSynthesisUtterance(compactForSpeech(text));
-      utterance.rate = 1.02;
-      utterance.pitch = 1;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-    },
-    [voiceReplies],
-  );
+  const apiHeaders = useCallback((json = true): HeadersInit => {
+    const headers: Record<string, string> = { "X-Hermes-Session-Key": sessionKey };
+    if (json) headers["Content-Type"] = "application/json";
+    if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+    return headers;
+  }, [apiKey, sessionKey]);
 
-  const updateStatus = useCallback(
-    (next: CockpitStatus, announce?: string) => {
-      setStatus(next);
-      if (handsFree && announce) speak(announce);
-    },
-    [handsFree, speak],
-  );
-
-  const apiHeaders = useCallback(
-    (json = true): HeadersInit => {
-      const headers: Record<string, string> = {
-        "X-Hermes-Session-Key": sessionKey,
-      };
-      if (json) headers["Content-Type"] = "application/json";
-      if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
-      return headers;
-    },
-    [apiKey, sessionKey],
-  );
-
-  const resolvedInput = useMemo(() => {
-    const spoken = `${transcript} ${interimTranscript}`.trim();
-    return (typedInput || spoken).trim();
-  }, [interimTranscript, transcript, typedInput]);
+  const resolvedInput = useMemo(() => (typedInput || transcript).trim(), [transcript, typedInput]);
 
   const closeEventSource = useCallback(() => {
     eventStreamAbortRef.current?.abort();
     eventStreamAbortRef.current = null;
   }, []);
 
-  useEffect(() => () => closeEventSource(), [closeEventSource]);
+  const stopMediaTracks = useCallback(() => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  }, []);
 
-  const appendEvent = useCallback(
-    (event: RunEvent) => {
-      setEvents((current) => [event, ...current].slice(0, 80));
-      const kind = event.event;
-      if (kind === "message.delta") {
-        setStreamingText((text) => `${text}${String(event.delta ?? "")}`);
-        updateStatus("working");
-      } else if (kind === "tool.started") {
-        updateStatus("working", `Working. Started ${String(event.tool ?? "a tool")}.`);
-      } else if (kind === "approval.request") {
-        setApprovalEvent(event);
-        updateStatus("waiting_for_approval", "I need approval before continuing.");
-      } else if (kind === "approval.responded") {
-        setApprovalEvent(null);
-        updateStatus("working", "Approval sent. Continuing.");
-      } else if (kind === "run.completed") {
-        const output = String(event.output ?? "");
-        setResponse(output);
-        setStreamingText("");
-        updateStatus("done", output ? `Done. ${output}` : "Done.");
-        closeEventSource();
-      } else if (kind === "run.failed") {
-        setError(String(event.error ?? "Run failed"));
-        updateStatus("error", `Blocked. ${String(event.error ?? "Run failed")}`);
-        closeEventSource();
-      } else if (kind === "run.cancelled") {
-        updateStatus("blocked", "Stopped.");
-        closeEventSource();
-      }
-    },
-    [closeEventSource, updateStatus],
-  );
+  useEffect(() => () => {
+    closeEventSource();
+    if (recordTimerRef.current) clearTimeout(recordTimerRef.current);
+    mediaRecorderRef.current?.stop();
+    stopMediaTracks();
+  }, [closeEventSource, stopMediaTracks]);
 
-  const startRun = useCallback(
-    async (message?: string) => {
-      const input = (message ?? resolvedInput).trim();
-      if (!input) {
-        setError("Say or type a command first.");
-        updateStatus("blocked", "Say or type a command first.");
-        return;
-      }
-      closeEventSource();
-      setError(null);
+  const restartHandsFreeLater = useCallback((delay = 950) => {
+    if (!handsFreeRef.current) return;
+    window.setTimeout(() => {
+      if (!handsFreeRef.current) return;
+      if (["thinking", "working", "waiting_for_approval", "transcribing"].includes(statusRef.current)) return;
+      void startRecording(true);
+    }, delay);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const appendEvent = useCallback((event: RunEvent) => {
+    setEvents((current) => [event, ...current].slice(0, 80));
+    const kind = event.event;
+    if (kind === "message.delta") {
+      setStreamingText((text) => `${text}${String(event.delta ?? "")}`);
+      updateStatus("working");
+    } else if (kind === "tool.started") {
+      updateStatus("working", `Working. Started ${String(event.tool ?? "a tool")}.`);
+    } else if (kind === "approval.request") {
+      setApprovalEvent(event);
+      updateStatus("waiting_for_approval", "I need approval before continuing.");
+      restartHandsFreeLater(700);
+    } else if (kind === "approval.responded") {
       setApprovalEvent(null);
-      setResponse("");
+      updateStatus("working", "Approval sent. Continuing.");
+    } else if (kind === "run.completed") {
+      const output = String(event.output ?? "");
+      setResponse(output);
       setStreamingText("");
-      setEvents([]);
-      updateStatus("thinking", "Thinking.");
+      updateStatus("done", output ? `Done. ${output}` : "Done.");
+      closeEventSource();
+      restartHandsFreeLater(1800);
+    } else if (kind === "run.failed") {
+      setError(String(event.error ?? "Run failed"));
+      updateStatus("error", `Blocked. ${String(event.error ?? "Run failed")}`);
+      closeEventSource();
+      restartHandsFreeLater(1800);
+    } else if (kind === "run.cancelled") {
+      updateStatus("blocked", "Stopped.");
+      closeEventSource();
+      restartHandsFreeLater(1200);
+    }
+  }, [closeEventSource, restartHandsFreeLater, updateStatus]);
 
-      try {
-        const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs`, {
-          method: "POST",
-          headers: apiHeaders(),
-          body: JSON.stringify({
-            input,
-            instructions: DEFAULT_INSTRUCTIONS,
-            session_id: sessionKey,
-          }),
-        });
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-        const data = (await res.json()) as { run_id?: string };
-        if (!data.run_id) throw new Error("API did not return run_id");
-        const activeRunId: string = data.run_id;
-        setRunId(activeRunId);
-        setTranscript("");
-        setInterimTranscript("");
-        setTypedInput("");
-        updateStatus("working", "Working.");
+  const startRun = useCallback(async (message?: string) => {
+    const input = (message ?? resolvedInput).trim();
+    if (!input) {
+      setError("Say or type a command first.");
+      updateStatus("blocked", "Say or type a command first.");
+      return;
+    }
+    closeEventSource();
+    setError(null);
+    setApprovalEvent(null);
+    setResponse("");
+    setStreamingText("");
+    setEvents([]);
+    updateStatus("thinking", "Thinking.");
 
-        const streamAbort = new AbortController();
-        eventStreamAbortRef.current = streamAbort;
-        void (async () => {
-          try {
-            const streamRes = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(activeRunId)}/events`, {
-              headers: apiHeaders(false),
-              signal: streamAbort.signal,
-            });
-            if (!streamRes.ok) throw new Error(`${streamRes.status}: ${await streamRes.text()}`);
-            if (!streamRes.body) throw new Error("Event stream response had no body");
+    try {
+      const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ input, instructions: DEFAULT_INSTRUCTIONS, session_id: sessionKey }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const data = (await res.json()) as { run_id?: string };
+      if (!data.run_id) throw new Error("API did not return run_id");
+      const activeRunId: string = data.run_id;
+      setRunId(activeRunId);
+      setTranscript("");
+      setTypedInput("");
+      updateStatus("working", "Working.");
 
-            const reader = streamRes.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buffer += decoder.decode(value, { stream: true });
-              const frames = buffer.split("\n\n");
-              buffer = frames.pop() ?? "";
-              for (const frame of frames) {
-                const dataLines = frame
-                  .split("\n")
-                  .filter((line) => line.startsWith("data:"))
-                  .map((line) => line.slice(5).trimStart());
-                if (dataLines.length === 0) continue;
-                try {
-                  appendEvent(JSON.parse(dataLines.join("\n")) as RunEvent);
-                } catch (parseError) {
-                  setError(`Bad event payload: ${String(parseError)}`);
-                }
-              }
+      const streamAbort = new AbortController();
+      eventStreamAbortRef.current = streamAbort;
+      void (async () => {
+        try {
+          const streamRes = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(activeRunId)}/events`, {
+            headers: apiHeaders(false),
+            signal: streamAbort.signal,
+          });
+          if (!streamRes.ok) throw new Error(`${streamRes.status}: ${await streamRes.text()}`);
+          if (!streamRes.body) throw new Error("Event stream response had no body");
+
+          const reader = streamRes.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const frames = buffer.split("\n\n");
+            buffer = frames.pop() ?? "";
+            for (const frame of frames) {
+              const dataLines = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart());
+              if (dataLines.length === 0) continue;
+              try { appendEvent(JSON.parse(dataLines.join("\n")) as RunEvent); }
+              catch (parseError) { setError(`Bad event payload: ${String(parseError)}`); }
             }
-          } catch (streamError) {
-            if (streamAbort.signal.aborted) return;
-            setError(`Event stream disconnected: ${String(streamError)}`);
-            updateStatus("blocked", "Event stream disconnected.");
           }
-        })();
-      } catch (runError) {
-        setError(String(runError));
-        updateStatus("error", "I could not start the run.");
-      }
-    },
-    [apiBase, apiHeaders, apiKey, appendEvent, closeEventSource, resolvedInput, sessionKey, updateStatus],
-  );
+        } catch (streamError) {
+          if (streamAbort.signal.aborted) return;
+          setError(`Event stream disconnected: ${String(streamError)}`);
+          updateStatus("blocked", "Event stream disconnected.");
+          restartHandsFreeLater(1500);
+        }
+      })();
+    } catch (runError) {
+      setError(String(runError));
+      updateStatus("error", "I could not start the run.");
+      restartHandsFreeLater(1500);
+    }
+  }, [apiBase, apiHeaders, appendEvent, closeEventSource, resolvedInput, restartHandsFreeLater, sessionKey, updateStatus]);
 
-  const sendApproval = useCallback(
-    async (choice: "once" | "session" | "always" | "deny") => {
-      if (!runId) return;
-      setError(null);
-      try {
-        const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(runId)}/approval`, {
-          method: "POST",
-          headers: apiHeaders(),
-          body: JSON.stringify({ choice }),
-        });
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-        setApprovalEvent(null);
-        updateStatus(choice === "deny" ? "blocked" : "working", choice === "deny" ? "Denied." : "Approved.");
-      } catch (approvalError) {
-        setError(String(approvalError));
-        updateStatus("error", "Approval failed.");
-      }
-    },
-    [apiBase, apiHeaders, runId, updateStatus],
-  );
+  const sendApproval = useCallback(async (choice: "once" | "session" | "always" | "deny") => {
+    if (!runId) return;
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(runId)}/approval`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ choice }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      setApprovalEvent(null);
+      updateStatus(choice === "deny" ? "blocked" : "working", choice === "deny" ? "Denied." : "Approved.");
+    } catch (approvalError) {
+      setError(String(approvalError));
+      updateStatus("error", "Approval failed.");
+    }
+  }, [apiBase, apiHeaders, runId, updateStatus]);
 
   const stopRun = useCallback(async () => {
-    if (!runId) return;
+    if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
+    if (!runId) {
+      closeEventSource();
+      updateStatus("blocked", "Stopped.");
+      return;
+    }
     setError(null);
     try {
       const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(runId)}/stop`, {
@@ -372,131 +353,166 @@ export default function CockpitPage() {
     }
   }, [apiBase, apiHeaders, closeEventSource, runId, updateStatus]);
 
-  const handleVoiceCommand = useCallback(
-    (text: string): boolean => {
-      const command = text.trim().toLowerCase();
-      if (!handsFree || !command) return false;
-      if (["stop", "cancel", "cancel run", "abort"].includes(command)) {
-        void stopRun();
-        return true;
-      }
-      if (["repeat", "say that again", "read it again"].includes(command)) {
-        speak(response || streamingText || statusLabel(status));
-        return true;
-      }
-      if (["clear", "reset"].includes(command)) {
-        setTranscript("");
-        setInterimTranscript("");
-        setTypedInput("");
-        setError(null);
-        updateStatus("idle", "Cleared.");
-        return true;
-      }
-      if (approvalEvent) {
-        if (["yes", "approve", "approved", "send it", "do it", "allow"].includes(command)) {
-          void sendApproval("once");
-          return true;
-        }
-        if (["no", "deny", "reject", "don't", "do not", "cancel"].includes(command)) {
-          void sendApproval("deny");
-          return true;
-        }
-      }
-      return false;
-    },
-    [approvalEvent, handsFree, response, sendApproval, speak, status, stopRun, streamingText, updateStatus],
-  );
-
-  const stopListening = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+  const handleVoiceCommand = useCallback((text: string): boolean => {
+    const command = text.trim().toLowerCase().replace(/[.!?]$/g, "");
+    if (!command) return false;
+    if (["stop", "cancel", "cancel run", "abort", "interrupt"].includes(command)) {
+      void stopRun();
+      return true;
     }
-    recognitionRef.current?.stop();
-    setIsListening(false);
-    setInterimTranscript("");
-    setStatus((current) => (current === "listening" ? "ready" : current));
-  }, []);
+    if (["repeat", "say that again", "read it again"].includes(command)) {
+      speak(response || streamingText || statusLabel(statusRef.current));
+      return true;
+    }
+    if (["clear", "reset"].includes(command)) {
+      setTranscript("");
+      setTypedInput("");
+      setError(null);
+      updateStatus("idle", "Cleared.");
+      restartHandsFreeLater(500);
+      return true;
+    }
+    if (approvalEvent) {
+      if (["yes", "approve", "approved", "send it", "do it", "allow"].includes(command)) {
+        void sendApproval("once");
+        return true;
+      }
+      if (["no", "deny", "reject", "don't", "do not", "cancel"].includes(command)) {
+        void sendApproval("deny");
+        return true;
+      }
+    }
+    return false;
+  }, [approvalEvent, response, restartHandsFreeLater, sendApproval, speak, stopRun, streamingText, updateStatus]);
 
-  const startListening = useCallback(() => {
-    if (!recognitionCtor) {
-      setError("Browser speech recognition is unavailable. Use typed input or Chrome/Android.");
-      updateStatus("blocked", "Speech recognition is unavailable in this browser.");
+  const transcribeBlob = useCallback(async (blob: Blob) => {
+    const form = new FormData();
+    const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+    form.append("audio", blob, `cockpit.${ext}`);
+    const res = await fetch(`${apiBase.replace(/\/+$/, "")}/v1/cockpit/transcribe`, {
+      method: "POST",
+      headers: apiHeaders(false),
+      body: form,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const data = (await res.json()) as { text?: string };
+    return (data.text ?? "").trim();
+  }, [apiBase, apiHeaders]);
+
+  const processAudioBlob = useCallback(async (blob: Blob, autoSubmit: boolean) => {
+    if (blob.size < 700) {
+      if (autoSubmit) restartHandsFreeLater(300);
       return;
     }
-    if (isListening) return;
-    const recognition = new recognitionCtor();
-    recognitionRef.current = recognition;
-    recognition.continuous = handsFree;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        const text = result[0]?.transcript ?? "";
-        if (result.isFinal) finalText += text;
-        else interimText += text;
-      }
-      if (interimText) setInterimTranscript(interimText);
-      if (finalText.trim()) {
-        const commandHandled = handleVoiceCommand(finalText);
-        if (!commandHandled) {
-          setTranscript((current) => `${current} ${finalText}`.trim());
-          if (handsFree) {
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            silenceTimerRef.current = setTimeout(() => {
-              void startRun(`${transcript} ${finalText}`.trim());
-            }, 1400);
-          }
-        }
-      }
-    };
-    recognition.onerror = (event) => {
-      setError(`Speech recognition error: ${event.error ?? "unknown"}`);
-      setIsListening(false);
-      updateStatus("blocked", "Speech recognition stopped.");
-    };
-    recognition.onend = () => {
-      setIsListening(false);
-      if (handsFree && status !== "working" && status !== "thinking" && status !== "waiting_for_approval") {
-        try {
-          recognition.start();
-          setIsListening(true);
-          updateStatus("listening");
-        } catch {
-          // Browsers often require a fresh user gesture before restarting.
-        }
-      }
-    };
+    updateStatus("transcribing", "Transcribing.");
+    setError(null);
     try {
-      recognition.start();
-      setIsListening(true);
-      updateStatus("listening", "Listening.");
-    } catch (listenError) {
-      setError(String(listenError));
-      setIsListening(false);
-      updateStatus("error", "Could not start listening.");
+      const text = await transcribeBlob(blob);
+      setLastTranscript(text);
+      if (!text) {
+        updateStatus("listening", "I did not catch that.");
+        if (autoSubmit) restartHandsFreeLater(600);
+        return;
+      }
+      if (handleVoiceCommand(text)) return;
+      setTranscript(text);
+      setTypedInput("");
+      if (autoSubmit) void startRun(text);
+      else updateStatus("ready", "Ready to send.");
+    } catch (transcribeError) {
+      setError(String(transcribeError));
+      updateStatus("error", "Transcription failed.");
+      if (autoSubmit) restartHandsFreeLater(1400);
     }
-  }, [handleVoiceCommand, handsFree, isListening, recognitionCtor, startRun, status, transcript, updateStatus]);
+  }, [handleVoiceCommand, restartHandsFreeLater, startRun, transcribeBlob, updateStatus]);
+
+  async function startRecording(autoSubmit = false) {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError("This browser cannot record microphone audio. Try Android Chrome over HTTPS or use typed input.");
+      updateStatus("blocked", "Microphone recording is unavailable.");
+      return;
+    }
+    if (!isSecureMicContext()) {
+      setError("Microphone access requires HTTPS or localhost. Use the Tailscale HTTPS URL / serve route before using phone voice.");
+      updateStatus("blocked", "Phone microphone requires HTTPS.");
+      return;
+    }
+    if (mediaRecorderRef.current?.state === "recording") return;
+    if (["thinking", "working", "transcribing"].includes(statusRef.current)) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const mimeType = pickAudioMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        setIsRecording(false);
+        if (recordTimerRef.current) {
+          clearTimeout(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        audioChunksRef.current = [];
+        stopMediaTracks();
+        void processAudioBlob(blob, autoSubmit);
+      };
+      recorder.start(250);
+      setIsRecording(true);
+      updateStatus("listening", autoSubmit ? "Listening." : "Recording.");
+      if (autoSubmit) {
+        recordTimerRef.current = setTimeout(() => {
+          if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
+        }, HANDS_FREE_SECONDS * 1000);
+      }
+    } catch (recordError) {
+      stopMediaTracks();
+      setIsRecording(false);
+      setError(String(recordError));
+      updateStatus("error", "Could not access microphone.");
+    }
+  }
+
+  const stopRecording = useCallback(() => {
+    if (recordTimerRef.current) {
+      clearTimeout(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
+  }, []);
 
   const toggleHandsFree = () => {
     const next = !handsFree;
     setHandsFree(next);
+    handsFreeRef.current = next;
     if (next) {
       setVoiceReplies(true);
-      speak("Hands-free mode on. Say a command, or say stop, repeat, clear, approve, or deny.");
-      setTimeout(startListening, 250);
+      speak("Hands-free mode on. I will listen in short turns. Say stop, repeat, clear, approve, or deny.");
+      setTimeout(() => void startRecording(true), 350);
     } else {
-      stopListening();
+      stopRecording();
       speak("Hands-free mode off.");
+      updateStatus("idle");
+    }
+  };
+
+  const installApp = async () => {
+    const prompt = installPrompt as Event & { prompt?: () => Promise<void>; userChoice?: Promise<unknown> };
+    if (prompt?.prompt) {
+      await prompt.prompt();
+      await prompt.userChoice?.catch(() => undefined);
+      setInstallPrompt(null);
     }
   };
 
   const statusTone = {
     idle: "border-midground/20 bg-midground/5",
     listening: "border-sky-300/50 bg-sky-400/10",
+    transcribing: "border-purple-300/50 bg-purple-400/10",
     ready: "border-emerald-300/50 bg-emerald-400/10",
     thinking: "border-amber-300/50 bg-amber-400/10",
     working: "border-blue-300/50 bg-blue-400/10",
@@ -512,7 +528,7 @@ export default function CockpitPage() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <Typography className="font-bold text-2xl tracking-wide text-midground sm:text-3xl">Hermes Cockpit</Typography>
-            <p className="mt-1 text-sm opacity-70">Mobile truck mode: talk, watch work, approve safely.</p>
+            <p className="mt-1 text-sm opacity-70">Mobile truck mode: record, transcribe locally, watch work, approve safely.</p>
           </div>
           <Button ghost size="icon" aria-label="Cockpit settings" onClick={() => setSettingsOpen((v) => !v)}>
             <Settings2 className="h-5 w-5" />
@@ -522,19 +538,19 @@ export default function CockpitPage() {
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <StatusPill label="Status" value={statusLabel(status)} hot={status === "listening" || status === "working"} />
           <StatusPill label="Run" value={runId ? runId.slice(0, 13) : "none"} />
-          <StatusPill label="Voice" value={recognitionCtor ? "available" : "typed fallback"} />
-          <StatusPill label="Mode" value={handsFree ? "hands-free" : "manual"} hot={handsFree} />
+          <StatusPill label="Mic" value={isSecureMicContext() ? "server Whisper" : "HTTPS needed"} hot={isSecureMicContext()} />
+          <StatusPill label="Mode" value={handsFree ? "hands-free" : "walkie"} hot={handsFree} />
         </div>
 
         {settingsOpen && (
           <div className="mt-4 grid gap-3 rounded-2xl border border-current/15 bg-black/20 p-3 text-sm">
             <label className="grid gap-1">
               <span className="text-xs uppercase tracking-[0.15em] opacity-55">API base URL</span>
-              <input className="rounded-xl border border-current/20 bg-black/30 px-3 py-2 outline-none" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="http://127.0.0.1:8642" />
+              <input className="rounded-xl border border-current/20 bg-black/30 px-3 py-2 outline-none" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://desktop-vcb4ksf-1.tail87092b.ts.net:8642" />
             </label>
             <label className="grid gap-1">
               <span className="text-xs uppercase tracking-[0.15em] opacity-55">API key / bearer token (optional)</span>
-              <input className="rounded-xl border border-current/20 bg-black/30 px-3 py-2 outline-none" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Only if api_server.api_key is configured" type="password" />
+              <input className="rounded-xl border border-current/20 bg-black/30 px-3 py-2 outline-none" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Only if API_SERVER_KEY is configured" type="password" />
             </label>
             <label className="grid gap-1">
               <span className="text-xs uppercase tracking-[0.15em] opacity-55">Session key</span>
@@ -549,38 +565,42 @@ export default function CockpitPage() {
 
       <section className="grid gap-3 rounded-3xl border border-current/15 bg-black/20 p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={isListening ? stopListening : startListening} className="min-h-14 flex-1 rounded-2xl text-base sm:flex-none">
-            {isListening ? <MicOff className="mr-2 h-5 w-5" /> : <Mic className="mr-2 h-5 w-5" />}
-            {isListening ? "Stop listening" : "Push to talk"}
+          <Button onClick={isRecording ? stopRecording : () => void startRecording(false)} className="min-h-16 flex-1 rounded-2xl text-base sm:flex-none">
+            {isRecording ? <MicOff className="mr-2 h-5 w-5" /> : <Mic className="mr-2 h-5 w-5" />}
+            {isRecording ? "Stop & transcribe" : "Push to talk"}
           </Button>
-          <Button ghost onClick={toggleHandsFree} className={cn("min-h-14 rounded-2xl", handsFree && "border-emerald-300/60 bg-emerald-400/15")}>
+          <Button ghost onClick={toggleHandsFree} className={cn("min-h-16 rounded-2xl", handsFree && "border-emerald-300/60 bg-emerald-400/15")}>
             <Radio className="mr-2 h-5 w-5" />
             Hands-free {handsFree ? "on" : "off"}
           </Button>
-          <Button ghost onClick={() => setVoiceReplies((v) => !v)} className="min-h-14 rounded-2xl">
+          <Button ghost onClick={() => setVoiceReplies((v) => !v)} className="min-h-16 rounded-2xl">
             {voiceReplies ? <Volume2 className="mr-2 h-5 w-5" /> : <VolumeX className="mr-2 h-5 w-5" />}
             Voice replies
+          </Button>
+          <Button ghost onClick={installApp} disabled={!installPrompt} className="min-h-16 rounded-2xl">
+            <Download className="mr-2 h-5 w-5" />
+            Install app
           </Button>
         </div>
 
         <textarea
           className="min-h-28 rounded-2xl border border-current/15 bg-black/25 p-3 text-base outline-none placeholder:opacity-40"
-          value={typedInput || `${transcript}${interimTranscript ? ` ${interimTranscript}` : ""}`}
+          value={typedInput || transcript}
           onChange={(e) => {
             setTypedInput(e.target.value);
             setTranscript("");
-            setInterimTranscript("");
             setStatus("ready");
           }}
           placeholder="Say or type: Text Hannah…, Check FlipperForce…, Research this property…, Have Codex build…"
         />
+        {lastTranscript && <p className="text-xs opacity-60">Last heard: “{lastTranscript}”</p>}
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void startRun()} disabled={!resolvedInput || status === "thinking" || status === "working"} className="min-h-12 flex-1 rounded-2xl sm:flex-none">
+          <Button onClick={() => void startRun()} disabled={!resolvedInput || status === "thinking" || status === "working" || status === "transcribing"} className="min-h-12 flex-1 rounded-2xl sm:flex-none">
             <Send className="mr-2 h-4 w-4" />
             Send to Hermes
           </Button>
-          <Button ghost onClick={stopRun} disabled={!runId || status === "done" || status === "idle"} className="min-h-12 rounded-2xl">
+          <Button ghost onClick={stopRun} disabled={!runId && !isRecording} className="min-h-12 rounded-2xl">
             <CircleStop className="mr-2 h-4 w-4" />
             Stop
           </Button>
@@ -646,11 +666,13 @@ export default function CockpitPage() {
       </section>
 
       <section className="rounded-3xl border border-current/15 bg-black/20 p-4 text-xs leading-relaxed opacity-75 sm:p-5">
-        <Typography className="mb-2 font-bold text-base">Hands-free safety rules</Typography>
+        <Typography className="mb-2 flex items-center gap-2 font-bold text-base"><Smartphone className="h-4 w-4" />App + hands-free notes</Typography>
         <ul className="list-disc space-y-1 pl-5 normal-case">
-          <li>Hands-free mode may auto-submit your dictated command after a short pause.</li>
+          <li>Use “Install app” or Chrome menu → Add to Home screen to save this cockpit like an app.</li>
+          <li>Voice uses Android microphone recording plus server-side Whisper, not Chrome speech recognition.</li>
+          <li>Hands-free records short turns, transcribes, submits after you stop talking, speaks back, then listens again.</li>
+          <li>Phone microphone and PWA install require HTTPS or localhost; use a private Tailscale HTTPS route.</li>
           <li>It does not auto-approve risky actions. Say “approve” or “deny” when an approval card appears.</li>
-          <li>Browser speech recognition works best in Chrome/Android. iOS support is limited; typed fallback remains available.</li>
         </ul>
       </section>
     </main>

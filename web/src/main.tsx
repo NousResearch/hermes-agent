@@ -12,6 +12,12 @@ import { HERMES_BASE_PATH } from "./lib/api";
 // can access React, components, etc. immediately.
 exposePluginSDK();
 
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter basename={HERMES_BASE_PATH || undefined}>
     <I18nProvider>

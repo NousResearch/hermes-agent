@@ -45,13 +45,13 @@ This installs the `agent-client-protocol` dependency and enables:
 - `hermes-acp`
 - `python -m acp_adapter`
 
-For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses the npm launcher package `@nousresearch/hermes-agent-acp`, which runs:
+For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses a `uvx` distribution that runs:
 
 ```bash
 uvx --from 'hermes-agent[acp]==<version>' hermes-acp
 ```
 
-Make sure `uv` or `uvx` is available on `PATH` before using the registry install path.
+Make sure `uv` is available on `PATH` before using the registry install path.
 
 ## Launching the ACP server
 
@@ -150,13 +150,13 @@ acp_registry/icon.svg
 
 The upstream registry PR copies those files into the top-level `hermes-agent/` directory in `agentclientprotocol/registry`.
 
-The registry entry uses an `npx` distribution:
+The registry entry uses a `uvx` distribution that points directly at the `hermes-agent` PyPI release:
 
 ```text
-npx @nousresearch/hermes-agent-acp@<version>
+uvx --from 'hermes-agent[acp]==<version>' hermes-acp
 ```
 
-The launcher then runs `hermes-acp` from the matching Python package version.
+The registry CI verifies that the pinned version exists on PyPI, so the manifest's `version` and uvx `package` pin must always match `pyproject.toml`. `scripts/release.py` keeps them in lockstep automatically.
 
 ## Configuration and credentials
 
@@ -207,7 +207,7 @@ Check:
 - For manual/local development, verify the custom `agent_servers` command points to `hermes acp`.
 - Hermes is installed and on your PATH.
 - The ACP extra is installed (`pip install -e '.[acp]'`).
-- `uv` or `uvx` is installed if launching from the official Zed registry entry.
+- `uv` is installed if launching from the official Zed registry entry.
 
 ### ACP starts but immediately errors
 

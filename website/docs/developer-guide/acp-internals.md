@@ -31,7 +31,7 @@ hermes acp / hermes-acp / python -m acp_adapter
   -> acp.run_agent(agent, use_unstable_protocol=True)
 ```
 
-The Zed ACP Registry path launches the same adapter through `npx @nousresearch/hermes-agent-acp@<version>`, which delegates to `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`.
+The Zed ACP Registry path launches the same adapter through `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`, pointed at the `hermes-agent` PyPI release.
 
 Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 

@@ -1,11 +1,11 @@
 """Tests for the ACP Registry version-lockstep bump in scripts/release.py.
 
-The official ACP Registry manifest, the @nousresearch/hermes-agent-acp npm
-package, and the npm launcher's HERMES_AGENT_VERSION constant must all match
-``pyproject.toml`` exactly — ``tests/acp/test_registry_manifest.py`` enforces
-this at lint time. The release script is the single place that bumps them in
-lockstep with pyproject; if that bump ever silently breaks, weekly releases
-fail the manifest test until someone hand-edits four files.
+The official ACP Registry manifest must match ``pyproject.toml`` exactly —
+``tests/acp/test_registry_manifest.py`` enforces this at lint time, and the
+upstream registry CI rejects ``@latest`` / floating pins. The release script
+is the single place that bumps the manifest in lockstep with pyproject; if
+that bump ever silently breaks, weekly releases fail the manifest test
+until someone hand-edits the JSON.
 """
 
 from __future__ import annotations
@@ -25,26 +25,14 @@ def _load_release_module(monkeypatch, tmp_root: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    # Repoint every REPO_ROOT-derived path at our temp tree.
     monkeypatch.setattr(module, "REPO_ROOT", tmp_root)
     monkeypatch.setattr(
         module, "ACP_REGISTRY_MANIFEST", tmp_root / "acp_registry" / "agent.json"
     )
-    monkeypatch.setattr(
-        module,
-        "ACP_NPM_PACKAGE_JSON",
-        tmp_root / "packages" / "hermes-agent-acp" / "package.json",
-    )
-    monkeypatch.setattr(
-        module,
-        "ACP_NPM_LAUNCHER",
-        tmp_root / "packages" / "hermes-agent-acp" / "bin" / "hermes-agent-acp.js",
-    )
     return module
 
 
-def _write_fixture(root: Path, version: str) -> None:
-    """Write the three ACP-registry files we expect release.py to bump."""
+def _write_manifest(root: Path, version: str) -> None:
     manifest_dir = root / "acp_registry"
     manifest_dir.mkdir(parents=True)
     (manifest_dir / "agent.json").write_text(
@@ -55,7 +43,10 @@ def _write_fixture(root: Path, version: str) -> None:
                 "version": version,
                 "description": "test",
                 "distribution": {
-                    "npx": {"package": f"@nousresearch/hermes-agent-acp@{version}"}
+                    "uvx": {
+                        "package": f"hermes-agent[acp]=={version}",
+                        "args": ["hermes-acp"],
+                    }
                 },
             },
             indent=2,
@@ -64,29 +55,9 @@ def _write_fixture(root: Path, version: str) -> None:
         encoding="utf-8",
     )
 
-    package_dir = root / "packages" / "hermes-agent-acp"
-    (package_dir / "bin").mkdir(parents=True)
-    (package_dir / "package.json").write_text(
-        json.dumps(
-            {
-                "name": "@nousresearch/hermes-agent-acp",
-                "version": version,
-                "bin": {"hermes-agent-acp": "bin/hermes-agent-acp.js"},
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (package_dir / "bin" / "hermes-agent-acp.js").write_text(
-        f"const HERMES_AGENT_VERSION = '{version}';\n"
-        f"const HERMES_SPEC = `hermes-agent[acp]==${{HERMES_AGENT_VERSION}}`;\n",
-        encoding="utf-8",
-    )
 
-
-def test_update_acp_registry_versions_bumps_all_three_files(monkeypatch, tmp_path):
-    _write_fixture(tmp_path, "0.13.0")
+def test_update_acp_registry_versions_bumps_manifest_and_pin(monkeypatch, tmp_path):
+    _write_manifest(tmp_path, "0.13.0")
     module = _load_release_module(monkeypatch, tmp_path)
 
     module._update_acp_registry_versions("0.14.0")
@@ -95,41 +66,27 @@ def test_update_acp_registry_versions_bumps_all_three_files(monkeypatch, tmp_pat
         (tmp_path / "acp_registry" / "agent.json").read_text(encoding="utf-8")
     )
     assert manifest["version"] == "0.14.0"
-    assert (
-        manifest["distribution"]["npx"]["package"]
-        == "@nousresearch/hermes-agent-acp@0.14.0"
-    )
-
-    package = json.loads(
-        (
-            tmp_path / "packages" / "hermes-agent-acp" / "package.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert package["version"] == "0.14.0"
-
-    launcher = (
-        tmp_path / "packages" / "hermes-agent-acp" / "bin" / "hermes-agent-acp.js"
-    ).read_text(encoding="utf-8")
-    assert "const HERMES_AGENT_VERSION = '0.14.0';" in launcher
-    assert "0.13.0" not in launcher
+    assert manifest["distribution"]["uvx"]["package"] == "hermes-agent[acp]==0.14.0"
+    # args stay untouched so we don't accidentally rewrite them.
+    assert manifest["distribution"]["uvx"]["args"] == ["hermes-acp"]
 
 
-def test_update_acp_registry_versions_is_silent_when_files_missing(
+def test_update_acp_registry_versions_is_silent_when_manifest_missing(
     monkeypatch, tmp_path
 ):
-    """Older release branches predate the ACP Registry assets — must no-op."""
+    """Older release branches predate the ACP Registry asset — must no-op."""
     module = _load_release_module(monkeypatch, tmp_path)
 
     # No fixture written; function should not raise.
     module._update_acp_registry_versions("0.14.0")
 
 
-def test_update_version_files_bumps_acp_assets_alongside_pyproject(
+def test_update_version_files_bumps_manifest_alongside_pyproject(
     monkeypatch, tmp_path
 ):
     """End-to-end: update_version_files() is the function release.py actually
-    calls, so it must drive the ACP bump too."""
-    _write_fixture(tmp_path, "0.13.0")
+    calls, so it must drive the manifest bump too."""
+    _write_manifest(tmp_path, "0.13.0")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "hermes-agent"\nversion = "0.13.0"\n', encoding="utf-8"
     )
@@ -153,7 +110,4 @@ def test_update_version_files_bumps_acp_assets_alongside_pyproject(
         (tmp_path / "acp_registry" / "agent.json").read_text(encoding="utf-8")
     )
     assert manifest["version"] == "0.14.0"
-    assert (
-        manifest["distribution"]["npx"]["package"]
-        == "@nousresearch/hermes-agent-acp@0.14.0"
-    )
+    assert manifest["distribution"]["uvx"]["package"] == "hermes-agent[acp]==0.14.0"

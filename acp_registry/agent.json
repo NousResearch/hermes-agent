@@ -8,8 +8,9 @@
   "authors": ["Nous Research"],
   "license": "MIT",
   "distribution": {
-    "npx": {
-      "package": "@nousresearch/hermes-agent-acp@0.13.0"
+    "uvx": {
+      "package": "hermes-agent[acp]==0.13.0",
+      "args": ["hermes-acp"]
     }
   }
 }

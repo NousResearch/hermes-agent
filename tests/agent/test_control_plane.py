@@ -117,12 +117,12 @@ class TestIntentMapping:
 
     # MAIN + STATUS signal
     def test_main_status_signal(self):
-        d = classify("status?", frontdesk_mode_active=False)
+        d = classify("/status", frontdesk_mode_active=False)
         assert d.intent is Intent.STATUS
         assert d.recommendation is Recommendation.MAIN
 
     def test_main_status_signal_ko(self):
-        d = classify("지금 뭐 해?", frontdesk_mode_active=False)
+        d = classify("/status", frontdesk_mode_active=False)
         assert d.intent is Intent.STATUS
         assert d.recommendation is Recommendation.MAIN
 
@@ -211,12 +211,12 @@ class TestTranscriptRenderVisibility:
         assert d.transcript_render is True
 
     def test_status_transcript_render_false_when_mode_off(self):
-        d = classify("status?", frontdesk_mode_active=False)
+        d = classify("/status", frontdesk_mode_active=False)
         assert d.intent is Intent.STATUS
         assert d.transcript_render is False
 
     def test_status_transcript_render_true_when_mode_on(self):
-        d = classify("status?", frontdesk_mode_active=True)
+        d = classify("/status", frontdesk_mode_active=True)
         assert d.intent is Intent.STATUS
         assert d.transcript_render is True
 
@@ -298,7 +298,7 @@ class TestFingerprintDeterminism:
         assert len(d.fingerprint) > 0
 
     def test_fingerprint_in_to_dict(self):
-        d = classify("status?", frontdesk_mode_active=False)
+        d = classify("/status", frontdesk_mode_active=False)
         data = d.to_dict()
         assert "fingerprint" in data
         assert data["fingerprint"] == d.fingerprint
@@ -317,7 +317,7 @@ class TestHashability:
 
     def test_two_decisions_in_set(self):
         d1 = classify("그만", frontdesk_mode_active=False)
-        d2 = classify("status?", frontdesk_mode_active=False)
+        d2 = classify("/status", frontdesk_mode_active=False)
         s = {d1, d2}
         assert len(s) == 2
 

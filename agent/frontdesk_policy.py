@@ -102,7 +102,7 @@ class FrontdeskSignal(Enum):
     CODE_EDIT = "code_edit"             # "고쳐", "수정", "implement", "refactor"
     LONG = "long"                       # heuristic >= 2 minutes of work
     MANY_TOOLS = "many_tools"           # heuristic >= 3 tool calls
-    STATUS = "status"                   # "status?", "어디까지", "뭐 했어"
+    STATUS = "status"                   # explicit /status command
     STOP = "stop"                       # whole-body stop token
     STEER = "steer"                     # short addition / "근데", "그리고"
     ACK = "ack"                         # whole-body thanks/감사
@@ -171,30 +171,12 @@ ACK_TOKENS_KO: tuple[str, ...] = (
     "수고했어",
 )
 
-# Status query anchors.  These are *substring* matches — a status fragment is
-# usually short and contains one of these tokens whole-cloth.
-_STATUS_ANCHORS_EN: tuple[str, ...] = (
-    "status",
-    "what are you doing",
-    "what's running",
-    "show me",
-    "list",
-    "/tasks",
-    "/agents",
-    "/mode",
-)
+# Status query anchor. Keep this deliberately narrow: only the explicit
+# /status command is a status probe. Natural-language questions should stay in
+# the normal main/worker routing path so users can speak freely.
+_STATUS_ANCHORS_EN: tuple[str, ...] = ("/status",)
 
-_STATUS_ANCHORS_KO: tuple[str, ...] = (
-    "상태",
-    "어디까지",
-    "뭐 했어",
-    "뭐해",
-    "뭐 해",
-    "진행",
-    "어떤 lane",
-    "어떤 워커",
-    "지금 뭐",
-)
+_STATUS_ANCHORS_KO: tuple[str, ...] = ()
 
 # Artifact-creation anchors.  Single-anchor → strong WORKER recommendation
 # (PRD §8.1 final paragraph).
@@ -587,12 +569,10 @@ def _has_code_edit_anchor(low_body: str, body: str) -> bool:
 
 
 def _is_status_query(body: str, low_body: str) -> bool:
-    if _contains_any(low_body, _STATUS_ANCHORS_EN) or _contains_any(body, _STATUS_ANCHORS_KO):
-        return True
-    # A naked "?" or trailing-only "?" with very short body counts as status.
-    if len(body) <= 12 and body.endswith("?"):
-        return True
-    return False
+    # Treat only the exact /status command as a status probe. Substrings and
+    # slash commands with arguments stay in normal routing, where the main agent
+    # can answer or delegate as appropriate.
+    return low_body.strip() == "/status"
 
 
 def _looks_like_steer(low_body: str, body: str) -> bool:
@@ -749,8 +729,9 @@ def classify_request(
         signals.add(FrontdeskSignal.EXPLICIT_MAIN_REQ)
 
     # ------------------------------------------------------------------
-    # 6. Status query — short MAIN hit (returns immediately, beats worker
-    #    anchors so "status of the report.md task?" stays on MAIN).
+    # 6. Exact /status command — short MAIN hit. Natural-language status-like
+    #    text, /tasks, /agents, and /status with arguments continue through the
+    #    normal main/worker routing path.
     # ------------------------------------------------------------------
     if _is_status_query(body, low_body):
         signals.add(FrontdeskSignal.STATUS)

@@ -290,7 +290,7 @@ def test_advise_frontdesk_routes_a_research_artifact_request_to_worker_lane():
 
 def test_advise_frontdesk_keeps_short_status_query_on_main():
     rt = OrchestrationRuntime.create()
-    decision = rt.advise_frontdesk("status?")
+    decision = rt.advise_frontdesk("/status")
     assert decision.recommendation == Recommendation.MAIN
     assert not decision.should_delegate
 
@@ -313,7 +313,7 @@ def test_advise_frontdesk_for_owner_creates_runtime_if_absent():
     assert decision.should_delegate
     rt = get_orchestration_runtime(owner)
     assert isinstance(rt, OrchestrationRuntime)
-    assert advise_frontdesk_for_owner(owner, "status?").recommendation == Recommendation.MAIN
+    assert advise_frontdesk_for_owner(owner, "/status").recommendation == Recommendation.MAIN
 
 
 def test_advise_frontdesk_for_owner_does_not_inspect_other_owners():

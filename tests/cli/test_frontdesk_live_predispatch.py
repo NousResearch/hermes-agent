@@ -10,21 +10,31 @@ from agent.task_registry import STATUS_CANCELLED
 from tests.cli.test_cli_init import _make_cli
 
 
-def test_status_consumed_before_model_run():
+def test_short_korean_chat_question_falls_through_to_model_when_frontdesk_live_enabled():
     cli = _make_cli()
     cli.frontdesk_live_enabled = True
     cli.agent = MagicMock()
-    cli.agent.run_conversation.return_value = {"final_response": "model"}
+    cli.agent.max_iterations = 90
+    cli.agent.run_conversation.return_value = {
+        "final_response": "model",
+        "messages": [],
+        "completed": True,
+        "response_previewed": True,
+    }
+    cli._active_agent_route_signature = "sig"
 
-    response = cli.chat("지금 뭐 하고 있어?")
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": "sig",
+             "model": None,
+             "runtime": None,
+             "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        response = cli.chat("지금 뭐 하고 있어?")
 
-    cli.agent.run_conversation.assert_not_called()
-    assert isinstance(response, str)
-    assert (
-        "Tasks:" in response
-        or "Active tasks:" in response
-        or "No active tasks" in response
-    )
+    cli.agent.run_conversation.assert_called_once()
+    assert response == "model"
 
 
 def test_stop_never_enters_pending_queue_when_busy():

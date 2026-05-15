@@ -127,20 +127,24 @@ async def test_orchestration_status_query_disabled_falls_through_to_agent():
 
 
 @pytest.mark.asyncio
-async def test_orchestration_status_query_enabled_returns_empty_overview_without_agent():
+async def test_orchestration_status_query_enabled_still_falls_through_without_agent():
     runner = _make_runner()
     runner._orchestration_status_queries_enabled = True
     event = _make_event(text="지금 뭐 하고 있어?")
 
-    with patch.object(GatewayRunner, "_handle_message_with_agent", AsyncMock()) as inner:
+    with patch.object(
+        GatewayRunner,
+        "_handle_message_with_agent",
+        AsyncMock(return_value="agent-handled"),
+    ) as inner:
         result = await runner._handle_message(event)
 
-    assert result == "No active tasks or workers are currently registered."
-    inner.assert_not_awaited()
+    assert result == "agent-handled"
+    inner.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_orchestration_status_query_is_read_only_while_agent_running():
+async def test_natural_language_status_like_text_queues_while_agent_running():
     runner = _make_runner()
     runner._orchestration_status_queries_enabled = True
     event = _make_event(text="what's running?")
@@ -154,9 +158,9 @@ async def test_orchestration_status_query_is_read_only_while_agent_running():
 
     result = await runner._handle_message(event)
 
-    assert result == "No active tasks or workers are currently registered."
+    assert result is None
     fake_agent.interrupt.assert_not_called()
-    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+    assert session_key in runner.adapters[Platform.TELEGRAM]._pending_messages
 
 
 @pytest.mark.asyncio
@@ -211,7 +215,7 @@ async def test_orchestration_status_query_does_not_swallow_media():
 
 
 @pytest.mark.asyncio
-async def test_orchestration_status_query_is_scoped_to_requesting_session():
+async def test_natural_language_status_like_text_does_not_return_scoped_status():
     runner = _make_runner()
     runner._orchestration_status_queries_enabled = True
     event = _make_event(text="what's running?", chat_id="session-a")
@@ -228,18 +232,24 @@ async def test_orchestration_status_query_is_scoped_to_requesting_session():
         worker_result="foreign private result",
     )
 
-    result = await runner._handle_message(event)
+    with patch.object(
+        GatewayRunner,
+        "_handle_message_with_agent",
+        AsyncMock(return_value="agent-handled"),
+    ) as inner:
+        result = await runner._handle_message(event)
 
-    assert result == "No active tasks or workers are currently registered."
+    assert result == "agent-handled"
+    inner.assert_awaited_once()
     assert "foreign private" not in result
     assert requesting_session != foreign_session
 
 
 @pytest.mark.asyncio
-async def test_orchestration_status_query_shows_only_same_session_worker_details():
+async def test_format_session_scoped_orchestration_overview_shows_only_same_session_worker_details():
     runner = _make_runner()
     runner._orchestration_status_queries_enabled = True
-    event = _make_event(text="what's running?", chat_id="session-a")
+    event = _make_event(text="/status", chat_id="session-a")
     requesting_session = build_session_key(event.source)
     task, handle = _install_runtime_with_worker(
         runner,
@@ -257,7 +267,7 @@ async def test_orchestration_status_query_shows_only_same_session_worker_details
     )
     assert foreign_lane.wait(foreign.worker_id, timeout=2)
 
-    result = await runner._handle_message(event)
+    result = runner._format_session_scoped_orchestration_overview(requesting_session)
 
     assert task.task_id in result
     assert handle.worker_id in result
@@ -268,10 +278,10 @@ async def test_orchestration_status_query_shows_only_same_session_worker_details
 
 
 @pytest.mark.asyncio
-async def test_orchestration_status_query_hides_worker_with_foreign_task_id_even_if_visible_task_points_to_it():
+async def test_format_session_scoped_orchestration_overview_hides_worker_with_foreign_task_id_even_if_visible_task_points_to_it():
     runner = _make_runner()
     runner._orchestration_status_queries_enabled = True
-    event = _make_event(text="what's running?", chat_id="session-a")
+    event = _make_event(text="/status", chat_id="session-a")
     requesting_session = build_session_key(event.source)
 
     task_registry = TaskRegistry()
@@ -300,7 +310,7 @@ async def test_orchestration_status_query_hides_worker_with_foreign_task_id_even
         OrchestrationRuntime(task_registry=task_registry, worker_registry=worker_registry),
     )
 
-    result = await runner._handle_message(event)
+    result = runner._format_session_scoped_orchestration_overview(requesting_session)
 
     assert "visible task" in result
     assert visible_task.task_id in result

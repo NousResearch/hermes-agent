@@ -33,9 +33,9 @@ What this module is -- and isn't:
 * It now includes the first *library-level* frontdesk loop:
   :meth:`OrchestrationRuntime.handle_frontdesk_input` consumes the Phase 2
   control-plane verdict and performs the minimal injected-registry side effects
-  needed for STOP / STATUS / STEER / WORKER.  This loop is still not live
-  CLI/Gateway wiring and still starts only lanes that a caller explicitly
-  registered on the runtime.
+  needed for STOP / explicit ``/status`` / STEER / WORKER.  This loop is still
+  not live CLI/Gateway wiring and still starts only lanes that a caller
+  explicitly registered on the runtime.
 * It is **not** the Ralph / focused-agent runtime, **not** a
   ``delegate_task(background=True)`` mechanism, **not** automatic
   Telegram/gateway routing of arbitrary natural-language messages, **not** a
@@ -82,8 +82,18 @@ from agent.orchestration_status import (
     format_tasks as _format_tasks,
 )
 from agent.task_registry import (
+    FRONTDESK_CANCELLED,
+    FRONTDESK_ERROR,
+    FRONTDESK_QUEUED,
+    FRONTDESK_RUNNING_WORKER,
+    FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+    STAGE_CANCELLED,
+    STAGE_DONE,
+    STAGE_FAILED,
+    STAGE_NOT_STARTED,
+    STAGE_QUEUED,
+    STAGE_RUNNING,
     STATUS_CANCELLED,
-    STATUS_DONE,
     STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
@@ -235,11 +245,31 @@ class OrchestrationRuntime:
             error=error,
         )
         if snapshot["status"] == "succeeded":
-            self.task_registry.update_status(task_id, STATUS_DONE, note="worker result pending review")
+            self.task_registry.update_status(
+                task_id,
+                STATUS_RUNNING,
+                note="worker result stored; review pending",
+            )
+            self.task_registry.update_frontdesk_metadata(
+                task_id,
+                frontdesk_state=FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+                worker_stage=STAGE_DONE,
+                reviewer_stage=STAGE_QUEUED,
+            )
         elif snapshot["status"] == "failed":
-            self.task_registry.update_status(task_id, STATUS_ERROR, note="worker failed; result pending review")
+            self.task_registry.update_status(task_id, STATUS_ERROR, note="worker failed")
+            self.task_registry.update_frontdesk_metadata(
+                task_id,
+                frontdesk_state=FRONTDESK_ERROR,
+                worker_stage=STAGE_FAILED,
+            )
         elif snapshot["status"] == "cancelled":
             self.task_registry.update_status(task_id, STATUS_CANCELLED, note="worker cancelled")
+            self.task_registry.update_frontdesk_metadata(
+                task_id,
+                frontdesk_state=FRONTDESK_CANCELLED,
+                worker_stage=STAGE_CANCELLED,
+            )
         return snapshot
 
     def collect_worker_results(
@@ -307,7 +337,8 @@ class OrchestrationRuntime:
 
         * STOP cancels active tasks/workers for the session and returns a local
           control line; the stopped text is never converted into a follow-up.
-        * STATUS returns the local runtime overview.
+        * STATUS returns the local runtime overview for the explicit
+          ``/status`` command.
         * STEER calls an explicit ``steer_callback`` only when the caller says a
           main turn is in flight; otherwise it falls back to ``MAIN``.
         * NEW_TASK_WORKER creates a focused task, starts a registered worker lane,
@@ -427,6 +458,9 @@ class OrchestrationRuntime:
             session_key=session_key,
             origin={"platform": source_surface, "session_key": session_key},
             status=STATUS_QUEUED,
+            frontdesk_state=FRONTDESK_QUEUED,
+            worker_stage=STAGE_QUEUED,
+            reviewer_stage=STAGE_NOT_STARTED,
         )
         lane_names = self.worker_registry.lane_names()
         if not lane_names:
@@ -459,6 +493,13 @@ class OrchestrationRuntime:
             task.task_id,
             STATUS_RUNNING,
             note=f"worker started: {handle.worker_id}",
+        )
+        self.task_registry.update_frontdesk_metadata(
+            task.task_id,
+            frontdesk_state=FRONTDESK_RUNNING_WORKER,
+            worker_stage=STAGE_RUNNING,
+            reviewer_stage=STAGE_NOT_STARTED,
+            worker_session_id=handle.worker_id,
         )
         return FrontdeskTurnResult(
             decision=decision,

@@ -138,67 +138,68 @@
   notes: "ack with Korean laughter suffix ㅋㅋ — stripped"
 
 # --------------------------------------------------------------------------
-# STATUS  (10 rows)
+# STATUS / natural-language status-like chat
+# Only /status is a status command. Natural-language probes stay on MAIN.
 # --------------------------------------------------------------------------
 - id: 21
-  text: "지금 뭐 해?"
+  text: "/status"
   expected_intent: STATUS
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐 해"
+  notes: "explicit status command"
 
 - id: 22
   text: "뭐 했어?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐 했어"
+  notes: "natural-language status-like chat stays on main"
 
 - id: 23
   text: "어디까지 갔어?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어디까지"
+  notes: "natural-language progress question stays on main"
 
 - id: 24
   text: "진행 상황은?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 진행"
+  notes: "natural-language progress question stays on main"
 
 - id: 25
   text: "상태 알려줘"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 상태"
+  notes: "natural-language status request stays on main"
 
 - id: 26
   text: "뭐해?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 뭐해 (compact form)"
+  notes: "compact chat question stays on main"
 
 - id: 27
   text: "지금 뭐 하는 중이야?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 지금 뭐"
+  notes: "natural-language chat question stays on main"
 
 - id: 28
   text: "어떤 워커 돌고 있어?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어떤 워커"
+  notes: "agent/worker curiosity stays on main unless /status"
 
 - id: 29
   text: "진행 중인 작업 알려줘"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 진행"
+  notes: "natural-language task-status request stays on main"
 
 - id: 30
   text: "어떤 lane 쓰고 있어?"
-  expected_intent: STATUS
+  expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "status anchor: 어떤 lane"
+  notes: "lane curiosity stays on main unless /status"
 
 # --------------------------------------------------------------------------
 # NEW_TASK_MAIN  (10 rows — classify with frontdesk_mode_active=False)

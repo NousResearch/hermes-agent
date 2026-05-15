@@ -7,6 +7,18 @@ import pytest
 
 from agent.pending_turn_queue import PendingTurnItem, KIND_TEXT, KIND_MEDIA, BOUNDARY_HARD
 from agent.task_registry import (
+    FRONTDESK_BLOCKED_USER_INPUT,
+    FRONTDESK_REVIEW_PASSED,
+    FRONTDESK_RUNNING_WORKER,
+    FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+    REVIEW_ACTION_ASK_USER,
+    REVIEW_ACTION_PRESENT,
+    REVIEW_BLOCKED,
+    REVIEW_PASSED,
+    STAGE_DONE,
+    STAGE_NOT_STARTED,
+    STAGE_QUEUED,
+    STAGE_RUNNING,
     STATUS_BLOCKED,
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -15,6 +27,7 @@ from agent.task_registry import (
     STATUS_QUEUED,
     STATUS_RUNNING,
     WORKER_CLAUDE_CODE,
+    ReviewResultArtifact,
     TaskOrigin,
     TaskRegistry,
 )
@@ -234,6 +247,91 @@ def test_worker_result_strips_or_rejects_raw_non_json_metadata():
         "review_status": "pending_review",
     }
     json.dumps(reg.to_dict(), allow_nan=False)
+
+
+def test_frontdesk_metadata_and_review_artifact_roundtrip():
+    reg = TaskRegistry()
+    task = reg.create_task(
+        "background implementation",
+        session_key="s1",
+        status=STATUS_QUEUED,
+        frontdesk_state=FRONTDESK_RUNNING_WORKER,
+        worker_stage=STAGE_RUNNING,
+        reviewer_stage=STAGE_NOT_STARTED,
+    )
+
+    reg.update_frontdesk_metadata(
+        task.task_id,
+        worker_process_id=12345,
+        worker_session_id="worker-1",
+        last_message_path="/tmp/workers/task-1/last-message.txt",
+        summary_artifact_path="/tmp/workers/task-1/summary.md",
+    )
+    reg.attach_worker_result(
+        task.task_id,
+        {"worker_id": "worker-1", "status": "succeeded", "summary": "done"},
+    )
+    reg.update_frontdesk_metadata(
+        task.task_id,
+        frontdesk_state=FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+        worker_stage=STAGE_DONE,
+        reviewer_stage=STAGE_QUEUED,
+    )
+    review = reg.attach_review_result(
+        task.task_id,
+        ReviewResultArtifact(
+            review_status=REVIEW_PASSED,
+            reviewer_model="gpt-5.5",
+            summary="safe to present",
+            tests_run=["pytest tests/agent/test_task_registry.py"],
+            changed_files=["agent/task_registry.py"],
+            risks=["durability still future work"],
+            recommended_next_action=REVIEW_ACTION_PRESENT,
+            artifact_paths=["/tmp/workers/task-1/review.json"],
+        ),
+    )
+
+    assert review["review_status"] == REVIEW_PASSED
+    assert task.frontdesk_state == FRONTDESK_REVIEW_PASSED
+    assert task.review_verdict == REVIEW_PASSED
+    assert task.reviewer_stage == STAGE_DONE
+    assert task.review_artifact_path == "/tmp/workers/task-1/review.json"
+
+    restored = TaskRegistry.from_dict(copy.deepcopy(reg.to_dict()))
+    restored_task = restored.get_task(task.task_id)
+    assert restored_task is not None
+    assert restored_task.worker_process_id == "12345"
+    assert restored_task.worker_session_id == "worker-1"
+    assert restored_task.last_message_path.endswith("last-message.txt")
+    assert restored_task.summary_artifact_path.endswith("summary.md")
+    assert restored_task.review_result == review
+    assert restored_task.frontdesk_state == FRONTDESK_REVIEW_PASSED
+    json.dumps(restored.to_dict(), allow_nan=False)
+
+
+def test_blocking_review_sets_user_input_state():
+    reg = TaskRegistry()
+    task = reg.create_task("needs clarification", status=STATUS_RUNNING)
+
+    review = reg.attach_review_result(
+        task.task_id,
+        {
+            "review_status": REVIEW_BLOCKED,
+            "reviewer_model": "gpt-5.5",
+            "summary": "need user to choose deployment target",
+            "tests_run": [],
+            "changed_files": [],
+            "risks": ["cannot choose target safely"],
+            "recommended_next_action": REVIEW_ACTION_ASK_USER,
+            "artifact_paths": [],
+        },
+    )
+
+    assert review["review_status"] == REVIEW_BLOCKED
+    assert task.status == STATUS_BLOCKED
+    assert task.frontdesk_state == FRONTDESK_BLOCKED_USER_INPUT
+    assert task.awaiting_user_input is True
+    assert task.blocked_reason == "need user to choose deployment target"
 
 
 def test_json_persistence_roundtrip_and_missing_file(tmp_path):

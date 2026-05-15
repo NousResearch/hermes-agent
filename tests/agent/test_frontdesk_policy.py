@@ -9,7 +9,7 @@ Coverage targets (PRD §11.1 + design review §7.1):
 - Single worker anchor → WORKER_LANE (artifact, research, code_edit)
 - Multi-anchor confidence: HIGH
 - Explicit overrides (worker and main)
-- Status queries
+- Explicit /status command handling
 - Noise / empty
 - Determinism (INV-6)
 - Side-effect freeness (no forbidden imports)
@@ -294,22 +294,23 @@ class TestWorkerLaneRecommendation:
 # MAIN recommendation
 # ---------------------------------------------------------------------------
 class TestMainRecommendation:
-    """Status queries and explicit-main overrides stay on MAIN."""
+    """Explicit /status and explicit-main overrides stay on MAIN."""
 
     def test_status_query_en(self):
-        d = classify_request("status?")
+        d = classify_request("/status")
         assert d.recommendation is FrontdeskRecommendation.MAIN
         assert FrontdeskSignal.STATUS in d.signals
 
     def test_status_query_ko(self):
         d = classify_request("지금 뭐 해?")
         assert d.recommendation is FrontdeskRecommendation.MAIN
-        assert FrontdeskSignal.STATUS in d.signals
+        assert FrontdeskSignal.STATUS not in d.signals
+        assert FrontdeskSignal.EXPLICIT_MAIN_REQ not in d.signals
 
     def test_status_query_ko_eodickkaji(self):
         d = classify_request("어디까지 갔어?")
         assert d.recommendation is FrontdeskRecommendation.MAIN
-        assert FrontdeskSignal.STATUS in d.signals
+        assert FrontdeskSignal.STATUS not in d.signals
 
     def test_explicit_main_override_ko_direct(self):
         d = classify_request("직접 해")
@@ -336,7 +337,7 @@ class TestMainRecommendation:
         assert d.recommendation is FrontdeskRecommendation.MAIN
 
     def test_should_delegate_false_for_main(self):
-        d = classify_request("status?")
+        d = classify_request("/status")
         assert d.should_delegate is False
 
     def test_is_control_false_for_main(self):
@@ -486,7 +487,7 @@ class TestDeterminism:
         assert d1.signals == d2.signals
 
     def test_decision_is_hashable_as_frozen_dataclass(self):
-        d1 = classify_request("status?")
+        d1 = classify_request("/status")
         d2 = classify_request("그만")
         s = {d1, d2}
         assert len(s) == 2
@@ -551,7 +552,7 @@ class TestJsonRoundTrip:
         assert data["recommendation"] == "worker_lane"
 
     def test_to_dict_contains_required_keys(self):
-        d = classify_request("status?")
+        d = classify_request("/status")
         data = d.to_dict()
         required = {"recommendation", "confidence", "signals", "debug_label", "raw_text", "notes"}
         assert required.issubset(data.keys())
@@ -580,6 +581,22 @@ class TestPropertyHelpers:
     def test_should_delegate_false_for_main(self):
         d = classify_request("what is the status?")
         assert d.should_delegate is False
+
+    def test_embedded_status_command_text_stays_main(self):
+        d = classify_request("please /status")
+        assert d.recommendation is FrontdeskRecommendation.MAIN
+        assert FrontdeskSignal.STATUS not in d.signals
+
+    def test_status_command_with_extra_text_stays_main(self):
+        d = classify_request("/status now")
+        assert d.recommendation is FrontdeskRecommendation.MAIN
+        assert FrontdeskSignal.STATUS not in d.signals
+
+    @pytest.mark.parametrize("text", ["/tasks", "/agents", "show /tasks", "any agents running?"])
+    def test_task_agent_status_like_text_stays_main_without_status_signal(self, text: str):
+        d = classify_request(text)
+        assert d.recommendation is FrontdeskRecommendation.MAIN
+        assert FrontdeskSignal.STATUS not in d.signals
 
     def test_should_delegate_false_for_control(self):
         d = classify_request("stop")

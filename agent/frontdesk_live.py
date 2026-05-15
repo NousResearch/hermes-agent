@@ -14,7 +14,6 @@ from utils import is_truthy_value
 
 _DEFAULT_WORKER_LANE = "main"
 _DEFAULT_WORKER_TIMEOUT_SECONDS = 60 * 60
-_COMPLETION_NOTICE_LIMIT = 1200
 _FRONTDESK_NOTIFIERS: dict[tuple[int, str | None], Callable[[str], Any]] = {}
 
 
@@ -32,7 +31,39 @@ def _worker_prompt(goal: str) -> str:
     )
 
 
-def _run_default_worker_subprocess(goal: str, token: Any) -> str:
+def _worker_artifact_paths(task_id: str | None) -> dict[str, Path]:
+    from hermes_constants import get_hermes_home
+
+    safe_task_id = task_id or "untracked"
+    worker_dir = get_hermes_home() / "workers" / safe_task_id
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "last_message": worker_dir / "last-message.txt",
+        "summary": worker_dir / "summary.md",
+        "stderr": worker_dir / "stderr.log",
+    }
+
+
+def _write_text_artifact(path: Path | None, text: str) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _run_default_worker_subprocess(
+    goal: str,
+    token: Any,
+    *,
+    task_id: str | None = None,
+    on_process_start: Callable[[int], Any] | None = None,
+    last_message_path: Path | None = None,
+    summary_path: Path | None = None,
+    stderr_path: Path | None = None,
+) -> str:
     """Run one frontdesk worker task in a detached Hermes oneshot subprocess."""
     cmd = [sys.executable, "-m", "hermes_cli.main", "-z", _worker_prompt(goal)]
     env = dict(os.environ)
@@ -46,6 +77,11 @@ def _run_default_worker_subprocess(goal: str, token: Any) -> str:
         stderr=subprocess.PIPE,
         text=True,
     )
+    if on_process_start is not None:
+        try:
+            on_process_start(proc.pid)
+        except Exception:
+            pass
     started = time.monotonic()
     while proc.poll() is None:
         if getattr(token, "cancelled", False):
@@ -61,11 +97,16 @@ def _run_default_worker_subprocess(goal: str, token: Any) -> str:
         if time.monotonic() - started > _DEFAULT_WORKER_TIMEOUT_SECONDS:
             proc.kill()
             stdout, stderr = proc.communicate(timeout=5)
+            _write_text_artifact(last_message_path, (stdout or "").strip())
+            _write_text_artifact(stderr_path, (stderr or "").strip())
             raise TimeoutError(
                 f"frontdesk worker timed out after {_DEFAULT_WORKER_TIMEOUT_SECONDS}s\n{stderr or stdout}"
             )
         time.sleep(0.5)
     stdout, stderr = proc.communicate()
+    _write_text_artifact(last_message_path, (stdout or "").strip())
+    _write_text_artifact(summary_path, (stdout or "").strip())
+    _write_text_artifact(stderr_path, (stderr or "").strip())
     if proc.returncode != 0:
         detail = (stderr or stdout or "").strip()
         raise RuntimeError(f"frontdesk worker exited {proc.returncode}: {detail}")
@@ -73,10 +114,11 @@ def _run_default_worker_subprocess(goal: str, token: Any) -> str:
 
 
 def _completion_notice(task_id: str | None, summary: str) -> str:
-    text = summary.strip()
-    if len(text) > _COMPLETION_NOTICE_LIMIT:
-        text = text[: _COMPLETION_NOTICE_LIMIT - 1].rstrip() + "…"
-    return f"worker complete: {task_id or 'untracked'}\n\n{text}"
+    del summary
+    return (
+        f"worker complete: {task_id or 'untracked'}\n\n"
+        "Result captured. Review is pending before final presentation. Use /status for details."
+    )
 
 
 def _linked_worker_id(runtime: Any, task_id: str | None) -> str | None:
@@ -99,15 +141,24 @@ def _attach_worker_result(
     status: str,
     summary: str,
     error: str | None = None,
+    paths: dict[str, Path] | None = None,
 ) -> None:
     if task_id is None:
         return
+    artifacts = []
+    if paths:
+        for key, path in paths.items():
+            if key == "stderr":
+                continue
+            artifacts.append({"kind": key, "path": str(path)})
     payload = {
         "worker_id": worker_id,
         "task_id": task_id,
         "status": status,
         "summary": summary,
     }
+    if artifacts:
+        payload["artifacts"] = artifacts
     if error:
         payload["error"] = error
     try:
@@ -121,6 +172,14 @@ def _attach_worker_result(
             runtime.task_registry.attach_worker_result(task_id, payload)
         except Exception:
             pass
+    try:
+        runtime.task_registry.update_frontdesk_metadata(
+            task_id,
+            last_message_path=str(paths["last_message"]) if paths and "last_message" in paths else None,
+            summary_artifact_path=str(paths["summary"]) if paths and "summary" in paths else None,
+        )
+    except Exception:
+        pass
 
 
 def ensure_default_worker_lane(
@@ -151,8 +210,36 @@ def ensure_default_worker_lane(
 
     def runner(spec: WorkerSpec, token: CancelToken) -> str:
         worker_id = _linked_worker_id(runtime, spec.task_id)
+        paths = _worker_artifact_paths(spec.task_id)
         try:
-            result = run_default_worker(spec.goal, token)
+            runtime.task_registry.update_frontdesk_metadata(
+                spec.task_id,
+                worker_session_id=worker_id,
+                last_message_path=str(paths["last_message"]),
+                summary_artifact_path=str(paths["summary"]),
+            )
+        except Exception:
+            pass
+
+        def _record_process(pid: int) -> None:
+            try:
+                runtime.task_registry.update_frontdesk_metadata(
+                    spec.task_id,
+                    worker_process_id=str(pid),
+                )
+            except Exception:
+                pass
+
+        try:
+            result = run_default_worker(
+                spec.goal,
+                token,
+                task_id=spec.task_id,
+                on_process_start=_record_process,
+                last_message_path=paths["last_message"],
+                summary_path=paths["summary"],
+                stderr_path=paths["stderr"],
+            )
         except BaseException as exc:
             from agent.worker_lanes import WorkerCancelled
 
@@ -165,6 +252,7 @@ def ensure_default_worker_lane(
                 status=status,
                 summary=summary,
                 error=str(exc) or type(exc).__name__,
+                paths=paths,
             )
             raise
         _attach_worker_result(
@@ -173,6 +261,7 @@ def ensure_default_worker_lane(
             worker_id=worker_id,
             status="succeeded",
             summary=result,
+            paths=paths,
         )
         sk = None
         if isinstance(spec.metadata, dict):

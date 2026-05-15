@@ -88,7 +88,7 @@ class Intent(Enum):
     Closed set — each value drives a distinct downstream branch:
 
     * ``STOP``             — INV-1: hard purge of the queue, never re-inject.
-    * ``STATUS``           — answer locally / via ``/tasks`` snapshot.
+    * ``STATUS``           — explicit ``/status`` probe; answer on MAIN.
     * ``STEER``            — surface invokes ``running_agent.steer`` (after
                              verifying main is actually in flight).
     * ``NEW_TASK_MAIN``    — foreground main turn (the conservative default).

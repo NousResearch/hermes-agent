@@ -14,6 +14,11 @@ from agent.orchestration_status import (
 )
 from agent.pending_turn_queue import PendingTurnItem
 from agent.task_registry import (
+    FRONTDESK_BLOCKED_USER_INPUT,
+    FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+    REVIEW_PASSED,
+    STAGE_DONE,
+    STAGE_QUEUED,
     STATUS_BLOCKED,
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -84,6 +89,63 @@ def test_task_snapshot_and_formatting_includes_counts_worker_and_state():
     assert "1 follow-up queued" in text
     assert "1 note" in text
     assert "needs you" in text
+
+
+def test_status_includes_frontdesk_worker_reviewer_metadata():
+    reg = TaskRegistry()
+    task = reg.create_task(
+        "implement frontdesk phase B/C",
+        session_key="s1",
+        status=STATUS_RUNNING,
+    )
+    reg.assign_worker(task.task_id, "worker-55", worker_kind="codex")
+    reg.update_frontdesk_metadata(
+        task.task_id,
+        frontdesk_state=FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+        worker_stage=STAGE_DONE,
+        reviewer_stage=STAGE_QUEUED,
+        worker_process_id="12345",
+        worker_session_id="codex-session-1",
+        last_message_path="/tmp/hermes/workers/task/last-message.txt",
+        summary_artifact_path="/tmp/hermes/workers/task/summary.md",
+        review_artifact_path="/tmp/hermes/workers/task/review.json",
+        review_verdict=REVIEW_PASSED,
+    )
+
+    snap = build_snapshot(reg, session_key="s1")
+    task_dict = snap.tasks[0]
+    assert task_dict["frontdesk_state"] == FRONTDESK_WORKER_DONE_PENDING_REVIEW
+    assert task_dict["worker_stage"] == STAGE_DONE
+    assert task_dict["reviewer_stage"] == STAGE_QUEUED
+    assert task_dict["worker_process_id"] == "12345"
+
+    text = format_overview(snap, compact=False)
+    assert "frontdesk=worker_done_pending_review" in text
+    assert "worker=done" in text
+    assert "reviewer=queued" in text
+    assert "pid=12345" in text
+    assert "session=codex-session-1" in text
+    assert "review: passed" in text
+    assert "last=/tmp/hermes/workers/task/last-message.txt" in text
+    assert "summary=/tmp/hermes/workers/task/summary.md" in text
+    assert "review=/tmp/hermes/workers/task/review.json" in text
+
+
+def test_status_marks_blocked_user_input_state_as_blocked():
+    reg = TaskRegistry()
+    task = reg.create_task("needs user choice", session_key="s1", status=STATUS_RUNNING)
+    reg.update_frontdesk_metadata(
+        task.task_id,
+        frontdesk_state=FRONTDESK_BLOCKED_USER_INPUT,
+        awaiting_user_input=True,
+        blocked_reason="choose target branch",
+    )
+
+    snap = build_snapshot(reg, session_key="s1")
+    assert snap.counts["tasks_blocked"] == 1
+    text = format_overview(snap)
+    assert "needs you" in text
+    assert "blocked: choose target branch" in text
 
 
 def test_format_tasks_registry_defaults_to_active_tasks_only_and_session_scope():
@@ -204,18 +266,28 @@ def test_worker_with_non_json_safe_metadata_degrades_without_raising():
 
 
 def test_natural_language_status_query_helper_korean_and_english():
+    assert looks_like_orchestration_status_query("/status")
     for text in (
+        "please /status",
+        "/status now",
+        "show /tasks",
+        "/tasks",
+        "/agents",
+        "현재 상태",
+        "상태 알려줘",
+        "작업 현황",
+        "작업 진행 상황",
         "지금 뭐 하고 있어?",
-        "돌고 있는 작업 있어?",
-        "에이전트 뭐 돌아가?",
-        "내가 봐야 하는 거 있어?",
+        "어디까지 갔어?",
         "what are you working on?",
+        "show tasks please",
+        "any tasks",
         "any agents running?",
-        "show tasks",
-        "anything blocked?",
+        "부대찌개 칼로리 알려줘",
+        "이것도 반영해줘",
+        "stop",
+        "",
     ):
-        assert looks_like_orchestration_status_query(text), text
-    for text in ("부대찌개 칼로리 알려줘", "이것도 반영해줘", "stop", ""):
         assert not looks_like_orchestration_status_query(text), text
 
 

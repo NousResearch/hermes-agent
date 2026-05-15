@@ -16,26 +16,25 @@ from tests.gateway.test_busy_session_ack import _make_adapter, _make_event, _mak
 
 
 @pytest.mark.asyncio
-async def test_status_consumed_before_model_run():
+async def test_short_korean_chat_question_falls_through_to_model_when_frontdesk_live_enabled():
     from gateway.run import GatewayRunner
 
     runner, _sentinel = _make_runner()
     runner.frontdesk_live_enabled = True
+    runner._orchestration_status_queries_enabled = True
     adapter = _make_adapter()
     event = _make_event(text="지금 뭐 하고 있어?")
     runner.adapters[event.source.platform] = adapter
 
-    with patch.object(GatewayRunner, "_run_agent", autospec=True) as run_agent:
+    with patch.object(
+        GatewayRunner,
+        "_handle_message_with_agent",
+        new=AsyncMock(return_value="model"),
+    ) as handle_with_agent:
         result = await GatewayRunner._handle_message(runner, event)
 
-    run_agent.assert_not_called()
-    assert isinstance(result, str)
-    assert (
-        "Tasks:" in result
-        or "Active tasks:" in result
-        or "No active tasks" in result
-        or "Available worker lanes" in result
-    )
+    handle_with_agent.assert_called_once()
+    assert result == "model"
 
 
 @pytest.mark.asyncio

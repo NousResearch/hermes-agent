@@ -6061,19 +6061,19 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
-        # Optional, read-only natural-language status queries.  This is the
-        # first production-facing bridge from the orchestration runtime to the
-        # gateway, so it is feature-gated and intentionally narrow: text only,
-        # no slash commands, no media, no mutation, no worker dispatch.  It runs
-        # after pending prompt/confirmation handling but before the busy/running
-        # guard so "지금 뭐 하고 있어?" can be a safe status check rather than an
-        # interrupt/queued follow-up.
-        orchestration_status_reply = self._maybe_handle_orchestration_status_query(
-            event,
-            session_key=_quick_key,
-        )
-        if orchestration_status_reply is not None:
-            return orchestration_status_reply
+        # Optional, read-only natural-language status queries are deliberately
+        # disabled while frontdesk-live pre-dispatch is active. In live mode the
+        # status surface is explicit slash syntax only (``/status`` and
+        # ``/frontdesk status``); ordinary questions such as "지금 뭐 하고 있어?"
+        # must remain user prompts when the session is idle, while stop/worker
+        # and active follow-up controls are handled by the live gate below.
+        if not getattr(self, "frontdesk_live_enabled", False):
+            orchestration_status_reply = self._maybe_handle_orchestration_status_query(
+                event,
+                session_key=_quick_key,
+            )
+            if orchestration_status_reply is not None:
+                return orchestration_status_reply
 
         frontdesk_live_reply = await self._maybe_handle_frontdesk_live_input(
             event,

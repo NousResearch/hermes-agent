@@ -75,33 +75,43 @@ def test_stop_never_returns_busy_when_frontdesk_enabled(server):
     )
 
 
-def test_status_consumed_before_agent_build_when_frontdesk_enabled(server):
+def test_short_korean_chat_question_starts_agent_build_when_frontdesk_enabled(server):
     sid = "s1"
     session = _session(frontdesk_enabled=True, running=False)
     session["agent_ready"].set()
     server._sessions[sid] = session
-    buf = io.StringIO()
-    server._real_stdout = buf
 
-    with patch.object(server, "_start_agent_build") as start_build:
+    with patch.object(server, "_start_agent_build") as start_build, \
+         patch.object(server, "_run_prompt_submit") as run_prompt:
         resp = server.handle_request({
-            "id": "r-status",
+            "id": "r-chat",
             "method": "prompt.submit",
             "params": {"session_id": sid, "text": "지금 뭐 하고 있어?"},
         })
 
     assert "error" not in resp
-    assert resp["result"]["status"] == "frontdesk"
-    start_build.assert_not_called()
+    assert resp["result"]["status"] == "streaming"
+    start_build.assert_called_once_with(sid, session)
     session["agent"].run_conversation.assert_not_called()
-    assert any(
-        msg.get("params", {}).get("type") == "message.complete"
-        and (
-            "Tasks:" in msg.get("params", {}).get("payload", {}).get("text", "")
-            or "No active tasks" in msg.get("params", {}).get("payload", {}).get("text", "")
-        )
-        for msg in _events(buf)
-    )
+
+
+def test_slash_status_does_not_enter_frontdesk_prompt_gate(server):
+    sid = "s1"
+    session = _session(frontdesk_enabled=True, running=False)
+    session["agent_ready"].set()
+    server._sessions[sid] = session
+
+    with patch.object(server, "_start_agent_build") as start_build, \
+         patch.object(server, "_run_prompt_submit") as run_prompt:
+        resp = server.handle_request({
+            "id": "r-status",
+            "method": "prompt.submit",
+            "params": {"session_id": sid, "text": "/status"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"]["status"] == "streaming"
+    start_build.assert_called_once_with(sid, session)
 
 
 def test_worker_request_does_not_start_agent_build_when_no_lane(server):

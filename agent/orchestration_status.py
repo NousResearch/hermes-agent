@@ -20,8 +20,8 @@ What this module is -- and isn't:
   of handle-ish objects -- into concise, deterministic, Telegram-friendly text:
   :func:`format_tasks`, :func:`format_agents`, :func:`format_overview`.  Bullets
   and labels, never markdown tables.  :func:`looks_like_orchestration_status_query`
-  is a deterministic Korean/English predicate that *only* says "this message reads
-  like a request for the status board"; it routes nothing by itself.
+  is a deterministic predicate for the explicit ``/status`` board command; it
+  routes nothing by itself.
 * It is **not** the Ralph / focused-agent runtime, **not** an LLM/model
   classifier, **not** automatic Telegram/gateway routing of natural-language
   status queries, **not** a live worker process dashboard (it reads whatever a
@@ -71,6 +71,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
 from agent.task_registry import (
+    FRONTDESK_TERMINAL_STATES as _FRONTDESK_TERMINAL_STATES,
     STATUS_BLOCKED as _TASK_STATUS_BLOCKED,
     STATUS_ERROR as _TASK_STATUS_ERROR,
     TERMINAL_STATUSES as _TERMINAL_TASK_STATUSES,
@@ -146,6 +147,12 @@ def _task_is_active(status: Any) -> bool:
     return status not in _TERMINAL_TASK_STATUSES
 
 
+def _task_frontdesk_active(status: Any, frontdesk_state: Any) -> bool:
+    if isinstance(frontdesk_state, str) and frontdesk_state:
+        return frontdesk_state not in _FRONTDESK_TERMINAL_STATES
+    return _task_is_active(status)
+
+
 def _worker_is_terminal(status: Any) -> bool:
     return status in _TERMINAL_WORKER_STATUSES
 
@@ -202,6 +209,8 @@ def _task_to_dict(task: Any) -> dict[str, Any]:
         notes = _count_value(task.get("notes"))
         artifacts = _count_value(task.get("artifacts"))
         st = status if isinstance(status, str) else "?"
+        frontdesk_state = _str_or_none(task.get("frontdesk_state"))
+        awaiting_user_input = bool(task.get("awaiting_user_input"))
         return {
             "task_id": _str_or_none(task.get("task_id")) or "?",
             "status": st,
@@ -209,17 +218,30 @@ def _task_to_dict(task: Any) -> dict[str, Any]:
             "session_key": _str_or_none(task.get("session_key")),
             "worker_id": worker_id,
             "worker_kind": _str_or_none(task.get("worker_kind")),
+            "frontdesk_state": frontdesk_state,
+            "worker_stage": _str_or_none(task.get("worker_stage")),
+            "reviewer_stage": _str_or_none(task.get("reviewer_stage")),
+            "worker_process_id": _str_or_none(task.get("worker_process_id")),
+            "worker_session_id": _str_or_none(task.get("worker_session_id")),
+            "last_message_path": _str_or_none(task.get("last_message_path")),
+            "summary_artifact_path": _str_or_none(task.get("summary_artifact_path")),
+            "review_artifact_path": _str_or_none(task.get("review_artifact_path")),
+            "review_verdict": _str_or_none(task.get("review_verdict")),
+            "blocked_reason": _str_or_none(task.get("blocked_reason")),
+            "awaiting_user_input": awaiting_user_input,
             "followups": followups,
             "notes": notes,
             "artifacts": artifacts,
-            "active": _task_is_active(st),
-            "blocked": st == _TASK_STATUS_BLOCKED,
+            "active": _task_frontdesk_active(st, frontdesk_state),
+            "blocked": st == _TASK_STATUS_BLOCKED or awaiting_user_input,
             "error": st == _TASK_STATUS_ERROR,
         }
 
     status = getattr(task, "status", None)
     goal = _str_or_none(getattr(task, "user_goal", None)) or ""
     worker_id = _str_or_none(getattr(task, "active_worker_id", None))
+    frontdesk_state = _str_or_none(getattr(task, "frontdesk_state", None))
+    awaiting_user_input = bool(getattr(task, "awaiting_user_input", False))
     followups = getattr(task, "pending_followups", None) or []
     notes = getattr(task, "notes", None) or []
     artifacts = getattr(task, "artifacts", None) or []
@@ -230,11 +252,22 @@ def _task_to_dict(task: Any) -> dict[str, Any]:
         "session_key": _str_or_none(getattr(task, "session_key", None)),
         "worker_id": worker_id,
         "worker_kind": _str_or_none(getattr(task, "worker_kind", None)),
+        "frontdesk_state": frontdesk_state,
+        "worker_stage": _str_or_none(getattr(task, "worker_stage", None)),
+        "reviewer_stage": _str_or_none(getattr(task, "reviewer_stage", None)),
+        "worker_process_id": _str_or_none(getattr(task, "worker_process_id", None)),
+        "worker_session_id": _str_or_none(getattr(task, "worker_session_id", None)),
+        "last_message_path": _str_or_none(getattr(task, "last_message_path", None)),
+        "summary_artifact_path": _str_or_none(getattr(task, "summary_artifact_path", None)),
+        "review_artifact_path": _str_or_none(getattr(task, "review_artifact_path", None)),
+        "review_verdict": _str_or_none(getattr(task, "review_verdict", None)),
+        "blocked_reason": _str_or_none(getattr(task, "blocked_reason", None)),
+        "awaiting_user_input": awaiting_user_input,
         "followups": len(followups),
         "notes": len(notes),
         "artifacts": len(artifacts),
-        "active": _task_is_active(status),
-        "blocked": status == _TASK_STATUS_BLOCKED,
+        "active": _task_frontdesk_active(status, frontdesk_state),
+        "blocked": status == _TASK_STATUS_BLOCKED or awaiting_user_input,
         "error": status == _TASK_STATUS_ERROR,
     }
 
@@ -570,6 +603,40 @@ def _format_task_block(task: dict[str, Any], *, compact: bool, worker_index: dic
                 wline += " (cancel requested)"
         lines.append(wline)
 
+    stage_bits: list[str] = []
+    if task.get("frontdesk_state"):
+        stage_bits.append(f"frontdesk={task['frontdesk_state']}")
+    if task.get("worker_stage"):
+        stage_bits.append(f"worker={task['worker_stage']}")
+    if task.get("reviewer_stage"):
+        stage_bits.append(f"reviewer={task['reviewer_stage']}")
+    if stage_bits:
+        lines.append("  stage: " + " · ".join(stage_bits))
+
+    process_bits: list[str] = []
+    if task.get("worker_process_id"):
+        process_bits.append(f"pid={task['worker_process_id']}")
+    if task.get("worker_session_id"):
+        process_bits.append(f"session={task['worker_session_id']}")
+    if process_bits:
+        lines.append("  process: " + " · ".join(process_bits))
+
+    if task.get("review_verdict"):
+        lines.append(f"  review: {task['review_verdict']}")
+    if task.get("awaiting_user_input"):
+        reason = _truncate(task.get("blocked_reason"), _detail_limit(compact))
+        lines.append(f"  blocked: {reason or 'waiting for user input'}")
+
+    path_bits: list[str] = []
+    if task.get("last_message_path"):
+        path_bits.append(f"last={task['last_message_path']}")
+    if task.get("summary_artifact_path"):
+        path_bits.append(f"summary={task['summary_artifact_path']}")
+    if task.get("review_artifact_path"):
+        path_bits.append(f"review={task['review_artifact_path']}")
+    if path_bits:
+        lines.append("  artifacts: " + " · ".join(path_bits))
+
     bits: list[str] = []
     if task.get("followups"):
         bits.append(_plural(int(task["followups"]), "follow-up") + " queued")
@@ -796,60 +863,22 @@ class OrchestrationStatusFormatter:
         )
 
 
-# --------------------------------------------------------------------------
-# Natural-language status-query predicate (a hint only -- routes nothing).
+# Explicit status-query predicate (a hint only -- routes nothing).
 #
-# Like agent.followup_router's trigger lists this is the documented set, not an
-# exhaustive grammar: a later LLM phase can refine the genuinely ambiguous text.
-# Matching is plain case-insensitive substring (Korean is unaffected by casing) --
-# deliberately a touch generous, because this predicate decides nothing on its
-# own; it only lets a later gateway/CLI layer choose to call the formatter.
-# --------------------------------------------------------------------------
-_STATUS_QUERY_TRIGGERS: tuple[str, ...] = (
-    # --- Korean: "what are you doing / what's running / which tasks / agents" ---
-    "뭐 하고 있", "뭐하고 있", "뭐 하고있", "뭐하고있", "뭐 하는 중", "뭐하는 중",
-    "뭐 하는중", "뭐하는중", "뭐 하는 거", "뭐 하고 계", "지금 뭐 해", "지금 뭐 하",
-    "지금 뭐하", "뭐 하니", "뭐 하고 있니", "뭐 하는 중이", "뭐 진행", "뭐 작업",
-    "무슨 작업", "어떤 작업", "뭐 돌아가", "뭐 돌고", "뭐가 돌아", "뭐가 돌고",
-    "돌고 있는 작업", "돌고있는 작업", "돌아가는 작업", "돌고 있는 거", "돌고있는 거",
-    "진행 중인 작업", "진행중인 작업", "진행 중인 거", "진행중인 거", "진행 중인 일", "진행중인 일",
-    "작업 목록", "작업 리스트", "작업 있어", "작업 있나", "작업 뭐", "작업 몇 개", "작업 몇개",
-    "활성 작업", "활성화된 작업", "남은 작업",
-    "에이전트 뭐", "에이전트 목록", "에이전트 리스트", "에이전트 돌", "에이전트 있", "에이전트 몇",
-    "무슨 에이전트", "어떤 에이전트", "워커 뭐", "워커 목록", "워커 돌", "워커 있", "일꾼",
-    "대기 중인", "대기중인", "막힌 거", "막혀 있는", "막혀있는", "기다리는 거", "내가 봐야",
-    "내가 확인해야", "후속 작업", "후속 요청", "팔로업", "팔로우업", "follow-up 뭐",
-    # --- English ---
-    "what are you working on", "what're you working on", "what you working on",
-    "what are you doing", "what're you doing", "what you doing",
-    "are you working on anything", "anything you're working on", "anything you are working on",
-    "what's running", "whats running", "what is running", "anything running",
-    "anything active", "what's active", "whats active",
-    "active task", "active tasks", "active worker", "active workers",
-    "any active task", "any tasks", "any task running", "tasks running", "tasks active",
-    "what tasks", "which tasks", "what task is", "list tasks", "show tasks",
-    "show me the tasks", "task list", "the task board",
-    "any agents", "any agent running", "agents running", "what agents", "which agents",
-    "agent list", "list agents", "show agents", "any workers", "what workers",
-    "which workers", "workers running", "worker list",
-    "what's in progress", "whats in progress", "what is in progress", "in progress right now",
-    "what's queued", "whats queued", "anything queued", "follow-ups queued",
-    "followups queued", "follow ups queued",
-    "anything blocked", "what's blocked", "whats blocked", "is anything blocked",
-    "anything waiting for me", "waiting for me", "waiting on me",
-    "anything need me", "anything needs me", "need my input", "needs my input",
-    "status board", "orchestration status", "orchestrator status",
-)
+# Only /status should trigger the orchestration status board. Natural-language
+# questions should flow through normal routing so the main agent can answer,
+# delegate to a worker, or return quickly without an extra status-intercept layer.
+_STATUS_QUERY_TRIGGERS: tuple[str, ...] = ("/status",)
+
+
 
 
 def looks_like_orchestration_status_query(text: Any) -> bool:
-    """True when *text* reads like a request for the orchestration status board.
+    """True only for the explicit ``/status`` orchestration status command.
 
-    Examples that match: ``"지금 뭐 하고 있어?"``, ``"돌고 있는 작업 있어?"``,
-    ``"에이전트 뭐 돌아가?"``, ``"what are you working on?"``, ``"active tasks?"``,
-    ``"any agents running?"``.  This is a *hint*: it neither parses nor routes the
-    message -- a later gateway/CLI layer may use it to decide to call
-    :func:`format_overview` (or :func:`format_tasks` / :func:`format_agents`).
+    Natural-language status-like questions (for example "지금 뭐 하고 있어?" or
+    "what are you working on?") intentionally return ``False`` so they stay in
+    normal main/worker routing instead of being intercepted by the status board.
     Non-strings, empty strings, and ordinary prose all return ``False``.
     """
     if not isinstance(text, str):
@@ -857,4 +886,4 @@ def looks_like_orchestration_status_query(text: Any) -> bool:
     low = text.strip().lower()
     if not low:
         return False
-    return any(trigger in low for trigger in _STATUS_QUERY_TRIGGERS)
+    return low in _STATUS_QUERY_TRIGGERS

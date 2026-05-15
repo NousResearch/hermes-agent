@@ -3012,6 +3012,8 @@ def _maybe_handle_frontdesk_prompt(
     """Consume opt-in frontdesk control input before TUI queue/model paths."""
     if not isinstance(text, str) or not text.strip():
         return None
+    if text.lstrip().startswith("/"):
+        return None
 
     agent = session.get("agent")
 

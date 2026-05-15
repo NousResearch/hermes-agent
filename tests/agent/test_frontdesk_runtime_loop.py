@@ -7,7 +7,15 @@ import pytest
 
 from agent.control_plane import Intent, Recommendation
 from agent.orchestration_runtime import OrchestrationRuntime
-from agent.task_registry import STATUS_CANCELLED, STATUS_RUNNING
+from agent.task_registry import (
+    FRONTDESK_RUNNING_WORKER,
+    FRONTDESK_WORKER_DONE_PENDING_REVIEW,
+    STAGE_DONE,
+    STAGE_QUEUED,
+    STAGE_RUNNING,
+    STATUS_CANCELLED,
+    STATUS_RUNNING,
+)
 from agent.worker_lanes import CancelToken, ThreadWorkerLane, WorkerSpec, WorkerStatus
 
 
@@ -36,6 +44,8 @@ def test_frontdesk_worker_decision_creates_task_and_starts_registered_worker_lan
     task = runtime.task_registry.get_task(result.task_id)
     assert task is not None
     assert task.status == STATUS_RUNNING
+    assert task.frontdesk_state == FRONTDESK_RUNNING_WORKER
+    assert task.worker_stage == STAGE_RUNNING
     assert task.active_worker_id == result.worker_id
     assert task.worker_kind == "thread"
     assert entered.wait(2.0)
@@ -82,6 +92,10 @@ def test_frontdesk_worker_completion_retains_result_for_review():
     assert task.result["tests"] == {"pytest": "passed"}
     assert "raw_process" not in task.result
     assert task.result["review_status"] == "pending_review"
+    assert task.status == STATUS_RUNNING
+    assert task.frontdesk_state == FRONTDESK_WORKER_DONE_PENDING_REVIEW
+    assert task.worker_stage == STAGE_DONE
+    assert task.reviewer_stage == STAGE_QUEUED
     json.dumps(task.to_dict(), allow_nan=False)
 
 
@@ -141,7 +155,7 @@ def test_korean_followup_attaches_to_active_worker_task(followup_text):
         runtime.worker_registry.wait(started.worker_id, timeout=2.0)
 
 
-def test_followup_does_not_swallow_stop_or_status():
+def test_followup_does_not_swallow_stop_or_explicit_status():
     runtime = OrchestrationRuntime.create()
     entered = threading.Event()
     release = threading.Event()
@@ -162,15 +176,22 @@ def test_followup_does_not_swallow_stop_or_status():
     assert started.worker_id is not None
     assert entered.wait(2.0)
 
-    status = runtime.handle_frontdesk_input(
+    natural_question = runtime.handle_frontdesk_input(
         "지금 뭐 하고 있어?",
+        frontdesk_mode_active=True,
+        session_key="s1",
+    )
+    assert natural_question.action == "followup_attached"
+
+    status = runtime.handle_frontdesk_input(
+        "/status",
         frontdesk_mode_active=True,
         session_key="s1",
     )
     assert status.action == "status"
     task = runtime.task_registry.get_task(started.task_id)
     assert task is not None
-    assert task.pending_followups == []
+    assert [item.text for item in task.pending_followups] == ["지금 뭐 하고 있어?"]
 
     stopped = runtime.handle_frontdesk_input(
         "멈춰",
@@ -179,7 +200,7 @@ def test_followup_does_not_swallow_stop_or_status():
     )
     assert stopped.action == "stopped"
     assert stopped.cancelled_tasks == 1
-    assert task.pending_followups == []
+    assert [item.text for item in task.pending_followups] == ["지금 뭐 하고 있어?"]
     release.set()
     assert runtime.worker_registry.wait(started.worker_id, timeout=2.0)
 
@@ -201,7 +222,7 @@ def test_followup_without_active_worker_falls_through_honestly():
     assert runtime.task_registry.list_tasks(session_key="s1") == []
 
 
-def test_session_scoped_status_does_not_leak_other_session_workers():
+def test_session_scoped_explicit_status_does_not_leak_other_session_workers():
     runtime = OrchestrationRuntime.create()
     release = threading.Event()
 
@@ -226,7 +247,7 @@ def test_session_scoped_status_does_not_leak_other_session_workers():
 
     try:
         status = runtime.handle_frontdesk_input(
-            "지금 뭐 하고 있어?",
+            "/status",
             frontdesk_mode_active=True,
             session_key="s1",
         )
@@ -290,7 +311,7 @@ def test_frontdesk_status_returns_local_overview_without_starting_worker():
     runtime.task_registry.create_task("existing", session_key="s1", status=STATUS_RUNNING)
 
     result = runtime.handle_frontdesk_input(
-        "지금 뭐 하고 있어?",
+        "/status",
         frontdesk_mode_active=True,
         session_key="s1",
     )
@@ -308,7 +329,7 @@ def test_frontdesk_status_shows_available_lane_when_idle():
     runtime.worker_registry.register(ThreadWorkerLane(runner=lambda spec, token: "ok", name="main"))
 
     result = runtime.handle_frontdesk_input(
-        "지금 뭐 하고 있어?",
+        "/status",
         frontdesk_mode_active=True,
         session_key="s1",
     )

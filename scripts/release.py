@@ -431,6 +431,7 @@ AUTHOR_MAP = {
     "dyxushuai@gmail.com": "dyxushuai",
     "33860762+etcircle@users.noreply.github.com": "etcircle",
     "liujinkun@bytedance.com": "liujinkun2025",
+    "lubrsy706@gmail.com": "Lubrsy706",
     "dmayhem93@gmail.com": "dmahan93",
     "fr@tecompanytea.com": "ifrederico",
     "cdanis@gmail.com": "cdanis",

@@ -58,6 +58,17 @@ _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
 
+# Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
+# the prefix is baked into the server-side issuance flow, not a UI hint).
+# Anything else (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a
+# leftover template value and would cause the SDK to silently accept the
+# credentials at construction time but drop every trace at flush time.
+# See #23823 — the silent-failure bug this guard fixes.
+_LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
+    "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
+    "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
+}
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -86,6 +97,42 @@ def _debug(message: str) -> None:
 _INIT_FAILED = object()
 
 
+def _redact_key_preview(value: str) -> str:
+    """Return a brief, log-safe preview of a credential value.
+
+    Keeps enough characters to disambiguate common placeholders
+    (``placeholder``, ``test-key``, ``your-key``) without echoing a
+    real secret in full if an operator pasted one into the wrong env
+    var.  Used only for the once-per-process placeholder-detection
+    warning in :func:`_get_langfuse`.
+    """
+    if not value:
+        return "<empty>"
+    if len(value) <= 12:
+        return repr(value)
+    return repr(value[:6] + "...")
+
+
+def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
+    """Return an error message if ``value`` is not a real Langfuse key.
+
+    Returns ``None`` when the value matches the documented Langfuse
+    prefix for ``env_name``, or when no prefix is registered for the
+    name (in which case we trust the operator).  When validation
+    fails the returned string is suitable for direct inclusion in a
+    single log line — it names the env var and shows a safe preview.
+    """
+    expected = _LANGFUSE_KEY_PREFIXES.get(env_name, "")
+    if not expected:
+        return None
+    if value.startswith(expected):
+        return None
+    return (
+        f"{env_name}={_redact_key_preview(value)} "
+        f"(expected {expected!r} prefix)"
+    )
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
@@ -108,6 +155,33 @@ def _get_langfuse() -> Optional[Langfuse]:
     public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
     secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
     if not (public_key and secret_key):
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+
+    # Reject placeholder credentials with a one-shot warning so the
+    # operator sees the misconfiguration instead of silently shipping a
+    # broken observability stack (#23823).  The SDK does not validate
+    # keys at construction time — it queues traces in memory and only
+    # discovers the auth failure when the background flush thread tries
+    # to post them, by which point the warning is buried under whatever
+    # else the process is logging.  Catch it here, surface it once, and
+    # short-circuit via the same _INIT_FAILED path as the empty case.
+    placeholder_issues = [
+        msg
+        for msg in (
+            _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
+            _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
+        )
+        if msg
+    ]
+    if placeholder_issues:
+        logger.warning(
+            "Langfuse plugin: credentials look like placeholders, traces will "
+            "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
+            "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
+            "silence this warning.",
+            "; ".join(placeholder_issues),
+        )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 

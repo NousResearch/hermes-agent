@@ -1505,15 +1505,16 @@ def _plugin_image_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "image_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "image_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1542,15 +1543,16 @@ def _plugin_video_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "video_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "video_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1813,6 +1815,11 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if plugin_name:
         image_cfg = config.get("image_gen", {})
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
+    video_plugin_name = provider.get("video_gen_plugin_name")
+    if video_plugin_name:
+        video_cfg = config.get("video_gen", {})
+        return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:

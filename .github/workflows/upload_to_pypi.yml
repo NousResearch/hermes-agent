@@ -71,6 +71,11 @@ jobs:
           test -f hermes_cli/web_dist/index.html || { echo "ERROR: web_dist not built"; exit 1; }
           test -f hermes_cli/tui_dist/entry.js || { echo "ERROR: tui_dist not built"; exit 1; }
 
+      - name: Bundle install.sh into wheel
+        run: |
+          mkdir -p hermes_cli/scripts
+          cp scripts/install.sh hermes_cli/scripts/install.sh
+
       - name: Build wheel and sdist
         run: uv build --sdist --wheel
 

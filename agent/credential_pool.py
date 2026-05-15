@@ -245,6 +245,17 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
+    # Handle providers that embed an absolute reset timestamp in the error message,
+    # e.g. MiniMax: "resets at 2026-05-18T00:00:00Z"
+    reset_match = re.search(
+        r"resets?\s+at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?(?:[+-]\d{2}:?\d{2})?)",
+        message,
+        re.IGNORECASE,
+    )
+    if reset_match:
+        reset_ts = _parse_absolute_timestamp(reset_match.group(1))
+        if reset_ts is not None:
+            return max(0.0, reset_ts - time.time())
     return None
 
 

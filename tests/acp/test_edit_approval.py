@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
     clear_edit_approval_requester,
     set_edit_approval_requester,
+    should_auto_approve_edit,
 )
 from model_tools import handle_function_call
 
@@ -177,3 +179,25 @@ def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
     assert proposals[0].tool_name == "patch"
     assert proposals[0].old_text == "alpha\nbeta\n"
     assert proposals[0].new_text == "alpha\ngamma\n"
+
+
+def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_path):
+    workspace_file = tmp_path / "src.py"
+    tmp_file = Path("/tmp/hermes-acp-auto-approve-test.txt")
+    env_file = tmp_path / ".env"
+
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(workspace_file), None, "x", {}),
+        "workspace_session",
+        str(tmp_path),
+    )
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(tmp_file), None, "x", {}),
+        "workspace_session",
+        str(tmp_path),
+    )
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(env_file), None, "SECRET=x", {}),
+        "session",
+        str(tmp_path),
+    )

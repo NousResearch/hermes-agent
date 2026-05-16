@@ -52,6 +52,32 @@ def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
 
+    @pytest.mark.asyncio
+    async def test_new_session_includes_edit_approval_config_option(self, agent):
+        resp = await agent.new_session(cwd="/tmp")
+
+        assert resp.config_options
+        option = resp.config_options[0]
+        assert option.id == "edit_approval_policy"
+        assert option.current_value == "ask"
+        assert {choice.value for choice in option.options} == {
+            "ask",
+            "workspace_session",
+            "session",
+        }
+
+    @pytest.mark.asyncio
+    async def test_set_config_option_persists_edit_approval_policy(self, agent):
+        resp = await agent.new_session(cwd="/tmp")
+        update = await agent.set_config_option(
+            "edit_approval_policy",
+            resp.session_id,
+            "workspace_session",
+        )
+
+        assert isinstance(update, SetSessionConfigOptionResponse)
+        assert update.config_options[0].current_value == "workspace_session"
+
 
 # ---------------------------------------------------------------------------
 # initialize
@@ -892,7 +918,8 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result == {"configOptions": []}
+        assert config_result["configOptions"]
+        assert config_result["configOptions"][0]["id"] == "edit_approval_policy"
 
     @pytest.mark.asyncio
     async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):

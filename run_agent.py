@@ -5284,9 +5284,23 @@ class AIAgent:
 
             api_key = None
             try:
-                api_key = getattr(self.client, "api_key", None)
+                # For Anthropic-native mode self.client is None — the key and
+                # transport live on self._anthropic_api_key / _anthropic_client.
+                if self.api_mode == "anthropic_messages":
+                    api_key = getattr(self, "_anthropic_api_key", None) or getattr(self.client, "api_key", None)
+                else:
+                    api_key = getattr(self.client, "api_key", None)
             except Exception as e:
                 logger.debug("Could not extract API key for debug dump: %s", e)
+
+            # Build the actual endpoint path from the api_mode, not a hardcoded
+            # /chat/completions which was only correct for OpenAI-wire mode.
+            if self.api_mode == "codex_responses":
+                _endpoint_path = "/responses"
+            elif self.api_mode == "anthropic_messages":
+                _endpoint_path = "/v1/messages"
+            else:
+                _endpoint_path = "/chat/completions"
 
             dump_payload: Dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
@@ -5294,7 +5308,7 @@ class AIAgent:
                 "reason": reason,
                 "request": {
                     "method": "POST",
-                    "url": f"{self.base_url.rstrip('/')}{'/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
+                    "url": f"{self.base_url.rstrip('/')}{_endpoint_path}",
                     "headers": {
                         "Authorization": f"Bearer {self._mask_api_key_for_logs(api_key)}",
                         "Content-Type": "application/json",

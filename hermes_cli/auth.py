@@ -1136,10 +1136,31 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return merged
 
     provider_entries = pool.get(provider_id)
+    global_entries = global_pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
+        # Profile has entries for this provider.  Also merge in any global
+        # ``manual:*`` entries that are not already present in the profile
+        # pool — so a credential registered at global scope (e.g. via
+        # ``hermes auth add anthropic`` outside a profile) is visible as a
+        # fallback when all profile-level entries are exhausted.
+        # Non-manual (seeded) global entries are NOT merged: the seeder runs
+        # again when load_pool() re-reads this slice, so they would be
+        # duplicated.  Manual entries are user-owned and must survive pruning.
+        if isinstance(global_entries, list):
+            profile_ids = {e.get("id") for e in provider_entries if isinstance(e, dict)}
+            profile_sources = {e.get("source") for e in provider_entries if isinstance(e, dict)}
+            extra = [
+                e for e in global_entries
+                if isinstance(e, dict)
+                and e.get("id") not in profile_ids
+                and e.get("source") not in profile_sources
+                and isinstance(e.get("source"), str)
+                and (e["source"] == "manual" or e["source"].startswith("manual:"))
+            ]
+            if extra:
+                return list(provider_entries) + extra
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
 
 

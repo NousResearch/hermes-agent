@@ -160,6 +160,42 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_send_disables_replied_user_when_source_is_bot_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    allowed_mentions_seen = []
+
+    class FakeAllowedMentions:
+        def __init__(self, *, everyone, roles, users, replied_user):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+
+    async def fake_send(*, content, reference=None, allowed_mentions=None):
+        allowed_mentions_seen.append(allowed_mentions)
+        return SimpleNamespace(id=1234)
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=SimpleNamespace(id=99, to_reference=MagicMock(return_value=object()))),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    import gateway.platforms.discord as discord_platform
+    discord_platform.discord.AllowedMentions = FakeAllowedMentions
+
+    result = await adapter.send("555", "hello", reply_to="99", metadata={"source_is_bot": True})
+
+    assert result.success is True
+    assert allowed_mentions_seen
+    assert allowed_mentions_seen[0].replied_user is False
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

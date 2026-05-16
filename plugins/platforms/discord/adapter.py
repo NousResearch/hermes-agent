@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -50,7 +51,12 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.helpers import (
+    BotLoopFuse,
+    BotThreadMembershipTracker,
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+)
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -115,7 +121,16 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _has_raw_user_mention(content: str, user_id: Any) -> bool:
+    """Return True only for literal Discord mention text in message content."""
+    sid = str(user_id or "")
+    if not sid:
+        return False
+    content = content or ""
+    return f"<@{sid}>" in content or f"<@!{sid}>" in content
+
+
+def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
@@ -142,11 +157,15 @@ def _build_allowed_mentions():
             return default
         return raw in {"true", "1", "yes", "on"}
 
+    default_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+    if replied_user is None:
+        replied_user = default_replied_user
+
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
         roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        replied_user=bool(replied_user),
     )
 
 
@@ -578,6 +597,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        self._bot_threads = BotThreadMembershipTracker("discord")
+        self._bot_loop_fuse = BotLoopFuse("discord")
+        self._warned_unrestricted_bot_acceptance = False
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -594,6 +616,146 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+
+    @staticmethod
+    def _csv_env_set(name: str) -> set[str]:
+        return {item.strip() for item in os.getenv(name, "").split(",") if item.strip()}
+
+    def _discord_allowed_bot_users(self) -> set[str]:
+        return self._csv_env_set("DISCORD_ALLOWED_BOT_USERS")
+
+    def _is_allowed_bot_user(self, user_id: Any) -> bool:
+        allowed = self._discord_allowed_bot_users()
+        if not allowed:
+            if not self._warned_unrestricted_bot_acceptance:
+                logger.warning(
+                    "[%s] DISCORD_ALLOW_BOTS admits bot messages but DISCORD_ALLOWED_BOT_USERS is unset; "
+                    "preserving backward-compatible broad bot admission.",
+                    self.name,
+                )
+                self._warned_unrestricted_bot_acceptance = True
+            return True
+        return str(user_id) in allowed
+
+    def _discord_bot_control_channels(self) -> set[str]:
+        """Channels/parents where bot-thread invitations may register.
+
+        No fallback to DISCORD_ALLOWED_CHANNELS: bot-control scope is an explicit
+        authorization surface, and wildcard must be deliberately configured here.
+        """
+        return self._csv_env_set("DISCORD_BOT_CONTROL_CHANNELS")
+
+    def _message_channel_ids(self, message: Any) -> set[str]:
+        channel_ids = {str(message.channel.id)}
+        parent_channel_id = None
+        thread_cls = getattr(discord, "Thread", None)
+        if thread_cls is not None and isinstance(message.channel, thread_cls):
+            parent_channel_id = self._get_parent_channel_id(message.channel)
+        elif hasattr(message.channel, "parent_id") and message.channel.parent_id:
+            parent_channel_id = str(message.channel.parent_id)
+        if parent_channel_id:
+            channel_ids.add(str(parent_channel_id))
+        return channel_ids
+
+    def _is_bot_control_scope(self, message: Any) -> bool:
+        allowed = self._discord_bot_control_channels()
+        return bool(allowed) and ("*" in allowed or bool(self._message_channel_ids(message) & allowed))
+
+    def _bot_thread_ids(self, message: Any) -> tuple[Optional[str], Optional[str]]:
+        thread_cls = getattr(discord, "Thread", None)
+        if thread_cls is None or not isinstance(message.channel, thread_cls):
+            return None, None
+        return str(message.channel.id), self._get_parent_channel_id(message.channel)
+
+    def _is_bot_fuse_suppressed(self, message: Any) -> bool:
+        if not self._client or not self._client.user:
+            return True
+        thread_id, _ = self._bot_thread_ids(message)
+        return self._bot_loop_fuse.is_suppressed(
+            receiver_bot_id=str(self._client.user.id),
+            sender_bot_id=str(message.author.id),
+            thread_id=thread_id,
+        )
+
+    def _record_bot_fuse_acceptance(self, message: Any) -> bool:
+        if not self._client or not self._client.user:
+            return False
+        thread_id, _ = self._bot_thread_ids(message)
+        return self._bot_loop_fuse.record_and_check(
+            receiver_bot_id=str(self._client.user.id),
+            sender_bot_id=str(message.author.id),
+            thread_id=thread_id,
+        )
+
+    def _register_bot_thread_invitation(self, message: Any) -> None:
+        if not self._client or not self._client.user:
+            return
+        thread_id, parent_channel_id = self._bot_thread_ids(message)
+        if not thread_id or not self._is_bot_control_scope(message):
+            return
+        self._bot_threads.mark(
+            receiver_bot_id=str(self._client.user.id),
+            sender_bot_id=str(message.author.id),
+            thread_id=thread_id,
+            parent_channel_id=parent_channel_id,
+            source_message_id=str(message.id),
+        )
+
+    def _allow_registered_bot_thread_followup(self, message: Any) -> bool:
+        if not self._client or not self._client.user:
+            return False
+        thread_id, _ = self._bot_thread_ids(message)
+        if not thread_id or not self._is_bot_control_scope(message):
+            return False
+        if not self._is_allowed_bot_user(message.author.id):
+            return False
+        if not self._bot_threads.contains(
+            receiver_bot_id=str(self._client.user.id),
+            sender_bot_id=str(message.author.id),
+            thread_id=thread_id,
+        ):
+            return False
+        self._bot_threads.refresh(
+            receiver_bot_id=str(self._client.user.id),
+            sender_bot_id=str(message.author.id),
+            thread_id=thread_id,
+        )
+        return True
+
+    def _should_accept_bot_message(self, message: Any, allow_bots: str) -> bool:
+        if allow_bots == "none":
+            return False
+        if allow_bots == "all":
+            if self._is_bot_fuse_suppressed(message):
+                logger.warning("[%s] Suppressing Discord bot message from %s: loop fuse active", self.name, message.author.id)
+                return False
+            self._record_bot_fuse_acceptance(message)
+            return True
+        if allow_bots != "mentions":
+            return False
+
+        if not self._client or not self._client.user:
+            return False
+        raw_self_mentioned = _has_raw_user_mention(message.content, self._client.user.id)
+        registered_followup = False if raw_self_mentioned else self._allow_registered_bot_thread_followup(message)
+        if not raw_self_mentioned and not registered_followup:
+            return False
+        if not self._is_allowed_bot_user(message.author.id):
+            return False
+        if self._is_bot_fuse_suppressed(message):
+            logger.warning("[%s] Suppressing Discord bot message from %s: loop fuse active", self.name, message.author.id)
+            return False
+        if raw_self_mentioned:
+            self._register_bot_thread_invitation(message)
+        tripped = self._record_bot_fuse_acceptance(message)
+        if tripped:
+            logger.warning(
+                "[%s] Discord bot loop fuse tripped for sender=%s thread=%s; suppressing further messages temporarily",
+                self.name,
+                message.author.id,
+                getattr(message.channel, "id", "channel"),
+            )
+        return True
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -749,13 +911,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
+                    if not adapter_self._should_accept_bot_message(message, allow_bots):
                         return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                    # Bot is permitted — skip the human-user allowlist below
+                    # (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
@@ -1428,15 +1587,40 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
+            send_callable = channel.send
+            send_side_effect = getattr(send_callable, "side_effect", None)
+            signature_target = send_side_effect if callable(send_side_effect) else send_callable
+            try:
+                send_params = inspect.signature(signature_target).parameters
+                send_accepts_allowed_mentions = (
+                    "allowed_mentions" in send_params
+                    or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in send_params.values())
+                )
+            except (TypeError, ValueError):
+                send_accepts_allowed_mentions = True
+
+            source_is_bot = bool(metadata and metadata.get("source_is_bot"))
+
+            async def _safe_channel_send(*, chunk_content: str, chunk_reference: Any) -> Any:
+                kwargs = {
+                    "content": chunk_content,
+                    "reference": chunk_reference,
+                }
+                if send_accepts_allowed_mentions:
+                    kwargs["allowed_mentions"] = _build_allowed_mentions(
+                        replied_user=False if source_is_bot else None,
+                    )
+                return await channel.send(**kwargs)
+
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
+                    msg = await _safe_channel_send(
+                        chunk_content=chunk,
+                        chunk_reference=chunk_reference,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1456,9 +1640,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
+                        msg = await _safe_channel_send(
+                            chunk_content=chunk,
+                            chunk_reference=None,
                         )
                     else:
                         raise
@@ -1603,23 +1787,65 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        ``metadata['thread_id']`` mirrors :meth:`send`: when present, fetch the
+        message from the Discord thread rather than the parent channel.  This
+        matters for background progress bubbles delivered inside Discord
+        threads.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            thread_id = None
+            if metadata and metadata.get("thread_id"):
+                thread_id = metadata["thread_id"]
+            target_id = thread_id or chat_id
+
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
+            if not channel:
+                return SendResult(
+                    success=False,
+                    error=f"Channel {target_id} not found",
+                    retryable=False,
+                )
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
-            await msg.edit(content=formatted)
+            await msg.edit(
+                content=formatted,
+                allowed_mentions=_build_allowed_mentions(),
+            )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
+            err_text = str(e)
+            transient_markers = (
+                "429",
+                "rate limit",
+                "timeout",
+                "temporarily unavailable",
+                "502",
+                "503",
+                "504",
+            )
+            permanent_markers = (
+                "404",
+                "not found",
+                "10008",  # Unknown Message
+                "50001",  # Missing Access
+                "50013",  # Missing Permissions
+            )
+            err_lower = err_text.lower()
+            retryable = any(m in err_lower for m in transient_markers) and not any(
+                m.lower() in err_lower for m in permanent_markers
+            )
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=err_text, retryable=retryable)
 
     async def _send_file_attachment(
         self,

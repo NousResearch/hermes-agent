@@ -2,8 +2,14 @@
 
 import asyncio
 import os
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from gateway.config import PlatformConfig
+from gateway.platforms import discord as discord_platform
+from gateway.platforms.discord import DiscordAdapter, _has_raw_user_mention
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -58,6 +64,98 @@ class TestDiscordBotFilter(unittest.TestCase):
         
         return True  # message accepted
 
+    def _adapter(self, **env):
+        tmp = tempfile.TemporaryDirectory()
+        baseline_env = {
+            "HERMES_HOME": tmp.name,
+            "DISCORD_ALLOWED_BOT_USERS": "",
+            "DISCORD_BOT_CONTROL_CHANNELS": "",
+        }
+        baseline_env.update(env)
+        patcher = patch.dict(os.environ, baseline_env, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(tmp.cleanup)
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
+        return adapter
+
+    def test_raw_mention_helper_ignores_reply_metadata_mentions(self):
+        self.assertTrue(_has_raw_user_mention("hello <@99999>", 99999))
+        self.assertTrue(_has_raw_user_mention("hello <@!99999>", 99999))
+        self.assertFalse(_has_raw_user_mention("hello", 99999))
+        self.assertFalse(_has_raw_user_mention("hello <@12345>", 99999))
+
+    def test_actual_mentions_mode_uses_raw_content_not_message_mentions(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
+        our_user = getattr(adapter._client, "user")
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="reply ping only", mentions=[our_user])
+        self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
+
+    def test_actual_mentions_mode_accepts_raw_self_mention(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="<@99999> checkpoint ready", mentions=[])
+        self.assertTrue(adapter._should_accept_bot_message(msg, "mentions"))
+
+    def test_actual_mentions_mode_respects_allowed_bot_users(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="777")
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="<@99999> checkpoint ready", mentions=[])
+        self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
+
+    def test_bot_loop_fuse_applies_to_explicit_mentions(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
+        bot = _make_author(bot=True)
+        results = []
+        for idx in range(4):
+            msg = _make_message(author=bot, content=f"<@99999> msg {idx}", mentions=[])
+            msg.id = idx
+            results.append(adapter._should_accept_bot_message(msg, "mentions"))
+        self.assertEqual(results, [True, True, True, True])
+        fifth = _make_message(author=bot, content="<@99999> msg 5", mentions=[])
+        fifth.id = 5
+        self.assertFalse(adapter._should_accept_bot_message(fifth, "mentions"))
+
+    def test_registered_bot_thread_followup_requires_explicit_bot_control_scope(self):
+        class FakeThread:
+            def __init__(self):
+                self.id = 444
+                self.parent_id = 333
+                self.parent = SimpleNamespace(id=333)
+
+        if discord_platform.discord is None:
+            discord_platform.discord = SimpleNamespace(Thread=FakeThread)
+        else:
+            setattr(discord_platform.discord, "Thread", FakeThread)
+
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
+        bot = _make_author(bot=True)
+        invite = _make_message(author=bot, content="<@99999> start", mentions=[])
+        invite.channel = FakeThread()
+        invite.id = 1
+        self.assertTrue(adapter._should_accept_bot_message(invite, "mentions"))
+
+        followup = _make_message(author=bot, content="continue", mentions=[])
+        followup.channel = FakeThread()
+        followup.id = 2
+        self.assertFalse(adapter._should_accept_bot_message(followup, "mentions"))
+
+        adapter_scoped = self._adapter(
+            DISCORD_ALLOW_BOTS="mentions",
+            DISCORD_ALLOWED_BOT_USERS="12345",
+            DISCORD_BOT_CONTROL_CHANNELS="333",
+        )
+        invite2 = _make_message(author=bot, content="<@99999> start", mentions=[])
+        invite2.channel = FakeThread()
+        invite2.id = 3
+        self.assertTrue(adapter_scoped._should_accept_bot_message(invite2, "mentions"))
+        followup2 = _make_message(author=bot, content="continue", mentions=[])
+        followup2.channel = FakeThread()
+        followup2.id = 4
+        self.assertTrue(adapter_scoped._should_accept_bot_message(followup2, "mentions"))
+
     def test_own_messages_always_ignored(self):
         """Bot's own messages are always ignored regardless of allow_bots."""
         bot_user = _make_author(is_self=True)
@@ -100,7 +198,8 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
     def test_case_insensitive(self):

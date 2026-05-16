@@ -338,10 +338,31 @@ class TestLoadGatewayConfig:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")  # user override
 
-        load_gateway_config()
+        config = load_gateway_config()
 
-        # Env value preserved, not clobbered by yaml.
+        # Env value preserved, not clobbered by yaml, and adapter-visible
+        # platform extra mirrors the effective value rather than stale YAML.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+        assert config.platforms[Platform.DISCORD].extra["thread_require_mention"] is True
+
+    def test_bridges_discord_thread_require_mention_to_platform_extra(self, tmp_path, monkeypatch):
+        """Discord adapter should receive effective thread gate in PlatformConfig.extra."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  thread_require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["thread_require_mention"] is False
+        assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "false"
 
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -75,6 +75,27 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("http://[::1]:8080/") is False
 
+    def test_ipv6_scope_id_is_stripped_and_blocked(self):
+        """IPv6 scope IDs should not bypass SSRF checks."""
+        real_ip_address = ipaddress.ip_address
+
+        def fake_ip_address(value):
+            if "%" in value:
+                raise ValueError("scope IDs are not accepted by this parser")
+            return real_ip_address(value)
+
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1%eth0", 0, 0, 2)),
+        ]), patch("tools.url_safety.ipaddress.ip_address", side_effect=fake_ip_address):
+            assert is_safe_url("http://[fe80::1%25eth0]/") is False
+
+    def test_unparseable_ipv6_after_scope_strip_blocks(self):
+        """If the normalized IP is still invalid, fail closed."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("not-an-ip%eth0", 0, 0, 2)),
+        ]), patch("tools.url_safety.ipaddress.ip_address", side_effect=ValueError("bad ip")):
+            assert is_safe_url("http://invalid.example/") is False
+
     def test_dns_failure_blocked(self):
         """DNS failures now fail closed — block the request."""
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):

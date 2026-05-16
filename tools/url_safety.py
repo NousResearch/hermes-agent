@@ -135,6 +135,20 @@ def _reset_allow_private_cache() -> None:
     _cached_allow_private = False
 
 
+def _normalize_ip_candidate(ip_str: str) -> str:
+    """Strip IPv6 scope IDs before parsing.
+
+    Some platforms surface link-local IPv6 addresses as ``fe80::1%eth0`` or
+    similar scope-qualified strings. ``ipaddress.ip_address()`` accepts some of
+    these forms, but not all interpreter / stdlib combinations do. We normalize
+    them to the bare address first so the security check behaves consistently.
+    """
+    candidate = (ip_str or "").strip()
+    if "%" in candidate:
+        candidate = candidate.split("%", 1)[0].strip()
+    return candidate
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
@@ -290,10 +304,15 @@ def is_safe_url(url: str) -> bool:
 
         for family, _, _, _, sockaddr in addr_info:
             ip_str = sockaddr[0]
+            ip_candidate = _normalize_ip_candidate(ip_str)
             try:
-                ip = ipaddress.ip_address(ip_str)
+                ip = ipaddress.ip_address(ip_candidate)
             except ValueError:
-                continue
+                logger.warning(
+                    "Blocked request — unparseable address for %s: %s",
+                    hostname, ip_str,
+                )
+                return False
 
             # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
@@ -306,7 +325,7 @@ def is_safe_url(url: str) -> bool:
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
+                    hostname, ip_candidate,
                 )
                 return False
 

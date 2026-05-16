@@ -45,10 +45,10 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
-    SessionConfigOptionSelect,
-    SessionConfigSelectOption,
     SessionForkCapabilities,
     SessionListCapabilities,
+    SessionMode,
+    SessionModeState,
     SessionModelState,
     SessionResumeCapabilities,
     SessionInfo,
@@ -499,6 +499,17 @@ class HermesACPAgent(acp.Agent):
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
+    _MODE_DEFAULT = "default"
+    _MODE_ACCEPT_EDITS = "accept_edits"
+    _MODE_DONT_ASK = "dont_ask"
+    _MODE_TO_EDIT_APPROVAL_POLICY = {
+        _MODE_DEFAULT: "ask",
+        _MODE_ACCEPT_EDITS: "workspace_session",
+        _MODE_DONT_ASK: "session",
+    }
+    _EDIT_APPROVAL_POLICY_TO_MODE = {
+        value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
+    }
 
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
@@ -513,47 +524,43 @@ class HermesACPAgent(acp.Agent):
         logger.info("ACP client connected")
 
 
-    def _session_config_options(self, state: SessionState) -> list[Any]:
-        values = getattr(state, "config_options", None)
-        if not isinstance(values, dict):
-            values = {}
-        current = str(values.get(self._EDIT_APPROVAL_POLICY_CONFIG_ID) or self._EDIT_APPROVAL_POLICY_DEFAULT)
-        allowed = {"ask", "workspace_session", "session"}
-        if current not in allowed:
-            current = self._EDIT_APPROVAL_POLICY_DEFAULT
-        return [
-            SessionConfigOptionSelect(
-                id=self._EDIT_APPROVAL_POLICY_CONFIG_ID,
-                name="Edit approvals",
-                description="Control ACP edit approvals for this session.",
-                category="permissions",
-                type="select",
-                current_value=current,
-                options=[
-                    SessionConfigSelectOption(
-                        value="ask",
-                        name="Ask before edits",
-                        description="Require approval for every file edit.",
-                    ),
-                    SessionConfigSelectOption(
-                        value="workspace_session",
-                        name="Auto-allow workspace edits",
-                        description="Allow workspace and /tmp edits for this session; still asks for sensitive paths.",
-                    ),
-                    SessionConfigSelectOption(
-                        value="session",
-                        name="Auto-allow all edits this session",
-                        description="Allow file edits for this session except sensitive paths.",
-                    ),
-                ],
-            )
-        ]
+    def _session_modes(self, state: SessionState) -> SessionModeState:
+        """Return ACP session modes while preserving Zed's separate model picker.
+
+        Zed renders ``config_options`` in the prominent selector slot where the
+        model picker was visible. Claude/Codex expose policy-like controls as ACP
+        modes, which coexist with the model picker, so Hermes maps edit approval
+        policy onto modes instead of advertising config options.
+        """
+
+        current = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        if current not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+            current = self._MODE_DEFAULT
+        return SessionModeState(
+            current_mode_id=current,
+            available_modes=[
+                SessionMode(
+                    id=self._MODE_DEFAULT,
+                    name="Default",
+                    description="Ask before edits.",
+                ),
+                SessionMode(
+                    id=self._MODE_ACCEPT_EDITS,
+                    name="Accept Edits",
+                    description="Auto-allow workspace and /tmp edits; still asks for sensitive paths.",
+                ),
+                SessionMode(
+                    id=self._MODE_DONT_ASK,
+                    name="Don't Ask",
+                    description="Auto-allow file edits for this session except sensitive paths.",
+                ),
+            ],
+        )
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
-        values = getattr(state, "config_options", None)
-        if not isinstance(values, dict):
-            values = {}
-        return str(values.get(self._EDIT_APPROVAL_POLICY_CONFIG_ID) or self._EDIT_APPROVAL_POLICY_DEFAULT), state.cwd
+        mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
+        return policy, state.cwd
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -1040,7 +1047,7 @@ class HermesACPAgent(acp.Agent):
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
-            config_options=self._session_config_options(state),
+            modes=self._session_modes(state),
         )
 
     async def load_session(
@@ -1084,7 +1091,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return LoadSessionResponse(
             models=self._build_model_state(state),
-            config_options=self._session_config_options(state),
+            modes=self._session_modes(state),
         )
 
     async def resume_session(
@@ -1116,7 +1123,7 @@ class HermesACPAgent(acp.Agent):
         self._schedule_usage_update(state)
         return ResumeSessionResponse(
             models=self._build_model_state(state),
-            config_options=self._session_config_options(state),
+            modes=self._session_modes(state),
         )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -1150,7 +1157,7 @@ class HermesACPAgent(acp.Agent):
         return ForkSessionResponse(
             session_id=new_id,
             models=self._build_model_state(state) if state is not None else None,
-            config_options=self._session_config_options(state) if state is not None else None,
+            modes=self._session_modes(state) if state is not None else None,
         )
 
     async def list_sessions(
@@ -1307,7 +1314,14 @@ class HermesACPAgent(acp.Agent):
         streamed_message = False
 
         if conn:
-            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            tool_progress_cb = make_tool_progress_cb(
+                conn,
+                session_id,
+                loop,
+                tool_call_ids,
+                tool_call_meta,
+                edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
+            )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
@@ -1849,9 +1863,12 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
-        setattr(state, "mode", mode_id)
+        normalized_mode = str(mode_id or "").strip()
+        if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+            normalized_mode = self._MODE_DEFAULT
+        setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
-        logger.info("Session %s: mode switched to %s", session_id, mode_id)
+        logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
     async def set_config_option(
@@ -1863,11 +1880,15 @@ class HermesACPAgent(acp.Agent):
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        options = getattr(state, "config_options", None)
-        if not isinstance(options, dict):
-            options = {}
-        options[str(config_id)] = value
-        setattr(state, "config_options", options)
+        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+            mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+            setattr(state, "mode", mode)
+        else:
+            options = getattr(state, "config_options", None)
+            if not isinstance(options, dict):
+                options = {}
+            options[str(config_id)] = value
+            setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))
+        return SetSessionConfigOptionResponse(config_options=[])

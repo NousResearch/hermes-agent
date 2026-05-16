@@ -2,6 +2,7 @@
 
 import pytest
 
+from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -173,6 +174,25 @@ class TestBuildToolStart:
         assert isinstance(item, ContentToolCallContent)
         assert "Approval prompt shows the diff" in item.content.text
         assert "new_file.py" in item.content.text
+
+    def test_auto_approved_edit_start_shows_diff_content(self):
+        """Auto-approved edit starts need the diff because no approval card exists."""
+        args = {"path": "/tmp/acp.txt", "old_string": "old", "new_string": "new"}
+        result = build_tool_start(
+            "tc-auto-edit",
+            "patch",
+            args,
+            edit_diff=EditProposal("patch", "/tmp/acp.txt", "old\n", "new\n", args),
+        )
+
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "edit"
+        assert len(result.content) == 1
+        item = result.content[0]
+        assert isinstance(item, FileEditToolCallContent)
+        assert item.path == "/tmp/acp.txt"
+        assert item.old_text == "old\n"
+        assert item.new_text == "new\n"
 
     def test_build_tool_start_for_terminal(self):
         """terminal should produce text content with the command."""

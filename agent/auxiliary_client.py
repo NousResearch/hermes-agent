@@ -1272,12 +1272,40 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
 def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     """Resolve a fresh xAI OAuth (api_key, base_url) for auxiliary clients.
 
-    Routes through ``hermes_cli.auth``'s runtime resolver so the auto-refresh
-    path is shared with the main agent, instead of relying on whatever raw
-    tokens happen to be sitting in auth.json or the credential pool.  Returns
-    ``None`` if the user is not authenticated with xAI Grok OAuth (so
-    ``_resolve_auto`` Step 1 falls through to the next provider in the chain).
+    Prefer the credential pool, matching the main runtime/provider status
+    path.  Some xAI OAuth logins live only as pool entries; falling straight
+    to the singleton auth-store resolver would make auxiliary tasks such as
+    compression report "no provider configured" even though ``hermes auth
+    status`` shows xAI OAuth as logged in.
+
+    Falls back to ``hermes_cli.auth``'s singleton runtime resolver for older
+    auth-store-only logins. Returns ``None`` if the user is not authenticated
+    with xAI Grok OAuth.
     """
+    try:
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        pool = load_pool("xai-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                    or ""
+                ).strip()
+                base_url = str(
+                    os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+                    or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+                    or getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or DEFAULT_XAI_OAUTH_BASE_URL
+                ).strip().rstrip("/")
+                if api_key and base_url:
+                    return api_key, base_url
+    except Exception as exc:
+        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
+
     try:
         from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 

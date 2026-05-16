@@ -3237,11 +3237,20 @@ class AIAgent:
             except Exception:
                 _aux_cfg_provider = ""
             if client is None or not aux_model:
-                msg = (
-                    "⚠ No auxiliary LLM provider configured — context "
-                    "compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
-                )
+                if _aux_cfg_provider and _aux_cfg_provider != "auto":
+                    msg = (
+                        "⚠ Configured auxiliary compression provider "
+                        f"'{_aux_cfg_provider}' is unavailable — context "
+                        "compression will drop middle turns without a summary. "
+                        "Check auxiliary.compression in config.yaml and "
+                        "reauthenticate that provider."
+                    )
+                else:
+                    msg = (
+                        "⚠ No auxiliary LLM provider configured — context "
+                        "compression will drop middle turns without a summary. "
+                        "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    )
                 self._compression_warning = msg
                 self._emit_status(msg)
                 logger.warning(

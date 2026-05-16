@@ -169,6 +169,12 @@ module [`AgentFirstModule`](https://github.com/nepenth/matrix-agentic-modules).
 This is an enhancement layer only. Standard Matrix homeservers continue to work
 without any behavior change.
 
+You do not need AgentFirstModule for the standard Matrix gateway features in
+this guide. Room isolation, reaction approvals, model selection reactions,
+tool activity, media, E2EE modes, and diagnostics all work on ordinary Matrix
+homeservers. AgentFirstModule is for deployments that want additional
+structured metadata for custom clients or downstream automation.
+
 When the module adds `unsigned.agent_metadata.is_agent=true`, Hermes reads these
 optional fields:
 

@@ -65,9 +65,10 @@ def test_research_subject_strips_mock_research_prefix():
 def test_format_direct_research_progress_prefixes_subject():
     text = _format_direct_research_progress("the best browser", ["📚 skimming", "🌐 browsing", "🛠️ tinkering"])
     assert text.startswith("Researching the best browser\nlive run · gathering sources\n\n")
-    assert "2 ago · 📚 skimming" in text
-    assert "1 ago · 🌐 browsing" in text
-    assert text.endswith("now   · 🛠️ tinkering")
+    assert "✓ framing" in text
+    assert "✓ browsing" in text
+    assert "◉ shaping" in text
+    assert text.endswith("○ publishing")
 
 
 def test_format_direct_research_result_includes_report_link():
@@ -75,7 +76,9 @@ def test_format_direct_research_result_includes_report_link():
         "the best browser",
         "https://research.briankeefe.dev/browser-report",
     )
-    assert text.startswith("Research complete · the best browser\nlive run · published\n\nReport\n")
+    assert text.startswith("Research complete · the best browser\nlive run · published\n\n")
+    assert "✓ publishing" in text
+    assert "\n\nReport\n" in text
     assert text.endswith("https://research.briankeefe.dev/browser-report")
 
 

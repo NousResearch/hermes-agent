@@ -177,21 +177,24 @@ def _research_subject(text: str, limit: int = 72) -> str:
 
 def _format_direct_research_progress(subject: str, labels: list[str]) -> str:
     visible = labels[-3:] if labels else ["🧠 thinking"]
-    timeline: list[str] = []
-    if len(visible) == 1:
-        timeline.append(f"now   · {visible[0]}")
-    elif len(visible) == 2:
-        timeline.append(f"1 ago · {visible[0]}")
-        timeline.append(f"now   · {visible[1]}")
-    else:
-        timeline.append(f"2 ago · {visible[0]}")
-        timeline.append(f"1 ago · {visible[1]}")
-        timeline.append(f"now   · {visible[2]}")
+    stage_index = 0
+    for label in visible:
+        lower = label.lower()
+        if "publish" in lower:
+            stage_index = max(stage_index, 3)
+        elif any(tok in lower for tok in ("tinker", "filing")):
+            stage_index = max(stage_index, 2)
+        elif "brows" in lower:
+            stage_index = max(stage_index, 1)
+    steps = []
+    for index, step in enumerate(_MOCK_RESEARCH_STEP_LABELS):
+        marker = "✓" if index < stage_index else "◉" if index == stage_index else "○"
+        steps.append(f"{marker} {step}")
     return "\n".join([
         f"Researching {subject}",
         "live run · gathering sources",
         "",
-        *timeline,
+        *steps,
     ])
 
 
@@ -199,6 +202,8 @@ def _format_direct_research_result(subject: str, final_url: str) -> str:
     return "\n".join([
         f"Research complete · {subject}",
         "live run · published",
+        "",
+        *(f"✓ {step}" for step in _MOCK_RESEARCH_STEP_LABELS),
         "",
         "Report",
         final_url,

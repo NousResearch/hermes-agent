@@ -670,7 +670,7 @@ class TestSendGoogleChatMediaDelivery:
         runner = MagicMock()
         runner.adapters = {"google_chat": adapter}
         
-        # Mock Platform("google_chat") resolving logic
+        # Mock Platform.GOOGLE_CHAT resolving logic
         class FakePlatform:
             def __init__(self, value):
                 self.value = value
@@ -678,12 +678,13 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
+        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
         
         # Need to put adapter under the FakePlatform key
-        runner.adapters = {FakePlatform("google_chat"): adapter}
+        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
 
         from tools.send_message_tool import _send_google_chat
         
@@ -716,8 +717,9 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
+        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform("google_chat"): adapter}
+        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 
@@ -785,8 +787,9 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
+        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform("google_chat"): adapter}
+        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 
@@ -820,8 +823,9 @@ class TestSendGoogleChatMediaDelivery:
                 return self.value == other
             def __hash__(self):
                 return hash(self.value)
+        FakePlatform.GOOGLE_CHAT = FakePlatform("google_chat")
                 
-        runner.adapters = {FakePlatform("google_chat"): adapter}
+        runner.adapters = {FakePlatform.GOOGLE_CHAT: adapter}
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
         monkeypatch.setattr("gateway.config.Platform", FakePlatform)
 

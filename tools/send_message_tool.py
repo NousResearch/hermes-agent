@@ -1703,11 +1703,7 @@ async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_
         runner = _gateway_runner_ref()
         if runner and hasattr(runner, "adapters"):
             from gateway.config import Platform
-            try:
-                platform_enum = Platform.GOOGLE_CHAT
-            except AttributeError:
-                platform_enum = Platform("google_chat")
-            adapter = runner.adapters.get(platform_enum)
+            adapter = runner.adapters.get(Platform.GOOGLE_CHAT)
             if adapter:
                 metadata = {"thread_id": thread_id} if thread_id else None
                 last_result = None

@@ -160,6 +160,7 @@ class Platform(Enum):
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
+    GOOGLE_CHAT = "google_chat"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"

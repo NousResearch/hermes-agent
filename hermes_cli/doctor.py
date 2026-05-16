@@ -10,6 +10,7 @@ import subprocess
 import shutil
 import importlib.util
 from pathlib import Path
+from typing import Dict, Optional
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -223,6 +224,39 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 
 _APIKEY_PROVIDERS_CACHE: list | None = None
+
+
+def _build_apikey_probe_headers(
+    pname: str,
+    base: str,
+    default_url: Optional[str],
+    key: str,
+) -> Dict[str, str]:
+    """Return the request headers for an API-key provider connectivity probe.
+
+    Most OpenAI-compatible providers accept ``Authorization: Bearer <key>`` on
+    the ``/models`` endpoint.  Google AI Studio (Gemini) is the notable
+    exception — it rejects Bearer auth with HTTP 401 and requires
+    ``x-goog-api-key: <key>`` instead.  Without this branch the doctor
+    falsely reports a valid ``GOOGLE_API_KEY`` as invalid (#26623).
+
+    Kimi servers want a ``User-Agent`` override regardless of which auth
+    style is used; the caller layers that on after the dict returned here.
+    """
+    _is_gemini = (
+        base_url_host_matches(base, "generativelanguage.googleapis.com")
+        or base_url_host_matches(default_url or "", "generativelanguage.googleapis.com")
+        or (pname or "").strip().lower() in {"gemini", "google", "google / gemini"}
+    )
+    if _is_gemini:
+        return {
+            "x-goog-api-key": key,
+            "User-Agent": _HERMES_USER_AGENT,
+        }
+    return {
+        "Authorization": f"Bearer {key}",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
 
 
 def _build_apikey_providers_list() -> list:
@@ -1468,10 +1502,7 @@ def run_doctor(args):
             if base_url_host_matches(base, "api.kimi.com") and base.rstrip("/").endswith("/coding"):
                 base = base.rstrip("/") + "/v1"
             url = (base.rstrip("/") + "/models") if base else default_url
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "User-Agent": _HERMES_USER_AGENT,
-            }
+            headers = _build_apikey_probe_headers(pname, base, default_url, key)
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
             r = httpx.get(url, headers=headers, timeout=10)

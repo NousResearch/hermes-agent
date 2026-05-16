@@ -3371,3 +3371,298 @@ completion_policy:
         assert spawns == [t]
         assert t not in res.preflight_blocked
         assert t not in res.skipped_nonspawnable
+
+
+# ---------------------------------------------------------------------------
+# Review lane classification
+# ---------------------------------------------------------------------------
+
+class TestClassifyKanbanReviewLane:
+    """Tests for classify_kanban_review_lane()."""
+
+    def test_fastlane_default_for_plain_kanban_task(self):
+        """No critical/standard triggers → FASTLANE_KANBAN."""
+        result = kb.classify_kanban_review_lane(
+            title="Polish error messages in hub response",
+            body="Tweak wording in Hub responses.\nNo system-level changes.",
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"
+        assert result["risk"] == "low"
+        assert result["hub_coordinator_evidence_check_required"] is True
+        assert result["reviewer_a_required"] is False
+        assert result["reviewer_b_required"] is False
+        assert any("default" in reason for reason in result["reasons"])
+
+    def test_fastlane_explicit_request_kept(self):
+        """Explicit request keeps FASTLANE when no triggers fire."""
+        result = kb.classify_kanban_review_lane(
+            title="Refactor kanban tool handlers",
+            body="Extract shared logic from _handle_* functions.",
+            requested_lane="FASTLANE_KANBAN",
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"
+
+    def test_forbidden_systems_do_not_escalate_fastlane_scope_contract(self):
+        """Negative scope declarations must not trip critical text matching."""
+        body = """
+review_lane: FASTLANE_KANBAN
+scope_contract:
+  version: 2
+  allowed_systems: [hermes-agent, hermes-kanban]
+  forbidden_systems: [OpenClaw, Atlas, Mission-Control, Telegram]
+  anti_scope:
+    - keine OpenClaw-Touches
+    - keine Mission-Control-Mutation
+"""
+        result = kb.classify_kanban_review_lane(
+            title="Write scratchpad note",
+            body=body,
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"
+        assert "critical_allowed_system_or_text" not in result["escalation_triggers"]
+
+    def test_forbidden_systems_do_not_hide_standard_review_trigger(self):
+        """Structured negative scope keeps STANDARD triggers observable."""
+        body = """
+review_lane: STANDARD_REVIEW
+Diese Probe testet task-lifecycle semantics.
+scope_contract:
+  version: 2
+  allowed_systems: [hermes-agent, hermes-kanban]
+  forbidden_systems: [OpenClaw, Atlas, Mission-Control, Telegram]
+  anti_scope: [keine Mission-Control-Mutation]
+"""
+        result = kb.classify_kanban_review_lane(
+            title="Lane validation standard probe",
+            body=body,
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+        assert "critical_allowed_system_or_text" not in result["escalation_triggers"]
+
+    def test_standard_review_escalates_on_lifecycle_terms(self):
+        """Lifecycle / dispatcher semantics → STANDARD_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Extend task-lifecycle policy with retry semantics",
+            body="Add retry_after_seconds to completion_policy.\nDispatcher should handle retry dispatch.",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+        assert result["risk"] == "medium"
+        assert result["hub_coordinator_evidence_check_required"] is False
+        assert result["reviewer_a_required"] is False
+        assert result["reviewer_b_required"] is True
+
+    def test_standard_review_escalates_on_kanban_db_semantics(self):
+        """kanban-db-semantics in body → STANDARD_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Add computed status field",
+            body="Add a computed read-only field to the task schema.\nkanban-db-semantics change.",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+
+    def test_standard_review_explicit_request_escalates(self):
+        """Explicit STANDARD_REVIEW request is honored."""
+        result = kb.classify_kanban_review_lane(
+            title="Minor tweak to review trigger logic",
+            body="Small refactor in hub.",
+            requested_lane="STANDARD_REVIEW",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+
+    def test_critical_review_on_runtime_activation(self):
+        """Runtime activation term → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Activate gateway runtime on startup",
+            body="Add gateway-runtime activation in startup sequence.",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["risk"] == "high"
+        assert result["hub_coordinator_evidence_check_required"] is False
+        assert result["reviewer_a_required"] is True
+        assert result["reviewer_b_required"] is True
+
+    def test_critical_review_on_openclaw_path(self):
+        """OpenClaw path marker → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Update openclaw model catalog",
+            body="Add new model entry.",
+            changed_paths=["/home/piet/.openclaw/openclaw.json"],
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["risk"] == "high"
+
+    def test_critical_review_on_secrets_path(self):
+        """Secrets path → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Rotate Discord webhook token",
+            body="Update stored token.",
+            changed_paths=["/home/piet/.hermes/auth.json"],
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["risk"] == "high"
+
+    def test_critical_review_on_restart_deploy(self):
+        """Restart/deploy terms → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Restart openclaw-gateway after config change",
+            body="Restart the gateway service and smoke-test.",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+
+    def test_critical_review_on_mission_control_path(self):
+        """Mission Control path → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Update MC dispatch priority",
+            body="Change priority field in MC.",
+            changed_paths=["/home/piet/.openclaw/workspace/mission-control/src/dispatch.py"],
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+
+    def test_critical_review_on_telegram(self):
+        """Telegram term → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Add Telegram notification channel",
+            body="Wire up Telegram bot for alert delivery.",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+
+    def test_critical_review_on_atlas(self):
+        """Atlas term → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Hook Atlas executor into dispatch loop",
+            body="Add Atlas call in dispatcher.",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+
+    def test_explicit_lane_can_escalate_not_downgrade(self):
+        """Explicit FASTLANE cannot downgrade CRITICAL trigger to FASTLANE."""
+        result = kb.classify_kanban_review_lane(
+            title="Restart gateway with new config",
+            body="Restart openclaw-gateway.service",
+            requested_lane="FASTLANE_KANBAN",
+            changed_paths=["/home/piet/.openclaw/openclaw.json"],
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"  # escalation wins
+
+    def test_standard_alias_normalized(self):
+        """STANDARD alias → STANDARD_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Update dispatcher lifecycle",
+            body="Add dispatcher retry logic.",
+            requested_lane="STANDARD",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+
+    def test_fastlane_alias_normalized(self):
+        """FASTLANE alias → FASTLANE_KANBAN."""
+        result = kb.classify_kanban_review_lane(
+            title="Tweak error wording",
+            body="No system changes.",
+            requested_lane="FASTLANE",
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"
+
+    def test_invalid_requested_lane_falls_back_to_computed(self):
+        """Invalid lane name → falls back to computed lane."""
+        result = kb.classify_kanban_review_lane(
+            title="Refactor",
+            body="Small refactor.",
+            requested_lane="INVALID_LANE",
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"  # computed default
+
+    def test_fastlane_with_only_kanban_tool_changes(self):
+        """Kanban-only tool changes → FASTLANE_KANBAN."""
+        result = kb.classify_kanban_review_lane(
+            title="Add kanban_history tool",
+            body="Add new kanban tool for history browsing.\nallowed_tools: kanban_show, kanban_history.",
+            changed_paths=["/home/piet/.hermes/hermes-agent/tools/kanban_tools.py"],
+        )
+        # Tool changes in hermes-agent (not system paths) → not auto-escalated
+        assert result["lane"] == "FASTLANE_KANBAN"
+
+    def test_critical_trumps_standard_term(self):
+        """Critical triggers override standard terms."""
+        result = kb.classify_kanban_review_lane(
+            title="Restart Atlas after dispatcher change",
+            body="Dispatcher lifecycle update then restart Atlas.",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+
+    def test_plain_restart_or_deploy_words_do_not_force_critical(self):
+        """Plain words like restart/deploy in notes stay FASTLANE absent hard triggers."""
+        result = kb.classify_kanban_review_lane(
+            title="Document deploy notes for kanban workers",
+            body="Add restart checklist wording to docs; no service or runtime changes.",
+        )
+        assert result["lane"] == "FASTLANE_KANBAN"
+        assert result["reviewer_b_required"] is False
+        assert result["hub_coordinator_evidence_check_required"] is True
+
+    def test_policy_review_lane_standard_requires_reviewer_b(self):
+        """Structured body policy can request STANDARD_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Small wording tweak",
+            body="""
+review_lane: STANDARD_REVIEW
+summary: Small wording tweak, but request one reviewer.
+""",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+        assert result["reviewer_a_required"] is False
+        assert result["reviewer_b_required"] is True
+        assert result["hub_coordinator_evidence_check_required"] is False
+
+    def test_policy_review_lane_critical_requires_reviewer_a_and_b(self):
+        """Structured body policy can request CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Small wording tweak",
+            body="""
+review_lane: CRITICAL_REVIEW
+summary: Explicitly request critical review.
+""",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["reviewer_a_required"] is True
+        assert result["reviewer_b_required"] is True
+        assert result["hub_coordinator_evidence_check_required"] is False
+
+    def test_scope_contract_allowed_systems_restart_is_critical(self):
+        """Structured allowed_systems hard-trigger CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Scoped restart action",
+            body="""
+scope_contract:
+  allowed_systems:
+    - restart
+""",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["reviewer_a_required"] is True
+        assert result["reviewer_b_required"] is True
+
+    def test_critical_alias_normalized(self):
+        """CRITICAL alias → CRITICAL_REVIEW."""
+        result = kb.classify_kanban_review_lane(
+            title="Force strict review",
+            body="Small refactor.",
+            requested_lane="CRITICAL",
+        )
+        assert result["lane"] == "CRITICAL_REVIEW"
+        assert result["reviewer_a_required"] is True
+        assert result["reviewer_b_required"] is True
+
+    def test_explicit_fastlane_cannot_downgrade_standard_trigger(self):
+        """Explicit FASTLANE cannot downgrade STANDARD lifecycle semantics."""
+        result = kb.classify_kanban_review_lane(
+            title="Update dispatcher lifecycle",
+            body="Change lifecycle behavior for task-links.",
+            requested_lane="FASTLANE_KANBAN",
+        )
+        assert result["lane"] == "STANDARD_REVIEW"
+        assert result["reviewer_b_required"] is True
+
+    def test_empty_title_and_body_defaults_to_fastlane(self):
+        """No title/body → FASTLANE_KANBAN."""
+        result = kb.classify_kanban_review_lane(title="", body="")
+        assert result["lane"] == "FASTLANE_KANBAN"
+        assert result["risk"] == "low"

@@ -2931,7 +2931,12 @@ def _normalized_review_lane(value: Any) -> Optional[str]:
 
 
 def _without_scope_negative_declarations(text: str, contract: dict[str, Any]) -> str:
-    """Remove negative scope declarations before free-text risk matching."""
+    """Remove negative scope declarations before free-text risk matching.
+
+    The lane classifier should not escalate a low-risk task merely because its
+    scope contract lists critical systems under forbidden/anti-scope fields.
+    Positive declarations such as allowed_systems are handled separately.
+    """
     sanitized = text
     for key in ("forbidden_systems", "forbidden_paths", "anti_scope"):
         for item in _review_lane_string_list(contract.get(key)):
@@ -2988,9 +2993,8 @@ def classify_kanban_review_lane(
     reasons: list[str] = []
     triggers: list[str] = []
     critical_text_haystack = _without_scope_negative_declarations(text_haystack, contract)
-    if allowed_systems.intersection(critical_terms) or any(
-        marker in critical_text_haystack for marker in critical_text_markers
-    ):
+    critical_text_hit = any(marker in critical_text_haystack for marker in critical_text_markers)
+    if allowed_systems.intersection(critical_terms) or critical_text_hit:
         triggers.append("critical_allowed_system_or_text")
     if any(marker in p.casefold() for p in paths for marker in critical_path_markers):
         triggers.append("critical_changed_path")

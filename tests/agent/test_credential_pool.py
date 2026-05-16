@@ -14,6 +14,44 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
 
+def _jwt_with_claims(claims: dict) -> str:
+    import base64
+    import json
+
+    def enc(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{enc({'alg': 'none'})}.{enc(claims)}."
+
+
+def test_label_from_token_reads_codex_nested_profile_email():
+    from agent.credential_pool import label_from_token
+
+    token = _jwt_with_claims({
+        "https://api.openai.com/profile": {"email": "codex@example.test", "email_verified": True},
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "97feb16e-be2d-40b8-b57e-495485376aab",
+            "chatgpt_plan_type": "plus",
+        },
+    })
+
+    assert label_from_token(token, "openai-codex-oauth-9") == "codex@example.test"
+
+
+def test_label_from_token_falls_back_to_codex_account_id_when_email_absent():
+    from agent.credential_pool import label_from_token
+
+    token = _jwt_with_claims({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "97feb16e-be2d-40b8-b57e-495485376aab",
+            "chatgpt_plan_type": "plus",
+        },
+    })
+
+    assert label_from_token(token, "openai-codex-oauth-9") == "codex-plus-97feb16e"
+
+
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

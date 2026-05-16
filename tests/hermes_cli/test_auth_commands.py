@@ -668,6 +668,37 @@ def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
     assert config_path.read_text(encoding="utf-8") == original_text
 
 
+def test_auth_list_truncates_long_email_labels(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "verylongemailaccount@example.com"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = None
+        last_error_code = None
+        last_status_at = None
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "verylon…@example.com" in out
+    assert "verylongemailaccount@example.com" not in out
+
+
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 

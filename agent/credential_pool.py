@@ -179,6 +179,28 @@ def label_from_token(token: str, fallback: str) -> str:
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+
+    # OpenAI Codex / ChatGPT OAuth tokens keep profile details in a namespaced
+    # JWT claim instead of the top-level email claim.  Without this, multiple
+    # linked Codex accounts all show up as generic labels such as
+    # ``openai-codex-oauth-8`` even when the token contains the account email.
+    profile = claims.get("https://api.openai.com/profile")
+    if isinstance(profile, dict):
+        for key in ("email", "preferred_username", "upn"):
+            value = profile.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    auth = claims.get("https://api.openai.com/auth")
+    if isinstance(auth, dict):
+        account_id = auth.get("chatgpt_account_id")
+        plan_type = auth.get("chatgpt_plan_type")
+        if isinstance(account_id, str) and account_id.strip():
+            prefix = "codex"
+            if isinstance(plan_type, str) and plan_type.strip():
+                prefix = f"codex-{plan_type.strip()}"
+            return f"{prefix}-{account_id.strip()[:8]}"
+
     return fallback
 
 

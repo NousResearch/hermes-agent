@@ -14,13 +14,17 @@ Inkbox gives one Hermes identity a mailbox, a phone number, and an edge tunnel. 
 Inkbox is a multi-channel platform adapter, not just an SMS adapter:
 
 - `message.received` webhooks become email turns.
-- `text.received` webhooks become SMS/MMS turns.
+- Inbound `text.received` webhooks are grouped into SMS/MMS turns.
 - Other `text.*` webhooks are delivery/lifecycle callbacks and are logged without starting an agent turn.
 - Incoming calls are answered by the adapter and bridged over `/phone/media/ws`.
 
 Hermes uses the resolved Inkbox Contact as the primary `chat_id` when possible. That means email, SMS, and outbound voice can share one contact-scoped session. Unknown senders fall back to the raw email address or E.164 phone number.
 
 ## SMS Behavior
+
+Inbound SMS is buffered per contact before Hermes starts an agent turn. By default the adapter waits for an 8-second quiet window so rapid human fragments, corrections, and follow-ups arrive as one prompt instead of several competing prompts. A multi-message turn uses an `inkbox:sms_burst` routing marker and includes relative timestamps for each fragment.
+
+Slash commands bypass SMS batching and routing markers, so a text such as `/approve` or `/deny` reaches the Hermes command parser as a command rather than tagged SMS body text. Carrier protocol words such as `START`, `STOP`, `HELP`, and `UNSUBSCRIBE` are treated as SMS control traffic and are acknowledged at the webhook layer without starting an agent turn.
 
 Outbound SMS is queued with `identity.send_text(to=..., text=...)`. The adapter returns a `SendResult` with the Inkbox text id and non-body metadata such as `delivery_status`.
 

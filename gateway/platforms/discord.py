@@ -578,8 +578,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing indicator loops per channel (DMs don't reliably
-        # show the standard typing gateway event for bots)
+        # show the standard typing gateway event for bots).  The max lifetime
+        # is a safety valve: the generic gateway typing loop should always call
+        # stop_typing(), but if cleanup is missed during cancellation/restart we
+        # must not refresh Discord typing forever.
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_loop_max_seconds = float(os.getenv("HERMES_DISCORD_TYPING_MAX_SECONDS", "1800"))
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
@@ -2715,8 +2719,14 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         async def _typing_loop() -> None:
+            max_seconds = self._typing_loop_max_seconds
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max_seconds if max_seconds > 0 else None
             try:
                 while True:
+                    if deadline is not None and loop.time() >= deadline:
+                        logger.debug("Discord typing indicator safety timeout reached for %s", chat_id)
+                        return
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
@@ -2728,7 +2738,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     except Exception as e:
                         logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
                         return
-                    await asyncio.sleep(8)
+                    if deadline is None:
+                        await asyncio.sleep(8)
+                    else:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            logger.debug("Discord typing indicator safety timeout reached for %s", chat_id)
+                            return
+                        await asyncio.sleep(min(8, remaining))
             except asyncio.CancelledError:
                 pass
             finally:

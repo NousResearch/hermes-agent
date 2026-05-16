@@ -445,3 +445,22 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_typing_task_self_expires_if_cleanup_is_missed():
+    """Discord typing loops must not refresh forever if stop_typing is missed."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._client.http.request = AsyncMock()
+    adapter._typing_tasks = {}
+    adapter._typing_loop_max_seconds = 0.01
+
+    await adapter.send_typing("12345")
+    assert "12345" in adapter._typing_tasks
+
+    await asyncio.sleep(0.05)
+
+    assert "12345" not in adapter._typing_tasks
+    assert adapter._client.http.request.await_count >= 1

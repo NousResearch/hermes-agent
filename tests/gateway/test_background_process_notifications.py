@@ -292,6 +292,7 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
         "agent:main:telegram:dm:123",
         "mock research the best browser",
         "standard",
+        event_message_id="55",
     )
 
     assert result == ""
@@ -299,9 +300,11 @@ async def test_start_manual_telegram_research_mock_path_skips_spawn_local(monkey
     assert adapter.send.await_count == 1
     assert adapter._edit_message.await_count == 4
     kickoff_text = adapter.send.await_args.args[1]
+    kickoff_metadata = adapter.send.await_args.kwargs["metadata"]
     progress_text = adapter._edit_message.await_args_list[0].kwargs["content"]
     final_text = adapter._edit_message.await_args_list[-1].kwargs["content"]
     assert kickoff_text.startswith("Researching the best browser\nmock preview · no tokens burned\n\n")
+    assert kickoff_metadata["telegram_reply_to_message_id"] == "55"
     assert "◉ framing" in kickoff_text
     assert "◉ browsing" in progress_text
     assert final_text.startswith("Research complete · the best browser\n")

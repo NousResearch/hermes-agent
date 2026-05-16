@@ -177,7 +177,32 @@ def _research_subject(text: str, limit: int = 72) -> str:
 
 def _format_direct_research_progress(subject: str, labels: list[str]) -> str:
     visible = labels[-3:] if labels else ["🧠 thinking"]
-    return "Researching " + subject + ":\n" + "\n".join(visible)
+    timeline: list[str] = []
+    if len(visible) == 1:
+        timeline.append(f"now   · {visible[0]}")
+    elif len(visible) == 2:
+        timeline.append(f"1 ago · {visible[0]}")
+        timeline.append(f"now   · {visible[1]}")
+    else:
+        timeline.append(f"2 ago · {visible[0]}")
+        timeline.append(f"1 ago · {visible[1]}")
+        timeline.append(f"now   · {visible[2]}")
+    return "\n".join([
+        f"Researching {subject}",
+        "live run · gathering sources",
+        "",
+        *timeline,
+    ])
+
+
+def _format_direct_research_result(subject: str, final_url: str) -> str:
+    return "\n".join([
+        f"Research complete · {subject}",
+        "live run · published",
+        "",
+        "Report",
+        final_url,
+    ])
 
 
 def _mock_research_step_delay_secs() -> float:
@@ -6104,7 +6129,7 @@ class GatewayRunner:
                             question="Research rigor?",
                             rigor_id=_rigor_id,
                             session_key=_quick_key,
-                            metadata=self._thread_metadata_for_source(
+                            metadata=self._research_delivery_metadata_for_source(
                                 source,
                                 getattr(event, "message_id", None),
                             ),
@@ -12600,6 +12625,19 @@ class GatewayRunner:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
         return metadata
 
+    def _research_delivery_metadata_for_source(
+        self,
+        source,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        metadata = self._thread_metadata_for_source(source, reply_to_message_id) or {}
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and reply_to_message_id is not None
+        ):
+            metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+        return metadata or None
+
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
@@ -13679,6 +13717,10 @@ class GatewayRunner:
 
         subject = _research_subject(prompt_text)
         is_mock_research = _looks_like_mock_manual_research_request(prompt_text)
+        delivery_metadata = self._research_delivery_metadata_for_source(
+            source,
+            event_message_id,
+        )
         kickoff_text = (
             _format_mock_research_progress(subject, 0)
             if is_mock_research
@@ -13690,7 +13732,7 @@ class GatewayRunner:
                 result = await adapter.send(
                     source.chat_id,
                     kickoff_text,
-                    metadata=self._thread_metadata_for_source(source, event_message_id),
+                    metadata=delivery_metadata,
                 )
                 if getattr(result, "success", False) and getattr(result, "message_id", None):
                     progress_message_id = str(result.message_id)
@@ -13720,6 +13762,7 @@ class GatewayRunner:
                 "mock_research_delivery": True,
                 "progress_message_id": progress_message_id,
                 "progress_subject": subject,
+                "delivery_metadata": delivery_metadata,
             }
             _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
             self._background_tasks.add(_watch_task)
@@ -13770,6 +13813,7 @@ class GatewayRunner:
                 "direct_research_delivery": True,
                 "progress_message_id": progress_message_id,
                 "progress_subject": subject,
+                "delivery_metadata": delivery_metadata,
             }
             process_registry.pending_watchers.append(watcher)
             _watch_task = asyncio.create_task(self._run_process_watcher(watcher))
@@ -13793,6 +13837,7 @@ class GatewayRunner:
         thread_id = watcher.get("thread_id", "")
         progress_message_id = watcher.get("progress_message_id")
         progress_subject = str(watcher.get("progress_subject") or "research")
+        delivery_metadata = watcher.get("delivery_metadata") or ({"thread_id": thread_id} if thread_id else None)
         adapter = None
         for p, a in self.adapters.items():
             if p.value == platform_name:
@@ -13813,8 +13858,7 @@ class GatewayRunner:
                         content=label,
                     )
                 else:
-                    send_meta = {"thread_id": thread_id} if thread_id else None
-                    send_result = await adapter.send(chat_id, label, metadata=send_meta)
+                    send_result = await adapter.send(chat_id, label, metadata=delivery_metadata)
                     if getattr(send_result, "success", False) and getattr(send_result, "message_id", None):
                         progress_message_id = str(send_result.message_id)
             except Exception as exc:
@@ -13831,8 +13875,7 @@ class GatewayRunner:
                     content=final_text,
                 )
             else:
-                send_meta = {"thread_id": thread_id} if thread_id else None
-                await adapter.send(chat_id, final_text, metadata=send_meta)
+                await adapter.send(chat_id, final_text, metadata=delivery_metadata)
         except Exception as exc:
             logger.error("Mock research delivery error: %s", exc)
 
@@ -13865,6 +13908,7 @@ class GatewayRunner:
         progress_message_id = watcher.get("progress_message_id")
         progress_subject = str(watcher.get("progress_subject") or "research")
         progress_history = ["🧠 thinking"]
+        delivery_metadata = watcher.get("delivery_metadata") or ({"thread_id": thread_id} if thread_id else None)
 
         if watcher.get("mock_research_delivery"):
             await self._run_mock_research_watcher(watcher)
@@ -13900,7 +13944,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = f"Report:\n{final_url}"
+                        final_text = _format_direct_research_result(progress_subject, final_url)
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None
@@ -13917,8 +13961,7 @@ class GatewayRunner:
                                     content=final_text,
                                 )
                             else:
-                                send_meta = {"thread_id": thread_id} if thread_id else None
-                                await adapter.send(chat_id, final_text, metadata=send_meta)
+                                await adapter.send(chat_id, final_text, metadata=delivery_metadata)
                         except Exception as e:
                             logger.error("Direct research delivery error: %s", e)
                     break
@@ -13995,8 +14038,7 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
-                            send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(chat_id, message_text, metadata=send_meta)
+                            await adapter.send(chat_id, message_text, metadata=delivery_metadata)
                         except Exception as e:
                             logger.error("Watcher completion delivery error: %s", e)
                 elif has_new_output and notify_mode == "all" and not agent_notify:
@@ -14027,7 +14069,6 @@ class GatewayRunner:
                         break
                 if adapter and chat_id:
                     try:
-                        send_meta = {"thread_id": thread_id} if thread_id else None
                         latest_labels = _extract_research_progress_lines(session.output_buffer, limit=1)
                         latest = latest_labels[-1] if latest_labels else "🧠 thinking"
                         if latest != progress_history[-1]:
@@ -14041,7 +14082,7 @@ class GatewayRunner:
                                 content=label,
                             )
                         else:
-                            await adapter.send(chat_id, label, metadata=send_meta)
+                            await adapter.send(chat_id, label, metadata=delivery_metadata)
                         logger.info(
                             "Direct research progress update for %s -> %r",
                             session_id,

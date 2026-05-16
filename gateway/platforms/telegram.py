@@ -541,9 +541,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> Optional[int]:
         if reply_to:
             return int(reply_to)
-        if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-            return cls._metadata_reply_to_message_id(metadata)
-        return None
+        return cls._metadata_reply_to_message_id(metadata)
 
     @classmethod
     def _thread_kwargs_for_send(

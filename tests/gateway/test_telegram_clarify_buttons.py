@@ -174,6 +174,41 @@ class TestTelegramSendClarify:
         rows = captured["rows"]
         assert len(rows) == 1
         assert [b.text for b in rows[0]] == ["Brief", "Standard", "Deep"]
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs.get("reply_to_message_id") is None
+
+    @pytest.mark.asyncio
+    async def test_send_research_rigor_uses_reply_to_message_id_from_metadata(self, monkeypatch):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 106
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        captured = {}
+
+        class _Btn:
+            def __init__(self, text, callback_data):
+                self.text = text
+                self.callback_data = callback_data
+
+        class _Markup:
+            def __init__(self, rows):
+                captured["rows"] = rows
+
+        monkeypatch.setattr("gateway.platforms.telegram.InlineKeyboardButton", _Btn)
+        monkeypatch.setattr("gateway.platforms.telegram.InlineKeyboardMarkup", _Markup)
+
+        result = await adapter.send_research_rigor(
+            chat_id="12345",
+            question="Research rigor?",
+            rigor_id="rig2",
+            session_key="sk-rigor3",
+            metadata={"telegram_reply_to_message_id": "444"},
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs["reply_to_message_id"] == 444
 
     @pytest.mark.asyncio
     async def test_open_ended_no_keyboard(self):

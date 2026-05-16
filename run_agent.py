@@ -2458,7 +2458,8 @@ class AIAgent:
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=self.platform
+                    or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
@@ -4371,7 +4372,8 @@ class AIAgent:
             ),
             "session_id": self.session_id or "",
             "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "platform": self.platform
+                            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             "tool_name": "memory",
         }
         if task_id:
@@ -10482,6 +10484,10 @@ class AIAgent:
                 limit=function_args.get("limit", 3),
                 db=session_db,
                 current_session_id=self.session_id,
+                session_source=(
+                    self.platform
+                    or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+                ),
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
@@ -11107,6 +11113,10 @@ class AIAgent:
                         limit=function_args.get("limit", 3),
                         db=session_db,
                         current_session_id=self.session_id,
+                        session_source=(
+                            self.platform
+                            or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+                        ),
                     )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():

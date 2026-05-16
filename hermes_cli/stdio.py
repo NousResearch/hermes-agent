@@ -36,6 +36,7 @@ __all__ = ["configure_windows_stdio", "is_windows"]
 
 
 _CONFIGURED = False
+_WINDOWS_PATH_BUFFER_SIZE = 32768
 
 
 def is_windows() -> bool:
@@ -163,9 +164,9 @@ def _default_windows_editor() -> str:
 
     Priority order, first match wins:
 
-    1. ``notepad`` — ships with every Windows install, no deps, works as a
-       blocking editor (``subprocess.call(["notepad", file])`` blocks until
-       the user closes the window).  This is the "always-works" default.
+    1. ``<Windows API system dir>\\notepad.exe`` — ships with every Windows
+       install, no deps, works as a blocking editor, and avoids Windows
+       current-directory/PATH executable hijacking.
 
     The prompt_toolkit buffer's ``open_in_editor`` and Hermes's
     ``hermes config edit`` both honour ``$EDITOR``.  Users who prefer a
@@ -179,13 +180,39 @@ def _default_windows_editor() -> str:
     Set this before launching Hermes (User env var in Windows Settings, or
     export in a PowerShell profile) and Hermes picks it up automatically.
     """
-    import shutil
+    return _trusted_system_notepad_path()
 
-    # notepad.exe is always in %SystemRoot%\System32 on Windows, so shutil.which
-    # will reliably find it.  Return the bare name so prompt_toolkit's shlex
-    # split doesn't trip over a path containing spaces.
-    if shutil.which("notepad"):
-        return "notepad"
+
+def _trusted_system_notepad_path() -> str:
+    """Return the trusted Windows system Notepad path, if present."""
+    import ntpath
+
+    # Supports Windows extended-length paths (\\?\ prefix), while still
+    # comfortably covering normal MAX_PATH usage.
+    candidates: list[str] = []
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        get_system_directory = getattr(kernel32, "GetSystemDirectoryW", None)
+        if get_system_directory:
+            buf = ctypes.create_unicode_buffer(_WINDOWS_PATH_BUFFER_SIZE)
+            length = get_system_directory(buf, len(buf))
+            if 0 < length < len(buf):
+                candidates.append(ntpath.join(buf.value, "notepad.exe"))
+    except Exception:
+        # ctypes/windll may be unavailable in some test/sandbox environments.
+        pass
+
+    # Conservative fallback when WinAPI lookup isn't available.
+    if not candidates:
+        candidates.append(r"C:\Windows\System32\notepad.exe")
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            # prompt_toolkit passes EDITOR through shlex.split(posix=True); forward
+            # slashes keep the absolute Windows path intact without shell quoting.
+            return candidate.replace("\\", "/")
     # On the extreme off-chance notepad is missing (WinPE, Nano Server), fall
     # back to nothing and let prompt_toolkit's silent no-op do its thing.
     return ""

@@ -51,6 +51,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_cli.auth import has_usable_secret
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,15 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"but is bound to non-loopback host '{self._host}'. "
                     f"INSECURE_NO_AUTH is for local testing only. "
                     f"Refusing to start to prevent accidental exposure."
+                )
+            if (
+                secret != _INSECURE_NO_AUTH
+                and not has_usable_secret(secret, min_length=1)
+            ):
+                raise ValueError(
+                    f"[webhook] Route '{name}' has a placeholder HMAC secret. "
+                    "Generate a real secret (e.g. `openssl rand -hex 32`) "
+                    "before enabling the webhook gateway."
                 )
             # deliver_only routes bypass the agent — the POST body becomes a
             # direct push notification via the configured delivery target.
@@ -590,6 +600,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
         """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        if not has_usable_secret(secret, min_length=1):
+            logger.warning(
+                "[webhook] Rejecting request: configured secret is a placeholder"
+            )
+            return False
+
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:

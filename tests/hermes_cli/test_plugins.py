@@ -992,8 +992,12 @@ class TestPluginCommands:
 
         with patch.object(plugins_mod, "_plugin_manager", None):
             engine = plugins_mod.get_plugin_context_engine()
+            second = plugins_mod.get_plugin_context_engine()
             assert engine is not None
+            assert second is not None
             assert engine.name == "stub-engine"
+            assert second.name == "stub-engine"
+            assert engine is not second
 
     def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
         """Commands registered during discover_and_load() are tracked on LoadedPlugin."""

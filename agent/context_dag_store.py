@@ -177,6 +177,85 @@ class ContextDAGStore:
                 f"session {session_id!r}: {sorted(missing_or_cross_session)!r}"
             )
 
+    def _create_summary_node_conn(
+        self,
+        conn,
+        *,
+        session_id: str,
+        summary_text: str,
+        kind: str = "leaf",
+        status: str = "valid",
+        source_hash: Optional[str] = None,
+        summary_hash: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        summary_model: Optional[str] = None,
+        token_estimate: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        node_id: Optional[str] = None,
+    ):
+        if node_id is None:
+            if source_hash:
+                node_id = self._summary_id(session_id, kind, source_hash, prompt_version)
+            else:
+                node_id = "ctxsum_" + hashlib.sha256(
+                    f"{session_id}:{kind}:{summary_text}".encode("utf-8")
+                ).hexdigest()[:32]
+        if summary_hash is None:
+            summary_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
+        metadata_json = _json_dumps(metadata or {})
+        now = time.time()
+
+        effective_node_id = node_id
+        if source_hash:
+            existing = conn.execute(
+                """
+                SELECT id FROM context_summary_nodes
+                WHERE session_id = ? AND kind = ? AND source_hash = ?
+                  AND prompt_version IS ?
+                """,
+                (session_id, kind, source_hash, prompt_version),
+            ).fetchone()
+            if existing is not None:
+                effective_node_id = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO context_summary_nodes (
+                id, session_id, kind, summary_text, status, source_hash,
+                summary_hash, prompt_version, summary_model, created_at,
+                updated_at, token_estimate, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                summary_text = excluded.summary_text,
+                status = excluded.status,
+                source_hash = excluded.source_hash,
+                summary_hash = excluded.summary_hash,
+                prompt_version = excluded.prompt_version,
+                summary_model = excluded.summary_model,
+                updated_at = excluded.updated_at,
+                token_estimate = excluded.token_estimate,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                effective_node_id,
+                session_id,
+                kind,
+                summary_text,
+                status,
+                source_hash,
+                summary_hash,
+                prompt_version,
+                summary_model,
+                now,
+                now,
+                token_estimate,
+                metadata_json,
+            ),
+        )
+        return conn.execute(
+            "SELECT * FROM context_summary_nodes WHERE id = ? AND session_id = ?",
+            (effective_node_id, session_id),
+        ).fetchone()
+
     def create_summary_node(
         self,
         *,
@@ -194,68 +273,87 @@ class ContextDAGStore:
     ) -> SummaryNode:
         """Idempotently create/update a session-scoped summary node."""
 
-        if node_id is None:
-            if source_hash:
-                node_id = self._summary_id(session_id, kind, source_hash, prompt_version)
-            else:
-                node_id = "ctxsum_" + hashlib.sha256(
-                    f"{session_id}:{kind}:{summary_text}".encode("utf-8")
-                ).hexdigest()[:32]
-        if summary_hash is None:
-            summary_hash = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
-        metadata_json = _json_dumps(metadata or {})
-        now = time.time()
+        def _do(conn):
+            return self._create_summary_node_conn(
+                conn,
+                session_id=session_id,
+                summary_text=summary_text,
+                kind=kind,
+                status=status,
+                source_hash=source_hash,
+                summary_hash=summary_hash,
+                prompt_version=prompt_version,
+                summary_model=summary_model,
+                token_estimate=token_estimate,
+                metadata=metadata,
+                node_id=node_id,
+            )
+
+        return self._row_to_summary(self.db._execute_write(_do))
+
+    def create_summary_node_with_links(
+        self,
+        *,
+        session_id: str,
+        summary_text: str,
+        kind: str,
+        source_hash: str,
+        prompt_version: Optional[str],
+        summary_model: Optional[str] = None,
+        token_estimate: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        sources: Optional[List[Dict[str, Any]]] = None,
+        edges: Optional[List[Dict[str, Any]]] = None,
+        summary_hash: Optional[str] = None,
+        status: str = "valid",
+    ) -> SummaryNode:
+        """Atomically upsert a summary node and all required DAG links.
+
+        This is the compactor's preferred write path: if any source or edge
+        insert fails, the node upsert is rolled back too, preventing a valid
+        orphan summary from being persisted. Replays are idempotent because the
+        node id, sources, and edges all use deterministic/upsert identities.
+        """
 
         def _do(conn):
-            effective_node_id = node_id
-            if source_hash:
-                existing = conn.execute(
-                    """
-                    SELECT id FROM context_summary_nodes
-                    WHERE session_id = ? AND kind = ? AND source_hash = ?
-                      AND prompt_version IS ?
-                    """,
-                    (session_id, kind, source_hash, prompt_version),
-                ).fetchone()
-                if existing is not None:
-                    effective_node_id = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO context_summary_nodes (
-                    id, session_id, kind, summary_text, status, source_hash,
-                    summary_hash, prompt_version, summary_model, created_at,
-                    updated_at, token_estimate, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    summary_text = excluded.summary_text,
-                    status = excluded.status,
-                    source_hash = excluded.source_hash,
-                    summary_hash = excluded.summary_hash,
-                    prompt_version = excluded.prompt_version,
-                    summary_model = excluded.summary_model,
-                    updated_at = excluded.updated_at,
-                    token_estimate = excluded.token_estimate,
-                    metadata_json = excluded.metadata_json
-                """,
-                (
-                    effective_node_id,
-                    session_id,
-                    kind,
-                    summary_text,
-                    status,
-                    source_hash,
-                    summary_hash,
-                    prompt_version,
-                    summary_model,
-                    now,
-                    now,
-                    token_estimate,
-                    metadata_json,
-                ),
+            row = self._create_summary_node_conn(
+                conn,
+                session_id=session_id,
+                summary_text=summary_text,
+                kind=kind,
+                status=status,
+                source_hash=source_hash,
+                summary_hash=summary_hash,
+                prompt_version=prompt_version,
+                summary_model=summary_model,
+                token_estimate=token_estimate,
+                metadata=metadata,
             )
+            summary_id = row["id"]
+            for edge in edges or []:
+                self._add_summary_edge_conn(
+                    conn,
+                    session_id=session_id,
+                    parent_id=edge["parent_id"],
+                    child_id=edge["child_id"],
+                    edge_order=edge.get("edge_order", 0),
+                )
+            for source in sources or []:
+                self._link_summary_source_conn(
+                    conn,
+                    session_id=session_id,
+                    summary_id=source.get("summary_id") or summary_id,
+                    source_type=source["source_type"],
+                    start_message_id=source.get("start_message_id"),
+                    end_message_id=source.get("end_message_id"),
+                    source_id=source.get("source_id", ""),
+                    start_offset=source.get("start_offset"),
+                    end_offset=source.get("end_offset"),
+                    metadata=source.get("metadata"),
+                )
             return conn.execute(
                 "SELECT * FROM context_summary_nodes WHERE id = ? AND session_id = ?",
-                (effective_node_id, session_id),
+                (summary_id, session_id),
             ).fetchone()
 
         return self._row_to_summary(self.db._execute_write(_do))
@@ -267,6 +365,72 @@ class ContextDAGStore:
                 (summary_id, session_id),
             ).fetchone()
         return self._row_to_summary(row) if row else None
+
+    def _link_summary_source_conn(
+        self,
+        conn,
+        *,
+        session_id: str,
+        summary_id: str,
+        source_type: str,
+        start_message_id: Optional[int] = None,
+        end_message_id: Optional[int] = None,
+        source_id: str = "",
+        start_offset: Optional[int] = None,
+        end_offset: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        metadata_json = _json_dumps(metadata or {})
+        now = time.time()
+        owner = conn.execute(
+            "SELECT 1 FROM context_summary_nodes WHERE id = ? AND session_id = ?",
+            (summary_id, session_id),
+        ).fetchone()
+        if owner is None:
+            raise ValueError(f"summary {summary_id!r} does not belong to session {session_id!r}")
+        self._validate_session_message_ids(
+            conn,
+            session_id,
+            (start_message_id, end_message_id),
+            "summary source",
+        )
+        conn.execute(
+            """
+            INSERT INTO context_summary_sources (
+                summary_id, source_type, source_id, start_message_id,
+                end_message_id, start_offset, end_offset, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO UPDATE SET metadata_json = excluded.metadata_json
+            """,
+            (
+                summary_id,
+                source_type,
+                source_id or "",
+                start_message_id,
+                end_message_id,
+                start_offset if start_offset is not None else -1,
+                end_offset if end_offset is not None else -1,
+                metadata_json,
+                now,
+            ),
+        )
+        return conn.execute(
+            """
+            SELECT * FROM context_summary_sources
+            WHERE summary_id = ? AND source_type = ? AND source_id = ?
+              AND start_message_id IS ? AND end_message_id IS ?
+              AND start_offset IS ? AND end_offset IS ?
+            """,
+            (
+                summary_id,
+                source_type,
+                source_id or "",
+                start_message_id,
+                end_message_id,
+                start_offset if start_offset is not None else -1,
+                end_offset if end_offset is not None else -1,
+            ),
+        ).fetchone()
 
     def link_summary_source(
         self,
@@ -283,59 +447,19 @@ class ContextDAGStore:
     ) -> SummarySource:
         """Idempotently attach a raw source span to a summary in one session."""
 
-        metadata_json = _json_dumps(metadata or {})
-        now = time.time()
-
         def _do(conn):
-            owner = conn.execute(
-                "SELECT 1 FROM context_summary_nodes WHERE id = ? AND session_id = ?",
-                (summary_id, session_id),
-            ).fetchone()
-            if owner is None:
-                raise ValueError(f"summary {summary_id!r} does not belong to session {session_id!r}")
-            self._validate_session_message_ids(
+            return self._link_summary_source_conn(
                 conn,
-                session_id,
-                (start_message_id, end_message_id),
-                "summary source",
+                session_id=session_id,
+                summary_id=summary_id,
+                source_type=source_type,
+                start_message_id=start_message_id,
+                end_message_id=end_message_id,
+                source_id=source_id,
+                start_offset=start_offset,
+                end_offset=end_offset,
+                metadata=metadata,
             )
-            conn.execute(
-                """
-                INSERT INTO context_summary_sources (
-                    summary_id, source_type, source_id, start_message_id,
-                    end_message_id, start_offset, end_offset, metadata_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT DO UPDATE SET metadata_json = excluded.metadata_json
-                """,
-                (
-                    summary_id,
-                    source_type,
-                    source_id or "",
-                    start_message_id,
-                    end_message_id,
-                    start_offset if start_offset is not None else -1,
-                    end_offset if end_offset is not None else -1,
-                    metadata_json,
-                    now,
-                ),
-            )
-            return conn.execute(
-                """
-                SELECT * FROM context_summary_sources
-                WHERE summary_id = ? AND source_type = ? AND source_id = ?
-                  AND start_message_id IS ? AND end_message_id IS ?
-                  AND start_offset IS ? AND end_offset IS ?
-                """,
-                (
-                    summary_id,
-                    source_type,
-                    source_id or "",
-                    start_message_id,
-                    end_message_id,
-                    start_offset if start_offset is not None else -1,
-                    end_offset if end_offset is not None else -1,
-                ),
-            ).fetchone()
 
         return self._row_to_source(self.db._execute_write(_do))
 
@@ -352,23 +476,34 @@ class ContextDAGStore:
             ).fetchall()
         return [self._row_to_source(row) for row in rows]
 
+    def _add_summary_edge_conn(
+        self, conn, *, session_id: str, parent_id: str, child_id: str, edge_order: int = 0
+    ) -> None:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM context_summary_nodes WHERE session_id = ? AND id IN (?, ?)",
+            (session_id, parent_id, child_id),
+        ).fetchone()[0]
+        if count != 2:
+            raise ValueError("parent and child summaries must belong to the same session")
+        conn.execute(
+            """
+            INSERT INTO context_summary_edges (parent_id, child_id, edge_order)
+            VALUES (?, ?, ?)
+            ON CONFLICT(parent_id, child_id) DO UPDATE SET edge_order = excluded.edge_order
+            """,
+            (parent_id, child_id, edge_order),
+        )
+
     def add_summary_edge(
         self, *, session_id: str, parent_id: str, child_id: str, edge_order: int = 0
     ) -> None:
         def _do(conn):
-            count = conn.execute(
-                "SELECT COUNT(*) FROM context_summary_nodes WHERE session_id = ? AND id IN (?, ?)",
-                (session_id, parent_id, child_id),
-            ).fetchone()[0]
-            if count != 2:
-                raise ValueError("parent and child summaries must belong to the same session")
-            conn.execute(
-                """
-                INSERT INTO context_summary_edges (parent_id, child_id, edge_order)
-                VALUES (?, ?, ?)
-                ON CONFLICT(parent_id, child_id) DO UPDATE SET edge_order = excluded.edge_order
-                """,
-                (parent_id, child_id, edge_order),
+            self._add_summary_edge_conn(
+                conn,
+                session_id=session_id,
+                parent_id=parent_id,
+                child_id=child_id,
+                edge_order=edge_order,
             )
 
         self.db._execute_write(_do)

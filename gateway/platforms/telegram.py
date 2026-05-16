@@ -564,7 +564,13 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
-                return {}
+                # Fallback: send with message_thread_id even without a reply
+                # anchor.  Telegram Bot API may not render the message inside
+                # the visible DM topic lane, but it's better than dropping
+                # thread routing entirely (which sends to the root chat).
+                # This path is hit by synthetic events (background process
+                # completions, watch notifications) that lack a message_id.
+                return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
             return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:

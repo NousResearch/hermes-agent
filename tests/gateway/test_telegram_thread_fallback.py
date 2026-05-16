@@ -530,8 +530,15 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
 
 
 @pytest.mark.asyncio
-async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
-    """DM-topic fallback without an anchor must not use message_thread_id alone."""
+async def test_send_dm_topic_fallback_without_anchor_uses_message_thread_id():
+    """DM-topic fallback without an anchor still sends message_thread_id.
+
+    Synthetic events (background process completions, watch notifications)
+    lack a message_id.  Previously this caused the message to be sent to the
+    root chat.  Now we fall back to message_thread_id alone — Telegram may
+    not render it inside the visible DM topic lane in all clients, but it
+    prevents cross-thread bleed.  See issue #9532.
+    """
     adapter = _make_adapter()
     call_log = []
 
@@ -552,7 +559,7 @@ async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[0]
+    assert call_log[0]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[0]
 
 

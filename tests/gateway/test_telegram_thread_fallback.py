@@ -282,7 +282,7 @@ async def test_send_retries_without_thread_on_thread_not_found():
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     result = await adapter.send(
-        chat_id="123",
+        chat_id="-100123",
         content="test message",
         metadata={"thread_id": "99999"},
     )
@@ -530,8 +530,8 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
 
 
 @pytest.mark.asyncio
-async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
-    """DM-topic fallback without an anchor must not use message_thread_id alone."""
+async def test_send_dm_topic_fallback_without_anchor_fails_closed():
+    """DM-topic fallback without an anchor must not send outside the topic."""
     adapter = _make_adapter()
     call_log = []
 
@@ -550,23 +550,21 @@ async def test_send_dm_topic_fallback_without_anchor_does_not_crash():
         },
     )
 
-    assert result.success is True
-    assert call_log[0]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[0]
-    assert "direct_messages_topic_id" not in call_log[0]
+    assert result.success is False
+    assert result.retryable is False
+    assert "requires a reply anchor" in (result.error or "")
+    assert call_log == []
 
 
 @pytest.mark.asyncio
-async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
-    """If Telegram deletes the reply anchor, private-topic retry must drop thread id too."""
+async def test_send_dm_topic_reply_not_found_fails_closed():
+    """If Telegram deletes the reply anchor, private-topic sends must not fall back elsewhere."""
     adapter = _make_adapter()
     call_log = []
 
     async def mock_send_message(**kwargs):
         call_log.append(dict(kwargs))
-        if len(call_log) == 1:
-            raise FakeBadRequest("Message to be replied not found")
-        return SimpleNamespace(message_id=781)
+        raise FakeBadRequest("Message to be replied not found")
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
@@ -580,12 +578,11 @@ async def test_send_dm_topic_reply_not_found_retry_drops_thread_id():
         },
     )
 
-    assert result.success is True
+    assert result.success is False
+    assert result.retryable is False
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
-    assert call_log[1]["reply_to_message_id"] is None
-    assert "message_thread_id" not in call_log[1]
-    assert "direct_messages_topic_id" not in call_log[1]
+    assert len(call_log) == 1
 
 
 @pytest.mark.asyncio
@@ -926,7 +923,7 @@ async def test_send_raises_on_other_bad_request():
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     result = await adapter.send(
-        chat_id="123",
+        chat_id="-100123",
         content="test message",
         metadata={"thread_id": "99999"},
     )
@@ -1029,7 +1026,7 @@ async def test_thread_fallback_only_fires_once():
     # Send a long message that gets split into chunks
     long_msg = "A" * 5000  # Exceeds Telegram's 4096 limit
     result = await adapter.send(
-        chat_id="123",
+        chat_id="-100123",
         content=long_msg,
         metadata={"thread_id": "99999"},
     )

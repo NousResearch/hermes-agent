@@ -10432,9 +10432,31 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "xiaomimimo.com")
         )
 
+    def _strips_reasoning_content_from_api_messages(self) -> bool:
+        """Return True when the active provider rejects ``reasoning_content``
+        in replayed assistant messages and returns HTTP 400 when it is present.
+
+        Unlike providers that *require* reasoning echo-back (DeepSeek, Kimi,
+        MiMo), these providers explicitly forbid the field and must receive
+        clean assistant messages without it.
+
+        Current providers:
+          - Cerebras (``api.cerebras.ai``) — their OpenAI-compatible endpoint
+            rejects ``reasoning_content`` with: "property
+            'messages.N.assistant.reasoning_content' is unsupported"
+        """
+        return base_url_host_matches(self.base_url, "api.cerebras.ai")
+
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
         """Copy provider-facing reasoning fields onto an API replay message."""
         if source_msg.get("role") != "assistant":
+            return
+
+        # 0. Providers that actively reject reasoning_content in message
+        # history: strip any stored value (from msg.copy()) and return early
+        # so no branch below re-adds the field.
+        if self._strips_reasoning_content_from_api_messages():
+            api_msg.pop("reasoning_content", None)
             return
 
         # 1. Explicit reasoning_content already set — preserve it verbatim

@@ -1,5 +1,8 @@
 """Tests for the central command registry and autocomplete."""
 
+import pathlib
+import re
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -1773,3 +1776,57 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-site invariants
+# ---------------------------------------------------------------------------
+
+class TestDispatchSiteInvariants:
+    """Guard against dispatch checks that key on aliases.
+
+    Both ``cli.py`` and ``gateway/run.py`` resolve the typed command via
+    ``resolve_command(...).name`` before branching, so the resulting
+    ``canonical`` string is always the canonical name from
+    ``COMMAND_REGISTRY``. A branch/member check keyed on an alias is dead code
+    by construction (e.g. ``provider`` is an alias for ``model``, so
+    ``canonical == "provider"`` never fires). These tests lock in that
+    invariant so the next time someone adds an alias they don't silently
+    orphan an existing handler — or vice versa.
+    """
+
+    _DISPATCH_FILES = ("cli.py", "gateway/run.py")
+    _BRANCH_RE = re.compile(r'canonical\s*==\s*"([^"]+)"')
+    _IN_LITERAL_RE = re.compile(r'canonical\s+in\s+([\{\(\[])(.*?)([\}\)\]])', re.DOTALL)
+    _STRING_LITERAL_RE = re.compile(r'"([^"]+)"')
+
+    def _scan_dispatch_checks(self):
+        """Yield (file, line, name) for ``canonical`` branch/member checks."""
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        for rel in self._DISPATCH_FILES:
+            path = repo_root / rel
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8")
+            for m in self._BRANCH_RE.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                yield rel, line, m.group(1)
+            for m in self._IN_LITERAL_RE.finditer(text):
+                line = text[: m.start()].count("\n") + 1
+                for name in self._STRING_LITERAL_RE.findall(m.group(2)):
+                    yield rel, line, name
+
+    def test_no_dispatch_check_keys_on_an_alias(self):
+        """``canonical`` alias checks are dead code after ``resolve_command``."""
+        canonicals = {cmd.name for cmd in COMMAND_REGISTRY}
+        aliases = {a for cmd in COMMAND_REGISTRY for a in cmd.aliases}
+        offenders = [
+            (rel, line, name)
+            for rel, line, name in self._scan_dispatch_checks()
+            if name in aliases and name not in canonicals
+        ]
+        assert not offenders, (
+            "Dispatch checks keyed on aliases will never fire because "
+            "resolve_command rewrites the alias to the canonical name. "
+            "Found: " + ", ".join(f"{r}:{l} canonical=={n!r}" for r, l, n in offenders)
+        )

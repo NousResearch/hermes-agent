@@ -65,6 +65,8 @@ _HERMES_CORE_TOOLS = [
     # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
     "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
+    # u8openapi
+    "u8_openapi_customer_get","u8_openapi_customer_add","u8_openapi_accept_add","u8_openapi_accept_get_tool","u8_openapi_accept_list_get_tool","u8_openapi_accept_verify_tool","u8_openapi_accept_unverify",
 ]
 
 
@@ -504,6 +506,12 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+    },
+    
+    "u8_openapi": {
+        "description": "u8erp openapi toolset",
+        "tools": ["u8_openapi_customer_get","u8_openapi_customer_add","u8_openapi_accept_add","u8_openapi_accept_get_tool","u8_openapi_accept_list_get_tool","u8_openapi_accept_verify_tool","u8_openapi_accept_unverify"],
+        "includes": []
     }
 }
 

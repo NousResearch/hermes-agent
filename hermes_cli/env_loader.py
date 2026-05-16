@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from utils import atomic_replace
 
 
@@ -20,6 +20,16 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
+
+# Per-process registry of env var names that load_hermes_dotenv itself
+# placed into os.environ (i.e. they were absent before our load).  On
+# reload, any name in this set that is no longer declared by any loaded
+# .env file is removed from os.environ — preventing "ghost" values from
+# surviving after the user deletes a key from .env.  Long-running
+# processes (gateway, dashboard, CLI sessions) used to keep stale values
+# forever because python-dotenv only writes keys it sees in the file.
+# Names we never seeded (genuine shell exports) are never popped.
+_HERMES_SEEDED_KEYS: set[str] = set()
 
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
@@ -139,6 +149,39 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def _gather_declared_keys(*paths: Path) -> tuple[set[str], bool]:
+    """Return (keys declared by these .env files, all_parsed flag).
+
+    Uses python-dotenv's parser without mutating os.environ.  If any
+    file fails to parse, all_parsed=False so callers can skip pruning
+    rather than risk popping keys whose declaration we couldn't read.
+
+    A key only counts as "declared" when its parsed value is non-None.
+    A bare ``FOO`` line (no ``=``) parses as ``FOO -> None`` but is not
+    actually seeded into ``os.environ`` by ``load_dotenv``, so treating
+    it as declared would let a previously-seeded value linger as a
+    ghost.  ``FOO=`` (empty value) parses as ``FOO -> ""`` and IS
+    seeded, so it correctly counts as declared.
+    """
+    keys: set[str] = set()
+    all_parsed = True
+    for path in paths:
+        if not path or not path.exists():
+            continue
+        try:
+            try:
+                values = dotenv_values(dotenv_path=path, encoding="utf-8")
+            except UnicodeDecodeError:
+                values = dotenv_values(dotenv_path=path, encoding="latin-1")
+        except Exception:
+            all_parsed = False
+            continue
+        for key, value in values.items():
+            if key and value is not None:
+                keys.add(key)
+    return keys, all_parsed
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -151,6 +194,9 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+    - keys we previously placed into os.environ that no longer appear in any
+      loaded .env file are popped.  Shell-exported keys we never seeded are
+      left alone, even when they appear in .env.
     """
     loaded: list[Path] = []
 
@@ -164,6 +210,18 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
+    # Snapshot which Hermes-seeded keys are still declared by any loaded
+    # .env file.  Anything we previously seeded that is now absent gets
+    # pruned from os.environ so deletions in .env take effect on reload.
+    declared_keys, all_parsed = _gather_declared_keys(user_env, project_env_path)
+    if all_parsed:
+        stale = _HERMES_SEEDED_KEYS - declared_keys
+        for key in stale:
+            os.environ.pop(key, None)
+        _HERMES_SEEDED_KEYS.difference_update(stale)
+
+    pre_load_keys = set(os.environ.keys())
+
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
@@ -171,5 +229,13 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
+
+    # Track keys we just placed into os.environ.  A key qualifies as
+    # "seeded by Hermes" only if it was absent before this load — keys
+    # already present (genuine shell exports, or values an earlier load
+    # already seeded) are not added a second time, and shell exports
+    # remain ineligible for pruning.
+    newly_seeded = (set(os.environ.keys()) - pre_load_keys) & declared_keys
+    _HERMES_SEEDED_KEYS.update(newly_seeded)
 
     return loaded

@@ -3539,8 +3539,16 @@ class TestFormatMessage:
         assert result == "AT&amp;T &lt; 5 &gt; 3"
 
     def test_preserves_existing_slack_entities(self, adapter):
-        text = "Hey <@U123>, see <https://example.com|example> and <!here>"
+        text = "Hey <@U123>, see <https://example.com|example> and <!subteam^S123|team>"
         assert adapter.format_message(text) == text
+
+    def test_escapes_special_broadcast_mentions(self, adapter):
+        text = "Broadcast <!everyone> <!channel> <!here|here>"
+        result = adapter.format_message(text)
+        assert result == "Broadcast &lt;!everyone&gt; &lt;!channel&gt; &lt;!here|here&gt;"
+        assert "<!everyone>" not in result
+        assert "<!channel>" not in result
+        assert "<!here" not in result
 
     def test_strikethrough(self, adapter):
         assert adapter.format_message("~~deleted~~") == "~deleted~"
@@ -3673,13 +3681,13 @@ class TestFormatMessage:
 
     # --- Entity preservation (spec-compliance) ---
 
-    def test_channel_mention_preserved(self, adapter):
-        """<!channel> special mention passes through unchanged."""
-        assert adapter.format_message("Attention <!channel>") == "Attention <!channel>"
+    def test_channel_mention_escaped(self, adapter):
+        """<!channel> broadcast mention is displayed literally."""
+        assert adapter.format_message("Attention <!channel>") == "Attention &lt;!channel&gt;"
 
-    def test_everyone_mention_preserved(self, adapter):
-        """<!everyone> special mention passes through unchanged."""
-        assert adapter.format_message("Hey <!everyone>") == "Hey <!everyone>"
+    def test_everyone_mention_escaped(self, adapter):
+        """<!everyone> broadcast mention is displayed literally."""
+        assert adapter.format_message("Hey <!everyone>") == "Hey &lt;!everyone&gt;"
 
     def test_subteam_mention_preserved(self, adapter):
         """<!subteam^ID> user group mention passes through unchanged."""

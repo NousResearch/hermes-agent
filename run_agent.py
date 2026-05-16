@@ -5006,23 +5006,35 @@ class AIAgent:
 
     @staticmethod
     def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Append a friendly hint when xAI's OAuth surface returns an
-        entitlement-shaped error.
+        """Append a neutral hint when xAI's OAuth surface returns the
+        permission-denied 403.
 
-        xAI's ``/v1/responses`` endpoint replies to OAuth tokens that lack a
-        SuperGrok / X Premium subscription with HTTP 403 carrying a body like::
+        xAI's ``/v1/responses`` endpoint replies to several distinct failure
+        modes with the SAME body::
 
             {"code": "The caller does not have permission to execute the
              specified operation", "error": "You have either run out of
              available resources or do not have an active Grok subscription.
-             Manage subscriptions at https://grok.com/..."}
+             Manage subscriptions at https://grok.com/?_s=usage or subscribe
+             at https://grok.com/supergrok"}
 
-        The raw text is useful but the action the user needs to take (subscribe
-        on grok.com, or switch providers with ``/model``) isn't obvious from
-        the wire format.  Detect the entitlement shape and append a hint.
+        That body covers at least four real causes we cannot distinguish
+        without more info from xAI:
 
-        Matched once per detail string — won't double-decorate if the upstream
-        already concatenated the same text.
+          * Account has no Grok subscription at all
+          * Account has SuperGrok but the tier doesn't include the requested
+            model (e.g. grok-4.3 needs SuperGrok Heavy)
+          * Monthly quota for the subscribed tier is exhausted (the
+            ``?_s=usage`` URL hints at this)
+          * SuperGrok is active but the API access add-on isn't enabled
+
+        Picking one ("you're not subscribed") is wrong for the other three
+        and reads as insulting to subscribers.  Surface the raw xAI text
+        verbatim and point at https://grok.com/?_s=usage where the user
+        can see WHICH of those four it is.
+
+        Matched once per detail string — won't double-decorate if the
+        upstream already concatenated the same text.
         """
         if not detail:
             return detail
@@ -5035,11 +5047,15 @@ class AIAgent:
         if not is_entitlement:
             return detail
         hint = (
-            " — xAI OAuth account lacks SuperGrok / X Premium entitlement for "
-            "this model. Subscribe at https://grok.com or run `/model` to "
+            " — xAI rejected the request on this OAuth account. Could be a "
+            "missing subscription, a tier that doesn't include this model, an "
+            "exhausted quota, or API access not enabled. Check "
+            "https://grok.com/?_s=usage to see which, or run `/model` to "
             "switch providers."
         )
-        if hint.strip() in detail:
+        # Idempotency: detect prior decoration by a substring unique to the
+        # hint (not present in xAI's own body text).
+        if "Could be a missing subscription" in detail:
             return detail
         return f"{detail}{hint}"
 

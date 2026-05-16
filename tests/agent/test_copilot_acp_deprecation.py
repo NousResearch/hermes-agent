@@ -2,11 +2,12 @@
 
 import pytest
 
-from agent.copilot_acp_client import _DEPRECATION_PATTERNS
+from agent.copilot_acp_client import _is_gh_copilot_deprecation_message
 
 
 class TestDeprecationPatternDetection:
-    """Verify that stderr messages from a deprecated gh-copilot CLI are caught."""
+    """Verify that stderr from the deprecated `gh copilot` extension is caught
+    without false-positiving on the new `@github/copilot` CLI."""
 
     _REAL_DEPRECATION_STDERR = (
         "The gh-copilot extension has been deprecated in favor of the newer "
@@ -18,25 +19,40 @@ class TestDeprecationPatternDetection:
     )
 
     def test_real_deprecation_message_matches(self):
-        lower = self._REAL_DEPRECATION_STDERR.lower()
-        assert any(pat in lower for pat in _DEPRECATION_PATTERNS)
+        assert _is_gh_copilot_deprecation_message(self._REAL_DEPRECATION_STDERR)
 
     @pytest.mark.parametrize(
-        "stderr_line",
+        "stderr_text",
         [
-            "The gh-copilot extension has been deprecated",
-            "No commands will be executed.",
-            "See deprecation notice at ...",
-            "Install copilot-cli instead",
+            # The deprecation banner uses both halves of the fingerprint.
+            "The gh-copilot extension has been deprecated.",
+            "gh-copilot: no commands will be executed.",
+            # Mixed casing — match is case-insensitive.
+            "The GH-Copilot Extension HAS BEEN DEPRECATED.",
         ],
     )
-    def test_individual_patterns_match(self, stderr_line: str):
-        lower = stderr_line.lower()
-        assert any(pat in lower for pat in _DEPRECATION_PATTERNS)
+    def test_genuine_deprecation_variants_match(self, stderr_text: str):
+        assert _is_gh_copilot_deprecation_message(stderr_text)
 
-    def test_normal_stderr_does_not_match(self):
-        normal = "Error: connection refused"
-        assert not any(pat in normal.lower() for pat in _DEPRECATION_PATTERNS)
+    @pytest.mark.parametrize(
+        "stderr_text",
+        [
+            # Generic errors — no fingerprint at all.
+            "Error: connection refused",
+            "",
+            # The NEW @github/copilot CLI's repo is github.com/github/copilot-cli.
+            # Its stderr can legitimately mention "copilot-cli" or "deprecation"
+            # in unrelated contexts; neither alone should trip the detector.
+            "copilot-cli: failed to authenticate with the API",
+            "warning: the --foo flag is scheduled for deprecation in v3",
+            "See https://github.com/github/copilot-cli/issues for support",
+            # Half the fingerprint without the other half.
+            "gh-copilot: command not found",
+            "extension has been deprecated (some other extension)",
+        ],
+    )
+    def test_does_not_false_positive(self, stderr_text: str):
+        assert not _is_gh_copilot_deprecation_message(stderr_text)
 
 
 class TestGitHubModelsAzureUrl:
@@ -45,7 +61,9 @@ class TestGitHubModelsAzureUrl:
     def test_url_to_provider_contains_azure_models(self):
         from agent.model_metadata import _URL_TO_PROVIDER
 
-        assert _URL_TO_PROVIDER.get("models.inference.ai.azure.com") == "github-models"
+        # Maps to the canonical "copilot" provider (same convention as the
+        # other GitHub-family entries) — not the "github-models" alias.
+        assert _URL_TO_PROVIDER.get("models.inference.ai.azure.com") == "copilot"
 
     def test_is_github_models_base_url_recognises_azure(self):
         from hermes_cli.models import _is_github_models_base_url

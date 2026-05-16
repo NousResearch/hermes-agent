@@ -555,3 +555,75 @@ def test_stranded_in_ready_works_on_real_db_row(kanban_home):
         assert stranded[0].data["assignee"] == "ghost"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# ghost_running
+#
+# Surfaces tasks that look Running in the board/UI but cannot actually be
+# owned by a live worker because core dispatcher claim/run metadata is absent
+# or internally inconsistent. These are operator-actionable: reclaim resets
+# them to ready so the dispatcher can create a coherent run.
+# ---------------------------------------------------------------------------
+
+
+def test_ghost_running_fires_when_running_has_no_claim_or_run_metadata():
+    now = 100_000
+    task = _task(
+        status="running",
+        assignee="dev",
+        claim_lock=None,
+        claim_expires=None,
+        worker_pid=None,
+        current_run_id=None,
+        last_heartbeat_at=None,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+
+    ghost = [d for d in diags if d.kind == "ghost_running"]
+    assert len(ghost) == 1
+    assert ghost[0].severity == "critical"
+    assert ghost[0].data["missing_fields"] == [
+        "claim_lock", "claim_expires", "worker_pid", "current_run_id"
+    ]
+    assert any(a.kind == "reclaim" and a.suggested for a in ghost[0].actions)
+
+
+def test_ghost_running_fires_when_current_run_missing_from_runs():
+    now = 100_000
+    task = _task(
+        status="running",
+        assignee="dev",
+        claim_lock="host:123",
+        claim_expires=now + 600,
+        worker_pid=424242,
+        current_run_id=99,
+        last_heartbeat_at=now - 60,
+    )
+    runs = [_run(outcome=None, run_id=1)]
+
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+
+    ghost = [d for d in diags if d.kind == "ghost_running"]
+    assert len(ghost) == 1
+    assert ghost[0].data["current_run_id"] == 99
+    assert ghost[0].data["run_state"] == "missing"
+
+
+def test_ghost_running_silent_for_coherent_running_task():
+    now = 100_000
+    task = _task(
+        status="running",
+        assignee="dev",
+        claim_lock="host:123",
+        claim_expires=now + 600,
+        worker_pid=424242,
+        current_run_id=7,
+        last_heartbeat_at=now - 60,
+    )
+    runs = [{"id": 7, "status": "running", "outcome": None}]
+
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+
+    assert [d for d in diags if d.kind == "ghost_running"] == []

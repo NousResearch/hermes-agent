@@ -13,7 +13,9 @@ Credential search order (matching Copilot CLI behaviour):
   1. COPILOT_GITHUB_TOKEN env var
   2. GH_TOKEN env var
   3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
+
+Generic ``gh auth token`` output is intentionally not used as a fallback:
+those tokens prove GitHub CLI login, not Copilot API entitlement.
 """
 
 from __future__ import annotations
@@ -81,16 +83,6 @@ def resolve_copilot_token() -> tuple[str, str]:
                 )
                 continue
             return val, env_var
-
-    # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
 
     return "", ""
 

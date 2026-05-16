@@ -1068,6 +1068,102 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
+def _cache_remote_image_url(url: str) -> Optional[str]:
+    """Download a remote image URL into the shared image cache and return its
+    local path, or ``None`` on any failure so callers degrade to the URL.
+
+    Mirrors ``_cache_mcp_image_block`` in ``tools/mcp_tool.py`` — same
+    ``cache_image_from_bytes`` helper, same magic-byte validation, same
+    "log and drop" failure mode — and exists so providers whose image links
+    expire fast (notably xAI ``imgen.x.ai/xai-tmp-imgen-*`` ephemeral URLs,
+    which 404 within seconds and lose every Telegram delivery fallback) get
+    captured at tool-completion time, before the messaging adapter races
+    the URL TTL.
+    """
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        return None
+
+    try:
+        from gateway.platforms.base import cache_image_from_bytes
+        from tools.url_safety import is_safe_url
+    except ImportError:
+        logger.debug("image_generate caching skipped — gateway helpers unavailable")
+        return None
+
+    if not is_safe_url(url):
+        logger.warning("image_generate: SSRF-unsafe image URL not cached: %s", url)
+        return None
+
+    from pathlib import Path as _Path
+    from urllib.parse import urlparse
+    ext = _Path(urlparse(url).path).suffix.lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        ext = ".jpg"
+
+    try:
+        import httpx
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            resp = client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                    "Accept": "image/*,*/*;q=0.8",
+                },
+            )
+            resp.raise_for_status()
+            return cache_image_from_bytes(resp.content, ext)
+    except Exception as exc:
+        logger.warning(
+            "image_generate: pre-cache of %s failed (%s); keeping original URL",
+            url, exc,
+        )
+        return None
+
+
+def _augment_with_local_cache(result_json: str) -> str:
+    """Pre-cache the generated image and rewrite the tool result so platforms
+    deliver the local bytes instead of re-fetching a possibly-expired URL.
+
+    Leaves the payload untouched when:
+      - the result is not valid JSON or not a dict
+      - ``success`` is false (no image to cache)
+      - ``image`` is missing, not a string, or already a local path
+      - downloading or caching fails (preserves the URL so the adapter can
+        still attempt the legacy URL → fallback-download → text-fallback
+        chain)
+
+    On a successful cache:
+      - ``image`` → local file path (so the agent's markdown emits a path
+        that doesn't match ``extract_images()``'s ``https?://`` regex,
+        sidestepping the failing URL-based ``send_photo``)
+      - ``source_url`` → original URL (preserved for diagnostics)
+      - ``media_tag`` → ``MEDIA:<path>`` (mirrors the TTS tool so the
+        gateway's MEDIA-tag scanner — see ``gateway/run.py`` post-stream
+        media dispatch — delivers the file natively regardless of how the
+        agent renders the result in text)
+    """
+    try:
+        result = json.loads(result_json)
+    except (json.JSONDecodeError, TypeError):
+        return result_json
+
+    if not isinstance(result, dict) or not result.get("success"):
+        return result_json
+
+    url = result.get("image")
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        return result_json
+
+    local_path = _cache_remote_image_url(url)
+    if not local_path:
+        return result_json
+
+    result["source_url"] = url
+    result["image"] = local_path
+    result["media_tag"] = f"MEDIA:{local_path}"
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
@@ -1078,11 +1174,13 @@ def _handle_image_generate(args, **kw):
     # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
-        return dispatched
+        return _augment_with_local_cache(dispatched)
 
-    return image_generate_tool(
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
+    return _augment_with_local_cache(
+        image_generate_tool(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+        )
     )
 
 

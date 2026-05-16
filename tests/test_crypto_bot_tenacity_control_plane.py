@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import crypto_bot_autonomy_readiness as readiness  # noqa: E402
 import crypto_bot_kanban_import_audit as kanban_import_audit  # noqa: E402
+import crypto_bot_pr_ci_audit as pr_ci_audit  # noqa: E402
 
 PLAN = Path(
     "/Users/preston/robinhood/crypto_bot/docs/planning/"
@@ -235,6 +236,25 @@ def test_kanban_import_audit_uses_pr_ci_payload_for_s006_remote_state() -> None:
     assert payload["pr_exists"] is True
     assert payload["remote_done"] is False
     assert payload["remote_lifecycle_state"] == "pr_created_ci_pending"
+
+
+def test_pr_ci_audit_counts_gitea_status_field_states() -> None:
+    payload = pr_ci_audit.classify_ci_state(
+        statuses_record={
+            "status": 200,
+            "data": [
+                {"status": "pending", "context": "Validate Crypto Bot / python"},
+                {"status": "success", "context": "Validate Crypto Bot / governance"},
+                {"status": "pending", "context": "Validate Crypto Bot / secrets"},
+            ],
+        },
+        combined_record={"status": 200, "data": {"state": "pending", "total_count": 3}},
+        pr_head_matches=True,
+    )
+
+    assert payload["statuses_count"] == 3
+    assert payload["ci_state"] == "pending"
+    assert payload["blocker"] == "ci_evidence_pending"
 
 
 def test_generated_configs_have_no_secret_like_values_after_tenacity_update() -> None:

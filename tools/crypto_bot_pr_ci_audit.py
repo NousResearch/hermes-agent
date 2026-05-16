@@ -320,7 +320,7 @@ def classify_ci_state(
         else None
     )
     raw_states = [
-        normalize_ci_state(item.get("state"))
+        normalize_ci_state(item.get("state") or item.get("status"))
         for item in statuses
         if isinstance(item, dict)
     ]

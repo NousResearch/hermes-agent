@@ -50,7 +50,7 @@ The credentials file has the format: `https://x-access-token:{github_pat_...}@gi
 If `publish_html` isn't available or you need to push manually:
 
 ```bash
-cd /opt/data/hermes-pages-repo
+cd /opt/data/hermes-pages
 git config user.email "hermes@hermes-agent.local"
 git config user.name "Hermes"
 git add <file>
@@ -59,6 +59,19 @@ GIT_TERMINAL_PROMPT=0 git push origin main
 ```
 
 **Always use `GIT_TERMINAL_PROMPT=0`** — avoids interactive SSH/GitHub prompts that would hang.
+
+**Source dir is `/opt/data/hermes-pages` — NOT `/opt/data/hermes-pages-repo`.** The skill previously misnamed this throughout. The canonical paths:
+
+| Path | What it is |
+|------|------------|
+| `/opt/data/hermes-pages` | Live deploy source — where HTML files live and get pushed from |
+| `/opt/data/hermes-pages-repo` | Does NOT exist — do not use |
+| `/opt/data/gordon-pages` | Gordon's SW engineering wiki source (separate Cloudflare Pages project) |
+
+**Key reminders:**
+- The hub index lives at `/opt/data/hermes-pages/wiki/index.html` (not a separate repo subdirectory)
+- Git push from `/opt/data/hermes-pages` directly — no intermediate repo clone needed
+- The wiki lives at `/opt/data/hermes-pages/wiki/` — write HTML files there, push, deploy auto-runs
 
 ## Key repos and URLs
 
@@ -114,12 +127,9 @@ Pitfalls:
 - Avoid `curl | python` verification patterns; security tooling may block or require approval. Fetch inside Python instead.
 - A successful deploy prints a preview URL, but Gordon's preferred public URL remains `https://hermes-pages-d55.pages.dev/`.
 
-## Index page maintenance
+## Hub index maintenance
 
-The hub at `https://hermes-pages.rouse-gordon.workers.dev/` is backed by `/opt/data/hermes-pages-repo/index.html`. Every time a new page is published:
-1. Note the new filename from the `publish_html` result
-2. Update the `href` in the index page's `.page-card` links
-3. Push the index update to `hermes-pages`
+The hub at `https://hermes-pages-d55.pages.dev/` is backed by `/opt/data/hermes-pages/wiki/index.html` (the wiki index, not the site root). Every time a new wiki page is published, add a link in the appropriate section using the same pattern as existing links — no summary or description, just a link. Then push from `/opt/data/hermes-pages`.
 
 Cloudflare Pages auto-deploys on push — typically live within 30 seconds.
 
@@ -157,9 +167,16 @@ Gordon maintains his personal wiki in markdown (`/opt/data/wiki/`). Convert and 
 **Gordon retired the markdown pipeline (2026-05-10). Wiki pages are now written directly in HTML.** The old md2html.py script exists but is no longer used. Do NOT write markdown and convert — edit HTML files directly and push.
 
 **Current workflow:**
-1. Edit HTML source directly (e.g. `/opt/data/hermes-pages-repo/wiki/...`)
-2. Commit and push: `cd /opt/data/hermes-pages-repo && git add <files> && git commit -m "..." && GIT_TERMINAL_PROMPT=0 git push origin main`
-3. Live on Cloudflare Pages in ~30 seconds
+1. Edit HTML source directly under `/opt/data/hermes-pages/wiki/` (e.g. `wiki/hobbies/new-topic.html`)
+2. Update the wiki hub index at `/opt/data/hermes-pages/wiki/index.html` to add a link to the new page
+3. Commit and push from `/opt/data/hermes-pages`:
+   ```bash
+   cd /opt/data/hermes-pages
+   git add wiki/hobbies/new-topic.html wiki/index.html
+   git commit -m "Add new wiki page"
+   GIT_TERMINAL_PROMPT=0 git push origin main
+   ```
+4. Live on Cloudflare Pages in ~30 seconds at `https://hermes-pages-d55.pages.dev/wiki/hobbies/new-topic`
 
 ### Wiki as HTML pages
 - `wiki/index.html` → **hub page** (auth check + page links, entry point at `/wiki/`)
@@ -237,7 +254,7 @@ Gordon's wiki is a long-term knowledge base. When incorporating new information 
 1. Read the JSON export (`/opt/data/cache/documents/`) — scan titles first with a quick loop to identify meaty conversations
 2. Read the content of significant ones
 3. Write new markdown pages under `/opt/data/wiki/` in the appropriate subdirectory:
-   - `hobbies/` — outdoor activities, fitness, style, travel
+   - `hobbies/` — outdoor activities, fitness, style, travel, home renovation research (e.g. alcove bathtubs, hiking, fishing)
    - `projects/` — Sidekick Studio and similar
    - `personal/` — health, habits
    - `entities/` — update the person entity

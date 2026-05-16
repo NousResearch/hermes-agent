@@ -29,13 +29,16 @@ What we DO NOT expose:
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
-    session_search / todo                  (model_tools.py). They require
-                                           the running AIAgent context to
-                                           dispatch (mid-loop state), so a
-                                           stateless MCP callback can't
-                                           drive them. See the inline
-                                           comment on EXPOSED_TOOLS below.
+  - memory, session_search               — exposed through local stateless
+                                           wrappers that read the same
+                                           HERMES_HOME as the spawned MCP
+                                           process.
+  - delegate_task / todo                 — `_AGENT_LOOP_TOOLS` in Hermes
+                                           (model_tools.py). They require
+                                           running AIAgent/TodoStore state, so
+                                           a stateless MCP callback can't drive
+                                           them. See the inline comment on
+                                           EXPOSED_TOOLS below.
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
 Spawned by: CodexAppServerSession.ensure_started() when the runtime is
@@ -60,11 +63,16 @@ logger = logging.getLogger(__name__)
 #   - terminal / shell / read_file / write_file / patch / search_files /
 #     process — codex's built-ins cover these and approval routes through
 #     codex's own UI.
-#   - delegate_task / memory / session_search / todo — these are
-#     `_AGENT_LOOP_TOOLS` in Hermes (model_tools.py:493). They require
-#     the running AIAgent context to dispatch (mid-loop state), so a
-#     stateless MCP callback can't drive them. Hermes' default runtime
-#     keeps these working; the codex_app_server runtime cannot.
+#   - delegate_task / todo — these are `_AGENT_LOOP_TOOLS` in Hermes
+#     (model_tools.py:493) and require running AIAgent/TodoStore state.
+#     Hermes' default runtime keeps these working; the codex_app_server
+#     runtime cannot drive them through a stateless MCP callback.
+#
+# memory and session_search are also agent-loop tools in the default
+# dispatcher, but they have file/DB-backed implementations that can be
+# invoked statelessly from this subprocess. We expose them through the
+# _STATELESS_AGENT_LOOP_DISPATCHERS map below instead of
+# model_tools.handle_function_call(), which intentionally blocks them.
 EXPOSED_TOOLS: tuple[str, ...] = (
     "web_search",
     "web_extract",
@@ -82,6 +90,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "image_generate",
     "skill_view",
     "skills_list",
+    "memory",
+    "session_search",
     "text_to_speech",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these
@@ -103,6 +113,51 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+
+def _dispatch_memory_stateless(**kwargs: Any) -> str:
+    """Run the file-backed memory tool without a parent AIAgent.
+
+    The normal Hermes loop injects a MemoryStore instance into the tool
+    handler. The codex_app_server MCP subprocess has the same profile-scoped
+    HERMES_HOME but no parent AIAgent object, so create a short-lived store,
+    load the current MEMORY.md/USER.md contents, and let MemoryStore's
+    process-wide file locks + atomic replace handle concurrent writes.
+    """
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    store = MemoryStore()
+    store.load_from_disk()
+    return memory_tool(
+        action=kwargs.get("action", ""),
+        target=kwargs.get("target", "memory"),
+        content=kwargs.get("content"),  # type: ignore[arg-type]
+        old_text=kwargs.get("old_text"),  # type: ignore[arg-type]
+        store=store,
+    )
+
+
+def _dispatch_session_search_stateless(**kwargs: Any) -> str:
+    """Run session_search against the profile-scoped SessionDB.
+
+    SessionDB resolves its path from HERMES_HOME, which CodexAppServerSession
+    already passes into this subprocess. SQLite supports concurrent readers;
+    the existing tool handles DB-unavailable and summarizer-unavailable cases.
+    """
+    from tools.session_search_tool import session_search
+
+    return session_search(
+        query=kwargs.get("query", ""),
+        role_filter=kwargs.get("role_filter"),  # type: ignore[arg-type]
+        limit=kwargs.get("limit", 3),
+        current_session_id=kwargs.get("current_session_id"),  # type: ignore[arg-type]
+    )
+
+
+_STATELESS_AGENT_LOOP_DISPATCHERS = {
+    "memory": _dispatch_memory_stateless,
+    "session_search": _dispatch_session_search_stateless,
+}
 
 
 def _build_server() -> Any:
@@ -162,6 +217,8 @@ def _build_server() -> Any:
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
+                    if tool_name in _STATELESS_AGENT_LOOP_DISPATCHERS:
+                        return _STATELESS_AGENT_LOOP_DISPATCHERS[tool_name](**(kwargs or {}))
                     return handle_function_call(tool_name, kwargs or {})
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)

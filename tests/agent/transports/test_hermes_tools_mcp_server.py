@@ -48,19 +48,78 @@ class TestModuleSurface:
             "vision_analyze",
             "image_generate",
             "skill_view",
+            "memory",
+            "session_search",
         ):
             assert required in EXPOSED_TOOLS, f"missing {required!r}"
 
-    def test_agent_loop_tools_not_exposed(self):
-        """delegate_task / memory / session_search / todo require the
-        running AIAgent context to dispatch, so a stateless MCP callback
-        can't drive them. They must NOT be in EXPOSED_TOOLS."""
+    def test_stateful_agent_loop_tools_not_exposed(self):
+        """delegate_task / todo require running AIAgent/TodoStore state,
+        so a stateless MCP callback can't drive them. They must NOT be in
+        EXPOSED_TOOLS."""
         from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
-        for agent_loop_tool in ("delegate_task", "memory", "session_search", "todo"):
+        for agent_loop_tool in ("delegate_task", "todo"):
             assert agent_loop_tool not in EXPOSED_TOOLS, (
                 f"{agent_loop_tool!r} requires the agent loop context "
                 "and can't be reached through a stateless MCP callback"
             )
+
+    def test_stateless_agent_loop_dispatchers_cover_memory_and_session_search(self):
+        """memory/session_search are blocked by model_tools.handle_function_call,
+        so the MCP server must route them through its local wrappers."""
+        from agent.transports.hermes_tools_mcp_server import (
+            _STATELESS_AGENT_LOOP_DISPATCHERS,
+        )
+
+        assert set(_STATELESS_AGENT_LOOP_DISPATCHERS) == {
+            "memory",
+            "session_search",
+        }
+
+    def test_memory_stateless_dispatch_uses_profile_memory_store(self, tmp_path, monkeypatch):
+        """The codex MCP subprocess has no parent AIAgent, but it does inherit
+        HERMES_HOME. Its memory wrapper should load and mutate that store."""
+        from agent.transports.hermes_tools_mcp_server import _dispatch_memory_stateless
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        result = _dispatch_memory_stateless(
+            action="add",
+            target="memory",
+            content="Codex runtime can write profile memory.",
+        )
+
+        assert '"success": true' in result
+        memory_file = home / "memories" / "MEMORY.md"
+        assert "Codex runtime can write profile memory." in memory_file.read_text()
+
+    def test_session_search_stateless_dispatch_forwards_args(self, monkeypatch):
+        from agent.transports import hermes_tools_mcp_server as m
+
+        calls = []
+
+        def fake_session_search(**kwargs):
+            calls.append(kwargs)
+            return '{"success": true}'
+
+        import tools.session_search_tool as session_search_tool
+
+        monkeypatch.setattr(session_search_tool, "session_search", fake_session_search)
+
+        assert m._dispatch_session_search_stateless(
+            query="oauth",
+            role_filter="assistant",
+            limit="2",
+            current_session_id="sid-123",
+        ) == '{"success": true}'
+        assert calls == [{
+            "query": "oauth",
+            "role_filter": "assistant",
+            "limit": "2",
+            "current_session_id": "sid-123",
+        }]
 
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they

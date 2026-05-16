@@ -971,9 +971,14 @@ def _tui_build_needed(tui_dir: Path) -> bool:
 
 def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
     ink_root = tui_dir / "packages" / "hermes-ink"
-    bundle = ink_root / "dist" / "ink-bundle.js"
+    dist_dir = ink_root / "dist"
+    bundle = dist_dir / "ink-bundle.js"
     if not bundle.exists():
-        return True
+        alt_bundle = dist_dir / "entry-exports.js"
+        if alt_bundle.exists():
+            bundle = alt_bundle
+        else:
+            return True
     bm = bundle.stat().st_mtime
     skip = frozenset({"node_modules", "dist"})
     for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):

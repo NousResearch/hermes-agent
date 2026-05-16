@@ -134,9 +134,29 @@ class RecordingAdapter:
         self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return {"success": True}
 
-    async def ensure_dm_topic(self, chat_id, topic_name):
-        self.ensure_dm_topic_calls.append({"chat_id": chat_id, "topic_name": topic_name})
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
         return "38049"
+
+
+class StaleTopicAdapter:
+    def __init__(self):
+        self.calls = []
+        self.ensure_dm_topic_calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": dict(metadata or {})})
+        if len(self.calls) == 1:
+            return SendResult(success=False, error="Bad Request: message thread not found")
+        return SendResult(success=True, message_id="fresh-message")
+
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
+        return "38064" if force_create else "32343"
 
 
 @pytest.mark.asyncio
@@ -162,7 +182,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
     await router._deliver_to_platform(target, "hello", metadata=None)
 
     assert adapter.ensure_dm_topic_calls == [
-        {"chat_id": "722341991", "topic_name": "Hermes API Test"}
+        {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
     ]
     assert adapter.calls == [
         {
@@ -174,6 +194,24 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = StaleTopicAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Personal")
+
+    result = await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert getattr(result, "message_id", None) == "fresh-message"
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": False},
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": True},
+    ]
+    assert [call["metadata"]["thread_id"] for call in adapter.calls] == ["32343", "38064"]
+    assert all(call["metadata"]["telegram_dm_topic_created_for_send"] is True for call in adapter.calls)
 
 
 @pytest.mark.asyncio

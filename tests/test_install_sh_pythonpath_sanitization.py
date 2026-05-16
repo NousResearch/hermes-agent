@@ -13,7 +13,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
 def test_install_script_unsets_pythonpath_and_pythonhome_early() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # During install, inherited Python env must be sanitized before pip/venv use.
     assert 'unset PYTHONPATH' in text
@@ -21,7 +21,7 @@ def test_install_script_unsets_pythonpath_and_pythonhome_early() -> None:
 
 
 def test_hermes_launcher_wrapper_clears_python_env_before_exec() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # Wrapper should clear env and forward args untouched to the venv entrypoint.
     assert 'cat > "$command_link_dir/hermes" <<EOF' in text

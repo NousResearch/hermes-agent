@@ -15,7 +15,9 @@ in ``command_link_dir`` and the venv entry point is left intact.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -29,7 +31,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def _extract_setup_path_shim_block() -> str:
     """Return the install.sh shim-write block used by setup_path()."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(
         r"(?P<block>mkdir -p \"\$command_link_dir\".*?chmod \+x \"\$command_link_dir/hermes\")",
         text,
@@ -74,6 +76,9 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
       * ``venv/bin/hermes`` still contains its original pip-script body
       * ``local_bin/hermes`` is a regular file (not a symlink) holding the shim
     """
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required to execute the install.sh shim block")
+
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     pip_entry = venv_bin / "hermes"
@@ -86,7 +91,12 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
     shim_path = command_link_dir / "hermes"
     # Reproduce the prior-install state: shim path is a symlink to the
     # pip-generated entry point.
-    shim_path.symlink_to(pip_entry)
+    try:
+        shim_path.symlink_to(pip_entry)
+    except OSError as exc:
+        if os.name == "nt":
+            pytest.skip(f"symlink creation is unavailable on this Windows session: {exc}")
+        raise
     assert shim_path.is_symlink()
 
     block = _extract_setup_path_shim_block()

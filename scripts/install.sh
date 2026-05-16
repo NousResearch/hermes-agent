@@ -309,6 +309,21 @@ get_hermes_command_path() {
     fi
 }
 
+configure_uv_python_dirs() {
+    # Root Linux installs use the FHS code layout under /usr/local/lib, but
+    # uv's default managed-Python location still lives under /root/.local.
+    # That makes the venv interpreter path root-home scoped and non-root users
+    # can fail to execute the shared /usr/local/bin/hermes shim. Point uv's
+    # managed Python dirs at a world-readable system location instead. (#21457)
+    if [ "$ROOT_FHS_LAYOUT" != true ]; then
+        return 0
+    fi
+
+    export UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+    export UV_PYTHON_BIN_DIR="/usr/local/share/uv/bin"
+    log_info "Root FHS install: using shared uv Python dir at $UV_PYTHON_INSTALL_DIR"
+}
+
 # ============================================================================
 # System detection
 # ============================================================================
@@ -1979,6 +1994,7 @@ main() {
 
     detect_os
     resolve_install_layout
+    configure_uv_python_dirs
     install_uv
     check_python
     check_git

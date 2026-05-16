@@ -408,6 +408,28 @@ install_uv() {
         rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
+    # Verify installer integrity (SHA256 of the known-good uv install.sh).
+    # Update this hash when intentionally upgrading the uv installer version.
+    _UV_INSTALLER_SHA256="SKIP"  # Set to actual hash to enable verification
+    if [ "$_UV_INSTALLER_SHA256" != "SKIP" ]; then
+        if command -v sha256sum &>/dev/null; then
+            _actual_hash=$(sha256sum "$_uv_installer" | cut -d' ' -f1)
+        elif command -v shasum &>/dev/null; then
+            _actual_hash=$(shasum -a 256 "$_uv_installer" | cut -d' ' -f1)
+        else
+            log_warn "Cannot verify installer integrity (no sha256sum/shasum found)"
+            _actual_hash="$_UV_INSTALLER_SHA256"
+        fi
+        if [ "$_actual_hash" != "$_UV_INSTALLER_SHA256" ]; then
+            log_error "uv installer checksum mismatch!"
+            log_error "  Expected: $_UV_INSTALLER_SHA256"
+            log_error "  Got:      $_actual_hash"
+            log_info "The installer may have been tampered with or updated upstream."
+            log_info "Verify the new version and update _UV_INSTALLER_SHA256 in this script."
+            rm -f "$_uv_install_log" "$_uv_installer"
+            exit 1
+        fi
+    fi
     if sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
         rm -f "$_uv_installer"
         # uv installs to ~/.local/bin by default

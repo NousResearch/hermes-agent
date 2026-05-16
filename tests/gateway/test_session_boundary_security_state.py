@@ -133,8 +133,8 @@ async def test_resume_clears_session_scoped_approval_and_yolo_state():
     }
     approve_session(session_key, "recursive delete")
     approve_session(other_key, "recursive delete")
-    enable_session_yolo(session_key)
-    enable_session_yolo(other_key)
+    enable_session_yolo(session_key, _user_initiated=True)
+    enable_session_yolo(other_key, _user_initiated=True)
     runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
     runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
@@ -166,8 +166,8 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     }
     approve_session(session_key, "recursive delete")
     approve_session(other_key, "recursive delete")
-    enable_session_yolo(session_key)
-    enable_session_yolo(other_key)
+    enable_session_yolo(session_key, _user_initiated=True)
+    enable_session_yolo(other_key, _user_initiated=True)
     runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
     runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True
@@ -239,8 +239,8 @@ def test_clear_session_boundary_security_state_is_scoped():
 
     approve_session(session_key, "recursive delete")
     approve_session(other_key, "recursive delete")
-    enable_session_yolo(session_key)
-    enable_session_yolo(other_key)
+    enable_session_yolo(session_key, _user_initiated=True)
+    enable_session_yolo(other_key, _user_initiated=True)
     runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
     runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
     runner._update_prompt_pending[session_key] = True

@@ -1250,7 +1250,7 @@ def _sync_session_key_after_compress(
             yolo_was_on = False
         if yolo_was_on:
             try:
-                enable_session_yolo(new_session_id)
+                enable_session_yolo(new_session_id, _user_initiated=True)
                 disable_session_yolo(old_key)
             except Exception:
                 pass
@@ -3896,7 +3896,7 @@ def _(rid, params: dict) -> dict:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
                 else:
-                    enable_session_yolo(session["session_key"])
+                    enable_session_yolo(session["session_key"], _user_initiated=True)
                     nv = "1"
             else:
                 current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))

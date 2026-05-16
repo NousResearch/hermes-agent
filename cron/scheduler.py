@@ -33,7 +33,9 @@ from typing import List, Optional
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
 # the module) fail with ModuleNotFoundError for hermes_time et al.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_parent_dir = str(Path(__file__).parent.parent)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
@@ -1488,6 +1490,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+
+        # Wall-clock hard limit: absolute cap on how long a cron job can run,
+        # regardless of activity.  Default 180s; override via
+        # HERMES_CRON_WALL_TIMEOUT env var.  0 = unlimited.
+        _raw_wall_timeout = os.getenv("HERMES_CRON_WALL_TIMEOUT", "").strip()
+        if _raw_wall_timeout:
+            try:
+                _cron_wall_limit = float(_raw_wall_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_WALL_TIMEOUT=%r; using default 180s",
+                    _raw_wall_timeout,
+                )
+                _cron_wall_limit = 180.0
+        else:
+            _cron_wall_limit = 180.0
+        _cron_wall_limit = _cron_wall_limit if _cron_wall_limit > 0 else None
+
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -1496,8 +1516,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _wall_timeout = False
+        _wall_start = time.monotonic()
         try:
-            if _cron_inactivity_limit is None:
+            if _cron_inactivity_limit is None and _cron_wall_limit is None:
                 # Unlimited — just wait for the result.
                 result = _cron_future.result()
             else:
@@ -1509,17 +1531,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if done:
                         result = _cron_future.result()
                         break
+                    # Wall-clock hard limit check.
+                    if _cron_wall_limit is not None:
+                        _elapsed = time.monotonic() - _wall_start
+                        if _elapsed >= _cron_wall_limit:
+                            _wall_timeout = True
+                            break
                     # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                    if _cron_inactivity_limit is not None:
+                        _idle_secs = 0.0
+                        if hasattr(agent, "get_activity_summary"):
+                            try:
+                                _act = agent.get_activity_summary()
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            except Exception:
+                                pass
+                        if _idle_secs >= _cron_inactivity_limit:
+                            _inactivity_timeout = True
+                            break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -1553,6 +1582,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
                 f"— last activity: {_last_desc}"
+            )
+
+        if _wall_timeout:
+            _elapsed = time.monotonic() - _wall_start
+            logger.error(
+                "Job '%s' exceeded wall-clock limit %.0fs (limit %.0fs)",
+                job_name, _elapsed, _cron_wall_limit,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out (wall-clock limit)")
+            raise TimeoutError(
+                f"Cron job '{job_name}' exceeded wall-clock limit "
+                f"{int(_elapsed)}s (limit {int(_cron_wall_limit)}s)"
             )
 
         # Guard against non-dict returns from run_conversation under error conditions

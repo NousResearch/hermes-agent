@@ -9,7 +9,7 @@
  *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
  *              │ write(data) PTY output bytes → VT100 parser              .
  *              ▼                                                          .
- *     WebSocket /api/pty?token=<session>                                  .
+ *     WebSocket /api/pty (first-message auth)                              .
  *          ▼                                                              .
  *     FastAPI pty_ws  (hermes_cli/web_server.py)                          .
  *          ▼                                                              .
@@ -37,12 +37,11 @@ import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
-  token: string,
   resume: string | null,
   channel: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams({ token, channel });
+  const qs = new URLSearchParams({ channel });
   if (resume) qs.set("resume", resume);
   return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
 }
@@ -552,7 +551,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
+    const url = buildWsUrl(resumeParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -562,6 +561,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
 
     ws.onopen = () => {
+      // First-message auth: send token before any PTY data to avoid
+      // leaking it in URL query params / browser history / proxy logs.
+      ws.send(JSON.stringify({ type: "auth", token }));
       setBanner(null);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will

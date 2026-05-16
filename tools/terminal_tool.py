@@ -218,8 +218,9 @@ def _check_disk_usage_warning():
 # fall back to callback identity (ACP / CLI interactive callbacks), then the
 # current thread. This prevents one interactive session from reusing another
 # session's cached sudo password inside the same long-lived process.
-_sudo_password_cache: dict[str, str] = {}
+_sudo_password_cache: dict[str, tuple[str, float]] = {}
 _sudo_password_cache_lock = threading.Lock()
+_SUDO_CACHE_TTL = 900.0  # 15 minutes
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -290,7 +291,14 @@ def _get_cached_sudo_password() -> str:
     """Return the cached sudo password for the current scope."""
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
-        return _sudo_password_cache.get(scope, "")
+        entry = _sudo_password_cache.get(scope)
+        if entry is None:
+            return ""
+        password, ts = entry
+        if time.monotonic() - ts > _SUDO_CACHE_TTL:
+            del _sudo_password_cache[scope]
+            return ""
+        return password
 
 
 def _set_cached_sudo_password(password: str) -> None:
@@ -298,7 +306,7 @@ def _set_cached_sudo_password(password: str) -> None:
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
         if password:
-            _sudo_password_cache[scope] = password
+            _sudo_password_cache[scope] = (password, time.monotonic())
         else:
             _sudo_password_cache.pop(scope, None)
 

@@ -586,9 +586,15 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
-def enable_session_yolo(session_key: str) -> None:
+def enable_session_yolo(session_key: str, *, _user_initiated: bool = False) -> None:
     """Enable YOLO bypass for a single session key."""
     if not session_key:
+        return
+    if not _user_initiated:
+        logger.warning(
+            "enable_session_yolo blocked: not called from user-initiated context "
+            "(session_key=%s)", session_key,
+        )
         return
     with _lock:
         _session_yolo.add(session_key)

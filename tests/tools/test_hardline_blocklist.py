@@ -203,7 +203,7 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
 
 def test_session_yolo_cannot_bypass_hardline(clean_session):
     """Gateway /yolo (session-scoped) must not bypass the hardline floor."""
-    enable_session_yolo("hardline_test")
+    enable_session_yolo("hardline_test", _user_initiated=True)
 
     result = check_dangerous_command("rm -rf /", "local")
     assert result["approved"] is False

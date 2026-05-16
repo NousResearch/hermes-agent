@@ -1098,6 +1098,13 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    # Ensure a shared global budget exists on the parent before constructing
+    # the child — create it lazily on first delegation.
+    if not getattr(parent_agent, "global_iteration_budget", None):
+        from run_agent import GlobalIterationBudget
+        _total_cap = 300  # default; could read from config
+        parent_agent.global_iteration_budget = GlobalIterationBudget(_total_cap)
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1129,6 +1136,7 @@ def _build_child_agent(
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        global_iteration_budget=parent_agent.global_iteration_budget,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
@@ -1484,6 +1492,14 @@ def _run_single_child(
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
+        # Orchestrator children must never inherit auto_approve — an orchestrator
+        # spawning workers with auto-approve would silently escalate privileges.
+        # Force deny for any child whose parent is an orchestrator.
+        _parent_role = getattr(parent_agent, "_delegate_role", None)
+        if _parent_role == "orchestrator":
+            _approval_cb = _subagent_auto_deny
+        else:
+            _approval_cb = _get_subagent_approval_callback()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
@@ -1491,7 +1507,7 @@ def _run_single_child(
             # input() and deadlock the parent's prompt_toolkit TUI.
             # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
             initializer=_set_subagent_approval_cb,
-            initargs=(_get_subagent_approval_callback(),),
+            initargs=(_approval_cb,),
         )
         # Capture the worker thread so the timeout diagnostic can dump its
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).

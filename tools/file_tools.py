@@ -127,6 +127,21 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return p.resolve()
 
 
+def _check_symlink_escape(original_path: str, resolved: Path) -> str | None:
+    """Return error message if original_path is a symlink escaping its parent."""
+    try:
+        orig = Path(original_path).expanduser()
+        if not orig.is_absolute():
+            return None  # relative paths are resolved against CWD, not a symlink risk
+        if orig.is_symlink():
+            link_parent = orig.parent.resolve()
+            if not str(resolved).startswith(str(link_parent)):
+                return f"Rejected: symlink '{original_path}' points outside its parent directory"
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -461,6 +476,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+
+        _sym_err = _check_symlink_escape(path, _resolved)
+        if _sym_err:
+            return json.dumps({"error": _sym_err})
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -809,6 +828,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         except Exception:
             _resolved = None
 
+        if _resolved is not None:
+            _sym_err = _check_symlink_escape(path, Path(_resolved))
+            if _sym_err:
+                return json.dumps({"error": _sym_err})
+
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
@@ -878,6 +902,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _resolved_paths.append(_r)
                 _seen.add(_r)
         _resolved_paths.sort()
+
+        # Symlink escape check for each path before acquiring locks.
+        for _p in _paths_to_check:
+            try:
+                _r = str(_resolve_path_for_task(_p, task_id))
+            except Exception:
+                continue
+            _sym_err = _check_symlink_escape(_p, Path(_r))
+            if _sym_err:
+                return json.dumps({"error": _sym_err})
 
         # Acquire per-path locks in sorted order via ExitStack.  On single
         # path this degenerates to one lock; on empty list (unresolvable)

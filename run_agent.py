@@ -329,6 +329,32 @@ class IterationBudget:
             return max(0, self.max_total - self._used)
 
 
+class GlobalIterationBudget:
+    """Shared iteration counter across parent + all subagents.
+
+    Passed from parent to children via delegate_tool. Each consume()
+    call decrements the shared pool. When exhausted, all agents stop.
+    Default cap: 300 (configurable via delegation.total_budget_cap).
+    """
+
+    def __init__(self, max_total: int):
+        self.max_total = max_total
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def consume(self) -> bool:
+        with self._lock:
+            if self._used >= self.max_total:
+                return False
+            self._used += 1
+            return True
+
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.max_total - self._used)
+
+
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
@@ -1192,6 +1218,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        global_iteration_budget: "GlobalIterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -1255,6 +1282,7 @@ class AIAgent:
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
         self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+        self.global_iteration_budget = global_iteration_budget
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
@@ -10719,9 +10747,12 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
+        _pre_compression_prompt = self._cached_system_prompt
         self._invalidate_system_prompt()
-        new_system_prompt = self._build_system_prompt(system_message)
-        self._cached_system_prompt = new_system_prompt
+        if _pre_compression_prompt is not None:
+            self._cached_system_prompt = _pre_compression_prompt
+        else:
+            self._cached_system_prompt = self._build_system_prompt(system_message)
 
         if self._session_db:
             try:
@@ -12563,6 +12594,10 @@ class AIAgent:
                 _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
+                break
+
+            if self.global_iteration_budget and not self.global_iteration_budget.consume():
+                _turn_exit_reason = "budget_exhausted"
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)

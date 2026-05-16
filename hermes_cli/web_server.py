@@ -3266,18 +3266,37 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
-        await ws.close(code=4401)
-        return
-
+    # --- loopback check (before accept) ---
     if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
 
     await ws.accept()
+
+    # --- first-message auth (after accept, within 5s timeout) ---
+    # Token is sent as the first WebSocket message instead of a query param
+    # to avoid leaking it into browser history, Referer headers, and proxy logs.
+    import asyncio as _asyncio
+    try:
+        _raw_auth = await _asyncio.wait_for(ws.receive_text(), timeout=5.0)
+    except (_asyncio.TimeoutError, Exception):
+        await ws.close(code=4401)
+        return
+    try:
+        _auth_msg = json.loads(_raw_auth)
+    except (json.JSONDecodeError, TypeError):
+        await ws.close(code=4401)
+        return
+    if (
+        not isinstance(_auth_msg, dict)
+        or _auth_msg.get("type") != "auth"
+        or not hmac.compare_digest(
+            str(_auth_msg.get("token", "")).encode(),
+            _SESSION_TOKEN.encode(),
+        )
+    ):
+        await ws.close(code=4401)
+        return
 
     # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
     # client and close cleanly rather than pretending the feature works.

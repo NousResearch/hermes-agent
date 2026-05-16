@@ -157,7 +157,7 @@ class TestYoloMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
-        enable_session_yolo("session-a")
+        enable_session_yolo("session-a", _user_initiated=True)
         assert is_session_yolo_enabled("session-a") is True
         assert is_session_yolo_enabled("session-b") is False
 
@@ -188,7 +188,7 @@ class TestYoloMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
-        enable_session_yolo("session-a")
+        enable_session_yolo("session-a", _user_initiated=True)
 
         token_a = set_current_session_key("session-a")
         try:
@@ -210,7 +210,7 @@ class TestYoloMode:
 
     def test_clear_session_removes_session_yolo_state(self):
         """Session cleanup must remove YOLO bypass state."""
-        enable_session_yolo("session-a")
+        enable_session_yolo("session-a", _user_initiated=True)
         assert is_session_yolo_enabled("session-a") is True
 
         approval_module.clear_session("session-a")

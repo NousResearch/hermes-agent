@@ -629,6 +629,59 @@ from gateway.config import (
     PlatformConfig,
     load_gateway_config,
 )
+
+# Static per-platform env-var name mappings used by _is_user_authorized.
+# These never change at runtime; plugin platforms are merged in at call time.
+_PLATFORM_ENV_MAP: dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+    Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+    Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+    Platform.SLACK: "SLACK_ALLOWED_USERS",
+    Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+    Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+    Platform.SMS: "SMS_ALLOWED_USERS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+    Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+    Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+    Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+    Platform.WECOM: "WECOM_ALLOWED_USERS",
+    Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+    Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+    Platform.QQBOT: "QQ_ALLOWED_USERS",
+    Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+}
+_PLATFORM_GROUP_USER_ENV_MAP: dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+}
+_PLATFORM_GROUP_CHAT_ENV_MAP: dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+    Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+}
+_PLATFORM_ALLOW_ALL_MAP: dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+    Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+    Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+    Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+    Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+    Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+    Platform.SMS: "SMS_ALLOW_ALL_USERS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+    Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+    Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+    Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+    Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+    Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+    Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+    Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+    Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+}
+_PLATFORM_ALLOW_BOTS_MAP: dict[Platform, str] = {
+    Platform.DISCORD: "DISCORD_ALLOW_BOTS",
+    Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+}
+
 from gateway.session import (
     SessionStore,
     SessionSource,
@@ -5495,56 +5548,11 @@ class GatewayRunner:
         if not user_id:
             return False
 
-        platform_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
-            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-            Platform.SLACK: "SLACK_ALLOWED_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
-            Platform.WECOM: "WECOM_ALLOWED_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-            Platform.QQBOT: "QQ_ALLOWED_USERS",
-            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
-        }
-        platform_group_user_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
-        }
-        platform_group_chat_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
-            Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
-        }
-        platform_allow_all_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
-            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
-            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
-            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
-            Platform.SMS: "SMS_ALLOW_ALL_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
-            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
-            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
-            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
-            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
-            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
-        }
+        platform_env_map = _PLATFORM_ENV_MAP
+        platform_group_user_env_map = _PLATFORM_GROUP_USER_ENV_MAP
+        platform_group_chat_env_map = _PLATFORM_GROUP_CHAT_ENV_MAP
+        platform_allow_all_map = _PLATFORM_ALLOW_ALL_MAP
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
-        platform_allow_bots_map = {
-            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
-            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
-        }
 
         # Plugin platforms: check the registry for auth env var names
         if source.platform not in platform_env_map:
@@ -5552,6 +5560,8 @@ class GatewayRunner:
                 from gateway.platform_registry import platform_registry
                 entry = platform_registry.get(source.platform.value)
                 if entry:
+                    platform_env_map = dict(platform_env_map)
+                    platform_allow_all_map = dict(platform_allow_all_map)
                     if entry.allowed_users_env:
                         platform_env_map[source.platform] = entry.allowed_users_env
                     if entry.allow_all_env:
@@ -5565,7 +5575,7 @@ class GatewayRunner:
             return True
 
         if getattr(source, "is_bot", False):
-            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            allow_bots_var = _PLATFORM_ALLOW_BOTS_MAP.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
@@ -10928,7 +10938,7 @@ class GatewayRunner:
             disable_session_yolo(session_key)
             return EphemeralReply(t("gateway.yolo.disabled"))
         else:
-            enable_session_yolo(session_key)
+            enable_session_yolo(session_key, _user_initiated=True)
             return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:

@@ -194,15 +194,15 @@ jobs:
 
             Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
+      - name: Setup Nix with read-only Cachix
+        uses: ./.github/actions/nix-setup
+
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
           ref: ${{ steps.resolve.outputs.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-
-      - name: Setup Nix with read-only Cachix
-        uses: ./.github/actions/nix-setup
 
       - name: Apply lockfile hashes
         id: apply

@@ -211,8 +211,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 

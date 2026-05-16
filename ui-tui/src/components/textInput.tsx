@@ -239,8 +239,20 @@ export function canFastAppendShape(
  * ASCII. Anything else (combining marks, IME compositions, wide chars,
  * tabs, ANSI fragments) goes through the normal render path so Ink can
  * recompute cell widths.
+ *
+ * Additionally rejects when the physical cursor sits at visual column
+ * 0 — i.e., right after a soft-wrap boundary. The "\b \b" sequence
+ * cannot move the cursor onto the previous visual row (terminals don't
+ * back-step across line wraps), so the physical cursor would stay put
+ * while the logical caret moves to the end of the previous visual
+ * line. That desyncs both Ink's `displayCursor` model and the user-
+ * visible position. Closes Copilot PR #26717 round 3 follow-up.
+ *
+ * `columns` is the composer's render width; when omitted we conservatively
+ * reject everything that could be a wrap boundary so unit tests of the
+ * pre-wrap shape contract keep working.
  */
-export function canFastBackspaceShape(current: string, cursor: number): boolean {
+export function canFastBackspaceShape(current: string, cursor: number, columns?: number): boolean {
   if (cursor !== current.length) {
     return false
   }
@@ -250,6 +262,13 @@ export function canFastBackspaceShape(current: string, cursor: number): boolean 
   }
 
   if (current.includes('\n')) {
+    return false
+  }
+
+  // If we know the wrap width, reject at the soft-wrap boundary: the
+  // caret's visual column is 0, so "\b \b" can't represent the physical
+  // move back to the previous visual line.
+  if (columns !== undefined && cursorLayout(current, cursor, columns).column === 0) {
     return false
   }
 
@@ -540,7 +559,7 @@ export function TextInput({
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
   const canFastBackspace = (current: string, cursor: number) =>
-    canFastEchoBase() && canFastBackspaceShape(current, cursor)
+    canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
 
   const commit = (
     next: string,

@@ -44,6 +44,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_use",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -153,8 +154,14 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "browser_use", "web_search"
         ],
+        "includes": []
+    },
+
+    "browser_use": {
+        "description": "Sidecar-backed browser-use agent for long-lived Playwright tasks through the browser-use-agent service",
+        "tools": ["browser_use"],
         "includes": []
     },
     

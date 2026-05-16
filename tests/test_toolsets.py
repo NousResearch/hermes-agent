@@ -78,6 +78,11 @@ class TestResolveToolset:
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
 
+    def test_browser_toolset_includes_browser_use_sidecar_tool(self):
+        tools = resolve_toolset("browser")
+        assert "browser_use" in tools
+        assert resolve_toolset("browser_use") == ["browser_use"]
+
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

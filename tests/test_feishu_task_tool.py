@@ -1,26 +1,12 @@
 """Tests for Feishu Task Tool.
 
-TDD Phase 1: Write tests that describe expected behavior.
-These tests will FAIL until the tool is implemented.
+Tests real lark_oapi library (installed in test env).
+sys.modules patching was removed — it caused cache conflicts under xdist.
 """
 
 import unittest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
-
-
-# Shared mock for lark_oapi module tree
-_mock_lark_module = MagicMock()
-
-
-def _make_mock_builder_chain():
-    """Create a mock request builder that simulates the lark_oapi builder chain."""
-    mock_request = MagicMock()
-    # Simulate builder().build() returning a request with queries/paths
-    # queries is a list of (key, value) tuples in lark_oapi
-    mock_request.queries = []
-    mock_request.paths = {}
-    return mock_request
 
 
 class TestFeishuTaskToolUnit(unittest.TestCase):
@@ -30,7 +16,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_list
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_success(self, mock_get_client):
         """List tasks returns formatted tasks."""
@@ -69,7 +54,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("task_guid/abc123", result)
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_empty(self, mock_get_client):
         """List tasks handles empty response."""
@@ -87,7 +71,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("success", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_with_completed_filter(self, mock_get_client):
         """List tasks respects completed parameter."""
@@ -107,30 +90,21 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made with the builder
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_with_due_range(self, mock_get_client):
-        """List tasks respects due_start and due_end parameters."""
+        """List tasks returns error for due_start/due_end — not supported by SDK."""
         import tools.feishu_task_tool as ft
 
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        mock_response = MagicMock()
-        mock_response.code = 0
-        mock_response.data = {"items": []}
-        mock_client.request.return_value = mock_response
+        mock_get_client.return_value = MagicMock()
 
         result = ft._handle_feishu_task_list({
             "due_start": "2026-04-01T00:00:00Z",
             "due_end": "2026-04-30T23:59:59Z",
         })
 
-        self.assertIn("success", result)
-        # Verify request was made
-        mock_client.request.assert_called_once()
+        self.assertIn("error", result)
+        self.assertIn("not yet supported", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_limit(self, mock_get_client):
         """List tasks respects limit parameter."""
@@ -150,7 +124,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_client_unavailable(self, mock_get_client):
         """Returns error when Feishu client is not available."""
@@ -163,7 +136,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("not available", result.lower())
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_list_tasks_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -186,7 +158,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_create
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_success(self, mock_get_client):
         """Create task returns the created task details."""
@@ -222,7 +193,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("New Task", result)
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_minimal(self, mock_get_client):
         """Create task works with only required fields."""
@@ -248,7 +218,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("success", result)
         self.assertIn("Minimal Task", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_missing_summary(self, mock_get_client):
         """Returns error when summary is missing."""
@@ -259,7 +228,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("summary", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_with_follower(self, mock_get_client):
         """Create task handles follower parameter."""
@@ -288,7 +256,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("success", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_client_unavailable(self, mock_get_client):
         """Returns error when client is not available."""
@@ -302,7 +269,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_create_task_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -328,7 +294,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_complete
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_complete_task_success(self, mock_get_client):
         """Complete task returns success."""
@@ -356,7 +321,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_complete_task_missing_guid(self, mock_get_client):
         """Returns error when task_guid is missing."""
@@ -367,7 +331,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("task_guid", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_complete_task_client_unavailable(self, mock_get_client):
         """Returns error when client is not available."""
@@ -381,7 +344,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_complete_task_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -406,7 +368,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_reopen
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_reopen_task_success(self, mock_get_client):
         """Reopen task returns success."""
@@ -434,7 +395,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_reopen_task_missing_guid(self, mock_get_client):
         """Returns error when task_guid is missing."""
@@ -445,7 +405,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("task_guid", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_reopen_task_client_unavailable(self, mock_get_client):
         """Returns error when client is not available."""
@@ -459,7 +418,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_reopen_task_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -484,7 +442,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_search
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_success(self, mock_get_client):
         """Search tasks returns matching tasks."""
@@ -518,7 +475,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("Clean groceries closet", result)
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_empty_query(self, mock_get_client):
         """Returns error when query is empty."""
@@ -531,7 +487,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("query", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_empty_results(self, mock_get_client):
         """Search tasks handles empty response."""
@@ -551,7 +506,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("success", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_with_filters(self, mock_get_client):
         """Search tasks respects assignee, creator, completed filters."""
@@ -577,7 +531,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made with filters
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_client_unavailable(self, mock_get_client):
         """Returns error when client is not available."""
@@ -591,7 +544,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_search_tasks_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -616,7 +568,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
     # feishu_task_delete
     # -------------------------------------------------------------------------
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_delete_task_success(self, mock_get_client):
         """Delete task returns success."""
@@ -638,7 +589,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         # Verify request was made
         mock_client.request.assert_called_once()
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_delete_task_missing_guid(self, mock_get_client):
         """Returns error when task_guid is missing."""
@@ -649,7 +599,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("task_guid", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_delete_task_client_unavailable(self, mock_get_client):
         """Returns error when client is not available."""
@@ -663,7 +612,6 @@ class TestFeishuTaskToolUnit(unittest.TestCase):
 
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_delete_task_api_error(self, mock_get_client):
         """Returns error when API returns non-zero code."""
@@ -768,7 +716,6 @@ class TestFeishuTaskToolSchema(unittest.TestCase):
 class TestFeishuTaskToolEdgeCases(unittest.TestCase):
     """Edge case tests for Feishu task tools."""
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_invalid_iso8601_due_date(self, mock_get_client):
         """Create task handles invalid due date gracefully."""
@@ -790,7 +737,6 @@ class TestFeishuTaskToolEdgeCases(unittest.TestCase):
         # Should return error for invalid due date
         self.assertIn("error", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_empty_summary(self, mock_get_client):
         """Create task rejects empty summary."""
@@ -803,7 +749,6 @@ class TestFeishuTaskToolEdgeCases(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("summary", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_task_guid_whitespace_stripped(self, mock_get_client):
         """Task GUID is stripped of whitespace."""
@@ -823,7 +768,6 @@ class TestFeishuTaskToolEdgeCases(unittest.TestCase):
 
         self.assertIn("success", result)
 
-    @patch.dict("sys.modules", {"lark_oapi": _mock_lark_module, "lark_oapi.api": _mock_lark_module, "lark_oapi.api.task": _mock_lark_module, "lark_oapi.api.task.v2": _mock_lark_module})
     @patch("tools.feishu_task_tool._get_client")
     def test_all_task_fields_preserved(self, mock_get_client):
         """All task fields are preserved in response."""

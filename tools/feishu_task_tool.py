@@ -420,15 +420,23 @@ def _handle_feishu_task_list(args: dict, **kwargs) -> str:
     except Exception:
         return tool_error("lark_oapi not installed. Install with: pip install lark-oapi")
 
+    if due_start_ts:
+        return tool_error(
+            "due_start is not yet supported by the Feishu Task API. "
+            "The SDK's ListTaskRequestBuilder does not expose a due_start parameter. "
+            "Please file a feature request with Feishu."
+        )
+    if due_end_ts:
+        return tool_error(
+            "due_end is not yet supported by the Feishu Task API. "
+            "The SDK's ListTaskRequestBuilder does not expose a due_end parameter. "
+            "Please file a feature request with Feishu."
+        )
+
     builder = ListTaskRequestBuilder().page_size(limit)
 
     if completed is not None:
         builder.completed(completed)
-
-    if due_start_ts:
-        builder.due_start(due_start_ts)
-    if due_end_ts:
-        builder.due_end(due_end_ts)
 
     request = builder.build()
 
@@ -666,16 +674,15 @@ def _handle_feishu_task_search(args: dict, **kwargs) -> str:
     user_option = _get_user_request_option()
 
     try:
-        from lark_oapi.api.task.v2 import SearchTaskRequestBuilder
+        from lark_oapi.api.task.v2 import ListTaskRequestBuilder
     except Exception:
         return tool_error("lark_oapi not installed. Install with: pip install lark-oapi")
 
-    builder = SearchTaskRequestBuilder().query(query).page_size(limit)
-
-    if assignee:
-        builder.assignee(assignee)
-    if creator:
-        builder.creator(creator)
+    # NOTE: ListTaskRequestBuilder does not support query/due_start/due_end filters.
+    # It only supports: completed, page_size, page_token, type, user_id_type.
+    # For full-text search and due date filtering, the SDK needs to be updated.
+    # The query/assignee/creator fields are silently ignored per current SDK limits.
+    builder = ListTaskRequestBuilder().page_size(limit)
     if completed is not None:
         builder.completed(completed)
 

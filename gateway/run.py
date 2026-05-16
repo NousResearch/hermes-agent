@@ -9892,6 +9892,31 @@ class GatewayRunner:
         if not decision.get("should_continue"):
             return
 
+        # Plugin veto: pre_goal_continuation may pause the goal right
+        # before we'd enqueue the next gateway tick. Mirrors the CLI
+        # call site in ``HermesCLI._maybe_continue_goal_after_turn``.
+        try:
+            from hermes_cli.goals import apply_continuation_hooks
+            proceed = apply_continuation_hooks(
+                session_id=sid,
+                goal_manager=mgr,
+                decision=decision,
+                last_response=final_response or "",
+            )
+        except Exception as exc:
+            logger.debug("goal continuation hook dispatch failed: %s", exc)
+            proceed = True
+        if not proceed:
+            if source is not None:
+                try:
+                    await self._defer_goal_status_notice_after_delivery(
+                        source,
+                        "⏸ Goal paused by plugin — use /goal resume to continue.",
+                    )
+                except Exception as exc:
+                    logger.debug("goal continuation notice failed: %s", exc)
+            return
+
         prompt = decision.get("continuation_prompt") or ""
         if not prompt or source is None:
             return

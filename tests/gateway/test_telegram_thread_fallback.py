@@ -236,14 +236,11 @@ async def test_send_typing_does_not_fall_back_to_root_for_dm_topic():
 
 
 @pytest.mark.asyncio
-async def test_send_typing_skips_api_call_for_dm_topic_reply_fallback():
-    """Hermes-created DM topic lanes have no working Bot API typing route.
+async def test_send_typing_makes_api_call_for_dm_topic_reply_fallback():
+    """Hermes-created DM topic lanes: send_chat_action with message_thread_id.
 
-    ``send_chat_action`` only accepts ``message_thread_id``, which Telegram's
-    Bot API 10.0 rejects for these lanes — the call would silently fail and
-    log a "thread not found" warning every typing tick (every 2s). Skipping
-    the call entirely keeps logs clean while preserving the user-visible
-    behavior (no typing indicator either way for these lanes).
+    ``send_chat_action`` does accept ``message_thread_id`` for private DM topic
+    lanes in practice — the typing indicator works when this call is made.
     """
     adapter = _make_adapter()
     call_log = []
@@ -262,7 +259,9 @@ async def test_send_typing_skips_api_call_for_dm_topic_reply_fallback():
         },
     )
 
-    assert call_log == []
+    assert call_log == [
+        {"chat_id": 12345, "action": "typing", "message_thread_id": 20197},
+    ]
 
 
 @pytest.mark.asyncio

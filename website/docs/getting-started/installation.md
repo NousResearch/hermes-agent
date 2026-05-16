@@ -10,31 +10,6 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### pip (recommended for most users)
-
-```bash
-pip install hermes-agent
-```
-
-This gives you the full Hermes Agent — CLI, web dashboard, and TUI — with zero external dependencies for core usage. Node.js, browser engines, and other optional tools are bootstrapped lazily on first use (e.g. when you run `hermes --tui` or use browser tools).
-
-PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. If you want bleeding-edge changes as they land, use the git install below.
-
-After installing, run:
-
-```bash
-hermes setup   # interactive wizard — configures your LLM provider and API key
-hermes         # start chatting
-```
-
-:::tip Optional: install everything upfront
-`hermes postinstall` installs Node.js, browser engines, ripgrep, and ffmpeg in one shot — then runs the setup wizard. Use this if you want the full experience (TUI, browser tools, voice) without waiting for lazy installs on first use.
-:::
-
-:::tip
-If you have [uv](https://docs.astral.sh/uv/) installed, `uv pip install hermes-agent` is faster.
-:::
-
 ### One-Line Installer (Linux / macOS / WSL2)
 
 For a git-based install that tracks `main` and gives you the latest changes immediately:

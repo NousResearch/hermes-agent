@@ -81,7 +81,7 @@ while read PR_NUMBER; do
 
   # 3. Reply to the PR acknowledging completion
   # Note for Agent: Make sure the actual code review is also submitted using the github-code-review standard.
-  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the \`reviewed\` label."
+  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the jules-reviewed label."
 
   echo "Completed PR #$PR_NUMBER"
 

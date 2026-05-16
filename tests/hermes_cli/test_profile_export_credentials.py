@@ -8,7 +8,11 @@ profiles; leaking credentials in the archive is a security issue.
 import tarfile
 from pathlib import Path
 
-from hermes_cli.profiles import export_profile, _DEFAULT_EXPORT_EXCLUDE_ROOT
+from hermes_cli.profiles import (
+    export_profile,
+    _DEFAULT_EXPORT_EXCLUDE_ROOT,
+    _profile_export_ignore,
+)
 
 
 class TestCredentialExclusion:
@@ -50,3 +54,24 @@ class TestCredentialExclusion:
         assert any("SOUL.md" in n for n in names), "SOUL.md should be in export"
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
+
+    def test_export_ignore_excludes_sqlite_sidecars_at_any_depth(self, tmp_path):
+        """SQLite WAL/SHM sidecars are transient and unsafe to copy live."""
+        root = tmp_path / "profile"
+        root.mkdir()
+        nested = root / "nested"
+        nested.mkdir()
+
+        ignored_root = _profile_export_ignore(root)(
+            str(root),
+            ["state.db", "state.db-shm", "state.db-wal", "state.db-journal"],
+        )
+        ignored_nested = _profile_export_ignore(root)(
+            str(nested),
+            ["kanban.db", "kanban.db-shm", "kanban.db-wal", "kanban.db-journal"],
+        )
+
+        assert "state.db" not in ignored_root
+        assert {"state.db-shm", "state.db-wal", "state.db-journal"} <= ignored_root
+        assert "kanban.db" not in ignored_nested
+        assert {"kanban.db-shm", "kanban.db-wal", "kanban.db-journal"} <= ignored_nested

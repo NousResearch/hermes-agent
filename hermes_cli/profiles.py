@@ -28,7 +28,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional
+from typing import Collection, List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -975,28 +975,41 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
-def _default_export_ignore(root_dir: Path):
+def _profile_export_ignore(root_dir: Path, root_excludes: Collection[str] | None = None):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
-    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
-    At all levels it excludes ``__pycache__``, sockets, and temp files.
+    At the root level it excludes everything in ``root_excludes``.
+    At all levels it excludes caches, sockets, temp files, and SQLite transient
+    sidecars. The SQLite sidecars are deliberately skipped because live WAL/SHM
+    files can disappear between ``copytree`` scanning and copying, making export
+    fail for active profiles.
     """
+
+    root_excludes = root_excludes or set()
 
     def _ignore(directory: str, contents: list) -> set:
         ignored: set = set()
         for entry in contents:
             # Universal exclusions (any depth)
-            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+            if entry == "__pycache__" or entry.endswith(
+                (".sock", ".tmp", ".db-shm", ".db-wal", ".db-journal")
+            ):
                 ignored.add(entry)
             # npm lockfiles can appear at root
             elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
         # Root-level exclusions
         if Path(directory) == root_dir:
-            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
+            ignored.update(c for c in contents if c in root_excludes)
         return ignored
 
     return _ignore
+
+
+def _default_export_ignore(root_dir: Path):
+    """Return an *ignore* callable for default-profile exports."""
+
+    return _profile_export_ignore(root_dir, _DEFAULT_EXPORT_EXCLUDE_ROOT)
 
 
 def export_profile(name: str, output_path: str) -> Path:
@@ -1037,7 +1050,7 @@ def export_profile(name: str, output_path: str) -> Path:
         shutil.copytree(
             profile_dir,
             staged,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=_profile_export_ignore(profile_dir, _CREDENTIAL_FILES),
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)
         return Path(result)

@@ -284,6 +284,18 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+# User-facing hint shown when the agent exhausts its iteration budget. Kept as
+# a single constant so message-site edits can't drift apart over time.
+# Mentions all three precedence paths (config / env / CLI) so a user who set
+# the limit via --max-turns or HERMES_MAX_ITERATIONS isn't told to edit a
+# config file that won't take effect.
+_MAX_ITERATIONS_HINT = (
+    "Raise this limit via 'agent.max_turns' in your Hermes config "
+    "(~/.hermes/config.yaml), the HERMES_MAX_ITERATIONS env var, "
+    "or the --max-turns CLI flag."
+)
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -11820,7 +11832,10 @@ class AIAgent:
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
-        print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
+        print(
+            f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary..."
+        )
+        print(_MAX_ITERATIONS_HINT)
 
         summary_request = (
             "You've reached the maximum number of tool-calling iterations allowed. "
@@ -11981,7 +11996,10 @@ class AIAgent:
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = (
+                        f"I reached the iteration limit and couldn't generate a summary. "
+                        f"{_MAX_ITERATIONS_HINT}"
+                    )
             else:
                 # Retry summary generation
                 if self.api_mode == "codex_responses":
@@ -12024,13 +12042,23 @@ class AIAgent:
                     if final_response:
                         messages.append({"role": "assistant", "content": final_response})
                     else:
-                        final_response = "I reached the iteration limit and couldn't generate a summary."
+                        final_response = (
+                            f"I reached the iteration limit and couldn't generate a summary. "
+                            f"{_MAX_ITERATIONS_HINT}"
+                        )
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = (
+                        f"I reached the iteration limit and couldn't generate a summary. "
+                        f"{_MAX_ITERATIONS_HINT}"
+                    )
 
         except Exception as e:
             logging.warning(f"Failed to get summary response: {e}")
-            final_response = f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. Error: {str(e)}"
+            final_response = (
+                f"I reached the maximum iterations ({self.max_iterations}) but couldn't summarize. "
+                f"{_MAX_ITERATIONS_HINT} "
+                f"Error: {str(e)}"
+            )
 
         return final_response
 
@@ -12505,7 +12533,11 @@ class AIAgent:
             elif not self.iteration_budget.consume():
                 _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
-                    self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
+                    self._safe_print(
+                        f"\n⚠️  Iteration budget exhausted "
+                        f"({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used). "
+                        f"{_MAX_ITERATIONS_HINT}"
+                    )
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)
@@ -15685,12 +15717,12 @@ class AIAgent:
             _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
             self._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
-                "— asking model to summarise"
+                f"— asking model to summarise. {_MAX_ITERATIONS_HINT}"
             )
             if not self.quiet_mode:
                 self._safe_print(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
-                    "— requesting summary..."
+                    f"— requesting summary... {_MAX_ITERATIONS_HINT}"
                 )
             final_response = self._handle_max_iterations(messages, api_call_count)
 

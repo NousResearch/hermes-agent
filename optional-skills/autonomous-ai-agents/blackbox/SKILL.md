@@ -20,15 +20,17 @@ The CLI is [open-source](https://github.com/blackboxaicode/cli) (GPL-3.0, TypeSc
 ## Prerequisites
 
 - Node.js 20+ installed
-- Blackbox CLI installed: `npm install -g @blackboxai/cli`
-- Or install from source:
+- **Do not assume `npm install -g @blackboxai/cli` installs the autonomous coding agent.** As of 2026-05 in Dalton's environment, npm package `@blackboxai/cli@1.0.2` describes itself as “A NPX command to install and list Model Context Protocols,” exposes a generic `cli` binary, and does **not** provide the `blackbox --prompt` / `blackbox configure` interface documented below.
+- Verify the actual binary before use:
+  ```bash
+  command -v blackbox
+  blackbox --help
+  blackbox info
   ```
-  git clone https://github.com/blackboxaicode/cli.git
-  cd cli && npm install && npm install -g .
-  ```
-- API key from [app.blackbox.ai/dashboard](https://app.blackbox.ai/dashboard)
-- Configured: run `blackbox configure` and enter your API key
-- Use `pty=true` in terminal calls — Blackbox CLI is an interactive terminal app
+- If no working autonomous Blackbox coding CLI is present, treat this skill as unavailable and use Claude Code, Codex, or OpenCode instead.
+- API key from [app.blackbox.ai/dashboard](https://app.blackbox.ai/dashboard), if a compatible CLI is later found.
+- Configured: run the compatible CLI's configure/login command and enter your API key.
+- Use `pty=true` in terminal calls — Blackbox CLI is expected to be an interactive terminal app
 
 ## One-Shot Tasks
 

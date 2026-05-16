@@ -174,6 +174,19 @@ class TestDispatch:
         assert parsed["ok"] is True
         assert ("type", {"text": "echo approved"}) in noop_backend.calls
 
+    def test_always_approved_session_still_allows_action_if_callback_cleared(self):
+        from tools.computer_use import tool as cu_tool
+
+        cu_tool.set_approval_callback(lambda _action, _args, _summary: "always_approve")
+        first = json.loads(cu_tool.handle_computer_use({"action": "type", "text": "echo first"}))
+        cu_tool.set_approval_callback(None)
+        second = json.loads(cu_tool.handle_computer_use({"action": "type", "text": "echo second"}))
+        backend = cu_tool._get_backend()
+
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert ("type", {"text": "echo first"}) in backend.calls
+        assert ("type", {"text": "echo second"}) in backend.calls
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)

@@ -212,7 +212,7 @@ class TestBraveFreeBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_available", lambda: False)
         assert web_tools._get_backend() == "brave-free"
 
     def test_brave_free_does_not_override_paid_provider(self, monkeypatch):

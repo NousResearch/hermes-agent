@@ -261,6 +261,13 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
     global _session_auto_approve, _always_allow
+    # Honor already-granted session approvals before checking for a callback,
+    # so that actions approved via approve_session / always_approve continue
+    # to work even if the callback is later cleared or never re-registered.
+    if _session_auto_approve:
+        return None
+    if action in _always_allow:
+        return None
     cb = _approval_callback
     if cb is None:
         return json.dumps({
@@ -272,10 +279,6 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
                 "runtime before retrying."
             ),
         })
-    if _session_auto_approve:
-        return None
-    if action in _always_allow:
-        return None
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)

@@ -975,6 +975,11 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+_LEGACY_PLATFORM_TOOLSET_ALIASES = {
+    "qqbot": ("qq",),
+}
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -986,6 +991,13 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    if toolset_names is None:
+        legacy_platforms = _LEGACY_PLATFORM_TOOLSET_ALIASES.get(platform, ())
+        for legacy_platform in legacy_platforms:
+            legacy_toolset_names = platform_toolsets.get(legacy_platform)
+            if isinstance(legacy_toolset_names, list):
+                toolset_names = legacy_toolset_names
+                break
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)

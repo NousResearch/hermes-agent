@@ -2236,6 +2236,16 @@ export default class Ink {
   // expected start position before the diff body runs.
   //
   // Public so tests can drive it directly without mounting App.
+  //
+  // Bumps BOTH `displayCursor` (used by log-update's relative-move
+  // preamble) AND, if non-null, `cursorDeclaration.relativeX/Y` (the
+  // target the cursor parks at after every frame). Advancing only one
+  // of the two would leave the other stale: e.g. if the deferred React
+  // `setCur` hasn't flushed yet, the next unrelated re-render would
+  // re-compute `target` from the stale declaration and park the
+  // hardware cursor back at the old caret column. We advance both so
+  // the fast-echo is invisible to intervening frames until React
+  // catches up.
   noteExternalCursorAdvance: CursorAdvanceNotifier = (dx, dy = 0) => {
     if (dx === 0 && dy === 0) {
       return
@@ -2252,16 +2262,35 @@ export default class Ink {
         x: this.displayCursor.x + dx,
         y: this.displayCursor.y + dy
       }
-
-      return
+    } else {
+      // No prior parked position. Seed from frontFrame.cursor (where
+      // log-update parked the cursor at the end of the last frame) so
+      // the next preamble's relative move correctly cancels the external
+      // advance.
+      const baseX = this.frontFrame.cursor.x
+      const baseY = this.frontFrame.cursor.y
+      this.displayCursor = { x: baseX + dx, y: baseY + dy }
     }
 
-    // No prior parked position. Seed from frontFrame.cursor (where
-    // log-update parked the cursor at the end of the last frame) so the
-    // next preamble's relative move correctly cancels the external advance.
-    const baseX = this.frontFrame.cursor.x
-    const baseY = this.frontFrame.cursor.y
-    this.displayCursor = { x: baseX + dx, y: baseY + dy }
+    // Also advance the active cursor declaration if any. Without this,
+    // a TextInput that defers its React `cur` state update (16ms timer
+    // in textInput.tsx — perf optimization that batches re-renders
+    // during heavy typing) leaves `cursorDeclaration.relativeX` pointing
+    // at the pre-keystroke caret column. If an unrelated component
+    // re-renders before the deferred `setCur` flushes, the cursor-park
+    // branch at the end of onRender would move the hardware cursor back
+    // to that stale relativeX and visually undo the fast-echo's
+    // advance. Bumping relativeX here keeps the declared target in
+    // lock-step with the physical cursor until React state catches up.
+    const decl = this.cursorDeclaration
+
+    if (decl !== null) {
+      this.cursorDeclaration = {
+        node: decl.node,
+        relativeX: decl.relativeX + dx,
+        relativeY: decl.relativeY + dy
+      }
+    }
   }
   /** Test-only accessor for the internally-tracked physical cursor. */
   __getDisplayCursorForTest(): { x: number; y: number } | null {
@@ -2270,6 +2299,10 @@ export default class Ink {
   /** Test-only accessor for the front frame's parked cursor (post-render). */
   __getFrontFrameCursorForTest(): { x: number; y: number } {
     return { x: this.frontFrame.cursor.x, y: this.frontFrame.cursor.y }
+  }
+  /** Test-only accessor for the currently-declared cursor target. */
+  __getCursorDeclarationForTest(): CursorDeclaration | null {
+    return this.cursorDeclaration
   }
   render(node: ReactNode): void {
     this.currentNode = node

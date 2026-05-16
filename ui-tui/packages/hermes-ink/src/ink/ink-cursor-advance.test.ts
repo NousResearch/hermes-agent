@@ -112,4 +112,56 @@ describe('Ink.noteExternalCursorAdvance', () => {
 
     ink.unmount()
   })
+
+  // Closes Copilot review feedback on PR #26717: the fast-echo path
+  // defers TextInput's React `cur` state for 16ms, so during that
+  // window `cursorDeclaration.relativeX` (which `useDeclaredCursor`
+  // sets from `cursorLayout(display, cur, columns)`) still points at
+  // the PRE-keystroke caret column. If we advanced only `displayCursor`,
+  // an unrelated re-render in that window would re-run onRender's
+  // cursor-park branch with the stale declaration and visually undo
+  // the fast-echo's advance. We must bump BOTH so the cursor stays
+  // anchored to the physical caret until React state catches up.
+  it('advances the active cursorDeclaration in lock-step with displayCursor', () => {
+    const { ink } = makeInk()
+
+    ink.render(React.createElement(Text, null, 'hi'))
+    ink.onRender()
+
+    const fakeNode = {} as unknown as Record<string, unknown>
+
+    const inkAny = ink as unknown as {
+      cursorDeclaration: { node: unknown; relativeX: number; relativeY: number } | null
+      displayCursor: { x: number; y: number } | null
+    }
+
+    inkAny.cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
+    inkAny.displayCursor = { x: 12, y: 0 }
+
+    ink.noteExternalCursorAdvance(3)
+
+    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 15, y: 0 })
+    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
+
+    ink.noteExternalCursorAdvance(-1)
+    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 14, y: 0 })
+    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 9, relativeY: 0 })
+
+    ink.unmount()
+  })
+
+  it('leaves cursorDeclaration unchanged when no declaration is active', () => {
+    const { ink } = makeInk()
+
+    ink.render(React.createElement(Text, null, 'hi'))
+    ink.onRender()
+
+    expect(ink.__getCursorDeclarationForTest()).toBeNull()
+
+    ink.noteExternalCursorAdvance(3)
+
+    expect(ink.__getCursorDeclarationForTest()).toBeNull()
+
+    ink.unmount()
+  })
 })

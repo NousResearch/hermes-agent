@@ -326,7 +326,11 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 # placeholder substitution, and reads the audio file the command wrote to
 # ``{output_path}``. Supported placeholders: ``{input_path}``,
 # ``{text_path}`` (alias for input_path), ``{output_path}``, ``{format}``,
-# ``{voice}``, ``{model}``, ``{speed}``. Use ``{{`` / ``}}`` for literal braces.
+# ``{voice}``, ``{model}``, ``{speed}``. If a provider also declares
+# ``clone_command`` for per-call voice cloning, that template additionally
+# receives ``{voice_reference_audio_path}`` / ``{ref_audio_path}`` and
+# ``{voice_reference_text}`` / ``{ref_text}``. Use ``{{`` / ``}}`` for
+# literal braces.
 #
 # Built-in provider names always win over an entry with the same name under
 # ``tts.providers``, so user config can't silently shadow ``edge`` etc.
@@ -460,6 +464,25 @@ def _get_command_tts_output_format(
     return fmt if fmt in COMMAND_TTS_OUTPUT_FORMATS else DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
 
+def _get_command_tts_clone_command(config: Dict[str, Any]) -> str:
+    """Return the optional clone command template for a command provider."""
+    raw = config.get("clone_command") or config.get("voice_clone_command") or ""
+    return str(raw).strip()
+
+
+def _resolve_voice_reference_audio_path(value: Optional[str]) -> Optional[str]:
+    """Resolve and validate a per-call reference voice audio path."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("file://"):
+        raw = raw[7:]
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Reference voice audio file not found: {path}")
+    return str(path)
+
+
 def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
     """Return True only when the user explicitly opted in to voice delivery."""
     value = config.get("voice_compatible", False)
@@ -563,7 +586,26 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
         return
 
-    import psutil
+    try:
+        import psutil
+    except ImportError:
+        # ``psutil`` is an optional dependency in some slim installs.  The
+        # command is launched in a new session on POSIX, so killing the process
+        # group still cleans up the shell and its children.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=2)
+            return
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            return
+
     try:
         parent = psutil.Process(proc.pid)
         for child in parent.children(recursive=True):
@@ -649,6 +691,8 @@ def _generate_command_tts(
     provider_name: str,
     config: Dict[str, Any],
     tts_config: Dict[str, Any],
+    voice_reference_audio_path: Optional[str] = None,
+    voice_reference_text: Optional[str] = None,
 ) -> str:
     """Generate speech by running a user-configured shell command.
 
@@ -656,11 +700,20 @@ def _generate_command_tts(
     Raises ``ValueError`` when the provider config is invalid, and
     ``RuntimeError`` for timeouts / non-zero exits / empty output.
     """
-    command_template = str(config.get("command") or "").strip()
-    if not command_template:
-        raise ValueError(
-            f"tts.providers.{provider_name}.command is not configured"
-        )
+    voice_clone = bool(voice_reference_audio_path)
+    if voice_clone:
+        command_template = _get_command_tts_clone_command(config)
+        if not command_template:
+            raise ValueError(
+                f"TTS provider '{provider_name}' does not support voice cloning; "
+                f"configure tts.providers.{provider_name}.clone_command"
+            )
+    else:
+        command_template = str(config.get("command") or "").strip()
+        if not command_template:
+            raise ValueError(
+                f"tts.providers.{provider_name}.command is not configured"
+            )
 
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -670,6 +723,8 @@ def _generate_command_tts(
     timeout = _get_command_tts_timeout(config)
     output_format = _get_command_tts_output_format(config, str(output))
     speed = config.get("speed", tts_config.get("speed", ""))
+    ref_audio_path = str(voice_reference_audio_path or "")
+    ref_text = str(voice_reference_text or "")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         text_path = Path(tmpdir) / "input.txt"
@@ -683,6 +738,12 @@ def _generate_command_tts(
             "voice": str(config.get("voice", "")),
             "model": str(config.get("model", "")),
             "speed": str(speed),
+            "voice_reference_audio_path": ref_audio_path,
+            "reference_audio_path": ref_audio_path,
+            "ref_audio_path": ref_audio_path,
+            "voice_reference_text": ref_text,
+            "reference_text": ref_text,
+            "ref_text": ref_text,
         }
         command = _render_command_tts_template(command_template, placeholders)
 
@@ -1622,6 +1683,8 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    voice_reference_audio_path: Optional[str] = None,
+    voice_reference_text: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -1636,12 +1699,24 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        voice_reference_audio_path: Optional path to reference voice audio for
+            per-call voice cloning. Requires a provider that supports cloning.
+        voice_reference_text: Optional transcript of the reference audio.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
     """
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
+
+    try:
+        resolved_reference_audio_path = _resolve_voice_reference_audio_path(
+            voice_reference_audio_path,
+        )
+    except FileNotFoundError as exc:
+        return tool_error(str(exc), success=False)
+    voice_clone_requested = bool(resolved_reference_audio_path)
+    reference_text = str(voice_reference_text or "")
 
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
@@ -1651,6 +1726,17 @@ def text_to_speech_tool(
     # so a user's ``tts.providers.openai.command`` can't override the real
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
+
+    if voice_clone_requested and command_provider_config is None:
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"TTS provider '{provider}' does not support per-call voice cloning. "
+                "Use a custom command provider with clone_command."
+            ),
+            "provider": provider,
+            "voice_clone": True,
+        }, ensure_ascii=False)
 
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
@@ -1705,7 +1791,13 @@ def text_to_speech_tool(
                 "Generating speech with command TTS provider '%s'...", provider,
             )
             file_str = _generate_command_tts(
-                text, file_str, provider, command_provider_config, tts_config,
+                text,
+                file_str,
+                provider,
+                command_provider_config,
+                tts_config,
+                voice_reference_audio_path=resolved_reference_audio_path,
+                voice_reference_text=reference_text,
             )
 
         elif provider == "elevenlabs":
@@ -1866,6 +1958,7 @@ def text_to_speech_tool(
             "media_tag": media_tag,
             "provider": provider,
             "voice_compatible": voice_compatible,
+            "voice_clone": voice_clone_requested,
         }, ensure_ascii=False)
 
     except ValueError as e:
@@ -2266,6 +2359,14 @@ TTS_SCHEMA = {
             "output_path": {
                 "type": "string",
                 "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+            },
+            "voice_reference_audio_path": {
+                "type": "string",
+                "description": "Optional local path to reference voice audio for per-call voice cloning. Requires the configured TTS provider to support cloning, such as a command provider with clone_command."
+            },
+            "voice_reference_text": {
+                "type": "string",
+                "description": "Optional transcript of the reference voice audio. Some cloning backends use this to improve voice matching."
             }
         },
         "required": ["text"]
@@ -2278,7 +2379,9 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        output_path=args.get("output_path")),
+        output_path=args.get("output_path"),
+        voice_reference_audio_path=args.get("voice_reference_audio_path"),
+        voice_reference_text=args.get("voice_reference_text")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

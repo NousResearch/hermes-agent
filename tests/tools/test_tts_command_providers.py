@@ -28,6 +28,7 @@ from tools.tts_tool import (
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
+    TTS_SCHEMA,
     _generate_command_tts,
     _get_command_tts_output_format,
     _get_command_tts_timeout,
@@ -57,6 +58,29 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
         f'shutil.copyfile(sys.argv[1], sys.argv[2])" '
         f'{{input_path}} {output_placeholder}'
     )
+
+
+def _python_clone_command() -> str:
+    """Return a command that proves clone placeholders reached the command."""
+    interpreter = sys.executable
+    return (
+        f'"{interpreter}" -c "from pathlib import Path; import sys; '
+        f'text=Path(sys.argv[1]).read_text(encoding=\'utf-8\'); '
+        f'Path(sys.argv[2]).write_text(\'clone:\' + Path(sys.argv[3]).name + \':\' + sys.argv[4] + \':\' + text, encoding=\'utf-8\')" '
+        f'{{input_path}} {{output_path}} {{voice_reference_audio_path}} {{voice_reference_text}}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# tool schema
+# ---------------------------------------------------------------------------
+
+class TestTextToSpeechToolSchema:
+    def test_schema_exposes_voice_clone_inputs(self):
+        props = TTS_SCHEMA["parameters"]["properties"]
+        assert "voice_reference_audio_path" in props
+        assert "voice_reference_text" in props
+        assert "reference voice audio" in props["voice_reference_audio_path"]["description"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +475,88 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    def test_command_provider_uses_clone_command_when_reference_audio_supplied(self, tmp_path):
+        ref_audio = tmp_path / "sample voice.wav"
+        ref_audio.write_bytes(b"fake wav bytes")
+        out = tmp_path / "clip.wav"
+        cfg = {
+            "provider": "py-clone",
+            "providers": {
+                "py-clone": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "clone_command": _python_clone_command(),
+                    "output_format": "wav",
+                },
+            },
+        }
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(
+                text="hello clone",
+                output_path=str(out),
+                voice_reference_audio_path=str(ref_audio),
+                voice_reference_text="reference transcript",
+            )
+
+        data = json.loads(result)
+        assert data["success"] is True, data
+        assert data["provider"] == "py-clone"
+        assert data["voice_clone"] is True
+        assert Path(data["file_path"]).read_text(encoding="utf-8") == (
+            "clone:sample voice.wav:reference transcript:hello clone"
+        )
+
+    def test_reference_audio_without_clone_command_returns_error(self, tmp_path):
+        ref_audio = tmp_path / "voice.wav"
+        ref_audio.write_bytes(b"fake wav bytes")
+        cfg = {
+            "provider": "py-copy",
+            "providers": {
+                "py-copy": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "output_format": "mp3",
+                },
+            },
+        }
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(
+                text="hi",
+                output_path=str(tmp_path / "clip.mp3"),
+                voice_reference_audio_path=str(ref_audio),
+            )
+
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "does not support voice cloning" in data["error"]
+
+    def test_missing_reference_audio_path_returns_error(self, tmp_path):
+        missing = tmp_path / "missing.wav"
+        cfg = {
+            "provider": "py-clone",
+            "providers": {
+                "py-clone": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "clone_command": _python_clone_command(),
+                    "output_format": "wav",
+                },
+            },
+        }
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(
+                text="hi",
+                output_path=str(tmp_path / "clip.wav"),
+                voice_reference_audio_path=str(missing),
+            )
+
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "Reference voice audio file not found" in data["error"]
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the

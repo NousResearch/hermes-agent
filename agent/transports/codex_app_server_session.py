@@ -404,7 +404,7 @@ class CodexAppServerSession:
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
-        deadline = time.time() + turn_timeout
+        deadline = time.monotonic() + turn_timeout
         turn_complete = False
         # Post-tool watchdog state. last_tool_completion_at is set whenever
         # a tool-shaped item completes; if no further notification arrives
@@ -412,7 +412,7 @@ class CodexAppServerSession:
         # fast-fail and retire the session.
         last_tool_completion_at: Optional[float] = None
 
-        while time.time() < deadline and not turn_complete:
+        while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
@@ -440,7 +440,7 @@ class CodexAppServerSession:
             # up on this turn instead of waiting for the outer deadline.
             if (
                 last_tool_completion_at is not None
-                and (time.time() - last_tool_completion_at)
+                and (time.monotonic() - last_tool_completion_at)
                     > post_tool_quiet_timeout
             ):
                 self._issue_interrupt(result.turn_id)
@@ -471,7 +471,7 @@ class CodexAppServerSession:
                         result.projected_messages.extend(proj.messages)
                     if proj.is_tool_iteration:
                         result.tool_iterations += 1
-                        last_tool_completion_at = time.time()
+                        last_tool_completion_at = time.monotonic()
                     if proj.final_text is not None:
                         result.final_text = proj.final_text
                         if _has_turn_aborted_marker(proj.final_text):
@@ -514,7 +514,7 @@ class CodexAppServerSession:
                 result.tool_iterations += 1
                 # Arm/refresh the post-tool quiet watchdog whenever a
                 # tool-shaped item completes.
-                last_tool_completion_at = time.time()
+                last_tool_completion_at = time.monotonic()
             else:
                 # Any non-tool projected activity (assistant message,
                 # status update, etc.) means codex is still producing

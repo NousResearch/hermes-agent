@@ -11736,11 +11736,13 @@ class HermesCLI:
 
         # Ensure tirith security scanner is available (downloads if needed).
         # Warn the user if tirith is enabled in config but not available,
-        # so they know command security scanning is degraded.
+        # so they know command security scanning is degraded.  Suppressed
+        # on platforms where tirith ships no binary (Windows etc.) — the
+        # user can't act on it and pattern-matching guards still run.
         try:
-            from tools.tirith_security import ensure_installed
+            from tools.tirith_security import ensure_installed, is_platform_supported
             tirith_path = ensure_installed(log_failures=False)
-            if tirith_path is None:
+            if tirith_path is None and is_platform_supported():
                 security_cfg = self.config.get("security", {}) or {}
                 tirith_enabled = security_cfg.get("tirith_enabled", True)
                 if tirith_enabled:

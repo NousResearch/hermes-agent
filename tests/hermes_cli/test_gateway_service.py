@@ -38,6 +38,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _no_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -175,7 +179,6 @@ class TestSystemdServiceRefresh:
         """
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
-        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
         monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
@@ -381,6 +384,11 @@ class TestGeneratedSystemdUnits:
             gateway_cli,
             "_get_restart_drain_timeout",
             lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("test_user", "test_group", "/home/test_user"),
         )
         unit = gateway_cli.generate_systemd_unit(system=True)
 
@@ -737,6 +745,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _no_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -1328,6 +1340,11 @@ class TestGeneratedUnitIncludesLocalBin:
             gateway_cli,
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("test_user", "test_group", "/home/test_user"),
         )
         unit = gateway_cli.generate_systemd_unit(system=True)
         # System unit uses the resolved home dir from _system_service_identity

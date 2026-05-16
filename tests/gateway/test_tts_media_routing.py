@@ -35,6 +35,23 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "dm"}
 
 
+def _routing_self():
+    """Stub `self` for direct GatewayRunner._deliver_media_from_response calls.
+
+    _deliver_media_from_response calls self._thread_metadata_for_source and
+    self._reply_anchor_for_event. The tests assert on routing/dispatch only,
+    so return a minimal metadata dict derived from the event's thread_id.
+    """
+    def _thread_meta(source, _anchor=None):
+        tid = getattr(source, "thread_id", None)
+        return {"thread_id": tid} if tid else None
+
+    return SimpleNamespace(
+        _thread_metadata_for_source=_thread_meta,
+        _reply_anchor_for_event=lambda _event: None,
+    )
+
+
 def _event(thread_id=None):
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -121,7 +138,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _routing_self(),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -150,7 +167,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _routing_self(),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -181,7 +198,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _routing_self(),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,

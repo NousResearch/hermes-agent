@@ -3,6 +3,7 @@
 import os
 import json
 import tempfile
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -1040,6 +1041,66 @@ class TestNewEndpoints:
             pass
 
 
+class TestDashboardAuthBoundary:
+    """Regression tests for dashboard authentication hardening."""
+
+    def test_start_server_refuses_public_bind_without_insecure(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setitem(sys.modules, "uvicorn", MagicMock())
+
+        with pytest.raises(SystemExit) as excinfo:
+            web_server.start_server(host="0.0.0.0", port=9119, open_browser=False)
+
+        assert "Refusing to bind" in str(excinfo.value)
+
+    def test_start_server_marks_public_bind_for_launch_token(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        uvicorn_mock = MagicMock()
+        monkeypatch.setitem(sys.modules, "uvicorn", uvicorn_mock)
+
+        web_server.start_server(
+            host="0.0.0.0",
+            port=9119,
+            open_browser=False,
+            allow_public=True,
+        )
+
+        assert web_server.app.state.bound_host == "0.0.0.0"
+        assert web_server.app.state.require_spa_token is True
+        uvicorn_mock.run.assert_called_once()
+
+    def test_public_spa_does_not_expose_token_without_launch_token(
+        self, tmp_path, monkeypatch
+    ):
+        try:
+            from fastapi import FastAPI
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_cli.web_server as web_server
+
+        (tmp_path / "index.html").write_text("<html><head></head><body></body></html>")
+        (tmp_path / "assets").mkdir()
+        monkeypatch.setattr(web_server, "WEB_DIST", tmp_path)
+        monkeypatch.setattr(web_server.app.state, "require_spa_token", True, raising=False)
+
+        test_app = FastAPI()
+        web_server.mount_spa(test_app)
+        client = TestClient(test_app)
+
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert web_server._SESSION_TOKEN not in resp.text
+        assert 'window.__HERMES_SESSION_TOKEN__=""' in resp.text
+
+        resp = client.get(f"/?token={web_server._SESSION_TOKEN}")
+        assert resp.status_code == 200
+        assert web_server._SESSION_TOKEN in resp.text
+
+
 # ---------------------------------------------------------------------------
 # Model context length: normalize/denormalize + /api/model/info
 # ---------------------------------------------------------------------------
@@ -1856,17 +1917,17 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Use ``/api/plugins/hermes-achievements/scan-status`` — a stable,
+        side-effect-free GET that reads in-process scan state with no DB or
+        external dependencies. With a valid token the handler should run
+        (200); without one the middleware should 401 before the handler.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):

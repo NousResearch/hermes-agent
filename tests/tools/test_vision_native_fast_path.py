@@ -153,6 +153,13 @@ class TestHandleVisionAnalyzeFastPath:
         img = tmp_path / "x.png"
         img.write_bytes(_TINY_PNG)
 
+        # Force the vision-capability lookup True without hitting the
+        # models.dev cache (unavailable in CI's sandboxed env).
+        monkeypatch.setattr(
+            "agent.image_routing._lookup_supports_vision",
+            lambda _provider, _model: True,
+        )
+
         # Set runtime override so the handler thinks we're on opus@openrouter
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "anthropic/claude-opus-4.6")

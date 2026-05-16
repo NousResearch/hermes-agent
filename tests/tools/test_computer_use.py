@@ -32,7 +32,7 @@ def _reset_backend():
 def noop_backend():
     """Return the active noop backend instance so tests can inspect calls."""
     from tools.computer_use.tool import _get_backend, set_approval_callback
-    set_approval_callback(lambda action, args, summary: "approve_once")
+    set_approval_callback(lambda _action, _args, _summary: "approve_once")
     return _get_backend()
 
 
@@ -158,6 +158,24 @@ class TestDispatch:
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
 
+    def test_destructive_action_fails_closed_without_approval_callback(self):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "type", "text": "echo should not run"})
+        parsed = json.loads(out)
+
+        assert parsed["error"] == "approval required but no approval callback is registered"
+        assert parsed["action"] == "type"
+
+    def test_destructive_action_runs_with_approval_callback(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "type", "text": "echo approved"})
+        parsed = json.loads(out)
+
+        assert parsed["ok"] is True
+        assert ("type", {"text": "echo approved"}) in noop_backend.calls
+
 
 class TestApprovalGate:
     def test_destructive_action_without_callback_fails_closed(self):
@@ -167,7 +185,7 @@ class TestApprovalGate:
         out = handle_computer_use({"action": "type", "text": "hello"})
         parsed = json.loads(out)
 
-        assert parsed["error"] == "approval callback unavailable"
+        assert parsed["error"] == "approval required but no approval callback is registered"
         assert parsed["action"] == "type"
 
     def test_destructive_action_with_approval_callback_routes_to_backend(self, noop_backend):

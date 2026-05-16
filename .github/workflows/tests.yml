@@ -23,54 +23,45 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8
 
       - name: Set up Python 3.11
         run: uv python install 3.11
+
+      - name: Cache uv dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: uv-
 
       - name: Install dependencies
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[dev,acp,web,voice]"
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ -q \
+            -o "addopts=" \
+            --ignore=tests/integration --ignore=tests/e2e \
+            -m "not integration" \
+            --tb=short -n auto
         env:
-          # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
-
-  e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
-
-      - name: Set up Python 3.11
-        run: uv python install 3.11
-
-      - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
 
       - name: Run e2e tests
         run: |

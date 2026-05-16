@@ -16978,6 +16978,7 @@ class GatewayRunner:
                             task, exc,
                         )
                     maybe_auto_title_kwargs = {
+                        "llm_client": getattr(agent, "client", None) if agent else None,
                         "main_runtime": {
                             "model": getattr(agent, "model", None),
                             "provider": getattr(agent, "provider", None),

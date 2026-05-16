@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from agent.auxiliary_client import call_llm
 
@@ -101,21 +101,24 @@ def generate_title(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    llm_client: Optional[Any] = None,
     retry_count: int = 3,
     retry_base_delay: float = 5.0,
 ) -> Optional[str]:
     """Generate a session title from user messages.
 
-    Uses the main runtime's model when available, falling back to the
-    auxiliary LLM client (cheapest/fastest available model).
-    Returns the title string or None on failure.
+    When ``llm_client`` is provided (an OpenAI-compatible client instance),
+    it is used directly — no provider resolution, no credential lookups,
+    no auxiliary fallback chain. This is the preferred path: the caller
+    passes the main agent's already-authenticated client, so title
+    generation always uses the same provider/model/credentials that just
+    successfully handled the conversation.
 
-    When explicit provider/model/base_url/api_key are passed, they take
-    priority over main_runtime and the auxiliary auto-detection chain.
-    This prevents failures when the credential pool is exhausted.
+    Falls back to ``call_llm()`` (auxiliary client resolution) only when
+    ``llm_client`` is None.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
-    auxiliary call raises — the caller typically wires this to
+    call raises — the caller typically wires this to
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
 
@@ -125,39 +128,44 @@ def generate_title(
     if not user_messages:
         return None
 
-    # Resolve explicit provider from main_runtime if not passed directly.
-    # We also pass main_runtime to call_llm so the auxiliary client can
-    # reuse the main agent's authenticated client instead of building a
-    # separate one that may lack valid credentials.
-    resolved_provider: Optional[str] = provider
-    resolved_model: Optional[str] = model
-    resolved_base_url: Optional[str] = base_url
-    resolved_api_key: Optional[str] = api_key
-    resolved_main_runtime: Optional[dict] = main_runtime
-
-    if not resolved_provider and main_runtime:
-        resolved_provider = main_runtime.get("provider")
-        resolved_model = resolved_model or main_runtime.get("model")
-        resolved_base_url = resolved_base_url or main_runtime.get("base_url")
-        resolved_api_key = resolved_api_key or main_runtime.get("api_key")
-
     messages = _build_messages(user_messages, assistant_response)
 
     last_exc: Optional[BaseException] = None
     for attempt in range(retry_count):
         try:
-            response = call_llm(
-                task="title_generation",
-                messages=messages,
-                max_tokens=100,
-                temperature=0.3,
-                timeout=timeout,
-                provider=resolved_provider,
-                model=resolved_model,
-                base_url=resolved_base_url,
-                api_key=resolved_api_key,
-                main_runtime=resolved_main_runtime,
-            )
+            if llm_client is not None:
+                # Use the caller's authenticated client directly — same
+                # provider, model, credentials, everything.
+                final_model = model or getattr(llm_client, "_model", None)
+                kwargs = {"messages": messages, "max_tokens": 100, "temperature": 0.3}
+                if final_model:
+                    kwargs["model"] = final_model
+                response = llm_client.chat.completions.create(**kwargs)
+            else:
+                # Fallback: resolve provider via auxiliary client chain.
+                resolved_provider: Optional[str] = provider
+                resolved_model: Optional[str] = model
+                resolved_base_url: Optional[str] = base_url
+                resolved_api_key: Optional[str] = api_key
+
+                if not resolved_provider and main_runtime:
+                    resolved_provider = main_runtime.get("provider")
+                    resolved_model = resolved_model or main_runtime.get("model")
+                    resolved_base_url = resolved_base_url or main_runtime.get("base_url")
+                    resolved_api_key = resolved_api_key or main_runtime.get("api_key")
+
+                response = call_llm(
+                    task="title_generation",
+                    messages=messages,
+                    max_tokens=100,
+                    temperature=0.3,
+                    timeout=timeout,
+                    provider=resolved_provider,
+                    model=resolved_model,
+                    base_url=resolved_base_url,
+                    api_key=resolved_api_key,
+                    main_runtime=main_runtime,
+                )
             title = (response.choices[0].message.content or "").strip()
             # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
             title = title.strip('"\'')
@@ -207,6 +215,7 @@ def auto_title_session(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    llm_client: Optional[Any] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -236,6 +245,7 @@ def auto_title_session(
         model=model,
         base_url=base_url,
         api_key=api_key,
+        llm_client=llm_client,
     )
     if not title:
         return
@@ -265,6 +275,7 @@ def maybe_auto_title(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    llm_client: Optional[Any] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -307,6 +318,7 @@ def maybe_auto_title(
             "model": model,
             "base_url": base_url,
             "api_key": api_key,
+            "llm_client": llm_client,
         },
         daemon=True,
         name="auto-title",

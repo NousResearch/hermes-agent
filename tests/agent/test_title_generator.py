@@ -95,6 +95,51 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
             assert generate_title(["q"]) is None
 
+    def test_uses_llm_client_directly(self):
+        """When llm_client is provided, use it directly — no call_llm."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Direct Client Title"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.title_generator.call_llm") as mock_call_llm:
+            title = generate_title(["hello"], llm_client=mock_client)
+            assert title == "Direct Client Title"
+            mock_call_llm.assert_not_called()
+
+    def test_llm_client_passes_model(self):
+        """When llm_client and model are both provided, model is passed through."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Titled"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        generate_title(["hi"], llm_client=mock_client, model="my-model")
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "my-model"
+        assert call_kwargs["max_tokens"] == 100
+        assert call_kwargs["temperature"] == 0.3
+
+    def test_llm_client_falls_back_to_auxiliary(self):
+        """When llm_client is None, falls back to call_llm."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Fallback Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title(["hello"], llm_client=None)
+            assert title == "Fallback Title"
+
+    def test_llm_client_error_returns_none(self):
+        """When llm_client raises, return None gracefully."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RuntimeError("connection refused")
+
+        title = generate_title(["hello"], llm_client=mock_client)
+        assert title is None
+
     def test_truncates_long_messages(self):
         """Long user messages should be truncated in the LLM request."""
         captured_kwargs = {}

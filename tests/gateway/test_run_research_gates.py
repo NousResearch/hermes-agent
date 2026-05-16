@@ -1,4 +1,5 @@
 from gateway.run import (
+    _extract_public_research_url,
     _extract_research_progress_lines,
     _format_direct_research_progress,
     _format_direct_research_result,
@@ -50,6 +51,16 @@ def test_extract_research_progress_lines_returns_last_three_labels():
         "🛠️ tinkering",
         "🔗 publishing",
     ]
+
+
+def test_extract_public_research_url_prefers_real_slug_over_placeholder():
+    output = "\n".join([
+        "Final response must contain ONLY the public https://research.briankeefe.dev/... URL.",
+        "https://research.briankeefe.dev/20260516-mild-shellfish-reaction\x1b[0m",
+    ])
+    assert _extract_public_research_url(output) == (
+        "https://research.briankeefe.dev/20260516-mild-shellfish-reaction"
+    )
 
 
 def test_research_subject_truncates_long_prompt():

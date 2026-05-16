@@ -486,6 +486,11 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Global auto-skill injection: skill names loaded on every new session
+    # regardless of platform or channel.  Per-channel bindings (Discord,
+    # Telegram topics) are merged on top; global skills come first.
+    auto_skills: List[str] = field(default_factory=list)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -577,6 +582,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "auto_skills": self.auto_skills,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -632,6 +638,10 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Global auto-skills: validated list of skill names
+        _raw_auto_skills = data.get("auto_skills") or []
+        auto_skills = [s for s in _raw_auto_skills if isinstance(s, str)] if isinstance(_raw_auto_skills, list) else []
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -647,6 +657,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            auto_skills=auto_skills,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -753,6 +764,13 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            # Global auto-skills: gateway.auto_skills in config.yaml
+            _gw_section = yaml_cfg.get("gateway", {})
+            if isinstance(_gw_section, dict):
+                _as = _gw_section.get("auto_skills")
+                if isinstance(_as, list):
+                    gw_data["auto_skills"] = [s for s in _as if isinstance(s, str)]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.

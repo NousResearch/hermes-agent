@@ -7363,10 +7363,24 @@ class GatewayRunner:
             session_entry.auto_reset_reason = None
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Discord channel_skill_bindings) and/or global gateway.auto_skills.
+        # Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
+        # Merge global auto_skills (from gateway config) with per-channel bindings.
+        # Global skills come first; per-channel skills are appended (deduped).
+        _global_auto = getattr(self.config, "auto_skills", None) or []
+        if _global_auto and _is_new_session:
+            _per_channel = [_auto] if isinstance(_auto, str) else list(_auto or [])
+            _merged: list[str] = []
+            for _s in _global_auto:
+                if _s not in _merged:
+                    _merged.append(_s)
+            for _s in _per_channel:
+                if _s not in _merged:
+                    _merged.append(_s)
+            _auto = _merged if _merged else None
         if _is_new_session and _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:

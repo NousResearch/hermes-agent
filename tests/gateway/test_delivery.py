@@ -1,7 +1,10 @@
 """Tests for the delivery routing module."""
 
-from gateway.config import Platform
-from gateway.delivery import DeliveryTarget
+import pytest
+
+from gateway.config import GatewayConfig, Platform
+from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.platforms.base import SendResult
 from gateway.session import SessionSource
 
 
@@ -122,5 +125,57 @@ class TestPlatformNameCaseInsensitivity:
         assert target.platform == Platform.TELEGRAM
         assert target.chat_id == "12345"
 
+class RecordingAdapter:
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
 
 
+@pytest.mark.asyncio
+async def test_explicit_telegram_private_thread_uses_direct_messages_topic_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "telegram_direct_messages_topic_id": "32344",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+
+
+class FailingAdapter:
+    async def send(self, chat_id, content, metadata=None):
+        return SendResult(success=False, error="route failed", retryable=False)
+
+
+@pytest.mark.asyncio
+async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: FailingAdapter()})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    with pytest.raises(RuntimeError, match="route failed"):
+        await router._deliver_to_platform(target, "hello", metadata=None)

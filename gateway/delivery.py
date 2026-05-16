@@ -25,6 +25,15 @@ from .config import Platform, GatewayConfig
 from .session import SessionSource
 
 
+def _looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+    if chat_id is None:
+        return False
+    try:
+        return int(chat_id) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class DeliveryTarget:
     """
@@ -249,9 +258,22 @@ class DeliveryRouter:
             )
         
         send_metadata = dict(metadata or {})
-        if target.thread_id and "thread_id" not in send_metadata:
-            send_metadata["thread_id"] = target.thread_id
-        return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        if target.thread_id:
+            if (
+                target.platform == Platform.TELEGRAM
+                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and "thread_id" not in send_metadata
+                and "message_thread_id" not in send_metadata
+                and "direct_messages_topic_id" not in send_metadata
+                and "telegram_direct_messages_topic_id" not in send_metadata
+            ):
+                send_metadata["telegram_direct_messages_topic_id"] = target.thread_id
+            elif "thread_id" not in send_metadata:
+                send_metadata["thread_id"] = target.thread_id
+        result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        if getattr(result, "success", True) is False:
+            raise RuntimeError(getattr(result, "error", None) or f"{target.platform.value} delivery failed")
+        return result
 
 
 

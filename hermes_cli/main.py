@@ -9904,6 +9904,38 @@ def main():
         dest="run_as_user",
         help="User account the Linux system service should run as",
     )
+    gateway_install.add_argument(
+        "--start-now",
+        dest="start_now",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-now",
+        dest="start_now",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--start-on-login",
+        dest="start_on_login",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--no-start-on-login",
+        dest="start_on_login",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--elevated-handoff",
+        dest="elevated_handoff",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser(

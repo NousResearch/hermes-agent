@@ -1030,6 +1030,541 @@ def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable
         assert kb.get_task(conn, c).status == "running"
 
 
+def test_dispatch_auto_continues_iteration_budget_block_once(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="resume me", assignee="alice")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "Iteration budget exhausted (60/60) — task could not complete "
+                "within the allowed iterations"
+            ),
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert res.auto_continued == [t]
+        assert spawns == [t]
+        assert kb.get_task(conn, t).status == "running"
+
+        comments = kb.list_comments(conn, t)
+        assert len(comments) == 1
+        assert "Iteration budget exhausted (60/60)" in comments[0].body
+        assert "Resume from the previous worker checkpoint" in comments[0].body
+
+        events = kb.list_events(conn, t)
+        auto_event = next(
+            e for e in events if e.kind == "dispatch_auto_continued_iteration_budget"
+        )
+        assert auto_event.run_id == run.id
+        assert auto_event.payload["previous_run_id"] == run.id
+        assert auto_event.payload["continuation_index"] == 1
+        assert auto_event.payload["continuation_limit"] == 1
+        assert auto_event.payload["checkpoint_comment_id"] == comments[0].id
+
+
+
+def test_dispatch_creates_independent_reviewer_for_review_required_block(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+        return 0
+
+    body = """
+scope_contract:
+  version: 2
+  assignee: coder
+  allowed_tools: [kanban_show, read_file, search_files, patch, write_file, kanban_comment, kanban_complete, kanban_block]
+  allowed_paths:
+    - /tmp/repo/**
+  forbidden_systems: [OpenClaw, Atlas, Mission-Control, Telegram]
+completion_policy:
+  require_scope_attestation: true
+"""
+
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="implement feature",
+            assignee="coder",
+            body=body,
+            workspace_kind="dir",
+            workspace_path="/tmp/repo",
+        )
+        context_comment_id = kb.add_comment(
+            conn,
+            source,
+            "coder",
+            "review handoff context with diff/test evidence",
+        )
+        kb.claim_task(conn, source)
+        run = kb.active_run(conn, source)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            source,
+            reason="review-required: feature shipped",
+            expected_run_id=run.id,
+            context_comment_id=context_comment_id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        reviewers = [t for t in kb.list_tasks(conn, assignee="reviewer") if t.created_by == "dispatcher"]
+        assert len(reviewers) == 1
+        reviewer = reviewers[0]
+        assert res.spawned == [(reviewer.id, "reviewer", "/tmp/repo")]
+        assert spawns == [reviewer.id]
+        assert reviewer.workspace_kind == "dir"
+        assert reviewer.workspace_path == "/tmp/repo"
+        assert kb.parent_ids(conn, reviewer.id) == []
+        assert f"source_task: {source}" in (reviewer.body or "")
+        assert f"source_run_id: {run.id}" in (reviewer.body or "")
+        assert f"context_comment_id: {context_comment_id}" in (reviewer.body or "")
+        assert "source remains blocked pending explicit Coordinator/Admin finalization" in (
+            reviewer.body or ""
+        )
+
+        handoff_events = [
+            e
+            for e in kb.list_events(conn, source)
+            if e.kind == "dispatch_review_required_handoff_created"
+        ]
+        assert len(handoff_events) == 1
+        assert handoff_events[0].run_id == run.id
+        assert handoff_events[0].payload["source_task"] == source
+        assert handoff_events[0].payload["source_run_id"] == run.id
+        assert handoff_events[0].payload["context_comment_id"] == context_comment_id
+        assert handoff_events[0].payload["reviewer_task_id"] == reviewer.id
+        assert handoff_events[0].payload["blocked_source_parent_edge"] is False
+
+        source_comments = kb.list_comments(conn, source)
+        assert source_comments[-1].author == "kanban-dispatcher"
+        assert reviewer.id in source_comments[-1].body
+        assert "no auto-completion" in source_comments[-1].body
+
+        assert kb.complete_task(
+            conn,
+            reviewer.id,
+            summary="verdict: APPROVED",
+            metadata={
+                "scope_contract_read": True,
+                "scope_contract_version": 2,
+                "scope_attestation": True,
+                "forbidden_actions_taken": 0,
+                "verdict": "APPROVED",
+                "blocking_findings": [],
+                "required_verification": [],
+                "evidence_audited": [source, reviewer.id],
+                "residual_risk": "local finalization remains explicit",
+                "effective_toolsets": [
+                    "skill_view",
+                    "kanban_show",
+                    "read_file",
+                    "search_files",
+                    "kanban_run_workspace_command",
+                    "kanban_comment",
+                    "kanban_complete",
+                    "kanban_block",
+                ],
+            },
+        )
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert kb.get_task(conn, source).status == "blocked"
+
+
+
+def test_dispatch_iteration_budget_continuation_cap_blocks_loop(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="bounded continuation", assignee="alice")
+        kb.claim_task(conn, t)
+        first_run = kb.active_run(conn, t)
+        assert first_run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "Iteration budget exhausted (60/60) — task could not complete "
+                "within the allowed iterations"
+            ),
+            expected_run_id=first_run.id,
+        )
+
+        first_dispatch = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert first_dispatch.auto_continued == [t]
+        assert spawns == [t]
+
+        second_run = kb.active_run(conn, t)
+        assert second_run is not None
+        assert second_run.id != first_run.id
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "Iteration budget exhausted (60/60) — task could not complete "
+                "within the allowed iterations"
+            ),
+            expected_run_id=second_run.id,
+        )
+
+        second_dispatch = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert second_dispatch.auto_continued == []
+        assert second_dispatch.continuation_capped == [t]
+        assert kb.get_task(conn, t).status == "blocked"
+        assert spawns == [t]
+
+        comments = kb.list_comments(conn, t)
+        assert len(comments) == 2
+        assert "Coordinator/Human review required" in comments[-1].body
+
+        events = kb.list_events(conn, t)
+        capped_event = next(
+            e for e in events if e.kind == "dispatch_iteration_budget_continuation_capped"
+        )
+        assert capped_event.run_id == second_run.id
+        assert capped_event.payload["previous_run_id"] == second_run.id
+        assert capped_event.payload["continuation_limit"] == 1
+
+        repeat_dispatch = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert repeat_dispatch.continuation_capped == []
+        assert len(kb.list_comments(conn, t)) == 2
+        assert len(
+            [
+                e
+                for e in kb.list_events(conn, t)
+                if e.kind == "dispatch_iteration_budget_continuation_capped"
+            ]
+        ) == 1
+
+
+
+def test_dispatch_ignores_non_budget_blocks(kanban_home, all_assignees_spawnable):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs human", assignee="alice")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Need a human decision on the rollout plan",
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert res.continuation_capped == []
+        assert kb.get_task(conn, t).status == "blocked"
+        assert kb.list_comments(conn, t) == []
+
+
+
+def test_dispatch_does_not_auto_continue_substring_only_budget_mentions(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="human triage", assignee="alice")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Need triage: prior run said Iteration budget exhausted (60/60), but this block is for policy approval",
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert res.continuation_capped == []
+        assert kb.get_task(conn, t).status == "blocked"
+        assert kb.list_comments(conn, t) == []
+
+
+
+def test_dispatch_does_not_auto_continue_canonical_budget_reason_with_non_budget_block_type(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="canonical-non-budget-marker", assignee="alice")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "Iteration budget exhausted (60/60) — task could not complete "
+                "within the allowed iterations"
+            ),
+            block_type="human_review_needed",
+            expected_run_id=run.id,
+        )
+
+        blocked = [e for e in kb.list_events(conn, t) if e.kind == "blocked"][-1]
+        assert blocked.payload.get("reason", "").startswith("Iteration budget exhausted")
+        assert blocked.payload.get("block_type") == "human_review_needed"
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert res.continuation_capped == []
+        assert kb.get_task(conn, t).status == "blocked"
+        assert kb.list_comments(conn, t) == []
+
+
+
+def test_dispatch_does_not_auto_continue_review_required_budget_phrase(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-needed", assignee="coder")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason=(
+                "review-required: Iteration budget exhausted (60/60) — "
+                "task could not complete within the allowed iterations"
+            ),
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert t not in [task_id for task_id, _assignee, _workspace in res.spawned]
+        assert [
+            e
+            for e in kb.list_events(conn, t)
+            if e.kind == "dispatch_auto_continued_iteration_budget"
+        ] == []
+        assert not any(
+            "dispatcher auto-continuation checkpoint" in c.body
+            for c in kb.list_comments(conn, t)
+        )
+
+
+def test_dispatch_does_not_auto_continue_budget_warning_strings(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="warning only", assignee="alice")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Iteration budget warning (60/60)",
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert res.continuation_capped == []
+        assert kb.get_task(conn, t).status == "blocked"
+        assert kb.list_comments(conn, t) == []
+
+
+
+def test_dispatch_does_not_reopen_budget_block_when_parents_are_undone(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(
+            conn,
+            title="child",
+            assignee="bob",
+            parents=[parent],
+        )
+        archived = kb.create_task(conn, title="archived", assignee="carol")
+        assert kb.archive_task(conn, archived)
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.block_task(
+            conn,
+            child,
+            reason=(
+                "Iteration budget exhausted (60/60) — task could not complete "
+                "within the allowed iterations"
+            ),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 123)
+
+        assert res.auto_continued == []
+        assert res.continuation_capped == []
+        assert kb.get_task(conn, child).status == "blocked"
+        assert kb.list_comments(conn, child) == []
+        assert kb.get_task(conn, archived).status == "archived"
+
+
+
+def test_dispatch_ignores_non_review_required_blocks(kanban_home, all_assignees_spawnable):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs human", assignee="coder")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="Need a human decision on the rollout plan",
+            expected_run_id=run.id,
+        )
+
+        kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+
+        assert kb.list_tasks(conn, assignee="reviewer") == []
+        assert [
+            e for e in kb.list_events(conn, t) if e.kind == "dispatch_review_required_handoff_created"
+        ] == []
+
+
+
+def test_dispatch_review_required_handoff_is_idempotent_per_blocked_run(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship patch", assignee="coder")
+        kb.claim_task(conn, t)
+        run = kb.active_run(conn, t)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="review-required: patch shipped",
+            expected_run_id=run.id,
+        )
+
+        first = kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+        reviewers_after_first = [task.id for task in kb.list_tasks(conn, assignee="reviewer")]
+        comments_after_first = len(kb.list_comments(conn, t))
+
+        second = kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+        reviewers_after_second = [task.id for task in kb.list_tasks(conn, assignee="reviewer")]
+        handoff_events = [
+            e for e in kb.list_events(conn, t) if e.kind == "dispatch_review_required_handoff_created"
+        ]
+
+        assert len(first.spawned) == 1
+        assert second.spawned == []
+        assert reviewers_after_first == reviewers_after_second
+        assert len(reviewers_after_second) == 1
+        assert len(handoff_events) == 1
+        assert len(kb.list_comments(conn, t)) == comments_after_first
+
+
+
+def test_dispatch_review_required_handoff_ignores_reviewer_loops_and_embedded_marker(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        reviewer_source = kb.create_task(conn, title="reviewer task", assignee="reviewer")
+        kb.claim_task(conn, reviewer_source)
+        reviewer_run = kb.active_run(conn, reviewer_source)
+        assert reviewer_run is not None
+        assert kb.block_task(
+            conn,
+            reviewer_source,
+            reason="review-required: reviewer should not recurse",
+            expected_run_id=reviewer_run.id,
+        )
+
+        embedded = kb.create_task(conn, title="embedded marker", assignee="coder")
+        kb.claim_task(conn, embedded)
+        embedded_run = kb.active_run(conn, embedded)
+        assert embedded_run is not None
+        assert kb.block_task(
+            conn,
+            embedded,
+            reason="Need human choice before review-required: later follow-up",
+            expected_run_id=embedded_run.id,
+        )
+
+        kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+
+        reviewer_tasks = kb.list_tasks(conn, assignee="reviewer")
+        assert len(reviewer_tasks) == 1
+        assert reviewer_tasks[0].id == reviewer_source
+        assert [
+            e
+            for e in kb.list_events(conn, reviewer_source)
+            if e.kind == "dispatch_review_required_handoff_created"
+        ] == []
+        assert [
+            e for e in kb.list_events(conn, embedded) if e.kind == "dispatch_review_required_handoff_created"
+        ] == []
+
+
+
+def test_dispatch_review_required_handoff_leaves_parent_gated_legacy_reviewer_inert(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="coder task", assignee="coder")
+        legacy = kb.create_task(
+            conn,
+            title="legacy reviewer child",
+            assignee="reviewer",
+            parents=[source],
+        )
+        assert kb.get_task(conn, legacy).status == "todo"
+
+        kb.claim_task(conn, source)
+        run = kb.active_run(conn, source)
+        assert run is not None
+        assert kb.block_task(
+            conn,
+            source,
+            reason="review-required: ready for verdict",
+            expected_run_id=run.id,
+        )
+
+        kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+
+        reviewer_tasks = [task for task in kb.list_tasks(conn, assignee="reviewer")]
+        independent = next(task for task in reviewer_tasks if task.id != legacy)
+        assert kb.get_task(conn, legacy).status == "todo"
+        assert kb.parent_ids(conn, independent.id) == []
+        handoff_event = [
+            e for e in kb.list_events(conn, source) if e.kind == "dispatch_review_required_handoff_created"
+        ][-1]
+        assert handoff_event.payload["legacy_reviewer_children"] == [legacy]
+        assert legacy in (independent.body or "")
+
+
+
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):
     def boom(task, workspace):
         raise RuntimeError("spawn failed")

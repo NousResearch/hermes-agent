@@ -144,6 +144,12 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    # Ensure nested worker-run tests are hermetic even when pytest itself is
+    # executed from an active dispatcher worker process. A stale outer
+    # HERMES_KANBAN_RUN_ID / CLAIM_LOCK would scope tool writes to the parent
+    # task run and make happy-path lifecycle calls fail with "unknown id".
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_CLAIM_LOCK", raising=False)
     return tid
 
 
@@ -1011,6 +1017,54 @@ def test_worker_lifecycle_through_tools(worker_env):
         # Heartbeat event recorded
         hb = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
         assert len(hb) == 1
+    finally:
+        conn.close()
+
+
+def test_blocked_event_marks_only_canonical_iteration_budget_guard(worker_env):
+    from hermes_cli import kanban_db as kb
+
+    canonical_reason = (
+        "Iteration budget exhausted (60/60) — task could not complete "
+        "within the allowed iterations"
+    )
+
+    conn = kb.connect()
+    try:
+        canonical = kb.create_task(conn, title="canonical", assignee="worker")
+        kb.claim_task(conn, canonical)
+        canonical_run = kb.active_run(conn, canonical)
+        assert canonical_run is not None
+        assert kb.block_task(
+            conn,
+            canonical,
+            reason=canonical_reason,
+            expected_run_id=canonical_run.id,
+        )
+
+        canonical_blocked = [
+            e for e in kb.list_events(conn, canonical) if e.kind == "blocked"
+        ][-1]
+        assert canonical_blocked.payload.get("block_type") == "iteration_budget_exhausted"
+
+        review_required = kb.create_task(conn, title="review", assignee="worker")
+        kb.claim_task(conn, review_required)
+        review_run = kb.active_run(conn, review_required)
+        assert review_run is not None
+        assert kb.block_task(
+            conn,
+            review_required,
+            reason=(
+                "review-required: Iteration budget exhausted (60/60) — "
+                "task could not complete within the allowed iterations"
+            ),
+            expected_run_id=review_run.id,
+        )
+
+        review_blocked = [
+            e for e in kb.list_events(conn, review_required) if e.kind == "blocked"
+        ][-1]
+        assert "block_type" not in review_blocked.payload
     finally:
         conn.close()
 

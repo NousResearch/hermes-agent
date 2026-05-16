@@ -3082,6 +3082,7 @@ def block_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    block_type: Optional[str] = None,
     expected_run_id: Optional[int] = None,
     context_comment_id: Optional[int] = None,
 ) -> bool:
@@ -3135,7 +3136,12 @@ def block_task(
                 outcome="blocked",
                 summary=reason,
             )
+        normalized_block_type = _normalize_block_type_marker(block_type)
+        if normalized_block_type is None and _is_iteration_budget_guard_reason(reason):
+            normalized_block_type = _ITERATION_BUDGET_BLOCK_TYPE
         block_payload_extra: dict[str, Any] = {"reason": reason}
+        if normalized_block_type:
+            block_payload_extra["block_type"] = normalized_block_type
         if context_comment_id is not None:
             comment = conn.execute(
                 "SELECT body FROM task_comments WHERE id = ? AND task_id = ?",
@@ -3783,6 +3789,425 @@ def _block_dispatch_preflight(
             {"reason": reason[:500], "blocked_at": now},
         )
         return True
+
+
+DEFAULT_ITERATION_BUDGET_CONTINUATION_LIMIT = 1
+_ITERATION_BUDGET_BLOCK_TYPE = "iteration_budget_exhausted"
+_ITERATION_BUDGET_GUARD_REASON_RE = re.compile(
+    r"^\s*iteration budget exhausted\s*\(\d+\s*/\s*\d+\)\s*[—-]\s*"
+    r"task could not complete within the allowed iterations\s*$",
+    re.IGNORECASE,
+)
+_ITERATION_BUDGET_AUTO_CONTINUE_EVENT = "dispatch_auto_continued_iteration_budget"
+_ITERATION_BUDGET_CONTINUATION_CAPPED_EVENT = "dispatch_iteration_budget_continuation_capped"
+_ITERATION_BUDGET_COMMENT_AUTHOR = "kanban-dispatcher"
+_REVIEW_REQUIRED_BLOCK_RE = re.compile(r"^\s*review-required:\s*", re.IGNORECASE)
+_REVIEW_REQUIRED_HANDOFF_EVENT = "dispatch_review_required_handoff_created"
+_REVIEW_REQUIRED_COMMENT_AUTHOR = "kanban-dispatcher"
+_REVIEW_REQUIRED_REVIEWER_ALLOWED_TOOLS = [
+    "skill_view",
+    "kanban_show",
+    "read_file",
+    "search_files",
+    "kanban_run_workspace_command",
+    "kanban_comment",
+    "kanban_complete",
+    "kanban_block",
+]
+
+
+def _is_iteration_budget_guard_reason(summary: Optional[str]) -> bool:
+    if not summary:
+        return False
+    return bool(_ITERATION_BUDGET_GUARD_REASON_RE.fullmatch(str(summary)))
+
+
+def _normalize_block_type_marker(block_type: Optional[str]) -> Optional[str]:
+    """Normalize optional machine guard markers for blocked payloads."""
+    if block_type is None:
+        return None
+    normalized = str(block_type).strip().lower()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _is_iteration_budget_exhausted(
+    summary: Optional[str], blocked_payload: Optional[dict[str, Any]]
+) -> bool:
+    if not _is_iteration_budget_guard_reason(summary):
+        return False
+    if not isinstance(blocked_payload, dict):
+        return False
+    block_type = str(blocked_payload.get("block_type") or "").strip().lower()
+    return block_type == _ITERATION_BUDGET_BLOCK_TYPE
+
+
+def _is_review_required_block(summary: Optional[str]) -> bool:
+    if not summary:
+        return False
+    return bool(_REVIEW_REQUIRED_BLOCK_RE.match(str(summary)))
+
+
+def _blocked_event_payload_for_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id = ? AND kind = 'blocked' AND run_id = ?
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id, int(run_id)),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return {}
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _legacy_parent_gated_reviewer_children(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT t.id
+          FROM task_links l
+          JOIN tasks t ON t.id = l.child_id
+         WHERE l.parent_id = ? AND LOWER(COALESCE(t.assignee, '')) = 'reviewer'
+         ORDER BY t.created_at ASC, t.id ASC
+        """,
+        (task_id,),
+    ).fetchall()
+    return [str(r["id"]) for r in rows]
+
+
+def _review_required_reviewer_body(
+    source_task: Task,
+    *,
+    source_run_id: int,
+    reason: str,
+    context_comment_id: Optional[int],
+    legacy_reviewer_children: list[str],
+) -> str:
+    allowed_paths: list[str] = []
+    if source_task.workspace_path:
+        allowed_paths.append(f"{source_task.workspace_path.rstrip('/')}/**")
+    lines = [
+        f"# Review blocked handoff for {source_task.id}",
+        "",
+        "Independent verdict-only Reviewer task created by the dispatcher because the source worker blocked with `review-required:`.",
+        "This task intentionally has NO parent edge to the blocked source so review can proceed without a deadlock.",
+        "",
+        "review_handoff:",
+        f"  source_task: {source_task.id}",
+        f"  source_run_id: {int(source_run_id)}",
+        f"  source_assignee: {source_task.assignee or ''}",
+        f"  source_workspace_kind: {source_task.workspace_kind}",
+    ]
+    if source_task.workspace_path:
+        lines.append(f"  source_workspace_path: {source_task.workspace_path}")
+    if context_comment_id is not None:
+        lines.append(f"  context_comment_id: {int(context_comment_id)}")
+    if legacy_reviewer_children:
+        lines.append("  legacy_parent_gated_reviewer_children:")
+        lines.extend([f"    - {child_id}" for child_id in legacy_reviewer_children])
+    lines.extend([
+        "",
+        "Review instructions:",
+        f"- blocked reason: {reason}",
+        "- Read the source task body, runs, comments, and the referenced context comment before deciding.",
+        "- Produce a verdict-only terminal result: APPROVED or NEEDS_REVISION.",
+        "- Required metadata keys: scope_contract_read=true, scope_contract_version=2, scope_attestation=true, forbidden_actions_taken=0, verdict, blocking_findings, required_verification, evidence_audited, residual_risk, effective_toolsets.",
+        "- source remains blocked pending explicit Coordinator/Admin finalization; there is no auto-completion of the source task from this reviewer verdict.",
+        "",
+        "scope_contract:",
+        "  version: 2",
+        "  assignee: reviewer",
+        "  allowed_systems:",
+        "    - hermes-agent",
+        "    - hermes-kanban",
+        "  allowed_tools:",
+    ])
+    lines.extend([f"    - {tool}" for tool in _REVIEW_REQUIRED_REVIEWER_ALLOWED_TOOLS])
+    if allowed_paths:
+        lines.append("  allowed_paths:")
+        lines.extend([f"    - {path}" for path in allowed_paths])
+    lines.extend([
+        "  forbidden_systems:",
+        "    - OpenClaw",
+        "    - Atlas",
+        "    - Mission-Control",
+        "    - Telegram",
+        "completion_policy:",
+        "  require_scope_attestation: true",
+    ])
+    return "\n".join(lines)
+
+
+def _review_required_source_comment(
+    *,
+    reviewer_task_id: str,
+    source_run_id: int,
+    legacy_reviewer_children: list[str],
+) -> str:
+    lines = [
+        "dispatcher review-required handoff created",
+        "",
+        f"- reviewer_task_id: {reviewer_task_id}",
+        f"- source_run_id: {int(source_run_id)}",
+        "- source remains blocked pending explicit Coordinator/Admin finalization after reviewer verdict",
+        "- no auto-completion of the blocked source task",
+    ]
+    if legacy_reviewer_children:
+        lines.append(
+            "- legacy parent-gated reviewer children left inert: "
+            + ", ".join(legacy_reviewer_children)
+        )
+    return "\n".join(lines)
+
+
+def _ensure_comment_once(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    author: str,
+    body: str,
+) -> int:
+    existing = conn.execute(
+        """
+        SELECT id FROM task_comments
+         WHERE task_id = ? AND author = ? AND body = ?
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id, author, body.strip()),
+    ).fetchone()
+    if existing:
+        return int(existing["id"])
+    return add_comment(conn, task_id, author, body)
+
+
+def _dispatch_review_required_handoffs(conn: sqlite3.Connection) -> list[str]:
+    blocked_rows = conn.execute(
+        "SELECT id FROM tasks WHERE status = 'blocked' ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    created_or_promoted: list[str] = []
+    for row in blocked_rows:
+        source_task = get_task(conn, row["id"])
+        if source_task is None:
+            continue
+        if str(source_task.assignee or "").strip().lower() == "reviewer":
+            continue
+        run = latest_run(conn, source_task.id)
+        if run is None or run.outcome != "blocked" or run.ended_at is None:
+            continue
+        if not _is_review_required_block(run.summary):
+            continue
+        if _has_task_event_for_run(conn, source_task.id, _REVIEW_REQUIRED_HANDOFF_EVENT, run.id):
+            continue
+
+        blocked_payload = _blocked_event_payload_for_run(conn, source_task.id, run.id)
+        context_comment_id = _metadata_int(blocked_payload, "context_comment_id")
+        legacy_reviewer_children = _legacy_parent_gated_reviewer_children(conn, source_task.id)
+        reviewer_body = _review_required_reviewer_body(
+            source_task,
+            source_run_id=run.id,
+            reason=(run.summary or "review-required").strip(),
+            context_comment_id=context_comment_id,
+            legacy_reviewer_children=legacy_reviewer_children,
+        )
+        reviewer_task_id = create_task(
+            conn,
+            title=f"Review blocked handoff for {source_task.id}: {source_task.title}",
+            body=reviewer_body,
+            assignee="reviewer",
+            created_by="dispatcher",
+            workspace_kind=source_task.workspace_kind,
+            workspace_path=source_task.workspace_path,
+            priority=source_task.priority,
+            idempotency_key=f"review-required:{source_task.id}:{run.id}",
+        )
+        comment_body = _review_required_source_comment(
+            reviewer_task_id=reviewer_task_id,
+            source_run_id=run.id,
+            legacy_reviewer_children=legacy_reviewer_children,
+        )
+        _ensure_comment_once(
+            conn,
+            source_task.id,
+            author=_REVIEW_REQUIRED_COMMENT_AUTHOR,
+            body=comment_body,
+        )
+        with write_txn(conn):
+            if _has_task_event_for_run(conn, source_task.id, _REVIEW_REQUIRED_HANDOFF_EVENT, run.id):
+                continue
+            _append_event(
+                conn,
+                source_task.id,
+                _REVIEW_REQUIRED_HANDOFF_EVENT,
+                {
+                    "source_task": source_task.id,
+                    "source_run_id": run.id,
+                    "reviewer_task_id": reviewer_task_id,
+                    "context_comment_id": context_comment_id,
+                    "blocked_source_parent_edge": False,
+                    "legacy_reviewer_children": legacy_reviewer_children,
+                },
+                run_id=run.id,
+            )
+        created_or_promoted.append(reviewer_task_id)
+    return created_or_promoted
+
+
+def _task_has_undone_parents(conn: sqlite3.Connection, task_id: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    )
+
+
+def _has_task_event_for_run(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    run_id: Optional[int],
+) -> bool:
+    if run_id is None:
+        return False
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? AND run_id = ? LIMIT 1",
+            (task_id, kind, int(run_id)),
+        ).fetchone()
+    )
+
+
+def _count_task_events(conn: sqlite3.Connection, task_id: str, kind: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+
+def _iteration_budget_continue_comment(run: Run, *, continuation_index: int, continuation_limit: int) -> str:
+    summary = (run.summary or "Iteration budget exhausted").strip()
+    return (
+        "dispatcher auto-continuation checkpoint\n\n"
+        f"- prior run id: {run.id}\n"
+        f"- worker summary: {summary}\n"
+        f"- continuation attempt: {continuation_index}/{continuation_limit}\n"
+        "- next worker instruction: Resume from the previous worker checkpoint, read prior comments/runs before acting, and continue only the remaining work. If the iteration budget exhausts again, block with a concise Coordinator/Human handoff instead of restarting from scratch."
+    )
+
+
+def _iteration_budget_cap_comment(run: Run, *, continuation_limit: int) -> str:
+    summary = (run.summary or "Iteration budget exhausted").strip()
+    return (
+        "dispatcher continuation cap reached\n\n"
+        f"- prior run id: {run.id}\n"
+        f"- worker summary: {summary}\n"
+        f"- continuation limit: {continuation_limit}\n"
+        "- next action: Coordinator/Human review required. Decide whether to raise the worker's iteration budget, split the task into smaller cards, or provide a tighter handoff before another retry."
+    )
+
+
+def _auto_continue_iteration_budget_blocks(
+    conn: sqlite3.Connection,
+    *,
+    continuation_limit: int = DEFAULT_ITERATION_BUDGET_CONTINUATION_LIMIT,
+) -> tuple[list[str], list[str]]:
+    """Reopen eligible iteration-budget blocks exactly once by default."""
+    if continuation_limit <= 0:
+        return ([], [])
+
+    blocked_rows = conn.execute(
+        "SELECT id FROM tasks WHERE status = 'blocked' ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    continued: list[str] = []
+    capped: list[str] = []
+    for row in blocked_rows:
+        task_id = row["id"]
+        run = latest_run(conn, task_id)
+        if run is None or run.outcome != "blocked" or run.ended_at is None:
+            continue
+        blocked_payload = _blocked_event_payload_for_run(conn, task_id, run.id)
+        if not _is_iteration_budget_exhausted(run.summary, blocked_payload):
+            continue
+        if _task_has_undone_parents(conn, task_id):
+            continue
+
+        prior_continuations = _count_task_events(
+            conn, task_id, _ITERATION_BUDGET_AUTO_CONTINUE_EVENT
+        )
+        if prior_continuations >= continuation_limit:
+            if _has_task_event_for_run(
+                conn,
+                task_id,
+                _ITERATION_BUDGET_CONTINUATION_CAPPED_EVENT,
+                run.id,
+            ):
+                continue
+            comment_id = add_comment(
+                conn,
+                task_id,
+                _ITERATION_BUDGET_COMMENT_AUTHOR,
+                _iteration_budget_cap_comment(
+                    run,
+                    continuation_limit=continuation_limit,
+                ),
+            )
+            _append_event(
+                conn,
+                task_id,
+                _ITERATION_BUDGET_CONTINUATION_CAPPED_EVENT,
+                {
+                    "previous_run_id": run.id,
+                    "continuation_limit": continuation_limit,
+                    "checkpoint_comment_id": int(comment_id),
+                    "summary": (run.summary or "")[:400] or None,
+                    "gate_reason": "Coordinator/Human review required",
+                },
+                run_id=run.id,
+            )
+            capped.append(task_id)
+            continue
+
+        if _has_task_event_for_run(conn, task_id, _ITERATION_BUDGET_AUTO_CONTINUE_EVENT, run.id):
+            continue
+        comment_id = add_comment(
+            conn,
+            task_id,
+            _ITERATION_BUDGET_COMMENT_AUTHOR,
+            _iteration_budget_continue_comment(
+                run,
+                continuation_index=prior_continuations + 1,
+                continuation_limit=continuation_limit,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            _ITERATION_BUDGET_AUTO_CONTINUE_EVENT,
+            {
+                "previous_run_id": run.id,
+                "continuation_index": prior_continuations + 1,
+                "continuation_limit": continuation_limit,
+                "checkpoint_comment_id": int(comment_id),
+                "summary": (run.summary or "")[:400] or None,
+            },
+            run_id=run.id,
+        )
+        if unblock_task(conn, task_id):
+            continued.append(task_id)
+    return (continued, capped)
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the

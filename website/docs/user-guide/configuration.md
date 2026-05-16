@@ -1487,11 +1487,11 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support five backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search`, `web_extract`, and `web_crawl` tools support six backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | parallel | tavily | exa | custom
 
   # Or use per-capability keys to mix providers (e.g. free search + paid extract):
   search_backend: "searxng"
@@ -1505,6 +1505,7 @@ web:
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| **Custom (OpenAI-compatible)** | `CUSTOM_SEARCH_API_KEY` + `CUSTOM_SEARCH_BASE_URL` | ✔ | ✔ | — |
 
 **Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `SEARXNG_URL` is set, SearXNG is used. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
@@ -1515,6 +1516,27 @@ web:
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
 **Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.
+
+### Custom OpenAI-compatible backend
+
+Routes both search and extract calls through any OpenAI-compatible `/chat/completions` endpoint that serves a model with built-in web access (e.g. **Perplexity Sonar**, OpenAI `gpt-4o` with browsing). Search-result extraction prefers a structured `search_results` field, falls back to a `citations` list, and as a last resort returns the answer text itself.
+
+```yaml
+web:
+  backend: custom
+  # Optional config-side fallbacks for env vars below:
+  custom_base_url: "https://api.perplexity.ai"
+  custom_model: "sonar"
+  custom_api_key: "..."         # prefer the env var
+```
+
+Resolution order for each value: `CUSTOM_SEARCH_*` env var → `web.custom_*` in `config.yaml` → default (`sonar` model only). Both the API key and the base URL are required; the model defaults to `sonar` when unset.
+
+```bash
+CUSTOM_SEARCH_API_KEY=...
+CUSTOM_SEARCH_BASE_URL=https://api.perplexity.ai
+CUSTOM_SEARCH_MODEL=sonar           # optional
+```
 
 ## Browser
 

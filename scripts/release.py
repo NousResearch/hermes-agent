@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -1199,11 +1200,81 @@ def _update_acp_registry_versions(semver: str) -> None:
         )
 
 
+def build_turnkey_installer_bundle(semver: str) -> Path:
+    """Create a single GitHub Release asset for turnkey CLI + editor setup."""
+    dist_dir = REPO_ROOT / "dist"
+    dist_dir.mkdir(exist_ok=True)
+    bundle = dist_dir / f"hermes-agent-{semver}-turnkey-installer.zip"
+    if bundle.exists():
+        bundle.unlink()
+
+    readme = f"""# Hermes Agent turnkey installer bundle v{semver}
+
+This archive is the GitHub Release one-stop installer bundle.
+
+## Windows / work laptop quick path
+
+1. Extract the zip.
+2. Open PowerShell in the extracted folder.
+3. Run:
+
+```powershell
+.\\install.ps1
+```
+
+The installer bootstraps uv, Python, Git, Hermes CLI, the curated `[all]`
+dependency set (including `hermes-acp`), browser/TUI dependencies where
+possible, and VS Code ACP Client integration. It also writes the VS Code
+`acp.agents` entry for Hermes when the VS Code settings path is available.
+
+Skip VS Code setup if needed:
+
+```powershell
+.\\install.ps1 -SkipVscode
+```
+
+## macOS / Linux
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Skip VS Code setup if needed:
+
+```bash
+./install.sh --skip-vscode
+```
+
+## Included files
+
+- `install.ps1` / `install.cmd` — Windows installers
+- `install.sh` — macOS/Linux/Termux installer
+- `acp_registry/` — ACP registry manifest/icon for editor integrations
+- `README-installer.md` — this file
+"""
+
+    files = [
+        (REPO_ROOT / "scripts" / "install.ps1", "install.ps1"),
+        (REPO_ROOT / "scripts" / "install.cmd", "install.cmd"),
+        (REPO_ROOT / "scripts" / "install.sh", "install.sh"),
+        (REPO_ROOT / "acp_registry" / "agent.json", "acp_registry/agent.json"),
+        (REPO_ROOT / "acp_registry" / "icon.svg", "acp_registry/icon.svg"),
+    ]
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README-installer.md", readme)
+        for src, arcname in files:
+            if src.exists():
+                zf.write(src, arcname)
+    return bundle
+
+
 def build_release_artifacts(semver: str) -> list[Path]:
     """Build sdist/wheel artifacts for the current release.
 
     Tries ``uv build`` first (matching the CI workflow), falls back to
-    ``python -m build`` if uv is unavailable.
+    ``python -m build`` if uv is unavailable. Also emits the turnkey
+    installer zip that GitHub Releases should expose as the one-stop asset.
     """
     dist_dir = REPO_ROOT / "dist"
     shutil.rmtree(dist_dir, ignore_errors=True)
@@ -1230,14 +1301,14 @@ def build_release_artifacts(semver: str) -> list[Path]:
         elif stdout:
             print(f"    {stdout.splitlines()[-1]}")
         print("    Install uv or the 'build' package to attach sdist/wheel assets.")
-        return []
+        return [build_turnkey_installer_bundle(semver)]
 
     artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
     matching = [p for p in artifacts if semver in p.name]
     if not matching:
         print("  ⚠ Built artifacts did not match the expected release version.")
-        return []
-    return matching
+        return [build_turnkey_installer_bundle(semver)]
+    return matching + [build_turnkey_installer_bundle(semver)]
 
 
 def resolve_author(name: str, email: str) -> str:

@@ -33,17 +33,19 @@ It intentionally excludes things that do not fit typical editor UX, such as mess
 
 ## Installation
 
-Install Hermes normally, then add the ACP extra:
-
-```bash
-pip install -e '.[acp]'
-```
-
-This installs the `agent-client-protocol` dependency and enables:
+Install Hermes normally. The default installers install the curated `[all]` extra, which includes ACP/editor support and enables:
 
 - `hermes acp`
 - `hermes-acp`
 - `python -m acp_adapter`
+
+On Windows/macOS/Linux, the installer also tries to install the VS Code ACP Client extension and writes the `acp.agents` settings entry for Hermes. Use `-SkipVscode` on PowerShell or `--skip-vscode` on macOS/Linux to opt out.
+
+For source/development installs that skipped extras, add ACP manually:
+
+```bash
+pip install -e '.[acp]'
+```
 
 For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses a `uvx` distribution that runs:
 

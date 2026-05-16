@@ -17,7 +17,8 @@ param(
     [switch]$SkipSetup,
     [string]$Branch = "main",
     [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
+    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
+    [switch]$SkipVscode
 )
 
 $ErrorActionPreference = "Stop"
@@ -1003,6 +1004,80 @@ function Set-PathVariable {
     Write-Success "hermes command ready"
 }
 
+function Install-VscodeAcp {
+    if ($SkipVscode) {
+        Write-Info "Skipping VS Code ACP setup (-SkipVscode)"
+        return
+    }
+
+    $codeCandidates = @(
+        "code",
+        "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
+        "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd",
+        "${env:ProgramFiles(x86)}\Microsoft VS Code\bin\code.cmd"
+    ) | Where-Object { $_ -and $_.Trim() }
+
+    $codeCmd = $null
+    foreach ($candidate in $codeCandidates) {
+        if ($candidate -eq "code") {
+            $cmd = Get-Command code -ErrorAction SilentlyContinue
+            if ($cmd) { $codeCmd = $cmd.Source; break }
+        } elseif (Test-Path $candidate) {
+            $codeCmd = $candidate; break
+        }
+    }
+
+    if ($codeCmd) {
+        Write-Info "Installing VS Code ACP Client extension..."
+        & $codeCmd --install-extension formulahendry.acp-client --force 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "VS Code ACP Client extension installed"
+        } else {
+            Write-Warn "Could not install VS Code ACP Client extension automatically."
+            Write-Info "Manual install: code --install-extension formulahendry.acp-client"
+        }
+    } else {
+        Write-Warn "VS Code CLI ('code') not found; skipping ACP Client extension install."
+        Write-Info "After installing VS Code, run: code --install-extension formulahendry.acp-client"
+    }
+
+    $settingsPath = Join-Path $env:APPDATA "Code\User\settings.json"
+    $hermesCommand = if (-not $NoVenv) { "$InstallDir\venv\Scripts\hermes.exe" } else { "hermes" }
+    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    if (-not (Test-Path $pythonExe)) {
+        Write-Warn "Python not found at $pythonExe; skipping VS Code settings merge."
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path $settingsPath) | Out-Null
+    $env:HERMES_VSCODE_SETTINGS = $settingsPath
+    $env:HERMES_VSCODE_COMMAND = $hermesCommand
+    & $pythonExe -c @"
+import json
+import os
+from pathlib import Path
+settings_path = Path(os.environ['HERMES_VSCODE_SETTINGS'])
+command = os.environ['HERMES_VSCODE_COMMAND']
+try:
+    data = json.loads(settings_path.read_text(encoding='utf-8')) if settings_path.exists() else {}
+except json.JSONDecodeError:
+    backup = settings_path.with_suffix(settings_path.suffix + '.bak')
+    backup.write_text(settings_path.read_text(encoding='utf-8'), encoding='utf-8')
+    data = {}
+agents = data.get('acp.agents')
+if not isinstance(agents, dict):
+    agents = {}
+agents['Hermes Agent'] = {'command': command, 'args': ['acp']}
+data['acp.agents'] = agents
+settings_path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+"@
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Configured VS Code ACP agent -> $settingsPath"
+    } else {
+        Write-Warn "Could not update VS Code acp.agents settings. Add Hermes manually in VS Code settings."
+    }
+}
+
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
@@ -1541,6 +1616,7 @@ function Main {
     Install-NodeDeps
     Set-PathVariable
     Copy-ConfigTemplates
+    Install-VscodeAcp
     Invoke-SetupWizard
     Install-PlatformSdks
     Start-GatewayIfConfigured

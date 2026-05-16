@@ -70,6 +70,7 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
+SKIP_VSCODE=false
 BRANCH="main"
 
 # Detect non-interactive mode (e.g. curl | bash)
@@ -96,6 +97,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_BROWSER=true
             shift
             ;;
+        --skip-vscode)
+            SKIP_VSCODE=true
+            shift
+            ;;
         --branch)
             BRANCH="$2"
             shift 2
@@ -118,6 +123,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --skip-vscode Skip VS Code ACP Client extension/settings setup"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
@@ -1402,6 +1408,77 @@ EOF
     log_success "hermes command ready"
 }
 
+setup_vscode_acp() {
+    if [ "$SKIP_VSCODE" = true ]; then
+        log_info "Skipping VS Code ACP setup (--skip-vscode)"
+        return 0
+    fi
+
+    if [ "$DISTRO" = "termux" ]; then
+        log_info "Skipping VS Code ACP setup on Termux"
+        return 0
+    fi
+
+    local code_cmd=""
+    if command -v code >/dev/null 2>&1; then
+        code_cmd="$(command -v code)"
+    elif [ -x "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ]; then
+        code_cmd="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    fi
+
+    if [ -z "$code_cmd" ]; then
+        log_warn "VS Code CLI ('code') not found; skipping ACP Client extension install."
+        log_info "After installing VS Code, run: code --install-extension formulahendry.acp-client"
+    else
+        log_info "Installing VS Code ACP Client extension..."
+        if "$code_cmd" --install-extension formulahendry.acp-client --force >/dev/null 2>&1; then
+            log_success "VS Code ACP Client extension installed"
+        else
+            log_warn "Could not install VS Code ACP Client extension automatically."
+            log_info "Manual install: code --install-extension formulahendry.acp-client"
+        fi
+    fi
+
+    local settings_file=""
+    case "${OS:-}" in
+        macos) settings_file="$HOME/Library/Application Support/Code/User/settings.json" ;;
+        linux) settings_file="${XDG_CONFIG_HOME:-$HOME/.config}/Code/User/settings.json" ;;
+        *) settings_file="" ;;
+    esac
+
+    if [ -z "$settings_file" ]; then
+        log_info "VS Code settings path unknown for $OS; skipping acp.agents settings merge."
+        return 0
+    fi
+
+    local hermes_cmd
+    hermes_cmd="$(get_hermes_command_path)"
+    mkdir -p "$(dirname "$settings_file")"
+    HERMES_VSCODE_SETTINGS="$settings_file" HERMES_VSCODE_COMMAND="$hermes_cmd" "$PYTHON_PATH" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+settings_path = Path(os.environ["HERMES_VSCODE_SETTINGS"])
+command = os.environ["HERMES_VSCODE_COMMAND"]
+
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
+except json.JSONDecodeError:
+    backup = settings_path.with_suffix(settings_path.suffix + ".bak")
+    backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+    data = {}
+
+agents = data.get("acp.agents")
+if not isinstance(agents, dict):
+    agents = {}
+agents["Hermes Agent"] = {"command": command, "args": ["acp"]}
+data["acp.agents"] = agents
+settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
+    log_success "Configured VS Code ACP agent → $settings_file"
+}
+
 copy_config_templates() {
     log_info "Setting up configuration files..."
 
@@ -1894,6 +1971,7 @@ main() {
     install_node_deps
     setup_path
     copy_config_templates
+    setup_vscode_acp
     run_setup_wizard
     maybe_start_gateway
 

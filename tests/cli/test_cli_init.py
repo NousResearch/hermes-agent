@@ -430,7 +430,8 @@ class TestRootLevelProviderOverride:
         assert cfg["model"]["provider"] == "openrouter"
 
     def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
-        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+        """Even when model.provider is the default 'auto', root-level provider is ignored
+        when `model:` is written in the dict form (the canonical "place provider here" shape)."""
         import yaml
 
         hermes_home = tmp_path / ".hermes"
@@ -452,6 +453,35 @@ class TestRootLevelProviderOverride:
 
         # Root-level "opencode-go" must NOT leak through
         assert cfg["model"]["provider"] != "opencode-go"
+
+    def test_root_provider_honored_when_model_is_string(self, tmp_path, monkeypatch):
+        """When `model:` is a STRING (short form), the dict has no provider slot —
+        the root-level `provider:` is the user's only way to specify it and must be honored.
+
+        Regression: every profile config in profiles/*/config.yaml uses the short form
+        plus a root-level `provider: copilot`. Pre-fix, model.provider stayed at the
+        hardcoded "auto" default and the legacy fallback short-circuited (because "auto"
+        is truthy), causing every kanban worker subprocess to hit AuthError on the
+        primary provider and fall through to the fallback chain.
+        """
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "model": "claude-opus-4.7-1m-internal",  # short form
+            "provider": "copilot",                    # root-level (only place it can go)
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["default"] == "claude-opus-4.7-1m-internal"
+        assert cfg["model"]["provider"] == "copilot"
 
     def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
         """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""

@@ -436,7 +436,24 @@ def load_cli_config() -> Dict[str, Any]:
             # only used as a FALLBACK when model.provider / model.base_url
             # is not already set — never as an override.  The canonical
             # location is model.provider (written by `hermes model`).
-            if not defaults["model"].get("provider"):
+            #
+            # Special case: when `model:` is written as a STRING (short
+            # form — see every profile config in profiles/*/config.yaml),
+            # the dict has no provider slot at all, so model.provider stays
+            # at the hardcoded "auto" default and the truthy check below
+            # short-circuits. That leaves the root-level `provider:` —
+            # the user's only way to specify provider in the short form —
+            # silently dropped. Every kanban worker subprocess then hits
+            # AuthError on the primary provider and falls through to the
+            # configured fallback chain (regression flooding profile
+            # error logs throughout May 2026 with thousands of "Primary
+            # provider auth failed" warnings).
+            _model_was_string = isinstance(file_config.get("model"), str)
+            _cur_provider = (defaults["model"].get("provider") or "").strip().lower()
+            _provider_unset = (not _cur_provider) or (
+                _model_was_string and _cur_provider == "auto"
+            )
+            if _provider_unset:
                 root_provider = file_config.get("provider")
                 if root_provider:
                     defaults["model"]["provider"] = root_provider

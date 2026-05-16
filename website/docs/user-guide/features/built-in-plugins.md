@@ -121,22 +121,14 @@ Traces Hermes turns, LLM calls, and tool invocations to [Langfuse](https://langf
 
 The plugin is fail-open: no SDK installed, no credentials, or a transient Langfuse error — all turn into a silent no-op in the hook. The agent loop is never impacted.
 
-**Setup (interactive — recommended):**
-
-```bash
-hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
-```
-
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
-
-**Setup (manual):**
+**Setup:**
 
 ```bash
 pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Or check the box in the interactive `hermes plugins` UI. Then put the credentials in `~/.hermes/.env`:
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...

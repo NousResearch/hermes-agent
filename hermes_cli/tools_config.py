@@ -1649,6 +1649,10 @@ def _plugin_web_search_providers() -> list[dict]:
         # Optional pass-through fields the schema can opt into.
         if schema.get("post_setup"):
             row["post_setup"] = schema["post_setup"]
+        if schema.get("region_selection"):
+            row["region_selection"] = schema["region_selection"]
+        if schema.get("region_env_var_map"):
+            row["region_env_var_map"] = schema["region_env_var_map"]
         rows.append(row)
     return rows
 
@@ -2251,6 +2255,51 @@ def _configure_provider(provider: dict, config: dict):
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
+    # Handle region selection for providers that support it (e.g. MiniMax)
+    selected_region = None
+    if provider.get("region_selection"):
+        web_cfg = config.setdefault("web", {})
+        current_region = web_cfg.get("region", "global")
+        regions = provider["region_selection"]
+        region_names = [r["name"] for r in regions]
+        region_values = [r["value"] for r in regions]
+        default_idx = region_values.index(current_region) if current_region in region_values else 0
+        
+        if sys.stdin.isatty():
+            # Interactive TUI mode
+            from hermes_cli.curses_ui import curses_radiolist
+            region_idx = curses_radiolist(
+                "  Select region:",
+                region_names,
+                selected=default_idx,
+                cancel_returns=default_idx,
+            )
+        else:
+            # Non-TTY mode (WebUI, etc.) — use text prompt
+            print()
+            _print_info("  Select region:")
+            for i, r in enumerate(regions):
+                marker = " [default]" if i == default_idx else ""
+                print(f"    {i + 1}. {r['name']}{marker}")
+            try:
+                choice = input("  Enter choice (1-{}): ".format(len(regions)))
+                region_idx = int(choice) - 1
+                if region_idx < 0 or region_idx >= len(regions):
+                    region_idx = default_idx
+            except (ValueError, EOFError):
+                region_idx = default_idx
+        
+        selected_region = region_values[region_idx]
+        web_cfg["region"] = selected_region
+        _print_success(f"  Region set to: {selected_region}")
+
+        # Update env var key based on region
+        if provider.get("region_env_var_map") and env_vars:
+            env_var_key = provider["region_env_var_map"].get(selected_region)
+            if env_var_key:
+                env_vars = [{**env_vars[0], "key": env_var_key}]
+                provider = {**provider, "env_vars": env_vars}
+
     # For tools without a specific config key (e.g. image_gen), still
     # track use_gateway so the runtime knows the user's intent.
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:
@@ -2534,6 +2583,53 @@ def _reconfigure_provider(provider: dict, config: dict):
         web_cfg["backend"] = provider["web_backend"]
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
+
+    # Handle region selection for providers that support it (e.g. MiniMax)
+    if provider.get("region_selection"):
+        web_cfg = config.setdefault("web", {})
+        current_region = web_cfg.get("region", "global")
+        regions = provider["region_selection"]
+        region_names = [r["name"] for r in regions]
+        region_values = [r["value"] for r in regions]
+        default_idx = region_values.index(current_region) if current_region in region_values else 0
+        
+        if sys.stdin.isatty():
+            # Interactive TUI mode
+            from hermes_cli.curses_ui import curses_radiolist
+            region_idx = curses_radiolist(
+                "  Select region:",
+                region_names,
+                selected=default_idx,
+                cancel_returns=default_idx,
+            )
+        else:
+            # Non-TTY mode (WebUI, etc.) — use text prompt
+            print()
+            _print_info("  Select region:")
+            for i, r in enumerate(regions):
+                marker = " [current]" if i == default_idx else ""
+                print(f"    {i + 1}. {r['name']}{marker}")
+            try:
+                choice = input("  Enter choice (1-{}, or Enter to keep current): ".format(len(regions)))
+                if choice.strip():
+                    region_idx = int(choice) - 1
+                    if region_idx < 0 or region_idx >= len(regions):
+                        region_idx = default_idx
+                else:
+                    region_idx = default_idx
+            except (ValueError, EOFError):
+                region_idx = default_idx
+        
+        selected_region = region_values[region_idx]
+        web_cfg["region"] = selected_region
+        _print_success(f"  Region set to: {selected_region}")
+
+        # Update env var key based on region
+        if provider.get("region_env_var_map") and env_vars:
+            env_var_key = provider["region_env_var_map"].get(selected_region)
+            if env_var_key:
+                env_vars = [{**env_vars[0], "key": env_var_key}]
+                provider = {**provider, "env_vars": env_vars}
 
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         section = config.setdefault(managed_feature, {})

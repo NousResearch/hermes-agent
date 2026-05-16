@@ -704,11 +704,10 @@ class QQAdapter(BasePlatformAdapter):
             "d": {
                 "token": f"QQBot {token}",
                 "intents": (1 << 25)
-                           | (1 << 26)
                            | (1 << 30)
                            | (
                                    1 << 12
-                           ),  # C2C_GROUP_AT_MESSAGES + INTERACTION + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE
+                           ),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",

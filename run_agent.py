@@ -2011,7 +2011,7 @@ class AIAgent:
         # through get_tool_definitions()).  Duplicate function names cause
         # 400 errors on providers that enforce unique names (e.g. Xiaomi
         # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
+        if self._memory_provider_tools_allowed() and self.tools is not None:
             _existing_tool_names = {
                 t.get("function", {}).get("name")
                 for t in self.tools
@@ -9121,14 +9121,18 @@ class AIAgent:
 
         # Non-vision Anthropic model (rare today, but keep the fallback for
         # compat): replace each image part with a vision_analyze text note.
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
+
+            new_msg = msg.copy()
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
@@ -9149,18 +9153,23 @@ class AIAgent:
         if self._model_supports_vision():
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
+
+            # Shallow copy the message to avoid mutating the original
+            new_msg = msg.copy()
             # Reuse the Anthropic text-fallback preprocessor — the behaviour is
             # identical (walk content parts, replace images with cached
             # descriptions, merge back into a single text or structured
             # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
@@ -9314,33 +9323,37 @@ class AIAgent:
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
-        prepared = copy.deepcopy(api_messages)
-        if not prepared:
-            return prepared
+        if not api_messages:
+            return []
 
-        for msg in prepared:
+        prepared = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                prepared.append(msg)
                 continue
-            content = msg.get("content")
+
+            new_msg = msg.copy()
+            content = new_msg.get("content")
             if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
+                new_msg["content"] = [{"type": "text", "text": content}]
             elif isinstance(content, list):
                 # Normalize: convert bare strings to text dicts, keep dicts as-is.
-                # deepcopy already created independent copies, no need for dict().
                 normalized_parts = []
                 for part in content:
                     if isinstance(part, str):
                         normalized_parts.append({"type": "text", "text": part})
                     elif isinstance(part, dict):
-                        normalized_parts.append(part)
+                        normalized_parts.append(part.copy())
                 if normalized_parts:
-                    msg["content"] = normalized_parts
+                    new_msg["content"] = normalized_parts
+            prepared.append(new_msg)
 
         # Inject cache_control on the last part of the system message.
         for msg in prepared:
             if isinstance(msg, dict) and msg.get("role") == "system":
                 content = msg.get("content")
                 if isinstance(content, list) and content and isinstance(content[-1], dict):
+                    # content[-1] is already a copy from above loop
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
@@ -10418,6 +10431,18 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _memory_provider_tools_allowed(self) -> bool:
+        """Return True when provider-backed memory tools are in this agent's toolset."""
+        return bool(self._memory_manager and "memory" in self.valid_tool_names)
+
+    def _is_allowed_memory_provider_tool(self, function_name: str) -> bool:
+        """Return True only for provider memory tools exposed to this agent."""
+        return bool(
+            self._memory_manager
+            and function_name in self.valid_tool_names
+            and self._memory_manager.has_tool(function_name)
+        )
+
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch.
 
@@ -10431,8 +10456,6 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             parent_agent=self,
         )
@@ -10504,7 +10527,7 @@ class AIAgent:
                 except Exception:
                     pass
             return result
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
+        elif self._is_allowed_memory_provider_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -11192,7 +11215,7 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+            elif self._is_allowed_memory_provider_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
                 spinner = None
@@ -13870,6 +13893,9 @@ class AIAgent:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
@@ -13909,7 +13935,7 @@ class AIAgent:
                         # Note: max_tokens = output token cap (one response).
                         #       context_length = total window (input + output combined).
                         available_out = parse_available_output_tokens_from_error(error_msg)
-                        if available_out is not None:
+                        if available_out is not None and available_out >= 512:
                             # Error is purely about the output cap being too large.
                             # Cap output to the available space and retry without
                             # touching context_length or triggering compression.
@@ -14028,6 +14054,9 @@ class AIAgent:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             # Can't compress further and already at minimum tier

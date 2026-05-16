@@ -1934,6 +1934,28 @@ class TestPerUserAttachmentRouting:
         assert adapter._user_chat_api is legacy_api
         assert adapter._user_credentials is legacy_creds
 
+    @pytest.mark.asyncio
+    async def test_dispatch_message_passes_user_email_to_setup_files(
+        self, adapter
+    ):
+        """_dispatch_message must pass event.source.user_id (the email)
+        to _handle_setup_files_command, NOT user_id_alt (the resource name)."""
+        envelope = _make_chat_envelope(
+            text="/setup-files",
+            sender_email="don@agilicus.com",
+        )
+        msg = envelope["chat"]["messagePayload"]["message"]
+        
+        adapter._handle_setup_files_command = AsyncMock(return_value=True)
+        await adapter._dispatch_message(msg, envelope["chat"]["messagePayload"])
+        
+        adapter._handle_setup_files_command.assert_called_once_with(
+            chat_id="spaces/S",
+            thread_id=None,
+            raw_text="/setup-files",
+            sender_email="don@agilicus.com"
+        )
+
 
 # ===========================================================================
 # Persistent thread-count store (restart-safe side-thread heuristic)

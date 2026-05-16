@@ -932,11 +932,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Google Chat: native media attachment support via adapter ---
+    if platform.value == "google_chat" and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_google_chat(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and google_chat; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -944,7 +961,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and google_chat"
         )
 
     last_result = None
@@ -1677,6 +1694,44 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
+
+
+async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via Google Chat using the adapter's send pipeline."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        if runner and hasattr(runner, "adapters"):
+            from gateway.config import Platform
+            adapter = runner.adapters.get(Platform("google_chat"))
+            if adapter:
+                metadata = {"thread_id": thread_id} if thread_id else None
+                last_result = None
+                if message.strip():
+                    last_result = await adapter.send(chat_id, message, metadata=metadata)
+                    if not last_result.success:
+                        return {"error": f"Google Chat send failed: {last_result.error}"}
+
+                for media_path, is_voice in (media_files or []):
+                    ext = os.path.splitext(media_path)[1].lower()
+                    if ext in _IMAGE_EXTS:
+                        last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+                    elif ext in _VIDEO_EXTS:
+                        last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+                    elif ext in _VOICE_EXTS and is_voice:
+                        last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                    elif ext in _AUDIO_EXTS:
+                        last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                    else:
+                        last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+                    if not last_result.success:
+                        return {"error": f"Google Chat media send failed: {last_result.error}"}
+
+                return {"success": True, "platform": "google_chat", "chat_id": chat_id, "message_id": last_result.message_id if last_result else None}
+    except Exception as e:
+        logger.debug("Failed to use live Google Chat adapter: %s", e)
+
+    return {"error": "Google Chat adapter not found or gateway not running with google_chat enabled."}
 
 
 async def _send_qqbot(pconfig, chat_id, message):

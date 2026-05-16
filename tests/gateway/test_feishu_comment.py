@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -38,6 +39,39 @@ def _make_event(
             "to_user_id": {"open_id": to_open_id},
         },
     })
+
+
+class TestCommentAgentToolScope(unittest.TestCase):
+    def test_comment_agent_scopes_feishu_tools_to_source_document(self):
+        """The agent cannot use injected Feishu tools against a different document."""
+        from gateway.platforms import feishu_comment
+
+        client = Mock()
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.enabled_toolsets = kwargs["enabled_toolsets"]
+
+            def run_conversation(self, prompt, conversation_history=None):
+                from tools import feishu_doc_tool, feishu_drive_tool
+
+                doc_result = json.loads(feishu_doc_tool._handle_feishu_doc_read({"doc_token": "OTHER_DOC"}))
+                drive_result = json.loads(feishu_drive_tool._handle_add_comment({"file_token": "OTHER_DOC", "content": "hi"}))
+                return {
+                    "final_response": f"{doc_result['error']} | {drive_result['error']}",
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+        fake_run_agent = SimpleNamespace(AIAgent=FakeAgent)
+        with patch.dict(sys.modules, {"run_agent": fake_run_agent}), \
+             patch.object(feishu_comment, "_resolve_model_and_runtime", return_value=("model", {})):
+            response = feishu_comment._run_comment_agent(
+                "prompt", client, "session", file_type="docx", file_token="SRC_DOC"
+            )
+
+        self.assertIn("outside the authorized comment document", response)
+        client.request.assert_not_called()
 
 
 class TestParseEvent(unittest.TestCase):

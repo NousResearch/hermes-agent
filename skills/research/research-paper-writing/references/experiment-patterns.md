@@ -179,35 +179,26 @@ Key design decisions:
 For tasks with ground-truth evaluation (code, math, factual):
 
 ```python
-import subprocess
-
-def evaluate_code(solution: str, test_cases: list, timeout: int = 30):
-    """Run code solution against test cases with sandboxed execution."""
+def evaluate_outputs(actual_outputs: list[str], test_cases: list[dict]):
+    """Score outputs produced by a trusted benchmark harness."""
     results = {"public": [], "private": []}
-    
-    for test in test_cases:
-        try:
-            proc = subprocess.run(
-                ["python3", "-c", solution],
-                input=test["input"],
-                capture_output=True,
-                timeout=timeout,
-                text=True
-            )
-            actual = proc.stdout.strip()
-            expected = test["expected"].strip()
-            passed = actual == expected
-        except subprocess.TimeoutExpired:
-            passed = False
-        
+
+    for actual, test in zip(actual_outputs, test_cases):
+        expected = test["expected"].strip()
+        passed = actual.strip() == expected
         category = "public" if test.get("public") else "private"
         results[category].append(passed)
-    
+
     return {
         "public_pass_rate": sum(results["public"]) / max(len(results["public"]), 1),
         "private_pass_rate": sum(results["private"]) / max(len(results["private"]), 1),
     }
 ```
+
+Do not execute model-generated or repository-provided code directly from this
+skill. For code benchmarks, use a trusted evaluation harness that already
+provides isolation (for example, a disposable container or managed judge) and
+then pass the captured outputs into the scoring helper above.
 
 ### Compute-Matched Comparison
 
@@ -481,7 +472,7 @@ Next: Run significance tests on these results.
 | **Process crash** | PID gone, log stops mid-problem | Re-run script (resumes from last checkpoint) |
 | **Wrong model ID** | Model not found errors | Fix ID (e.g., `claude-opus-4-6` not `claude-opus-4.6`) |
 | **Parallel slowdown** | Each experiment taking 2x longer | Reduce parallel experiments to 2-3 max |
-| **Security scan blocks** | Commands blocked by security | Use `execute_code` instead of piped `terminal` commands |
+| **Security scan blocks** | Commands blocked by security | Treat the block as authoritative: inspect the command, remove unsafe constructs, or ask the user for an approved safe alternative. Do not switch tools to bypass the scan. |
 | **Delegation failures** | `delegate_task` returns errors | Fall back to doing work directly |
 | **Timeout on hard problems** | Process stuck, no log progress | Kill, skip problem, note in results |
 | **Dataset path mismatch** | File not found errors | Verify paths before launching |

@@ -8,7 +8,8 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+import types
 
 import pytest
 
@@ -120,6 +121,73 @@ class TestModuleSurface:
             "limit": "2",
             "current_session_id": "sid-123",
         }]
+
+    def test_build_server_routes_stateless_agent_loop_tools_without_handle_function_call(self, monkeypatch):
+        """_build_server must route memory/session_search through local wrappers.
+
+        The normal Hermes dispatcher intentionally blocks agent-loop tools outside
+        AIAgent. Codex MCP handlers for memory/session_search should therefore
+        bypass handle_function_call while ordinary exposed tools still use it.
+        """
+        from agent.transports import hermes_tools_mcp_server as m
+        import model_tools
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self.tools = {}
+
+            def add_tool(self, fn, name, description):
+                self.tools[name] = fn
+
+        fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
+        setattr(fastmcp_mod, "FastMCP", FakeFastMCP)
+        server_mod = types.ModuleType("mcp.server")
+        setattr(server_mod, "fastmcp", fastmcp_mod)
+        mcp_mod = types.ModuleType("mcp")
+        setattr(mcp_mod, "server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_mod)
+
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": f"{name} description",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+                for name in ("memory", "session_search", "web_search")
+            ],
+        )
+
+        handle_calls = []
+        monkeypatch.setattr(
+            model_tools,
+            "handle_function_call",
+            lambda name, args: handle_calls.append((name, args)) or "handled",
+        )
+        monkeypatch.setitem(
+            m._STATELESS_AGENT_LOOP_DISPATCHERS,
+            "memory",
+            lambda **kwargs: f"memory:{kwargs['action']}",
+        )
+        monkeypatch.setitem(
+            m._STATELESS_AGENT_LOOP_DISPATCHERS,
+            "session_search",
+            lambda **kwargs: f"search:{kwargs['query']}",
+        )
+
+        server = m._build_server()
+
+        assert server.tools["memory"](action="list") == "memory:list"
+        assert server.tools["session_search"](query="oauth") == "search:oauth"
+        assert server.tools["web_search"](query="hermes") == "handled"
+        assert handle_calls == [("web_search", {"query": "hermes"})]
 
     def test_kanban_worker_tools_exposed(self):
         """Kanban workers run as `hermes chat -q` subprocesses; if they

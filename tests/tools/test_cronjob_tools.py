@@ -250,6 +250,61 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_create_normalizes_generic_mcp_toolset_when_unambiguous(self, monkeypatch):
+        from cron.jobs import get_job
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools._configured_mcp_toolset_names",
+            lambda: ["kb_engine_prod"],
+        )
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Watch KB sync",
+                schedule="every 5m",
+                enabled_toolsets=["mcp", "terminal", "kb_engine_prod"],
+            )
+        )
+
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored is not None
+        assert stored["enabled_toolsets"] == ["kb_engine_prod", "terminal"]
+
+    def test_create_rejects_generic_mcp_toolset_when_ambiguous(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.cronjob_tools._configured_mcp_toolset_names",
+            lambda: ["kb_engine_prod", "mcp-kb_engine_prod"],
+        )
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Watch KB sync",
+                schedule="every 5m",
+                enabled_toolsets=["mcp"],
+            )
+        )
+
+        assert result["success"] is False
+        assert "Do not use the generic value 'mcp'" in result["error"]
+        assert "kb_engine_prod" in result["error"]
+
+    def test_update_rejects_unknown_enabled_toolset(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                enabled_toolsets=["not-a-toolset"],
+            )
+        )
+
+        assert updated["success"] is False
+        assert "Unknown enabled_toolsets: not-a-toolset" in updated["error"]
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

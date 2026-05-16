@@ -288,6 +288,89 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _configured_mcp_toolset_names() -> List[str]:
+    """Return configured MCP server toolset names suitable for cron filters."""
+    names = set()
+
+    try:
+        from tools.registry import registry
+
+        aliases = registry.get_registered_toolset_aliases()
+        for alias, canonical in aliases.items():
+            if str(canonical).startswith("mcp-"):
+                names.add(str(alias))
+        if not names:
+            for toolset_name in registry.get_registered_toolset_names():
+                if str(toolset_name).startswith("mcp-"):
+                    names.add(str(toolset_name))
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.config import load_config, _expand_env_vars
+
+        cfg = _expand_env_vars(load_config()) or {}
+        servers = cfg.get("mcp_servers") or {}
+        if isinstance(servers, dict):
+            for server_name, server_cfg in servers.items():
+                if isinstance(server_cfg, dict):
+                    enabled = str(server_cfg.get("enabled", "true")).strip().lower()
+                    if enabled in {"false", "0", "no", "off"}:
+                        continue
+                if str(server_name).strip():
+                    names.add(str(server_name).strip())
+    except Exception:
+        pass
+
+    return sorted(names)
+
+
+def _normalize_enabled_toolsets(enabled_toolsets: Optional[List[str]]) -> tuple[Optional[List[str]], Optional[str]]:
+    """Normalize and validate cron enabled_toolsets before persisting a job."""
+    if enabled_toolsets is None:
+        return None, None
+
+    raw_toolsets = [str(item).strip() for item in enabled_toolsets if str(item).strip()]
+    if not raw_toolsets:
+        return None, None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception as exc:
+        return None, f"Could not validate enabled_toolsets: {exc}"
+
+    mcp_toolsets = _configured_mcp_toolset_names()
+    normalized_toolsets: List[str] = []
+    invalid_toolsets: List[str] = []
+
+    for toolset_name in raw_toolsets:
+        normalized_name = toolset_name
+        if toolset_name == "mcp":
+            if len(mcp_toolsets) == 1:
+                normalized_name = mcp_toolsets[0]
+            else:
+                invalid_toolsets.append(toolset_name)
+                continue
+
+        if normalized_name in mcp_toolsets or validate_toolset(normalized_name):
+            if normalized_name not in normalized_toolsets:
+                normalized_toolsets.append(normalized_name)
+        else:
+            invalid_toolsets.append(toolset_name)
+
+    if invalid_toolsets:
+        known_mcp = ", ".join(mcp_toolsets) if mcp_toolsets else "kb_engine_prod or mcp-kb_engine_prod"
+        invalid = ", ".join(sorted(set(invalid_toolsets)))
+        return None, (
+            f"Unknown enabled_toolsets: {invalid}. "
+            "Do not use the generic value 'mcp'; MCP cron jobs must use a "
+            f"configured MCP server toolset such as {known_mcp}, or omit "
+            "enabled_toolsets to use the cron platform defaults."
+        )
+
+    return normalized_toolsets or None, None
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -377,6 +460,10 @@ def cronjob(
                             success=False,
                         )
 
+            normalized_toolsets, toolset_error = _normalize_enabled_toolsets(enabled_toolsets)
+            if toolset_error:
+                return tool_error(toolset_error, success=False)
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -390,7 +477,7 @@ def cronjob(
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
-                enabled_toolsets=enabled_toolsets or None,
+                enabled_toolsets=normalized_toolsets,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 silent_ok=_silent_ok,
@@ -523,7 +610,10 @@ def cronjob(
                             )
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
-                updates["enabled_toolsets"] = enabled_toolsets or None
+                normalized_toolsets, toolset_error = _normalize_enabled_toolsets(enabled_toolsets)
+                if toolset_error:
+                    return tool_error(toolset_error, success=False)
+                updates["enabled_toolsets"] = normalized_toolsets
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -697,7 +787,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). For MCP tools, use the configured MCP server toolset name such as \"kb_engine_prod\" or \"mcp-kb_engine_prod\"; do not use the generic value \"mcp\". When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
             },
             "workdir": {
                 "type": "string",

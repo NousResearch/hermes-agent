@@ -2,6 +2,12 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Hermes Context Bridge
+
+- For local Codex/Claude context inheritance, recovery, and source-boundary rules, read `/Users/songying/.hermes/BRIDGE.md` first.
+- Prefer Hermes canonical paths under `/Users/songying/.hermes/` over legacy `/Users/songying/.openclaw/` compatibility paths.
+- Treat knowledge/wiki/output/memory as reference or durable memory unless live workspace/runtime evidence confirms execution truth.
+
 ## Development Environment
 
 ```bash

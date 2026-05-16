@@ -3762,3 +3762,135 @@ class TestRegisterMcpServers:
                 )
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Tests for parallel tool call support (port from openai/codex#17667)
+# ---------------------------------------------------------------------------
+
+class TestMcpParallelToolCalls:
+    """Tests for the supports_parallel_tool_calls config option."""
+
+    def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
+        """Non-MCP tool names always return False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe
+        assert is_mcp_tool_parallel_safe("web_search") is False
+        assert is_mcp_tool_parallel_safe("read_file") is False
+        assert is_mcp_tool_parallel_safe("terminal") is False
+        assert is_mcp_tool_parallel_safe("") is False
+
+    def test_is_mcp_tool_parallel_safe_no_servers(self):
+        """MCP tool from unknown server returns False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.clear()
+        assert is_mcp_tool_parallel_safe("mcp_docs_search") is False
+
+    def test_is_mcp_tool_parallel_safe_with_flag(self):
+        """MCP tool from a parallel-safe server returns True."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("docs")
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_docs_search") is True
+            assert is_mcp_tool_parallel_safe("mcp_docs_read_file") is True
+            # Different server should be False
+            assert is_mcp_tool_parallel_safe("mcp_github_list_repos") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+
+    def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
+        """Server names containing underscores are correctly matched."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("my_server")
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_my_server_query") is True
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("my_server")
+
+    def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
+        """Tool name that is just 'mcp_{server}' without a tool part returns False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("docs")
+        try:
+            # "mcp_docs" has no tool part after the server name
+            assert is_mcp_tool_parallel_safe("mcp_docs") is False
+            # "mcp_docs_" has empty tool part
+            assert is_mcp_tool_parallel_safe("mcp_docs_") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+
+    def test_register_mcp_servers_tracks_parallel_flag(self):
+        """register_mcp_servers populates _parallel_safe_servers from config."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+        fake_config = {
+            "parallel_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+            "serial_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+            "default_srv": {
+                "command": "echo",
+                # no supports_parallel_tool_calls key
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(fake_config)
+
+        with _lock:
+            assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
+            assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
+            assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
+            # Cleanup
+            _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+
+    def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
+        """Toggling supports_parallel_tool_calls to false removes server from the set."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+
+        # First registration: parallel enabled
+        config_on = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_on)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
+
+        # Second registration: parallel disabled
+        config_off = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_off)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers

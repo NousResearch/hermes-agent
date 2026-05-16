@@ -98,12 +98,7 @@ class TestBackgroundChildDoesNotHang:
         result = local_env.execute("sleep 30", timeout=2)
         elapsed = time.monotonic() - t0
 
-        # Allow generous headroom for CI under load — the key invariant is
-        # that the process was killed (not allowed to run the full 30 seconds).
-        assert elapsed < 10.0, (
-            f"timeout kill took {elapsed:.1f}s — process should have been "
-            f"killed within seconds of the 2s timeout"
-        )
+        assert elapsed < 4.0
         assert result["returncode"] == 124
         assert "timed out" in result["output"].lower()
 

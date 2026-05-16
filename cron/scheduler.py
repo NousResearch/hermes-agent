@@ -300,23 +300,19 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             chat_id, thread_id = rest, None
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        # Explicit platform IDs must remain authoritative: channel-directory
-        # lookups are name-based and can be influenced by external workspace
-        # channel/contact names.
-        if not is_explicit:
-            try:
-                from gateway.channel_directory import resolve_channel_name
-                resolved = resolve_channel_name(platform_key, chat_id)
-                if resolved:
-                    parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                    if resolved_is_explicit:
-                        chat_id = parsed_chat_id
-                        if parsed_thread_id is not None:
-                            thread_id = parsed_thread_id
-                    else:
-                        chat_id = resolved
-            except Exception:
-                pass
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_key, chat_id)
+            if resolved:
+                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+                if resolved_is_explicit:
+                    chat_id = parsed_chat_id
+                    if parsed_thread_id is not None:
+                        thread_id = parsed_thread_id
+                else:
+                    chat_id = resolved
+        except Exception:
+            pass
 
         return {
             "platform": platform_name,
@@ -660,7 +656,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
-_SCRIPT_OUTPUT_MAX_CHARS = 8000
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
@@ -698,33 +693,6 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _safe_script_env() -> dict[str, str]:
-    """Return a minimal environment for trusted cron scripts without secrets."""
-    hermes_home = str(_get_hermes_home())
-    env = {
-        "HERMES_HOME": hermes_home,
-        "HOME": hermes_home,
-        "PATH": os.getenv("PATH", os.defpath),
-        "LANG": os.getenv("LANG", "C.UTF-8"),
-        "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
-        "TZ": os.getenv("TZ", "UTC"),
-    }
-    return {k: v for k, v in env.items() if v is not None}
-
-
-def _sanitize_script_output(text: str) -> str:
-    """Redact and bound script output before it reaches prompts or delivery."""
-    cleaned = text.strip()
-    try:
-        from agent.redact import redact_sensitive_text
-        cleaned = redact_sensitive_text(cleaned, force=True)
-    except Exception:
-        pass
-    if len(cleaned) > _SCRIPT_OUTPUT_MAX_CHARS:
-        cleaned = cleaned[:_SCRIPT_OUTPUT_MAX_CHARS] + "\n\n[... script output truncated ...]"
-    return cleaned
-
-
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -752,6 +720,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
+    from hermes_constants import get_hermes_home
+
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -810,10 +780,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_safe_script_env(),
         )
-        stdout = _sanitize_script_output(result.stdout or "")
-        stderr = _sanitize_script_output(result.stderr or "")
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
 
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
@@ -1255,13 +1232,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
-    _cron_delivery_vars = (
-        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    _cron_context_vars = (
+        ("HERMES_CRON_SESSION", "1"),
+        ("HERMES_CRON_AUTO_DELIVER_PLATFORM", ""),
+        ("HERMES_CRON_AUTO_DELIVER_CHAT_ID", ""),
+        ("HERMES_CRON_AUTO_DELIVER_THREAD_ID", ""),
     )
-    for _var_name in _cron_delivery_vars:
-        _VAR_MAP[_var_name].set("")
+    for _var_name, _var_value in _cron_context_vars:
+        _VAR_MAP[_var_name].set(_var_value)
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
@@ -1377,8 +1355,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Persisted cron records may contain legacy base_url values created
+            # from model-callable tool args. Never pass them as explicit URLs,
+            # because the resolver would pair arbitrary endpoints with the
+            # operator's ambient API keys. Custom endpoints must come from the
+            # operator-controlled provider configuration instead.
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
@@ -1646,7 +1627,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
-        for _var_name in _cron_delivery_vars:
+        for _var_name, _ in _cron_context_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
             try:

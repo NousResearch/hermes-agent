@@ -2115,6 +2115,19 @@ class AIAgent:
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+        # Suppress fallback/rate-limit status messages from gateway channel.
+        # When true, fallback and rate-limit lifecycle messages are still printed
+        # to CLI (via _vprint) but NOT forwarded to status_callback (gateway chat).
+        # Other status messages (errors, warnings, tool failures) remain visible.
+        # Config key: logging.suppress_fallback_messages (default: false)
+        _logging_cfg = _agent_cfg.get("logging", {})
+        if not isinstance(_logging_cfg, dict):
+            _logging_cfg = {}
+        self._suppress_fallback_status = _logging_cfg.get("suppress_fallback_messages", False)
+        if not isinstance(self._suppress_fallback_status, bool):
+            from utils import is_truthy_value
+            self._suppress_fallback_status = is_truthy_value(self._suppress_fallback_status, default=False)
+
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
         try:
@@ -2920,11 +2933,27 @@ class AIAgent:
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
+
+        When logging.suppress_fallback_messages is enabled in config.yaml,
+        fallback and rate-limit messages are still printed to the CLI log but
+        NOT forwarded to the gateway status callback (keeping chat UI clean).
         """
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
+        # Suppress fallback/rate-limit status messages from gateway channel
+        # when logging.suppress_fallback_messages is enabled.
+        _is_fallback_status = (
+            "Rate limited" in message
+            or "switching to fallback" in message
+            or "trying fallback" in message
+            or "Non-retryable error" in message
+            or "Max retries" in message
+            or ("Waiting" in message and "attempt" in message)
+        )
+        if self._suppress_fallback_status and _is_fallback_status:
+            return
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)

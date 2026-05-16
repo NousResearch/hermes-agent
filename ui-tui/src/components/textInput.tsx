@@ -16,13 +16,14 @@ import {
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
+  useCursorAdvance: () => (dx: number, dy?: number) => void
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
   useStdout: () => { stdout?: NodeJS.WriteStream }
   useTerminalFocus: () => boolean
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -238,8 +239,26 @@ export function canFastAppendShape(
  * ASCII. Anything else (combining marks, IME compositions, wide chars,
  * tabs, ANSI fragments) goes through the normal render path so Ink can
  * recompute cell widths.
+ *
+ * When `columns` is supplied, ALSO rejects when the physical cursor
+ * sits at visual column 0 — i.e., right after a soft-wrap boundary.
+ * The "\b \b" sequence cannot move the cursor onto the previous visual
+ * row (terminals don't back-step across line wraps), so the physical
+ * cursor would stay put while the logical caret moves to the end of
+ * the previous visual line, desyncing both Ink's `displayCursor` model
+ * and the user-visible position.
+ *
+ * When `columns` is OMITTED, the wrap-boundary check is skipped
+ * entirely and the function reverts to the legacy non-wrap-aware
+ * contract — values like `'hello '` will return `true` even though
+ * they would be unsafe at a width of 6. Production callers (the
+ * composer's `canFastBackspace` helper) always pass `columns`;
+ * `columns` is optional only so unit tests of the pre-wrap shape
+ * contract can keep calling the helper without threading width
+ * through. Do NOT omit it from any new caller that relies on the
+ * wrap-boundary protection.
  */
-export function canFastBackspaceShape(current: string, cursor: number): boolean {
+export function canFastBackspaceShape(current: string, cursor: number, columns?: number): boolean {
   if (cursor !== current.length) {
     return false
   }
@@ -249,6 +268,13 @@ export function canFastBackspaceShape(current: string, cursor: number): boolean 
   }
 
   if (current.includes('\n')) {
+    return false
+  }
+
+  // If we know the wrap width, reject at the soft-wrap boundary: the
+  // caret's visual column is 0, so "\b \b" can't represent the physical
+  // move back to the previous visual line.
+  if (columns !== undefined && cursorLayout(current, cursor, columns).column === 0) {
     return false
   }
 
@@ -333,6 +359,7 @@ export function TextInput({
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
+  const noteCursorAdvance = useCursorAdvance()
 
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
@@ -368,7 +395,19 @@ export function TextInput({
     [sel]
   )
 
-  const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
+  // Read `curRef.current` (always up-to-date) rather than the `cur`
+  // React state. The fast-echo path defers the React `setCur` by 16ms
+  // to batch re-renders during heavy typing; if an unrelated render
+  // flushes this component during that window and we used the stale
+  // `cur` state here, the layout effect inside `useDeclaredCursor`
+  // would publish a stale cursor declaration and clobber the Ink-level
+  // bump from `noteCursorAdvance(...)`. `cur` is still in scope and
+  // referenced by setSel/setCur paths below, so React tracks the
+  // dependency naturally — we just don't use it as the source of truth
+  // for layout. The cursorLayout call is cheap (one wrap-text pass
+  // over a single-line string in the common case), so dropping useMemo
+  // is fine.
+  const layout = cursorLayout(display, curRef.current, columns)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
@@ -526,7 +565,7 @@ export function TextInput({
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
   const canFastBackspace = (current: string, cursor: number) =>
-    canFastEchoBase() && canFastBackspaceShape(current, cursor)
+    canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
 
   const commit = (
     next: string,
@@ -911,6 +950,12 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
           stdout!.write('\b \b')
+          // The "\b \b" sequence ends with the cursor one column to the
+          // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
+          // (and log-update's relative-move basis on the next frame) stays
+          // in sync — otherwise the cursor parks one cell to the right of
+          // the caret on the next unrelated re-render.
+          noteCursorAdvance(-1)
           commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
           return
@@ -998,6 +1043,14 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
+              // ASCII-printable text advances the physical cursor by exactly
+              // text.length cells (canFastAppendShape rejects non-ASCII,
+              // wide chars, newlines). Notify Ink so the cached displayCursor
+              // / log-update relative-move basis advances with it; otherwise
+              // any unrelated re-render that happens before the 16ms
+              // setCur/setParent flush parks the cursor text.length cells
+              // too far right (#cursor-drift).
+              noteCursorAdvance(text.length)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 
               return

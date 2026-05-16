@@ -133,4 +133,42 @@ describe('canFastBackspaceShape', () => {
   it('rejects deleting an emoji', () => {
     expect(canFastBackspaceShape('hi🙂', 'hi🙂'.length)).toBe(false)
   })
+
+  // Closes Copilot PR #26717 round 3: the "\b \b" sequence cannot move
+  // the terminal cursor onto the previous visual row across a
+  // soft-wrap boundary. When the caret sits at visual column 0 of a
+  // wrapped row (column == 0 in the computed cursor layout), backspace
+  // would leave the physical cursor in place while the logical caret
+  // moves up to the end of the previous visual line — desyncing both
+  // Ink's displayCursor model and the user-visible position. The fast
+  // path must fall through in that case so the normal Ink render path
+  // can lay out the correct cursor position.
+  it('rejects fast-backspace at a soft-wrap boundary when columns is known', () => {
+    // value width 6 in a column of 6 → cursorLayout produces (line 1, col 0)
+    // i.e. the caret has overflowed onto the next visual line.
+    const value = 'hello '
+    expect(canFastBackspaceShape(value, value.length, 6)).toBe(false)
+  })
+
+  it('rejects fast-backspace at an exact multiple of columns (wide wrap)', () => {
+    // 12 chars at width 6 → two full visual rows, caret at (line 2, col 0).
+    const value = 'abcdefghijkl'
+    expect(canFastBackspaceShape(value, value.length, 6)).toBe(false)
+  })
+
+  it('still accepts fast-backspace inside a wrapped line', () => {
+    // Caret mid-visual-line — "\b \b" can move the cursor one cell left
+    // without crossing a wrap boundary.
+    expect(canFastBackspaceShape('hello world', 'hello world'.length, 20)).toBe(true)
+    expect(canFastBackspaceShape('abcdefghi', 9, 6)).toBe(true) // visual line 1, col 3 → ok
+  })
+
+  it('skips the wrap-boundary check when columns is omitted (legacy contract)', () => {
+    // Callers that don't pass `columns` fall back to the pre-wrap-aware
+    // behavior — the function does NOT magically reject anything that
+    // could be a wrap boundary without the width. Production callers
+    // must always pass `columns`; this case is for unit tests of the
+    // pre-wrap shape contract.
+    expect(canFastBackspaceShape('hello ', 'hello '.length)).toBe(true)
+  })
 })

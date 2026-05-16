@@ -1276,6 +1276,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
+    # If the inactivity-timeout path can't get the worker thread to honor
+    # the interrupt within the grace window, we hand SessionDB / agent
+    # teardown to a future done-callback instead of closing them
+    # synchronously in `finally`.  Otherwise a still-running worker tool
+    # call could write to a closed SQLite store (segfault risk) or a
+    # torn-down httpx client.
+    _deferred_cleanup = False
+
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
@@ -1549,6 +1557,67 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             if hasattr(agent, "interrupt"):
                 agent.interrupt("Cron job timed out (inactivity)")
+
+            # Give the worker thread a grace window to honor the interrupt
+            # and unwind cleanly.  If it does, we fall through to the
+            # normal `finally` cleanup which closes SessionDB / agent
+            # synchronously.  If it doesn't, the worker is still mid-tool
+            # (e.g. a hung subprocess, blocked socket read, or a tool that
+            # ignores the interrupt flag) and tearing down SessionDB or
+            # the agent's httpx client out from under it would risk a
+            # SQLite use-after-close (segfault) or a noisy traceback.
+            # In that case we defer cleanup to a future done-callback
+            # that fires once the worker actually exits.
+            _GRACE_SECONDS = 5.0
+            try:
+                concurrent.futures.wait({_cron_future}, timeout=_GRACE_SECONDS)
+            except Exception:
+                pass
+
+            if not _cron_future.done():
+                logger.warning(
+                    "Job '%s': worker did not exit within %.0fs of interrupt "
+                    "— deferring SessionDB/agent close until worker finishes",
+                    job_name, _GRACE_SECONDS,
+                )
+                _deferred_cleanup = True
+                # Snapshot the handles the callback needs so the closure
+                # doesn't capture the whole local frame.
+                _deferred_session_db = _session_db
+                _deferred_agent = agent
+                _deferred_session_id = _cron_session_id
+                _deferred_job_id = job_id
+
+                def _finish_deferred_cleanup(_fut, _sdb=_deferred_session_db,
+                                             _ag=_deferred_agent,
+                                             _sid=_deferred_session_id,
+                                             _jid=_deferred_job_id):
+                    if _sdb is not None:
+                        try:
+                            _sdb.end_session(_sid, "cron_timeout")
+                        except (Exception, KeyboardInterrupt) as ce:
+                            logger.debug(
+                                "Job '%s' (deferred): failed to end session: %s",
+                                _jid, ce,
+                            )
+                        try:
+                            _sdb.close()
+                        except (Exception, KeyboardInterrupt) as ce:
+                            logger.debug(
+                                "Job '%s' (deferred): failed to close SQLite session store: %s",
+                                _jid, ce,
+                            )
+                    if _ag is not None:
+                        try:
+                            _ag.close()
+                        except (Exception, KeyboardInterrupt) as ce:
+                            logger.debug(
+                                "Job '%s' (deferred): failed to close agent resources: %s",
+                                _jid, ce,
+                            )
+
+                _cron_future.add_done_callback(_finish_deferred_cleanup)
+
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -1637,7 +1706,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
-        if _session_db:
+        if _session_db and not _deferred_cleanup:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
@@ -1650,8 +1719,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
+        #
+        # Skip when `_deferred_cleanup` is set — the worker thread didn't
+        # honor the interrupt within the grace window, so a done-callback
+        # on `_cron_future` will run end_session/close once it finally
+        # exits.  Closing here would race the live worker.
         try:
-            if agent is not None:
+            if agent is not None and not _deferred_cleanup:
                 agent.close()
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)

@@ -301,6 +301,137 @@ class TestInactivityTimeout:
         assert result["final_response"] == "no activity tracker"
 
 
+class TestDeferredCleanupOnStuckWorker:
+    """When the worker thread doesn't honor the interrupt within the grace
+    window, the scheduler must defer SessionDB/agent close to a done-callback
+    so it never closes those resources while the worker is still using them.
+
+    These tests don't drive the full `run_job` machinery — they exercise the
+    smaller invariant: a future whose worker stays busy past the grace window
+    must still trigger cleanup, but only after the worker actually finishes.
+    """
+
+    def test_grace_period_lets_cooperative_worker_finish(self):
+        """If the worker exits within the grace window, no deferral is needed."""
+        finished = threading.Event()
+
+        def cooperative_worker():
+            # Cooperative tool — exits almost immediately after the
+            # interrupt is requested.
+            time.sleep(0.05)
+            finished.set()
+            return "ok"
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(cooperative_worker)
+        _GRACE_SECONDS = 1.0
+        concurrent.futures.wait({future}, timeout=_GRACE_SECONDS)
+        pool.shutdown(wait=False)
+
+        assert future.done()
+        assert finished.is_set()
+
+    def test_stuck_worker_triggers_done_callback_on_eventual_exit(self):
+        """A worker that ignores the interrupt for longer than the grace
+        window must NOT have its cleanup run synchronously — it must run via
+        add_done_callback once the worker eventually finishes.
+        """
+        cleanup_ran_before_worker_done = []
+        cleanup_ran_after_worker_done = []
+        worker_done_at = []
+
+        # Worker that ignores any interrupt for 0.6s — longer than our
+        # 0.2s grace window.
+        def stuck_worker():
+            time.sleep(0.6)
+            worker_done_at.append(time.time())
+            return "eventually-done"
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(stuck_worker)
+
+        _GRACE_SECONDS = 0.2
+        concurrent.futures.wait({future}, timeout=_GRACE_SECONDS)
+        assert not future.done(), "worker should still be running after grace"
+
+        callback_ran_at = []
+
+        def _cleanup(_fut):
+            callback_ran_at.append(time.time())
+            # If the callback fires while the worker is still mid-task,
+            # this list would be populated.  It must remain empty.
+            if not _fut.done():
+                cleanup_ran_before_worker_done.append(True)
+            else:
+                cleanup_ran_after_worker_done.append(True)
+
+        future.add_done_callback(_cleanup)
+
+        # Now wait for the worker to actually finish.
+        future.result(timeout=2.0)
+        pool.shutdown(wait=False)
+
+        # Give the callback a brief moment to fire (it runs on the worker
+        # thread synchronously after the result is set, so it should
+        # already be done — but allow a tiny buffer for slow CI).
+        time.sleep(0.1)
+
+        assert not cleanup_ran_before_worker_done, \
+            "cleanup callback fired while worker was still running"
+        assert cleanup_ran_after_worker_done, \
+            "cleanup callback did not fire after worker exit"
+        # Callback must fire at or after the worker exit timestamp.
+        assert callback_ran_at[0] >= worker_done_at[0]
+
+    def test_callback_close_order_session_then_agent(self):
+        """The deferred callback closes SessionDB first, then agent.close.
+        Mirrors the synchronous-cleanup ordering in run_job's finally.
+        """
+        order = []
+
+        class FakeSessionDB:
+            def end_session(self, sid, reason):
+                order.append(("end_session", sid, reason))
+            def close(self):
+                order.append("session_close")
+
+        class FakeAgentCloseable:
+            def close(self):
+                order.append("agent_close")
+
+        sdb = FakeSessionDB()
+        ag = FakeAgentCloseable()
+
+        def _finish_deferred_cleanup(_fut, _sdb=sdb, _ag=ag,
+                                     _sid="cron_test_123", _jid="jobX"):
+            if _sdb is not None:
+                try:
+                    _sdb.end_session(_sid, "cron_timeout")
+                except Exception:
+                    pass
+                try:
+                    _sdb.close()
+                except Exception:
+                    pass
+            if _ag is not None:
+                try:
+                    _ag.close()
+                except Exception:
+                    pass
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(lambda: time.sleep(0.05) or "done")
+        future.add_done_callback(_finish_deferred_cleanup)
+        future.result(timeout=2.0)
+        pool.shutdown(wait=False)
+        time.sleep(0.05)
+
+        assert order[0][0] == "end_session"
+        assert order[0][2] == "cron_timeout"
+        assert order[1] == "session_close"
+        assert order[2] == "agent_close"
+
+
 class TestSysPathOrdering:
     """Test that sys.path is set before repo-level imports."""
 

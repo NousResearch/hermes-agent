@@ -8663,6 +8663,24 @@ class GatewayRunner:
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
+        # Session recap — what was this session ABOUT? Pure local compute,
+        # no LLM call, no prompt-cache impact. Useful when juggling multiple
+        # gateway sessions and you want a one-glance reminder of where this
+        # one left off. Inspired by Claude Code 2.1.114's /recap.
+        try:
+            from hermes_cli.session_recap import build_recap
+            history = self.session_store.load_transcript(session_entry.session_id)
+            recap = build_recap(
+                history,
+                session_title=title,
+                session_id=session_entry.session_id,
+                platform=source.platform.value if source else None,
+            )
+            if recap:
+                lines.extend(["", recap])
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("build_recap failed in /status: %s", exc)
+
         return "\n".join(lines)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:

@@ -1,4 +1,4 @@
-const CACHE_NAME = "hermes-cockpit-v1";
+const CACHE_NAME = "hermes-cockpit-v4";
 const APP_SHELL = ["/", "/cockpit", "/manifest.webmanifest", "/favicon.ico"];
 
 self.addEventListener("install", (event) => {

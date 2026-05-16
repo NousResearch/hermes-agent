@@ -15,7 +15,7 @@ import {
   VolumeX,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
@@ -54,6 +54,27 @@ const SESSION_KEY = "hermes.cockpit.sessionKey";
 const HANDS_FREE_SECONDS = 8;
 
 const DEFAULT_INSTRUCTIONS = `You are Hermes in Dalton's mobile truck cockpit. Be concise, mobile-friendly, and action-oriented. If Dalton asks you to send texts, emails, spend money, modify customer-facing systems, or take risky actions, draft first and require explicit approval unless a trusted rule already exists. Narrate blockers clearly.`;
+
+function normalizeApiBase(value: string): string {
+  const fallback = typeof window === "undefined" ? "" : window.location.origin;
+  const raw = (value || fallback).trim() || fallback;
+  const stripAppRoute = (path: string) => {
+    const normalized = path.replace(/\/+$/, "");
+    const marker = normalized.search(/\/(cockpit|dashboard|v1)(\/|$)/i);
+    return marker >= 0 ? normalized.slice(0, marker) || "/" : normalized || "/";
+  };
+  try {
+    const url = new URL(raw, fallback || undefined);
+    // Users may save/copy the cockpit page URL or a full /v1 endpoint as the API
+    // base. The frontend appends /v1 itself, so keep only the server origin/base.
+    url.pathname = stripAppRoute(url.pathname);
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return raw.replace(/\/+$/, "").replace(/\/(cockpit|dashboard|v1)(\/.*)?$/i, "");
+  }
+}
 
 function storageValue(key: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -120,10 +141,12 @@ export default function CockpitPage() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pushToTalkActiveRef = useRef(false);
   const handsFreeRef = useRef(false);
   const statusRef = useRef<CockpitStatus>("idle");
 
-  const [apiBase, setApiBase] = useState(() => storageValue(API_BASE_KEY, window.location.origin));
+  const [apiBase, setApiBaseState] = useState(() => normalizeApiBase(storageValue(API_BASE_KEY, window.location.origin)));
+  const setApiBase = useCallback((value: string) => setApiBaseState(normalizeApiBase(value)), []);
   const [apiKey, setApiKey] = useState(() => storageValue(API_KEY_KEY, ""));
   const [sessionKey, setSessionKey] = useState(() => storageValue(SESSION_KEY, generateSessionKey()));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -163,6 +186,7 @@ export default function CockpitPage() {
     utterance.rate = 1.02;
     utterance.pitch = 1;
     window.speechSynthesis.cancel();
+    window.speechSynthesis.resume();
     window.speechSynthesis.speak(utterance);
   }, [voiceReplies]);
 
@@ -228,6 +252,9 @@ export default function CockpitPage() {
       setResponse(output);
       setStreamingText("");
       updateStatus("done", output ? `Done. ${output}` : "Done.");
+      // In walkie/typed mode Dalton still expects the Voice replies toggle to
+      // read the final answer aloud. Hands-free already speaks via updateStatus.
+      if (output && !handsFreeRef.current) speak(output);
       closeEventSource();
       restartHandsFreeLater(1800);
     } else if (kind === "run.failed") {
@@ -240,7 +267,7 @@ export default function CockpitPage() {
       closeEventSource();
       restartHandsFreeLater(1200);
     }
-  }, [closeEventSource, restartHandsFreeLater, updateStatus]);
+  }, [closeEventSource, restartHandsFreeLater, speak, updateStatus]);
 
   const startRun = useCallback(async (message?: string) => {
     const input = (message ?? resolvedInput).trim();
@@ -426,7 +453,7 @@ export default function CockpitPage() {
     }
   }, [handleVoiceCommand, restartHandsFreeLater, startRun, transcribeBlob, updateStatus]);
 
-  async function startRecording(autoSubmit = false) {
+  async function startRecording(autoSubmit = false, maxSeconds = HANDS_FREE_SECONDS) {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("This browser cannot record microphone audio. Try Android Chrome over HTTPS or use typed input.");
       updateStatus("blocked", "Microphone recording is unavailable.");
@@ -464,10 +491,10 @@ export default function CockpitPage() {
       recorder.start(250);
       setIsRecording(true);
       updateStatus("listening", autoSubmit ? "Listening." : "Recording.");
-      if (autoSubmit) {
+      if (autoSubmit && maxSeconds > 0) {
         recordTimerRef.current = setTimeout(() => {
           if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
-        }, HANDS_FREE_SECONDS * 1000);
+        }, maxSeconds * 1000);
       }
     } catch (recordError) {
       stopMediaTracks();
@@ -484,6 +511,22 @@ export default function CockpitPage() {
     }
     if (mediaRecorderRef.current?.state === "recording") mediaRecorderRef.current.stop();
   }, []);
+
+  const startPushToTalk = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (["thinking", "working", "transcribing"].includes(statusRef.current)) return;
+    pushToTalkActiveRef.current = true;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    void startRecording(true, 60);
+  };
+
+  const finishPushToTalk = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (!pushToTalkActiveRef.current) return;
+    pushToTalkActiveRef.current = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    stopRecording();
+  };
 
   const toggleHandsFree = () => {
     const next = !handsFree;
@@ -565,9 +608,16 @@ export default function CockpitPage() {
 
       <section className="grid gap-3 rounded-3xl border border-current/15 bg-black/20 p-4 sm:p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={isRecording ? stopRecording : () => void startRecording(false)} className="min-h-16 flex-1 rounded-2xl text-base sm:flex-none">
+          <Button
+            onPointerDown={startPushToTalk}
+            onPointerUp={finishPushToTalk}
+            onPointerCancel={finishPushToTalk}
+            onContextMenu={(event) => event.preventDefault()}
+            disabled={status === "thinking" || status === "working" || status === "transcribing"}
+            className={cn("min-h-16 flex-1 rounded-2xl text-base select-none touch-none sm:flex-none", isRecording && "border-sky-300/70 bg-sky-400/20")}
+          >
             {isRecording ? <MicOff className="mr-2 h-5 w-5" /> : <Mic className="mr-2 h-5 w-5" />}
-            {isRecording ? "Stop & transcribe" : "Push to talk"}
+            {isRecording ? "Release to send" : "Hold to talk"}
           </Button>
           <Button ghost onClick={toggleHandsFree} className={cn("min-h-16 rounded-2xl", handsFree && "border-emerald-300/60 bg-emerald-400/15")}>
             <Radio className="mr-2 h-5 w-5" />
@@ -596,9 +646,9 @@ export default function CockpitPage() {
         {lastTranscript && <p className="text-xs opacity-60">Last heard: “{lastTranscript}”</p>}
 
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void startRun()} disabled={!resolvedInput || status === "thinking" || status === "working" || status === "transcribing"} className="min-h-12 flex-1 rounded-2xl sm:flex-none">
-            <Send className="mr-2 h-4 w-4" />
-            Send to Hermes
+          <Button onClick={() => void startRun()} disabled={!resolvedInput || status === "thinking" || status === "working" || status === "transcribing"} className="min-h-12 flex-1 rounded-2xl !normal-case !tracking-normal sm:flex-none">
+            <Send className="mr-2 h-4 w-4 shrink-0" />
+            <span className="whitespace-nowrap !normal-case !tracking-normal text-sm sm:text-base">Send<span className="hidden sm:inline"> to Hermes</span></span>
           </Button>
           <Button ghost onClick={stopRun} disabled={!runId && !isRecording} className="min-h-12 rounded-2xl">
             <CircleStop className="mr-2 h-4 w-4" />

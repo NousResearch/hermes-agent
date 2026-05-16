@@ -14792,14 +14792,19 @@ class GatewayRunner:
         repeat_count = [0]  # How many times the same message repeated
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
-        # that implements ``delete_message``). When enabled via
-        # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
-        # from the tool-progress / "Still working..." / status-callback bubbles
-        # are collected here and deleted after the final response lands.
-        # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
+        # that implements ``delete_message``). ``cleanup_progress`` is the
+        # older explicit opt-in for deleting status/interim bubbles after a
+        # successful final response. ``auto_delete_tool_progress`` is the
+        # newer tool-progress-bubble preference and defaults to True, so it
+        # must also enable cleanup tracking. Otherwise Discord tool bubbles
+        # are recorded nowhere and cannot be deleted despite the PR being
+        # present. Failed runs skip cleanup so bubbles remain as breadcrumbs.
+        _auto_delete_tool_progress = bool(
+            resolve_display_setting(user_config, platform_key, "auto_delete_tool_progress", True)
+        )
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
-        )
+        ) or _auto_delete_tool_progress
         _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
@@ -14968,9 +14973,7 @@ class GatewayRunner:
                 return
 
             # Check config: auto_delete_tool_progress (default: True)
-            _auto_delete = bool(
-                resolve_display_setting(user_config, platform_key, "auto_delete_tool_progress", True)
-            )
+            _auto_delete = _auto_delete_tool_progress
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
@@ -14979,6 +14982,16 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _should_delete_progress() -> bool:
+                """Keep failed-run breadcrumbs, but delete transient bubbles after successful runs."""
+                try:
+                    result = result_holder[0] if result_holder else None
+                    if isinstance(result, dict) and result.get("failed"):
+                        return False
+                except Exception:
+                    pass
+                return True
+
             while True:
                 try:
                     if not _run_still_current():
@@ -14986,7 +14999,7 @@ class GatewayRunner:
                         # it — the run completed before we could process a
                         # __reset__ signal from the stream consumer.  Without
                         # this, the progress bubble stays visible on Discord.
-                        if _cleanup_progress and _auto_delete and can_delete and progress_msg_id:
+                        if _cleanup_progress and _auto_delete and can_delete and _should_delete_progress() and progress_msg_id:
                             try:
                                 if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                     _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
@@ -15084,7 +15097,7 @@ class GatewayRunner:
                         # adapter supports it — keeps Discord chats clean.
                         # (The CancelledError handler below handles the interrupt
                         # path; this covers the "agent finished normally" case.)
-                        if _cleanup_progress and _auto_delete and progress_msg_id:
+                        if _cleanup_progress and _auto_delete and _should_delete_progress() and progress_msg_id:
                             try:
                                 if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                     _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
@@ -15195,7 +15208,7 @@ class GatewayRunner:
                                 # can_edit) — Discord supports delete even when
                                 # editing fails.  Nested-gate bug (May 2026);
                                 # delete was buried inside `if can_edit`.
-                                if _cleanup_progress and _auto_delete and can_delete and progress_msg_id:
+                                if _cleanup_progress and _auto_delete and can_delete and _should_delete_progress() and progress_msg_id:
                                     try:
                                         if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                             _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id
@@ -15231,7 +15244,7 @@ class GatewayRunner:
 
                     # Delete the progress bubble after final edit if the
                     # adapter supports it — keeps Discord chats clean
-                    if _cleanup_progress and _auto_delete and progress_msg_id:
+                    if _cleanup_progress and _auto_delete and _should_delete_progress() and progress_msg_id:
                         try:
                             if type(adapter).delete_message is not BasePlatformAdapter.delete_message:
                                 _progress_chat_id = _progress_thread_id if _progress_thread_id else source.chat_id

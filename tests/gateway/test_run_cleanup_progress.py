@@ -174,11 +174,12 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     # gateway actually reads (``_load_gateway_config`` returns user config).
     cfg = {
         "display": {
+            "auto_delete_tool_progress": bool(cleanup_on),
             "platforms": {
                 "telegram": {"cleanup_progress": True},
-            }
+            },
         }
-    } if cleanup_on else {}
+    } if cleanup_on else {"display": {"auto_delete_tool_progress": False}}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
 
     # The progress consumer also reads display.auto_delete_tool_progress from

@@ -17,6 +17,19 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+_INITIAL_DIRECTORY_PATH = DIRECTORY_PATH
+
+
+def _directory_path():
+    """Return the active channel-directory cache path.
+
+    Keep the public ``DIRECTORY_PATH`` override working for tests and callers
+    that monkeypatch it, but otherwise resolve HERMES_HOME at call time so
+    profile switches do not keep using the path captured at import.
+    """
+    if DIRECTORY_PATH != _INITIAL_DIRECTORY_PATH:
+        return DIRECTORY_PATH
+    return get_hermes_home() / "channel_directory.json"
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -61,7 +74,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
 
-    Returns the directory dict and writes it to DIRECTORY_PATH.
+    Returns the directory dict and writes it under the active HERMES_HOME.
     """
     from gateway.config import Platform
 
@@ -102,7 +115,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        atomic_json_write(DIRECTORY_PATH, directory)
+        atomic_json_write(_directory_path(), directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
@@ -246,10 +259,11 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
-    if not DIRECTORY_PATH.exists():
+    directory_path = _directory_path()
+    if not directory_path.exists():
         return {"updated_at": None, "platforms": {}}
     try:
-        with open(DIRECTORY_PATH, encoding="utf-8") as f:
+        with open(directory_path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {"updated_at": None, "platforms": {}}

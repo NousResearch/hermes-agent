@@ -49,6 +49,26 @@ class TestLoadDirectory:
             result = load_directory()
         assert result["updated_at"] is None
 
+    def test_uses_current_hermes_home_after_import(self, tmp_path, monkeypatch):
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+        (first_home / "channel_directory.json").write_text(json.dumps({
+            "updated_at": "2026-01-01T00:00:00",
+            "platforms": {"telegram": [{"id": "old", "name": "Old", "type": "dm"}]},
+        }))
+        (second_home / "channel_directory.json").write_text(json.dumps({
+            "updated_at": "2026-01-01T00:00:00",
+            "platforms": {"telegram": [{"id": "new", "name": "New", "type": "dm"}]},
+        }))
+
+        monkeypatch.setenv("HERMES_HOME", str(first_home))
+        assert load_directory()["platforms"]["telegram"][0]["id"] == "old"
+
+        monkeypatch.setenv("HERMES_HOME", str(second_home))
+        assert load_directory()["platforms"]["telegram"][0]["id"] == "new"
+
 
 class TestBuildChannelDirectoryWrites:
     def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):

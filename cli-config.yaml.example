@@ -855,6 +855,23 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Tool Loop Detection
+# =============================================================================
+# Detects when the agent enters a degenerate tool-calling loop (same tool with
+# identical arguments, identical results, or ping-pong alternation) and prunes
+# repeated call/response pairs from context to break token-level anchoring.
+#
+# Three detectors run after every tool call:
+#   generic_repeat   — same (tool, args) N consecutive times
+#   poll_no_progress — same tool, identical results N consecutive times
+#   ping_pong        — alternating between exactly 2 (tool, args) states
+#
+tool_loop_detection:
+  warning_threshold: 3      # Log a warning after this many consecutive repeats (default: 3)
+  critical_threshold: 5     # Prune context after this many consecutive repeats (default: 5)
+  window_size: 30           # Sliding window of recent tool calls to track (default: 30)
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

@@ -1856,6 +1856,7 @@ class AIAgent:
         self.valid_tool_names = set()
         if self.tools:
             self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
+            self._tool_loop_detector._valid_tool_names = self.valid_tool_names
             tool_names = sorted(self.valid_tool_names)
             if not self.quiet_mode:
                 print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
@@ -2092,6 +2093,15 @@ class AIAgent:
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
         except Exception:
             pass
+
+        _loop_cfg = _agent_cfg.get("tool_loop_detection", {})
+        if isinstance(_loop_cfg, dict) and _loop_cfg:
+            self._tool_loop_detector.warning_threshold = int(_loop_cfg.get("warning_threshold", 3))
+            self._tool_loop_detector.critical_threshold = int(_loop_cfg.get("critical_threshold", 5))
+            self._tool_loop_detector.window_size = int(_loop_cfg.get("window_size", 30))
+            self._tool_loop_detector._history = type(self._tool_loop_detector._history)(
+                maxlen=self._tool_loop_detector.window_size
+            )
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -6502,6 +6512,60 @@ class AIAgent:
             else:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
+
+    def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> None:
+        """Check for tool call loops after tool execution. Prune context on critical."""
+        if not assistant_message.tool_calls:
+            return
+
+        reasoning = self._extract_reasoning(assistant_message)
+
+        for tc in assistant_message.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+
+            last_tool_result = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "tool" and msg.get("tool_call_id") == (getattr(tc, "id", None) or getattr(tc, "call_id", None)):
+                    last_tool_result = msg.get("content", "")
+                    break
+
+            verdict = self._tool_loop_detector.record(
+                tool_name=tc.function.name,
+                args=args,
+                result=last_tool_result,
+                reasoning=reasoning,
+            )
+
+            if verdict.severity == "critical":
+                from agent.tool_loop_pruner import prune_tool_loop
+                pruned = prune_tool_loop(
+                    messages,
+                    tool_name=tc.function.name,
+                    streak=verdict.streak,
+                    intended_tool=verdict.intended_tool,
+                    detector=verdict.detector,
+                )
+                messages.clear()
+                messages.extend(pruned)
+                if not self.quiet_mode:
+                    self._safe_print(
+                        f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): "
+                        f"`{tc.function.name}` called {verdict.streak} times. "
+                        f"Pruned {verdict.streak - 1} repeated attempts from context."
+                    )
+                if verdict.intended_tool and not self.quiet_mode:
+                    self._safe_print(
+                        f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — "
+                        f"guidance injected."
+                    )
+            elif verdict.severity == "warning" and not self.quiet_mode:
+                self._safe_print(
+                    f"\n{self.log_prefix}⚠️  Possible loop: `{tc.function.name}` called "
+                    f"{verdict.streak} consecutive times ({verdict.detector})"
+                )
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
@@ -12144,6 +12208,8 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
+        if hasattr(self, '_tool_loop_detector'):
+            self._tool_loop_detector.reset()
 
         # Log conversation turn start for debugging/observability
         _preview_text = _summarize_user_message_for_log(user_message)

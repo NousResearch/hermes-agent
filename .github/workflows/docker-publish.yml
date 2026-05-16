@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets its
 # own SHA-tagged image; :main and :latest are guarded separately by the
@@ -37,7 +38,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  IMAGE_NAME: ghcr.io/adshrc/hermes-agent
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -80,12 +81,13 @@ jobs:
         with:
           image: ${{ env.IMAGE_NAME }}:test
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Push amd64 by digest only (no tag).  The merge job assembles the
       # tagged manifest list.  `push-by-digest=true` is docker's recommended
@@ -168,12 +170,13 @@ jobs:
         with:
           image: ${{ env.IMAGE_NAME }}:test
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push arm64 by digest
         id: push
@@ -231,11 +234,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Compute the tag for this run.  Main pushes use sha-<sha> (so every
       # commit gets its own immutable tag); releases use the release tag name.
@@ -331,11 +335,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Read the git revision label off the current :main manifest, then
       # use `git merge-base --is-ancestor` to check whether our commit is a
@@ -346,7 +351,7 @@ jobs:
         id: main_check
         run: |
           set -euo pipefail
-          image=nousresearch/hermes-agent
+          image=ghcr.io/adshrc/hermes-agent
 
           # Pull the JSON for the linux/amd64 sub-manifest's config and extract
           # the OCI revision label with jq — Go template field access can't
@@ -414,7 +419,7 @@ jobs:
         if: steps.main_check.outputs.push_main == 'true'
         run: |
           set -euo pipefail
-          image=nousresearch/hermes-agent
+          image=ghcr.io/adshrc/hermes-agent
           docker buildx imagetools create \
             --tag "${image}:main" \
             "${image}:sha-${GITHUB_SHA}"
@@ -452,17 +457,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Decide whether to move :latest
         id: latest_check
         run: |
           set -euo pipefail
-          image=nousresearch/hermes-agent
+          image=ghcr.io/adshrc/hermes-agent
 
           image_json=$(
             docker buildx imagetools inspect "${image}:latest" \
@@ -528,7 +534,7 @@ jobs:
           RELEASE_TAG: ${{ needs.merge.outputs.release_tag }}
         run: |
           set -euo pipefail
-          image=nousresearch/hermes-agent
+          image=ghcr.io/adshrc/hermes-agent
           docker buildx imagetools create \
             --tag "${image}:latest" \
             "${image}:${RELEASE_TAG}"

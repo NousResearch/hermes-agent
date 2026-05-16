@@ -55,6 +55,9 @@ RUN npm install --prefer-offline --no-audit && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
+# Pre-cache MCP server packages so they don't time out downloading at runtime
+RUN npm install -g @modelcontextprotocol/server-github
+
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
 # download + native-extension compile layer is cached unless those inputs

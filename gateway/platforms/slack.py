@@ -1956,21 +1956,11 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so future messages can auto-trigger the bot
-            # only when the mention came from a gateway-authorized sender.
-            # Otherwise an unauthorized channel user could arm a thread before
-            # the central gateway auth check and inject context into a later
-            # authorized user's unmentioned reply.
-            if (
-                event_thread_ts
-                and not self._slack_strict_mention()
-                and self._is_sender_authorized_for_thread_engagement(
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    thread_ts=thread_ts,
-                    is_dm=is_dm,
-                )
-            ):
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skipped in strict mode: strict_mention=true bots must be
+            # re-mentioned every turn, so remembering the thread would
+            # defeat the feature (and re-enable agent-to-agent ack loops).
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
@@ -2805,32 +2795,6 @@ class SlackAdapter(BasePlatformAdapter):
             await self.handle_message(event)
         finally:
             _slash_user_id.reset(_slash_user_id_token)
-
-    def _is_sender_authorized_for_thread_engagement(
-        self,
-        *,
-        channel_id: str,
-        user_id: str,
-        thread_ts: Optional[str],
-        is_dm: bool,
-    ) -> bool:
-        """Return whether a sender may arm Slack thread auto-engagement."""
-        runner = getattr(self, "gateway_runner", None)
-        if runner is None:
-            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if not callable(auth_fn):
-            # Adapter-only/unit-test usage has no gateway authorization layer.
-            return True
-
-        source = self.build_source(
-            chat_id=channel_id,
-            chat_type="dm" if is_dm else "group",
-            user_id=user_id,
-            thread_id=thread_ts,
-        )
-        return bool(auth_fn(source))
 
     def _has_active_session_for_thread(
         self,

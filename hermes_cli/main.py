@@ -67,7 +67,7 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Optional
 
 
@@ -6754,71 +6754,6 @@ def _is_android_python() -> bool:
     return sys.platform == "android"
 
 
-def _safe_tar_member_parts(member_name: str) -> list[str]:
-    """Return safe relative path parts for a tar member."""
-    normalized_name = member_name.replace("\\", "/")
-    posix_path = PurePosixPath(normalized_name)
-    windows_path = PureWindowsPath(member_name)
-
-    if (
-        not normalized_name
-        or posix_path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-    ):
-        raise ValueError(f"Unsafe archive member path: {member_name}")
-
-    parts = [part for part in posix_path.parts if part not in {"", "."}]
-    if not parts or any(part == ".." for part in parts):
-        raise ValueError(f"Unsafe archive member path: {member_name}")
-    return parts
-
-
-def _safe_extract_tar_archive(archive: Path, destination: Path) -> None:
-    """Extract a tar archive without allowing path escapes or links."""
-    import tarfile
-
-    with tarfile.open(archive, "r:*") as tar:
-        for member in tar.getmembers():
-            target = destination.joinpath(*_safe_tar_member_parts(member.name))
-
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-
-            if not member.isfile():
-                raise ValueError(f"Unsupported archive member type: {member.name}")
-
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source = tar.extractfile(member)
-            if source is None:
-                raise ValueError(f"Cannot read archive member: {member.name}")
-
-            with source, open(target, "wb") as dst:
-                shutil.copyfileobj(source, dst)
-
-            try:
-                os.chmod(target, member.mode & 0o777)
-            except OSError:
-                pass
-
-
-def _verify_file_sha256(path: Path, expected_hex: str) -> None:
-    """Raise if a file's SHA-256 digest does not match the expected value."""
-    import hashlib
-
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-
-    actual_hex = digest.hexdigest()
-    if actual_hex != expected_hex:
-        raise RuntimeError(
-            f"Downloaded archive hash mismatch: expected {expected_hex}, got {actual_hex}"
-        )
-
-
 def _install_psutil_android_compat(
     install_cmd_prefix: list[str],
     *,
@@ -6840,6 +6775,7 @@ def _install_psutil_android_compat(
     contains the same logic for ``scripts/install.sh`` (fresh installs).
     Both copies should be removed together.
     """
+    import tarfile
     import tempfile
     import urllib.request
 
@@ -6848,14 +6784,13 @@ def _install_psutil_android_compat(
         "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
         "psutil-7.2.2.tar.gz"
     )
-    psutil_sha256 = "0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(psutil_url, archive)
-        _verify_file_sha256(archive, psutil_sha256)
-        _safe_extract_tar_archive(archive, tmp_path)
+        with tarfile.open(archive) as tar:
+            tar.extractall(tmp_path)
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")

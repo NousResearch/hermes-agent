@@ -87,7 +87,6 @@ def atomic_json_write(
     data: Any,
     *,
     indent: int = 2,
-    preserve_symlink: bool = True,
     **dump_kwargs: Any,
 ) -> None:
     """Write JSON data to a file atomically.
@@ -100,26 +99,13 @@ def atomic_json_write(
         path: Target file path (will be created or overwritten).
         data: JSON-serializable data to write.
         indent: JSON indentation (default 2).
-        preserve_symlink: When True, update the real symlink target to keep
-            managed profile symlinks attached. When False, replace the path
-            itself so marker writes in user-writable directories cannot follow
-            attacker-controlled symlinks.
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if preserve_symlink:
-        original_mode = _preserve_file_mode(path)
-    else:
-        try:
-            stat_result = path.lstat()
-        except OSError:
-            original_mode = None
-        else:
-            original_mode = (
-                None if stat.S_ISLNK(stat_result.st_mode) else stat.S_IMODE(stat_result.st_mode)
-            )
+
+    original_mode = _preserve_file_mode(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -137,14 +123,8 @@ def atomic_json_write(
             )
             f.flush()
             os.fsync(f.fileno())
-        if preserve_symlink:
-            # Preserve symlinks — swap in-place on the real file (GitHub #16743).
-            real_path = atomic_replace(tmp_path, path)
-        else:
-            # Marker files may be written by a privileged CLI into a service
-            # user's HERMES_HOME; replace any symlink instead of following it.
-            os.replace(tmp_path, path)
-            real_path = str(path)
+        # Preserve symlinks — swap in-place on the real file (GitHub #16743).
+        real_path = atomic_replace(tmp_path, path)
         _restore_file_mode(real_path, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
@@ -163,7 +143,6 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
-    preserve_symlink: bool = True,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -178,25 +157,11 @@ def atomic_yaml_write(
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
-        preserve_symlink: When True, update the real symlink target to keep
-            managed profile symlinks attached. When False, replace the path
-            itself so privileged writes in user-writable directories cannot
-            follow attacker-controlled symlinks.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if preserve_symlink:
-        original_mode = _preserve_file_mode(path)
-    else:
-        try:
-            stat_result = path.lstat()
-        except OSError:
-            original_mode = None
-        else:
-            original_mode = (
-                None if stat.S_ISLNK(stat_result.st_mode) else stat.S_IMODE(stat_result.st_mode)
-            )
+    original_mode = _preserve_file_mode(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -210,13 +175,8 @@ def atomic_yaml_write(
                 f.write(extra_content)
             f.flush()
             os.fsync(f.fileno())
-        if preserve_symlink:
-            # Preserve symlinks — swap in-place on the real file (GitHub #16743).
-            real_path = atomic_replace(tmp_path, path)
-        else:
-            # Replace symlink path itself when caller explicitly opts out.
-            os.replace(tmp_path, path)
-            real_path = str(path)
+        # Preserve symlinks — swap in-place on the real file (GitHub #16743).
+        real_path = atomic_replace(tmp_path, path)
         _restore_file_mode(real_path, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level

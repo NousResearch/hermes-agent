@@ -1338,9 +1338,11 @@ async def web_extract_tool(
         Exception: If extraction fails or API key is not set
     """
     # Block URLs containing embedded secrets (exfiltration prevention).
-    from agent.redact import url_contains_secret
+    # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
+    from agent.redact import _PREFIX_RE
+    from urllib.parse import unquote
     for _url in urls:
-        if url_contains_secret(_url):
+        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "

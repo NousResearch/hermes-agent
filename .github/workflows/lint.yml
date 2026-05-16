@@ -46,7 +46,7 @@ jobs:
 
       - name: Install ruff + ty
         run: |
-          uv tool install ruff==0.15.10
+          uv tool install ruff
           uv tool install ty
 
       - name: Determine base ref
@@ -173,7 +173,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8
 
       - name: Install ruff
-        run: uv tool install ruff==0.15.10
+        run: uv tool install ruff
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,

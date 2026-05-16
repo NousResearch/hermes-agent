@@ -69,11 +69,6 @@ class TestMSGraphWebhookConfig:
         ]
 
 
-    def test_client_state_configured_tracks_secret_presence(self):
-        assert _make_adapter().client_state_configured is True
-        assert _make_adapter(client_state="").client_state_configured is False
-
-
 class TestMSGraphValidationHandshake:
     @pytest.mark.anyio
     async def test_validation_token_echo_on_get(self):

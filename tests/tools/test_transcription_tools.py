@@ -395,7 +395,7 @@ class TestTranscribeLocalCommand:
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
             # The transcription command might be passed as a string or list
-            if isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "whisper":
+            if isinstance(cmd, list) and any("whisper" in arg for arg in cmd):
                 (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             elif isinstance(cmd, str) and "whisper" in cmd:

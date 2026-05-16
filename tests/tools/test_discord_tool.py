@@ -1154,16 +1154,16 @@ class TestRegistrySessionAuthorization:
         tokens = None
         try:
             from gateway import session_context
+        except ImportError:
+            return tokens
 
-            tokens = session_context.set_session_vars(
-                platform=values["HERMES_SESSION_PLATFORM"],
-                chat_id=values["HERMES_SESSION_CHAT_ID"],
-                user_id=values["HERMES_SESSION_USER_ID"],
-                guild_id=values["HERMES_SESSION_GUILD_ID"],
-                parent_chat_id=values["HERMES_SESSION_PARENT_CHAT_ID"],
-            )
-        except Exception:
-            pass
+        tokens = session_context.set_session_vars(
+            platform=values["HERMES_SESSION_PLATFORM"],
+            chat_id=values["HERMES_SESSION_CHAT_ID"],
+            user_id=values["HERMES_SESSION_USER_ID"],
+            guild_id=values["HERMES_SESSION_GUILD_ID"],
+            parent_chat_id=values["HERMES_SESSION_PARENT_CHAT_ID"],
+        )
         return tokens
 
     def _clear_context(self, tokens):
@@ -1171,10 +1171,10 @@ class TestRegistrySessionAuthorization:
             return
         try:
             from gateway import session_context
+        except ImportError:
+            return
 
-            session_context.clear_session_vars(tokens)
-        except Exception:
-            pass
+        session_context.clear_session_vars(tokens)
 
     @patch("tools.discord_tool._discord_request")
     def test_fetch_messages_rejects_channel_outside_current_context(self, mock_req, monkeypatch):

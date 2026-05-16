@@ -1690,6 +1690,178 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+_SUPERSEDING_REVIEW_REWIRED_EVENT = "superseding_review_rewired"
+_NEEDS_REVISION_FIX_EVENT = "needs_revision_fix_task_ensured"
+
+
+def rewire_superseding_review_parent(
+    conn: sqlite3.Connection,
+    *,
+    source_task: str,
+    old_review_task: str,
+    new_review_task: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Replace a superseded review parent edge with the superseding review.
+
+    This is deliberately explicit and auditable: no reviewer completion or
+    dispatcher pass calls it automatically. The helper only rewires the
+    dependency edge; it does not complete, unblock, or otherwise finalize the
+    source task.
+    """
+    source_task = str(source_task).strip()
+    old_review_task = str(old_review_task).strip()
+    new_review_task = str(new_review_task).strip()
+    reason = str(reason or "").strip()
+    if not source_task or not old_review_task or not new_review_task:
+        raise ValueError("source_task, old_review_task, and new_review_task are required")
+    if old_review_task == new_review_task:
+        raise ValueError("old_review_task and new_review_task must differ")
+    if source_task in {old_review_task, new_review_task}:
+        raise ValueError("review task cannot be the source task")
+    missing = _find_missing_parents(conn, [source_task, old_review_task, new_review_task])
+    if missing:
+        raise ValueError(f"unknown task(s): {', '.join(missing)}")
+    if _would_cycle(conn, new_review_task, source_task):
+        raise ValueError(
+            f"linking {new_review_task} -> {source_task} would create a cycle"
+        )
+
+    with write_txn(conn):
+        old_cur = conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (old_review_task, source_task),
+        )
+        old_parent_removed = old_cur.rowcount > 0
+        already_new = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ? LIMIT 1",
+            (new_review_task, source_task),
+        ).fetchone()
+        conn.execute(
+            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (new_review_task, source_task),
+        )
+        new_parent_added = already_new is None
+        parent_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (new_review_task,)
+        ).fetchone()["status"]
+        if parent_status != "done":
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                (source_task,),
+            )
+        payload = {
+            "source_task": source_task,
+            "old_review_task": old_review_task,
+            "new_review_task": new_review_task,
+            "old_parent_removed": old_parent_removed,
+            "new_parent_added": new_parent_added,
+            "reason": reason,
+        }
+        _append_event(conn, source_task, _SUPERSEDING_REVIEW_REWIRED_EVENT, payload)
+    recompute_ready(conn)
+    return payload
+
+
+def _needs_revision_fix_body(
+    source: Task,
+    review_task: str,
+    reviewer_metadata: dict[str, Any],
+    reason: str,
+) -> str:
+    findings = reviewer_metadata.get("blocking_findings") or []
+    required = reviewer_metadata.get("required_verification") or []
+    lines = [
+        f"# Fix task for NEEDS_REVISION on {source.id}",
+        "",
+        "revision_chain:",
+        f"  source_task: {source.id}",
+        f"  review_task: {review_task}",
+        "  verdict: NEEDS_REVISION",
+        "  finalization_gate: explicit Coordinator/Admin finalization required",
+        "",
+        "Instruction:",
+        "- Fix only the reviewer findings below.",
+        "- After completion, request/create a new Reviewer task that supersedes the old review.",
+        "- The original source remains blocked until an explicit finalization gate rewires/supersedes and finalizes it.",
+        f"- Reason: {reason}",
+        "",
+        "blocking_findings:",
+    ]
+    lines.extend([f"  - {item}" for item in findings] or ["  - none provided"])
+    lines.append("required_verification:")
+    lines.extend([f"  - {item}" for item in required] or ["  - none provided"])
+    lines.extend([
+        "",
+        "reviewer_metadata_json:",
+        json.dumps(reviewer_metadata, indent=2, sort_keys=True, ensure_ascii=False),
+    ])
+    return "\n".join(lines)
+
+
+def ensure_needs_revision_fix_task(
+    conn: sqlite3.Connection,
+    *,
+    source_task: str,
+    review_task: str,
+    reviewer_metadata: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    """Create or return the deterministic fix task for a NEEDS_REVISION verdict.
+
+    Idempotency is keyed by source+review. The source task is not unblocked or
+    completed; the returned fix task is an independent follow-up that can later
+    produce a new review and explicit superseding/finalization gate.
+    """
+    source_task = str(source_task).strip()
+    review_task = str(review_task).strip()
+    reason = str(reason or "").strip()
+    if not isinstance(reviewer_metadata, dict):
+        raise ValueError("reviewer_metadata must be an object")
+    verdict = str(reviewer_metadata.get("verdict") or "").strip().upper()
+    if verdict != "NEEDS_REVISION":
+        raise ValueError("reviewer_metadata.verdict must be NEEDS_REVISION")
+    missing = _find_missing_parents(conn, [source_task, review_task])
+    if missing:
+        raise ValueError(f"unknown task(s): {', '.join(missing)}")
+    source = get_task(conn, source_task)
+    if source is None:
+        raise ValueError(f"unknown task(s): {source_task}")
+
+    key = f"needs-revision-fix:{source_task}:{review_task}"
+    existed = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (key,),
+    ).fetchone()
+    fix_task = create_task(
+        conn,
+        title=f"Fix NEEDS_REVISION for {source_task}: {source.title}",
+        body=_needs_revision_fix_body(source, review_task, reviewer_metadata, reason),
+        assignee=source.assignee,
+        created_by="kanban-review-chain",
+        workspace_kind=source.workspace_kind,
+        workspace_path=source.workspace_path,
+        priority=source.priority,
+        idempotency_key=key,
+    )
+    payload = {
+        "source_task": source_task,
+        "review_task": review_task,
+        "fix_task": fix_task,
+        "reason": reason,
+    }
+    if existed is None:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                source_task,
+                _NEEDS_REVISION_FIX_EVENT,
+                {**payload, "created": True},
+            )
+    return payload
+
+
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
     rows = conn.execute(

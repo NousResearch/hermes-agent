@@ -2482,6 +2482,38 @@ class TestBuildCallKwargsToolDedup:
         assert "tools" not in kwargs
 
 
+class TestBuildCallKwargsZaiVision:
+    """ZAI vision endpoints must not receive max_tokens."""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://open.bigmodel.cn/api/paas/v4",
+            "https://api.z.ai/api/paas/v4",
+        ],
+    )
+    def test_custom_zai_vision_skips_max_tokens(self, base_url):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="glm-4v-flash",
+            messages=[{"role": "user", "content": "analyze image"}],
+            max_tokens=2000,
+            base_url=base_url,
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_custom_non_zai_endpoint_keeps_max_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="glm-4v-flash",
+            messages=[{"role": "user", "content": "analyze image"}],
+            max_tokens=2000,
+            base_url="https://example.internal/v1",
+        )
+        assert kwargs.get("max_tokens") == 2000
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""

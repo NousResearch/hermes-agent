@@ -4149,14 +4149,21 @@ def _build_call_kwargs(
         # ZAI vision models (glm-4v-flash, glm-4v-plus, etc.) reject max_tokens with
         # error code 1210 ("API 调用参数有误") on multimodal requests — skip it.
         _model_lower = (model or "").lower()
+        custom_base = base_url or _current_custom_base_url()
+        _is_zai_custom_endpoint = (
+            provider == "custom"
+            and (
+                base_url_host_matches(custom_base, "bigmodel.cn")
+                or base_url_host_matches(custom_base, "z.ai")
+            )
+        )
         _skip_max_tokens = (
-            provider == "zai"
+            (provider == "zai" or _is_zai_custom_endpoint)
             and ("4v" in _model_lower or "5v" in _model_lower or "-v" in _model_lower)
         )
         if _skip_max_tokens:
             pass  # ZAI vision models do not accept max_tokens
         elif provider == "custom":
-            custom_base = base_url or _current_custom_base_url()
             if base_url_hostname(custom_base) == "api.openai.com":
                 kwargs["max_completion_tokens"] = max_tokens
             else:
@@ -4403,6 +4410,8 @@ def call_llm(
         ):
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
+            if _is_zai_param_error:
+                kwargs.pop("temperature", None)
             try:
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
@@ -4754,6 +4763,8 @@ async def async_call_llm(
         ):
             kwargs.pop("max_tokens", None)
             kwargs.pop("max_completion_tokens", None)
+            if _is_zai_param_error:
+                kwargs.pop("temperature", None)
             try:
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)

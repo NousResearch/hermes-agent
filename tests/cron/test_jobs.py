@@ -65,6 +65,11 @@ class TestParseDuration:
         with pytest.raises(ValueError):
             parse_duration("m30")
 
+    def test_zero_duration_raises(self):
+        for value in ("0m", "0h", "0d", "000minutes"):
+            with pytest.raises(ValueError, match="at least 1 minute"):
+                parse_duration(value)
+
 
 # =========================================================================
 # parse_schedule

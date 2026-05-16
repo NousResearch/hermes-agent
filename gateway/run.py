@@ -13668,36 +13668,39 @@ class GatewayRunner:
                         "user_name": user_name,
                     })
                     if not source:
+                        # Source resolution failed (missing routing metadata).
+                        # Fall through to the text-only notification path below
+                        # so the user at least gets a plain completion message
+                        # instead of losing the event entirely.
                         logger.warning(
-                            "Dropping completion notification with no routing metadata for process %s",
+                            "No routing metadata for process %s — falling back to text notification",
                             session_id,
                         )
+                    else:
+                        adapter = None
+                        for p, a in self.adapters.items():
+                            if p == source.platform:
+                                adapter = a
+                                break
+                        if adapter and source.chat_id:
+                            try:
+                                synth_event = MessageEvent(
+                                    text=synth_text,
+                                    message_type=MessageType.TEXT,
+                                    source=source,
+                                    internal=True,
+                                )
+                                logger.info(
+                                    "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                    session_id,
+                                    session_key,
+                                    source.chat_id,
+                                    source.thread_id,
+                                )
+                                await adapter.handle_message(synth_event)
+                            except Exception as e:
+                                logger.error("Agent notify injection error: %s", e)
                         break
-
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
-                            break
-                    if adapter and source.chat_id:
-                        try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                            )
-                            logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
-                                session_id,
-                                session_key,
-                                source.chat_id,
-                                source.thread_id,
-                            )
-                            await adapter.handle_message(synth_event)
-                        except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
-                    break
 
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode

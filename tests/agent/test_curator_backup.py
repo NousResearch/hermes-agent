@@ -69,9 +69,28 @@ def test_snapshot_excludes_backups_dir_itself(backup_env):
     assert snap2 is not None
     with tarfile.open(snap2 / "skills.tar.gz") as tf:
         names = tf.getnames()
-    assert not any(n.startswith(".curator_backups") for n in names), (
-        "second snapshot must not contain the first snapshot recursively"
-    )
+    assert not any(n.startswith(".curator_backups") for n in names)
+
+
+def test_snapshot_skips_symlink_members(backup_env):
+    """Snapshots should not create link members that rollback refuses to extract."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    real_skill = _write_skill(skills, "real")
+    linked_skill = skills / "linked-skill"
+    try:
+        linked_skill.symlink_to(real_skill, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+    snap = cb.snapshot_skills(reason="symlink-test")
+    assert snap is not None
+    with tarfile.open(snap / "skills.tar.gz") as tf:
+        members = tf.getmembers()
+
+    assert all(not (m.issym() or m.islnk()) for m in members)
+    names = [m.name for m in members]
+    assert not any(n == "linked-skill" or n.startswith("linked-skill/") for n in names)
 
 
 def test_snapshot_excludes_hub_dir(backup_env):
@@ -257,6 +276,28 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     ok, msg, _ = cb.rollback()
     assert not ok
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
+def test_rollback_rejects_tarball_link_member(backup_env):
+    """Tarballs with symlink/hardlink members can target paths outside skills."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        link = tarfile.TarInfo("alpha/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../outside"
+        tf.addfile(link)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "symlink" in msg.lower() or "hardlink" in msg.lower() or "refus" in msg.lower()
 
 
 # ---------------------------------------------------------------------------

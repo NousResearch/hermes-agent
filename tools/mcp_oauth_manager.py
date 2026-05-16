@@ -74,6 +74,7 @@ class _ProviderEntry:
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
+    pending_401_tasks: set["asyncio.Task[None]"] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +571,15 @@ class MCPOAuthManager:
                     finally:
                         entry.pending_401.pop(key, None)
 
-                asyncio.create_task(_do_handle())
+                # Track the task to prevent garbage collection mid-flight and
+                # log any unexpected errors. The await on `pending` below keeps
+                # the caller blocked until _do_handle resolves it, but holding a
+                # strong reference is a belt-and-suspenders guard against asyncio
+                # cancelling a "fire-and-forget" task whose only reference is the
+                # event loop's internal weak set.
+                _task = asyncio.create_task(_do_handle())
+                entry.pending_401_tasks.add(_task)
+                _task.add_done_callback(entry.pending_401_tasks.discard)
 
         try:
             return await pending

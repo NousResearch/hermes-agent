@@ -176,9 +176,17 @@ def parse_duration(s: str) -> int:
     
     value = int(match.group(1))
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
-    return value * multipliers[unit]
+    total_minutes = value * multipliers[unit]
+    # Reject zero-length intervals: an "every 0m" schedule would set
+    # next_run_at = now on every tick, producing an unbounded spin loop
+    # in the scheduler. Treat it as malformed at parse time.
+    if total_minutes <= 0:
+        raise ValueError(
+            f"Duration must be at least 1 minute (got '{s}', resolves to {total_minutes}m)"
+        )
+    return total_minutes
 
 
 def parse_schedule(schedule: str) -> Dict[str, Any]:

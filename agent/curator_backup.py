@@ -67,6 +67,19 @@ _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 
+def _snapshot_tar_filter(member: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+    """Skip link entries so snapshots remain safe to restore.
+
+    Rollback rejects symlink and hardlink members because their targets can
+    escape the extraction directory. Avoid producing those members ourselves
+    when a user has symlinks under ``skills/``.
+    """
+    if member.issym() or member.islnk():
+        logger.warning("Skipping link in curator snapshot: %s", member.name)
+        return None
+    return member
+
+
 def _backups_dir() -> Path:
     return get_hermes_home() / "skills" / ".curator_backups"
 
@@ -256,7 +269,12 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
                     continue
                 # arcname: store paths relative to skills/ so extraction
                 # drops cleanly back into the skills dir.
-                tf.add(str(entry), arcname=entry.name, recursive=True)
+                tf.add(
+                    str(entry),
+                    arcname=entry.name,
+                    recursive=True,
+                    filter=_snapshot_tar_filter,
+                )
         # Capture cron/jobs.json alongside the tarball. Never fails the
         # snapshot — the skills side is the core guarantee; cron is
         # additive. We still record in the manifest whether it was
@@ -602,12 +620,18 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         with tarfile.open(archive, "r:gz") as tf:
             # Python 3.12+ supports filter='data' for safer extraction.
             # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
+            # still reject absolute paths, .. components, and symlinks
+            # defensively. Symlinks/hard-links in the archive can otherwise
+            # follow out of the extract dir and clobber arbitrary files.
             for member in tf.getmembers():
                 name = member.name
                 if name.startswith("/") or ".." in Path(name).parts:
                     raise tarfile.TarError(
                         f"refusing to extract unsafe path: {name!r}"
+                    )
+                if member.issym() or member.islnk():
+                    raise tarfile.TarError(
+                        f"refusing to extract symlink/hardlink member: {name!r}"
                     )
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]

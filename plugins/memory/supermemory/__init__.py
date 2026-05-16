@@ -633,7 +633,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if self._write_thread and self._write_thread.is_alive():
             self._write_thread.join(timeout=2.0)
         self._write_thread = None
-        self._write_thread = threading.Thread(target=_run, daemon=False, name="supermemory-memory-write")
+        self._write_thread = threading.Thread(target=_run, daemon=True, name="supermemory-memory-write")
         self._write_thread.start()
 
     def shutdown(self) -> None:

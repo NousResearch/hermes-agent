@@ -32,6 +32,9 @@ class _FakeRegistry:
             return self._sessions.pop(0)
         return None
 
+    def is_completion_consumed(self, session_id):
+        return False
+
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     """Create a GatewayRunner with a fake config for the given mode."""
@@ -243,6 +246,42 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_missing_source_falls_back_to_text_notification(
+    monkeypatch, tmp_path
+):
+    """notify_on_complete should still send text if synthetic routing is unavailable."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="python task.py",
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    monkeypatch.setattr(runner, "_build_process_event_source", lambda _evt: None)
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    await runner._run_process_watcher(watcher)
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    sent_message = adapter.send.await_args.args[1]
+    assert "finished with exit code 0" in sent_message
 
 
 @pytest.mark.asyncio

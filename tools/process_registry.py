@@ -1337,9 +1337,23 @@ class ProcessRegistry:
             entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
         except Exception:
             return 0
+        if not isinstance(entries, list):
+            # Corrupted checkpoint (null, dict, scalar) — refuse to iterate so
+            # gateway startup is not derailed. The bad file will be rewritten
+            # the next time _write_checkpoint runs.
+            logger.warning(
+                "Checkpoint file is not a JSON list (type=%s); skipping recovery",
+                type(entries).__name__,
+            )
+            return 0
 
         recovered = 0
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            session_id = entry.get("session_id")
+            if not session_id:
+                continue
             pid = entry.get("pid")
             if not pid:
                 continue
@@ -1362,7 +1376,7 @@ class ProcessRegistry:
 
             if alive:
                 session = ProcessSession(
-                    id=entry["session_id"],
+                    id=session_id,
                     command=entry.get("command", "unknown"),
                     task_id=entry.get("task_id", ""),
                     session_key=entry.get("session_key", ""),

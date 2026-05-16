@@ -639,6 +639,23 @@ class TestCheckpoint:
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
             assert registry.recover_from_checkpoint() == 0
 
+    def test_recover_ignores_non_list_checkpoint(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps({"session_id": "proc_not_a_list"}))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 0
+
+    def test_recover_skips_malformed_entries(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([
+            None,
+            "not-a-dict",
+            {"pid": os.getpid(), "command": "missing session id"},
+        ]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 0
+            assert registry.pending_watchers == []
+
     def test_recover_dead_pid(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
         checkpoint.write_text(json.dumps([{

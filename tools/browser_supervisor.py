@@ -317,6 +317,38 @@ class CDPSupervisor:
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
+        # Tasks created with create_task() that need a strong reference so
+        # asyncio doesn't garbage-collect them before they finish. Examples:
+        # auto-dialog fulfillment and child-session domain enablement.
+        self._background_tasks: set[asyncio.Task] = set()
+
+    # ── Internal helpers ─────────────────────────────────────────────────────
+
+    def _spawn_background(self, coro) -> asyncio.Task:
+        """Create a background task with a strong reference and error logging.
+
+        Plain ``asyncio.create_task()`` only retains a weak reference, so a
+        fire-and-forget task can be garbage-collected mid-flight. We track it
+        in ``self._background_tasks`` until it finishes and surface any
+        exception via the supervisor logger instead of dropping it silently.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.debug(
+                    "CDP supervisor %s: background task failed: %s",
+                    self.task_id,
+                    exc,
+                )
+
+        task.add_done_callback(_on_done)
+        return task
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -862,13 +894,13 @@ class CDPSupervisor:
             # re-archive it as "remote".
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._spawn_background(
                 self._auto_handle_dialog(dialog, accept=False, prompt_text="")
             )
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._spawn_background(
                 self._auto_handle_dialog(
                     dialog, accept=True, prompt_text=dialog.default_prompt
                 )
@@ -880,7 +912,7 @@ class CDPSupervisor:
             loop = asyncio.get_running_loop()
             handle = loop.call_later(
                 self.dialog_timeout_s,
-                lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
+                lambda: self._spawn_background(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
 
@@ -1082,13 +1114,13 @@ class CDPSupervisor:
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._spawn_background(
                 self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
             )
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._spawn_background(
                 self._fulfill_bridge_request(
                     dialog, accept=True, prompt_text=default_prompt
                 )
@@ -1100,7 +1132,7 @@ class CDPSupervisor:
             loop = asyncio.get_running_loop()
             handle = loop.call_later(
                 self.dialog_timeout_s,
-                lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
+                lambda: self._spawn_background(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
 
@@ -1236,7 +1268,7 @@ class CDPSupervisor:
         # Enable domains on the child off-loop so the reader keeps pumping.
         # Awaiting the CDP replies here would deadlock because only the
         # reader can resolve those replies' Futures.
-        asyncio.create_task(self._enable_child_domains(sid))
+        self._spawn_background(self._enable_child_domains(sid))
 
     async def _enable_child_domains(self, sid: str) -> None:
         """Enable Page+Runtime (+nested setAutoAttach) on a child CDP session.

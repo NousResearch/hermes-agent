@@ -761,6 +761,11 @@ def _discover_all_plugins() -> list:
                         description = manifest.get("description", "")
                     except Exception:
                         pass
+                # Path-derived key, intentionally ignoring the manifest
+                # ``name:`` field for category-namespaced plugins — mirrors
+                # ``PluginManager._parse_manifest`` in plugins.py:1027-1028
+                # so renaming a directory (without touching plugin.yaml) shifts
+                # the registry key in both places consistently.
                 key = f"{prefix}/{d.name}" if prefix else manifest_name
                 src_label = source
                 if source == "user" and (d / ".git").exists():

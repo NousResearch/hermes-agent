@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     _xai_oauth_build_authorize_url,
     _xai_start_callback_server,
     _xai_validate_loopback_redirect_uri,
+    format_auth_error,
     get_xai_oauth_auth_status,
     refresh_xai_oauth_pure,
     resolve_provider,
@@ -730,6 +731,53 @@ def test_refresh_xai_oauth_pure_no_relogin_on_500(monkeypatch):
         )
     assert exc.value.code == "xai_refresh_failed"
     assert exc.value.relogin_required is False
+
+
+def test_refresh_xai_oauth_pure_403_marked_tier_denied_not_relogin(monkeypatch):
+    """403 from xAI's token endpoint is tier/entitlement, not stale tokens.
+
+    Regression test for #26847 — xAI's backend has been seen to 403
+    standard SuperGrok subscribers despite the in-app subscription
+    being active. Re-running ``hermes model`` won't help in that
+    case, so the AuthError must NOT set ``relogin_required=True``,
+    and must carry the dedicated ``xai_oauth_tier_denied`` code so
+    ``format_auth_error`` doesn't append the misleading re-auth hint.
+    """
+    response = _StubHTTPResponse(403, {"error": "permission_denied"})
+    _patch_httpx_client(monkeypatch, response)
+    with pytest.raises(AuthError) as exc:
+        refresh_xai_oauth_pure(
+            "at", "rt", token_endpoint="https://auth.x.ai/oauth2/token"
+        )
+    assert exc.value.code == "xai_oauth_tier_denied"
+    assert exc.value.relogin_required is False
+    message = str(exc.value).lower()
+    assert "403" in message
+    assert "xai_api_key" in message
+    assert "tier" in message
+
+
+def test_format_auth_error_tier_denied_does_not_suggest_relogin():
+    """``xai_oauth_tier_denied`` must not append the re-authenticate hint.
+
+    Regression for #26847: telling a tier-gated user to ``hermes model``
+    is actively wrong — re-logging in won't change xAI's allowlist
+    decision. The full message (with ``XAI_API_KEY`` fallback) is built
+    into the error itself.
+    """
+    err = AuthError(
+        "xAI token refresh failed with HTTP 403. Response: forbidden. "
+        "This OAuth account is not authorized for xAI API access — "
+        "xAI may be restricting API/OAuth use to specific SuperGrok tiers. "
+        "Set ``XAI_API_KEY`` and switch to ``provider: xai``.",
+        provider="xai-oauth",
+        code="xai_oauth_tier_denied",
+        relogin_required=False,
+    )
+    rendered = format_auth_error(err)
+    assert "re-authenticate" not in rendered.lower()
+    assert "hermes model" not in rendered.lower()
+    assert "XAI_API_KEY" in rendered
 
 
 def test_refresh_xai_oauth_pure_returns_updated_tokens(monkeypatch):

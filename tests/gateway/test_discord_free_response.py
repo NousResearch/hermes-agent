@@ -99,6 +99,13 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
+    for env_name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_STRICT_MENTION",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
     # Clear DISCORD_* env vars the test file exercises so tests don't leak
     # process-env state from the contributor's shell into per-test behaviour.
@@ -444,6 +451,46 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "follow-up without mention"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_strict_mention_requires_fresh_mentions_in_known_threads(adapter, monkeypatch):
+    """strict_mention disables the participated-thread mention bypass."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_STRICT_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("456")
+
+    thread = FakeThread(channel_id=456, name="existing thread")
+    message = make_message(channel=thread, content="follow-up without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_strict_mention_keeps_free_response_parent_override(adapter, monkeypatch):
+    """strict_mention still lets configured free-response channels bypass mention gating."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_STRICT_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "222")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    adapter._threads.mark("333")
+
+    forum = FakeForumChannel(channel_id=222, name="support-forum")
+    thread = FakeThread(channel_id=333, name="Forum topic", parent=forum)
+    message = make_message(channel=thread, content="allowed from forum thread")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed from forum thread"
     assert event.source.chat_type == "thread"
 
 

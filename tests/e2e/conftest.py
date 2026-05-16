@@ -10,6 +10,7 @@ No LLM, no real platform connections.
 """
 
 import asyncio
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -218,6 +219,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._show_reasoning = False
 
     runner._is_user_authorized = lambda _source: True
+    # Keep gateway command e2e tests deterministic: destructive slash
+    # confirmation is covered separately in tests/gateway/test_destructive_slash_confirm.py.
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._set_session_env = lambda _context: None
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
@@ -395,6 +399,14 @@ def _make_discord_adapter_wired(runner=None):
     """Create a DiscordAdapter wired to a GatewayRunner for e2e tests."""
     if runner is None:
         runner = make_runner(Platform.DISCORD)
+
+    for env_name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_STRICT_MENTION",
+    ):
+        os.environ.pop(env_name, None)
 
     config = PlatformConfig(enabled=True, token="e2e-test-token")
     from gateway.platforms.helpers import ThreadParticipationTracker

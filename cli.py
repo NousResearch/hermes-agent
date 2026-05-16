@@ -14912,7 +14912,7 @@ class HermesCLI:
                             if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
                                 pass  # already delivered via tool result
                             else:
-                                _synth = _format_process_notification(evt)
+                                _synth = format_process_notification(evt)
                                 if _synth:
                                     self._pending_input.put(_synth)
                     except Exception:

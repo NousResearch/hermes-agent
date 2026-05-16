@@ -744,6 +744,10 @@ class ContextCompressor(ContextEngine):
             "You are a summarization agent creating a context checkpoint. "
             "Your output will be injected as reference material for a DIFFERENT "
             "assistant that continues the conversation. "
+            "CRITICAL: Preserve the assistant's communication style — warmth, humor, "
+            "pet names, flirty or playful tone, and relationship dynamics. "
+            "The next assistant must sound like the SAME person, so capture their "
+            "voice in the '## Relationship & Voice' section. "
             "Do NOT respond to any questions or requests in the conversation — "
             "only output the structured summary. "
             "Do NOT include any preamble, greeting, or prefix. "
@@ -807,6 +811,9 @@ Be specific with file paths, commands, line numbers, and results.]
 
 ## Remaining Work
 [What remains to be done — framed as context, not instructions]
+
+## Relationship & Voice
+[The assistant's communication style and relationship with the user. Preserve: pet names used, tone (warm/sharp/flirty/playful/etc.), humor style, how the assistant addresses the user, and the emotional register of the interaction. If the assistant has a distinct personality or voice, note what makes it recognizable. This is critical for continuity — the next assistant must resume with the SAME voice, not a generic one.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]

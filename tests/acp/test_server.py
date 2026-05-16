@@ -13,6 +13,7 @@ from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
+    AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
     Implementation,
@@ -465,6 +466,211 @@ class TestSessionOps:
             and update.content.text == "So tell me the current state"
             for update in updates
         )
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_reasoning_thought_before_message(self, agent):
+        """Thinking-model thoughts must be replayed via ``agent_thought_chunk``.
+
+        Regression for #12285 — when a session is loaded, persisted assistant
+        ``reasoning_content`` / ``reasoning`` fields must surface as ACP
+        ``AgentThoughtChunk`` notifications in the same relative position they
+        had live (thought streams before the assistant message text), so Zed's
+        collapsed Thinking pane rebuilds instead of vanishing on reconnect.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": "Walk me through it."},
+            {
+                "role": "assistant",
+                "reasoning_content": "Let me think step by step about the request.",
+                "content": "Here is the plan.",
+            },
+            {"role": "user", "content": "And the legacy case?"},
+            {
+                "role": "assistant",
+                # No reasoning_content — exercise the legacy "reasoning" fallback
+                # path so sessions persisted before #16892 still replay thoughts.
+                "reasoning": "Older sessions stored the trace under the internal key.",
+                "content": "Same idea, older field name.",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+
+        replay_kinds = [
+            getattr(call.kwargs.get("update"), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"user_message_chunk", "agent_message_chunk", "agent_thought_chunk"}
+        ]
+        assert replay_kinds == [
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "agent_message_chunk",
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "agent_message_chunk",
+        ]
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        assert len(thought_updates) == 2
+        assert thought_updates[0].content.text == "Let me think step by step about the request."
+        assert thought_updates[1].content.text == "Older sessions stored the trace under the internal key."
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_reasoning_only_turn(self, agent):
+        """Assistant turns with reasoning but no content should still emit a thought.
+
+        Pure reasoning-only assistant entries (e.g. a thinking step before a
+        tool-call turn) commonly carry ``reasoning_content`` with empty
+        ``content``. The replay must still surface the thought so the editor's
+        Thinking pane rebuilds, even when there is no message text to follow.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "reasoning_content": "I should call the search tool next.",
+                "content": "",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        message_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentMessageChunk)
+        ]
+        assert len(thought_updates) == 1
+        assert thought_updates[0].content.text == "I should call the search tool next."
+        assert message_updates == []
+
+    @pytest.mark.asyncio
+    async def test_load_session_skips_empty_reasoning_fields(self, agent):
+        """Empty/whitespace reasoning fields must not produce notifications."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "reasoning_content": "",
+                "reasoning": "   \n\t",
+                "content": "Just a regular answer.",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        assert thought_updates == []
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_thought_then_tool_call_without_message(self, agent):
+        """Canonical thinking-model shape: reasoning + tool_call + no body text.
+
+        Thinking models commonly emit a pre-tool thought followed by a
+        tool_calls turn with empty ``content``. Replay must emit:
+        ``agent_thought_chunk`` then ``tool_call`` then ``tool_call_update``
+        for the matching tool result — and crucially, NO ``agent_message_chunk``
+        for the empty-text assistant body. Regression for the canonical
+        thinking-then-tool flow on #12285.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": "Find the bug."},
+            {
+                "role": "assistant",
+                "reasoning_content": "I should grep for the function name first.",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_grep_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern":"foo","path":"."}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_grep_1",
+                "content": '{"total_count":1,"matches":[{"path":"x.py","line":1,"content":"foo"}]}',
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        kinds = [
+            getattr(call.kwargs.get("update"), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {
+                "user_message_chunk",
+                "agent_thought_chunk",
+                "agent_message_chunk",
+                "tool_call",
+                "tool_call_update",
+            }
+        ]
+        # No agent_message_chunk for the empty-content assistant turn.
+        assert "agent_message_chunk" not in kinds
+        # Thought must precede the tool_call_start within the assistant turn,
+        # and the tool result follows.
+        assert kinds == [
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+        ]
 
     @pytest.mark.asyncio
     async def test_load_session_schedules_history_replay_after_response(self, agent):

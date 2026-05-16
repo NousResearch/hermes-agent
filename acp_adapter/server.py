@@ -1515,7 +1515,15 @@ class HermesACPAgent(acp.Agent):
 
         # Parse --provider and --global flags (same as CLI path in main.py)
         from hermes_cli.model_switch import parse_model_flags
-        model_input, explicit_provider, _persist_global = parse_model_flags(args)
+        try:
+            model_input, explicit_provider, persist_global = parse_model_flags(args)
+        except Exception as e:
+            return f"Error parsing model flags: {e}"
+
+        # Note: --global is a CLI-only concept (persists across sessions via config).
+        # ACP sessions are ephemeral, so persist_global is acknowledged but not applied.
+        if persist_global:
+            return "Note: --global flag is not supported in ACP mode. Model change applies to this session only."
 
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
         target_provider = explicit_provider or current_provider

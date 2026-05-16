@@ -2665,6 +2665,19 @@ def _append_event(
     # Event is now in task_events. The TUI gateway's DB poller will
     # pick it up after COMMIT (write_txn handles the commit).
 
+    # Notify any listening TUI gateway via FIFO (event-driven, zero polling).
+    # Only fires for notification-worthy event kinds — avoids waking the TUI
+    # for internal events like "created", "edited", "heartbeat".
+    _NOTIFY_KINDS = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
+    if kind in _NOTIFY_KINDS:
+        try:
+            _fifo_path = os.path.expanduser("~/.hermes/tui_kanban.fifo")
+            if os.path.exists(_fifo_path):
+                with open(_fifo_path, "w") as _fifo:
+                    _fifo.write(json.dumps({"task_id": task_id, "kind": kind}) + "\n")
+        except Exception:
+            pass  # Non-fatal — don't break the event write
+
 
 def _end_run(
     conn: sqlite3.Connection,

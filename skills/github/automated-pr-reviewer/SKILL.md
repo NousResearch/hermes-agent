@@ -2,7 +2,7 @@
 name: automated-pr-reviewer
 description: "Automated PR reviewer: scans for '@jules code review' comments and triggers code reviews."
 version: 1.0.0
-author: Hermes Agent
+author: badMade
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

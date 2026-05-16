@@ -445,7 +445,12 @@ class TestHealthEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
             assert resp.status == 200
+            assert resp.headers.get("Content-Security-Policy") == "default-src 'none'; frame-ancestors 'none'"
+            assert resp.headers.get("Permissions-Policy") == "camera=(), microphone=(), geolocation=()"
+            assert resp.headers.get("Strict-Transport-Security") == "max-age=31536000; includeSubDomains"
             assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("X-Frame-Options") == "DENY"
+            assert resp.headers.get("X-XSS-Protection") == "0"
             assert resp.headers.get("Referrer-Policy") == "no-referrer"
 
     @pytest.mark.asyncio

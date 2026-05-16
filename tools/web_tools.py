@@ -133,8 +133,9 @@ def _get_backend() -> str:
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
+    # Free-tier API backends trail the paid ones so existing paid setups are
+    # unaffected. ddgs requires explicit configuration because availability
+    # probing must not import a module name that local files can shadow.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -142,7 +143,6 @@ def _get_backend() -> str:
         ("exa", _has_env("EXA_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
         if available:
@@ -204,23 +204,19 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
-        return _ddgs_package_importable()
+        return _ddgs_package_available()
     return False
 
 
-def _ddgs_package_importable() -> bool:
-    """Return True when the ``ddgs`` Python package can be imported.
+def _ddgs_package_available() -> bool:
+    """Return True when explicit ddgs configuration can use the installed package.
 
-    ddgs is the only backend whose availability is driven by a package
-    presence rather than an env var / config entry.  Wrapped in a helper
-    so auto-detect and ``_is_backend_available`` share the same check
-    (and tests can monkeypatch a single symbol).
+    This delegates to the provider's metadata-based check and deliberately does
+    not import ``ddgs`` so local files cannot execute during tool discovery.
     """
-    try:
-        import ddgs  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    from tools.web_providers.ddgs import ddgs_package_available
+
+    return ddgs_package_available()
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -2089,7 +2085,7 @@ def check_web_api_key() -> bool:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free")
     )
 
 

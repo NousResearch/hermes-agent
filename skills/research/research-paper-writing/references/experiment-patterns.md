@@ -184,7 +184,7 @@ import subprocess
 def evaluate_code(solution: str, test_cases: list, timeout: int = 30):
     """Run code solution against test cases with sandboxed execution."""
     results = {"public": [], "private": []}
-    
+
     for test in test_cases:
         try:
             proc = subprocess.run(
@@ -199,10 +199,10 @@ def evaluate_code(solution: str, test_cases: list, timeout: int = 30):
             passed = actual == expected
         except subprocess.TimeoutExpired:
             passed = False
-        
+
         category = "public" if test.get("public") else "private"
         results[category].append(passed)
-    
+
     return {
         "public_pass_rate": sum(results["public"]) / max(len(results["public"]), 1),
         "private_pass_rate": sum(results["private"]) / max(len(results["private"]), 1),

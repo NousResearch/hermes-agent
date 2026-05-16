@@ -2029,9 +2029,13 @@ def _run_browser_command(
         result = {"success": False, "error": str(e)}
 
     # --- Lightpanda automatic Chrome fallback ---
-    # If engine is lightpanda and the result looks broken, retry with Chrome.
-    # This runs for ALL exit paths (timeout, empty, non-JSON, nonzero rc, parsed).
-    fallback_reason = _lightpanda_fallback_reason(engine, command, result)
+    # If the active session is a local Lightpanda daemon and the result looks
+    # broken, retry with Chrome. Cloud CDP sessions intentionally omit
+    # ``--engine`` above, so a configured Lightpanda engine does not prove the
+    # active backend is Lightpanda; falling back locally would bypass the cloud
+    # browser network boundary.
+    fallback_engine = engine if not session_info.get("cdp_url") else "auto"
+    fallback_reason = _lightpanda_fallback_reason(fallback_engine, command, result)
     if fallback_reason:
         logger.info(
             "Lightpanda fallback: retrying '%s' with Chrome (task=%s): %s",

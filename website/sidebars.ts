@@ -83,6 +83,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/voice-mode',
             'user-guide/features/web-search',
+            'user-guide/features/x-search',
             'user-guide/features/browser',
             'user-guide/features/computer-use',
             'user-guide/features/vision',

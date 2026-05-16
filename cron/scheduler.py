@@ -25,6 +25,7 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -252,6 +253,85 @@ def _quiet_day_fallback() -> str:
         "background and check back tomorrow. Reply any time if something "
         "shifts."
     )
+
+
+# ---------------------------------------------------------------------------
+# Artemis S-0511-07 — briefing-output persistence (scheduler-side write).
+# ---------------------------------------------------------------------------
+#
+# After _deliver_result succeeds for an artemis-briefing job, persist the
+# exact delivered text (LLM draft OR guard-substituted fallback) so Artemis
+# Coach can replay sections of the briefing on S2 ask without re-running the
+# cron. The file shape matches the artemis MCP tool `save_briefing_output`'s
+# write format — both writers share the storage layout, both readers (Coach
+# S2 via MCP `get_recent_briefings`, retro analysis scripts) consume the
+# same shape.
+#
+# Why scheduler-side and not LLM-side: the cron LLM has one final response
+# that IS the deliverable, no second turn for a post-delivery tool call.
+# The scheduler is also the only party that knows what was actually
+# delivered (LLM draft vs. guard fallback). See Artemis S-0511-07 spec
+# § Architecture for the full rationale.
+#
+# Failure handling: try/except swallows any persistence error, logs at WARN,
+# and falls through to mark_job_run unchanged. A missing persisted entry
+# means the next day's run produces a fresh one; the user has already
+# received the briefing.
+
+def _is_briefing_job(job: dict) -> bool:
+    """True for artemis-briefing cron jobs (the only writer of the
+    persisted-briefing store today). Skills list is the canonical marker;
+    job names can drift."""
+    skills = job.get("skills") or []
+    if not isinstance(skills, (list, tuple)):
+        return False
+    return "artemis-briefing" in skills
+
+
+def _persist_briefing_output(job: dict, delivered_text: str) -> None:
+    """Write the delivered briefing text to the artemis per-user briefings
+    directory. No-op + log on any failure — never raises.
+
+    Schema is the three-field minimal entry shared with the artemis MCP
+    tool `save_briefing_output`:
+      - user_id: from origin.user_id (set by _resolve_origin)
+      - briefing_timestamp: scheduler-side UTC at the moment of delivery
+      - formatted_output: exact text sent to Slack (LLM draft OR fallback)
+    """
+    try:
+        origin = _resolve_origin(job)
+        if not origin:
+            return
+        user_id = origin.get("user_id")
+        if not user_id:
+            return
+        if not isinstance(delivered_text, str) or not delivered_text.strip():
+            return
+
+        hermes_home_dyn = get_hermes_home()
+        out_dir = hermes_home_dyn / "artemis" / user_id / "briefings"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ts_now = datetime.now(timezone.utc)
+        ts_iso = ts_now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = {
+            "user_id": user_id,
+            "briefing_timestamp": ts_iso,
+            "formatted_output": delivered_text,
+        }
+        out_path = out_dir / (ts_iso.replace(":", "-") + ".json")
+        out_path.write_text(
+            json.dumps(entry, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning(
+            "briefing-persist failed for job %s (user=%s): %s",
+            job.get("id", "?"),
+            (job.get("origin") or {}).get("user_id", "?"),
+            exc,
+        )
+
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
@@ -1194,6 +1274,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                # Artemis S-0511-07 — persist the exact delivered text for
+                # briefing jobs so Coach S2 can replay sections later. Only
+                # fires on successful delivery; helper is self-swallowing on
+                # any failure (logs WARN, never raises). Runs BEFORE
+                # mark_job_run so a persistence raise still wouldn't get here,
+                # but the try/except inside the helper guarantees it.
+                if should_deliver and delivery_error is None and _is_briefing_job(job):
+                    _persist_briefing_output(job, deliver_content)
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 executed += 1

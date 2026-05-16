@@ -176,7 +176,7 @@ def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_even
                 conn,
                 tid,
                 "commented",
-                {"author": "human", "len": 7, "new_future_field": "future-secret"},
+                {"author": "human", "body_len": 7, "new_future_field": "future-secret"},
             )
 
     serialized = "\n".join(json.dumps(event, sort_keys=True) for event in captured_events)
@@ -201,9 +201,33 @@ def test_lifecycle_payloads_are_sanitized_and_bounded(kanban_home, captured_even
     assert completed["payload"]["result_len"] == len(big_result)
     assert completed["payload"]["metadata_keys"] == ["count", "token"]
     future = [e for e in captured_events if e["event_type"] == "kanban.comment_added"][-1]
+    assert future["payload"]["body_len"] == 7
     assert future["payload"]["new_future_field_present"] is True
     assert future["payload"]["new_future_field_len"] == len("future-secret")
     assert "new_future_field" not in future["payload"]
+
+
+def test_failure_events_share_run_failed_type_and_keep_outcome(
+    kanban_home, captured_events
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="crash me", assignee="worker")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                tid,
+                "crashed",
+                {"pid": 4242, "error": "secret stack trace"},
+            )
+
+    failed = [e for e in captured_events if e["event_type"] == "kanban.run_failed"][-1]
+    assert failed["task_id"] == tid
+    assert failed["payload"]["outcome"] == "crashed"
+    assert failed["payload"]["pid_present"] is True
+    assert failed["payload"]["error_present"] is True
+    assert failed["payload"]["error_len"] == len("secret stack trace")
+    assert "pid" not in failed["payload"]
+    assert "error" not in failed["payload"]
 
 
 def test_assignment_dependency_and_run_events_include_core_ids(

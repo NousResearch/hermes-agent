@@ -1697,7 +1697,7 @@ def add_comment(
             conn,
             task_id,
             "commented",
-            {"comment_id": comment_id, "author": author, "len": len(body)},
+            {"comment_id": comment_id, "author": author, "body_len": len(body)},
         )
         return comment_id
 
@@ -1751,7 +1751,7 @@ def _preview_text(value: Any, *, limit: int = _KANBAN_EVENT_PREVIEW_CHARS) -> st
 
         text = redact_sensitive_text(text)
     except Exception:
-        pass
+        logger.debug("Kanban lifecycle preview redaction failed", exc_info=True)
     return text[:limit]
 
 
@@ -1801,6 +1801,7 @@ def _sanitize_kanban_event_payload(kind: str, payload: Optional[dict]) -> dict[s
         "phantom_refs",
         "metadata_keys",
         "pid_present",
+        "body_len",
         "result_len",
         "len",
         "comment_id",
@@ -2148,6 +2149,10 @@ def claim_task(
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``claimer`` is copied into the claim lock and exposed to lifecycle
+    observers as a redacted/truncated ``payload.claimer`` value; callers
+    should not put secrets or raw user content in it.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()

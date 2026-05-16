@@ -493,6 +493,41 @@ class TestRecordFactory:
             logger.removeHandler(handler)
 
 
+class TestManagedRotatingFileHandler:
+    """Managed-mode log handling hardening."""
+
+    def test_managed_open_does_not_chmod_symlink_target(self, tmp_path):
+        sensitive_file = tmp_path / "auth.json"
+        sensitive_file.write_text("secret", encoding="utf-8")
+        sensitive_file.chmod(0o600)
+
+        log_path = tmp_path / "logs" / "gateway.log"
+        log_path.parent.mkdir()
+        log_path.symlink_to(sensitive_file)
+
+        with patch("hermes_cli.config.is_managed", return_value=True):
+            handler = hermes_logging._ManagedRotatingFileHandler(
+                str(log_path), maxBytes=1024, backupCount=1, encoding="utf-8"
+            )
+            handler.close()
+
+        assert not log_path.is_symlink()
+        assert stat.S_IMODE(sensitive_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
+    def test_managed_open_sets_regular_log_mode(self, tmp_path):
+        log_path = tmp_path / "logs" / "agent.log"
+        log_path.parent.mkdir()
+
+        with patch("hermes_cli.config.is_managed", return_value=True):
+            handler = hermes_logging._ManagedRotatingFileHandler(
+                str(log_path), maxBytes=1024, backupCount=1, encoding="utf-8"
+            )
+            handler.close()
+
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
+
 class TestComponentFilter:
     """Unit tests for _ComponentFilter."""
 

@@ -36,17 +36,6 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
 
-    def test_apply_env_overrides_bluebubbles_webhook_token(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-        monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_TOKEN", "hook-secret")
-        from gateway.config import GatewayConfig, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        bc = config.platforms[Platform.BLUEBUBBLES]
-        assert bc.extra["webhook_token"] == "hook-secret"
-
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
         monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
@@ -447,22 +436,16 @@ class TestBlueBubblesWebhookUrl:
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
         assert "192.168.1.50" in adapter._webhook_url
 
-    def test_register_url_embeds_webhook_token_not_password(self, monkeypatch):
-        """_webhook_register_url should use a dedicated token for inbound auth."""
-        adapter = _make_adapter(
-            monkeypatch, password="secret123", webhook_token="webhook-secret"
-        )
-        assert adapter._webhook_register_url.endswith("?token=webhook-secret")
-        assert "secret123" not in adapter._webhook_register_url
+    def test_register_url_embeds_password(self, monkeypatch):
+        """_webhook_register_url should append ?password=... for inbound auth."""
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        assert adapter._webhook_register_url.endswith("?password=secret123")
         assert adapter._webhook_register_url.startswith(adapter._webhook_url)
 
-    def test_register_url_url_encodes_webhook_token(self, monkeypatch):
-        """Webhook tokens with special characters must be URL-encoded."""
-        adapter = _make_adapter(
-            monkeypatch, password="W9fTC&L5JL*@", webhook_token="tok&*@"
-        )
-        assert "token=tok%26%2A%40" in adapter._webhook_register_url
-        assert "W9fTC" not in adapter._webhook_register_url
+    def test_register_url_url_encodes_password(self, monkeypatch):
+        """Passwords with special characters must be URL-encoded."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
@@ -589,7 +572,7 @@ class TestBlueBubblesWebhookRegistration:
     def test_register_reuses_existing(self, monkeypatch):
         """Crash resilience — existing registration is reused, no POST needed."""
         import asyncio
-        adapter = _make_adapter(monkeypatch, webhook_token="hook-secret")
+        adapter = _make_adapter(monkeypatch)
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
@@ -637,7 +620,7 @@ class TestBlueBubblesWebhookRegistration:
 
     def test_unregister_removes_matching(self, monkeypatch):
         import asyncio
-        adapter = _make_adapter(monkeypatch, webhook_token="hook-secret")
+        adapter = _make_adapter(monkeypatch)
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
@@ -652,7 +635,7 @@ class TestBlueBubblesWebhookRegistration:
     def test_unregister_removes_all_duplicates(self, monkeypatch):
         """Multiple orphaned registrations for same URL — all get removed."""
         import asyncio
-        adapter = _make_adapter(monkeypatch, webhook_token="hook-secret")
+        adapter = _make_adapter(monkeypatch)
         url = adapter._webhook_register_url
         deleted_ids = []
 
@@ -703,91 +686,3 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
-
-    def test_unregister_removes_legacy_password_registration(self, monkeypatch):
-        """Old password-bearing webhook URLs are cleaned up without reusing them."""
-        import asyncio
-
-        adapter = _make_adapter(
-            monkeypatch, password="api-secret", webhook_token="hook-secret"
-        )
-        legacy_url = adapter._legacy_password_webhook_url
-        deleted_ids = []
-
-        async def mock_delete(*args, **kwargs):
-            deleted_ids.append(args[0] if args else "")
-
-            class R:
-                def raise_for_status(self):
-                    pass
-
-            return R()
-
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": [{"id": 99, "url": legacy_url}]}
-        )
-        adapter.client.delete = mock_delete
-
-        ok = asyncio.get_event_loop().run_until_complete(adapter._unregister_webhook())
-        assert ok is True
-        assert len(deleted_ids) == 1
-
-    def test_register_logs_redacted_webhook_token(self, monkeypatch, caplog):
-        """Normal registration logs must not expose query credentials."""
-        import asyncio
-        import logging
-
-        adapter = _make_adapter(
-            monkeypatch, password="api-secret", webhook_token="hook-secret"
-        )
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []},
-            post_response={"status": 200, "data": {"id": 42}},
-        )
-
-        with caplog.at_level(logging.INFO, logger="gateway.platforms.bluebubbles"):
-            ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
-
-        assert ok is True
-        assert "hook-secret" not in caplog.text
-        assert "api-secret" not in caplog.text
-        assert "token=[REDACTED]" in caplog.text
-
-
-class TestBlueBubblesWebhookAuth:
-    class DummyRequest:
-        def __init__(self, query, body=b'{"event":"server-started"}', headers=None):
-            self.query = query
-            self.headers = headers or {}
-            self._body = body
-
-        async def read(self):
-            return self._body
-
-    def test_webhook_accepts_dedicated_token(self, monkeypatch):
-        import asyncio
-
-        adapter = _make_adapter(
-            monkeypatch, password="api-secret", webhook_token="hook-secret"
-        )
-        request = self.DummyRequest({"token": "hook-secret"})
-
-        response = asyncio.get_event_loop().run_until_complete(
-            adapter._handle_webhook(request)
-        )
-
-        assert response.status == 200
-
-    def test_webhook_rejects_api_password_query(self, monkeypatch):
-        import asyncio
-
-        adapter = _make_adapter(
-            monkeypatch, password="api-secret", webhook_token="hook-secret"
-        )
-        request = self.DummyRequest({"password": "api-secret"})
-
-        response = asyncio.get_event_loop().run_until_complete(
-            adapter._handle_webhook(request)
-        )
-
-        assert response.status == 401

@@ -35,7 +35,6 @@ import json
 import logging
 import os
 import queue
-import tempfile
 import threading
 
 from datetime import datetime, timezone
@@ -443,60 +442,16 @@ def _embedded_profile_env_path(config: dict[str, Any]):
     return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
-def _harden_embedded_profile_env_path(profile_env) -> None:
-    """Restrict Hindsight profile env access to the current user."""
-    try:
-        os.chmod(profile_env.parent, 0o700)
-    except (OSError, NotImplementedError):
-        pass
-    try:
-        if profile_env.exists():
-            os.chmod(profile_env, 0o600)
-    except (OSError, NotImplementedError):
-        pass
-
-
-def _write_embedded_profile_env(profile_env, content: str) -> None:
-    """Atomically write a profile env file without exposing secrets via umask."""
-    profile_env.parent.mkdir(parents=True, exist_ok=True)
-    _harden_embedded_profile_env_path(profile_env)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{profile_env.name}.",
-        suffix=".tmp",
-        dir=str(profile_env.parent),
-        text=True,
-    )
-    try:
-        try:
-            os.chmod(tmp_name, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_name, profile_env)
-        _harden_embedded_profile_env_path(profile_env)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def _materialize_embedded_profile_env(
-    config: dict[str, Any], *, llm_api_key: str | None = None
-):
+def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
+    profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    _write_embedded_profile_env(
-        profile_env,
+    profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
+        encoding="utf-8",
     )
     return profile_env
-
 
 def _sanitize_bank_segment(value: str) -> str:
     """Sanitize a bank_id_template placeholder value.
@@ -1271,7 +1226,6 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    _harden_embedded_profile_env_path(profile_env)
                     config_changed = saved != expected_env
 
                     if config_changed:

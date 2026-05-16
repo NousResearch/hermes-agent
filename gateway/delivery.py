@@ -44,6 +44,25 @@ def _looks_like_int(value: Optional[str]) -> bool:
         return False
 
 
+def _send_result_failed(result: Any) -> bool:
+    if isinstance(result, dict):
+        return result.get("success") is False
+    return getattr(result, "success", True) is False
+
+
+def _send_result_error(result: Any) -> Optional[str]:
+    if isinstance(result, dict):
+        error = result.get("error")
+    else:
+        error = getattr(result, "error", None)
+    return str(error) if error else None
+
+
+def _is_thread_not_found_delivery_error(result: Any) -> bool:
+    error = _send_result_error(result)
+    return bool(error and "thread not found" in error.lower())
+
+
 @dataclass
 class DeliveryTarget:
     """
@@ -268,6 +287,8 @@ class DeliveryRouter:
             )
         
         send_metadata = dict(metadata or {})
+        is_named_telegram_private_topic = False
+        named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:
             has_explicit_direct_topic = (
                 "direct_messages_topic_id" in send_metadata
@@ -283,6 +304,7 @@ class DeliveryRouter:
                 and not has_explicit_direct_topic
             )
             if is_named_telegram_private_topic:
+                named_telegram_private_topic_name = target_thread_id
                 ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
                 if ensure_dm_topic is None:
                     raise RuntimeError(
@@ -318,8 +340,37 @@ class DeliveryRouter:
             elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
                 send_metadata["thread_id"] = target_thread_id
         result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
-        if getattr(result, "success", True) is False:
-            raise RuntimeError(getattr(result, "error", None) or f"{target.platform.value} delivery failed")
+        if _send_result_failed(result):
+            if (
+                is_named_telegram_private_topic
+                and named_telegram_private_topic_name
+                and _is_thread_not_found_delivery_error(result)
+            ):
+                ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
+                if ensure_dm_topic is None:
+                    raise RuntimeError(
+                        "Telegram adapter cannot refresh named private DM topics"
+                    )
+                try:
+                    refreshed_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        named_telegram_private_topic_name,
+                        force_create=True,
+                    )
+                except TypeError:
+                    refreshed_thread_id = await ensure_dm_topic(
+                        target.chat_id,
+                        named_telegram_private_topic_name,
+                    )
+                if not refreshed_thread_id:
+                    raise RuntimeError(
+                        f"Failed to refresh Telegram private DM topic '{named_telegram_private_topic_name}'"
+                    )
+                send_metadata["thread_id"] = str(refreshed_thread_id)
+                send_metadata["telegram_dm_topic_created_for_send"] = True
+                result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+            if _send_result_failed(result):
+                raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
         return result
 
 

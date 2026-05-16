@@ -625,6 +625,33 @@ async def test_send_created_private_topic_uses_message_thread_without_anchor():
 
 
 @pytest.mark.asyncio
+async def test_created_private_topic_thread_not_found_fails_without_root_fallback():
+    """Created private-topic sends must not retry into All Messages on stale thread IDs."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="created topic message",
+        metadata={
+            "thread_id": "32343",
+            "telegram_dm_topic_created_for_send": True,
+        },
+    )
+
+    assert result.success is False
+    assert "thread not found" in str(result.error).lower()
+    assert len(call_log) == 1
+    assert call_log[0]["message_thread_id"] == 32343
+
+
+@pytest.mark.asyncio
 async def test_send_uses_metadata_reply_fallback_for_streaming_dm_topics():
     """Metadata-only sends still stay in Hermes-created Telegram DM topics."""
     adapter = _make_adapter()

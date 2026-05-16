@@ -16,6 +16,17 @@ import time
 def main():
     tid = os.environ["HERMES_KANBAN_TASK"]
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
+    board = os.environ.get("HERMES_KANBAN_BOARD", "")
+
+    # Orient first: exercise the same kanban_show surface dispatcher-spawned
+    # workers receive before mutating lifecycle state.
+    show = subprocess.run(
+        ["hermes", "kanban", "show", tid, "--json"],
+        check=True, capture_output=True, text=True,
+    )
+    shown = json.loads(show.stdout)
+    if shown.get("task", {}).get("id") != tid:
+        raise RuntimeError(f"kanban show returned the wrong task: {shown!r}")
 
     # Announce via CLI (goes through real argparse + init_db + etc)
     subprocess.run(
@@ -38,8 +49,10 @@ def main():
             "--summary", f"real-subprocess worker finished {tid}",
             "--metadata", json.dumps({
                 "workspace": workspace,
+                "board": board,
                 "worker_pid": os.getpid(),
                 "iterations": 3,
+                "oriented_with_kanban_show": True,
             }),
         ],
         check=True, capture_output=True,

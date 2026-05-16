@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 WT = str(Path(__file__).resolve().parents[2])
 FAKE_WORKER = str(Path(__file__).parent / "_fake_worker.py")
@@ -26,7 +27,7 @@ def make_spawn_fn(home: str):
     """Return a spawn_fn the dispatcher can call. Launches the fake
     worker as a detached subprocess."""
 
-    def _spawn(task, workspace):
+    def _spawn(task, workspace, *, board=None):
         log_path = os.path.join(home, f"worker_{task.id}.log")
         env = {
             **os.environ,
@@ -37,6 +38,8 @@ def make_spawn_fn(home: str):
             "HERMES_KANBAN_WORKSPACE": workspace,
             "PATH": f"{os.path.dirname(PY)}:{os.environ.get('PATH','')}",
         }
+        if board:
+            env["HERMES_KANBAN_BOARD"] = board
         log_f = open(log_path, "ab")
         proc = subprocess.Popen(
             [PY, FAKE_WORKER],
@@ -70,8 +73,9 @@ exec {PY} -m hermes_cli.main "$@"
     os.chmod(shim_path, 0o755)
     os.environ["PATH"] = f"{shim_dir}:{os.environ.get('PATH','')}"
 
-    kb.init_db()
-    conn = kb.connect()
+    kb.create_board("bo", name="Business Ops")
+    kb.init_db(board="bo")
+    conn = kb.connect(board="bo")
 
     # ============ SCENARIO A: happy path, 3 tasks ============
     print("=" * 60)
@@ -81,12 +85,12 @@ exec {PY} -m hermes_cli.main "$@"
     tids = []
     for i in range(3):
         tid = kb.create_task(
-            conn, title=f"real-e2e-{i}", assignee="worker",
+            conn, title=f"real-e2e-{i}", assignee="default",
         )
         tids.append(tid)
 
     spawn_fn = make_spawn_fn(home)
-    result = kb.dispatch_once(conn, spawn_fn=spawn_fn)
+    result = kb.dispatch_once(conn, spawn_fn=spawn_fn, board="bo")
     print(f"  dispatched: {len(result.spawned)} spawned")
     spawned_pids = []
     # The dispatcher sets worker_pid on each claimed task via _set_worker_pid.
@@ -124,6 +128,10 @@ exec {PY} -m hermes_cli.main "$@"
                 failures.append(f"task {tid} summary missing: {r.summary!r}")
             if not r.metadata or r.metadata.get("iterations") != 3:
                 failures.append(f"task {tid} metadata missing iterations: {r.metadata}")
+            if not r.metadata or r.metadata.get("board") != "bo":
+                failures.append(f"task {tid} metadata missing board pin: {r.metadata}")
+            if not r.metadata or not r.metadata.get("oriented_with_kanban_show"):
+                failures.append(f"task {tid} did not record kanban_show orientation: {r.metadata}")
             # Heartbeat events should be present
             events = kb.list_events(conn, tid)
             heartbeats = [e for e in events if e.kind == "heartbeat"]
@@ -145,7 +153,7 @@ exec {PY} -m hermes_cli.main "$@"
     print("=" * 60)
 
     crash_tid = kb.create_task(
-        conn, title="crash-e2e", assignee="worker",
+        conn, title="crash-e2e", assignee="default",
     )
 
     # Spawn a worker that sleeps long enough for us to kill it.
@@ -179,7 +187,7 @@ exec {PY} -m hermes_cli.main "$@"
         os.close(r)
         return grandchild_pid
 
-    result = kb.dispatch_once(conn, spawn_fn=spawn_sleeper)
+    result = kb.dispatch_once(conn, spawn_fn=spawn_sleeper, board="bo")
     task = kb.get_task(conn, crash_tid)
     print(f"  spawned sleeper pid={task.worker_pid} for {crash_tid}")
     # Kill the sleeper forcibly

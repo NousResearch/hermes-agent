@@ -35,13 +35,14 @@ def test_extract_research_progress_lines_returns_last_three_labels():
     output = "\n".join([
         "┊ 📚 skill evidence-report-publishing 0.0s",
         "┊ 💻 $ which hermes && pwd && whoami 0.8s",
-        "┊ 🌐 web_search some query 1.2s",
+        "┊ 🔎 web_search some query 1.2s",
         "┊ 💻 $ python verify.py 0.4s",
+        "┊ 💻 $ python3 render.py slug 0.4s",
     ])
     assert _extract_research_progress_lines(output, limit=3) == [
-        "🛠️ tinkering",
         "🌐 browsing",
         "🛠️ tinkering",
+        "🔗 publishing",
     ]
 
 

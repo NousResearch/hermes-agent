@@ -190,13 +190,15 @@ def _extract_research_progress_lines(output: str, limit: int = 3) -> list[str]:
         if not line:
             continue
         label = ""
-        if " web_" in line or " websearch" in line or "web_search" in line or "web_extract" in line or "browser" in line:
+        if "🌐" in raw_line or "🔎" in raw_line or " web_" in line or " websearch" in line or "web_search" in line or "web_extract" in line or " extract" in line or line.startswith("search ") or " browser" in line:
             label = "🌐 browsing"
-        elif " skill" in line or "skill_view" in line:
+        elif "📚" in raw_line or " skill" in line or "skill_view" in line:
             label = "📚 skimming"
-        elif " process" in line or " proc" in line:
+        elif "process wait" in line or " process" in line or " proc" in line:
             label = "🧠 thinking"
-        elif " terminal" in line or " $ " in f" {line} " or line.startswith("┊ 💻"):
+        elif any(tok in line for tok in ("render.py", "scoreboard.py", "update-index.py", "validate.py", "render-wrapper.py")):
+            label = "🔗 publishing"
+        elif "💻" in raw_line or "🧪" in raw_line or " terminal" in line or " $ " in f" {line} " or line.startswith("┊ 💻"):
             label = "🛠️ tinkering"
         elif any(tok in line for tok in ("write_file", "read_file", "patch", "grep", "glob", "search_files")):
             label = "💾 filing"
@@ -13751,7 +13753,7 @@ class GatewayRunner:
                 if direct_research_delivery:
                     final_url = _extract_public_research_url(session.output_buffer)
                     if session.exit_code == 0 and final_url:
-                        final_text = f"done\n{final_url}"
+                        final_text = f"Researching {progress_subject}:\ndone\n{final_url}"
                     else:
                         final_text = f"PUBLISH_FAILED: child exited with code {session.exit_code}"
                     adapter = None

@@ -271,6 +271,15 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WECOM_HOME_CHANNEL",
     "WECOM_HOME_CHANNEL_THREAD_ID",
     "WECOM_HOME_CHANNEL_NAME",
+    # API server bind/auth settings are common in local gateway profiles and
+    # change adapter defaults plus load_gateway_config() enablement. Tests that
+    # need them set opt in explicitly with monkeypatch.
+    "API_SERVER_ENABLED",
+    "API_SERVER_HOST",
+    "API_SERVER_PORT",
+    "API_SERVER_KEY",
+    "API_SERVER_CORS_ORIGINS",
+    "API_SERVER_MODEL_NAME",
     # Platform gating — set by load_gateway_config() as a side effect when
     # a config.yaml is present, so individual test bodies that call the
     # loader leak these values into later tests on the same xdist worker.

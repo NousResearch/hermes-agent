@@ -559,3 +559,9 @@ class TestStopProfileGateway:
         assert calls["kill"] == 1          # one SIGTERM
         assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
         assert calls["remove"] == 0
+
+
+def test_module_has_logger():
+    """Verify module has a logger instance (regression guard for #27154)."""
+    assert hasattr(gateway, "logger")
+    assert gateway.logger.name == "hermes_cli.gateway"

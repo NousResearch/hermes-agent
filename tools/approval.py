@@ -317,9 +317,7 @@ def _contains_sudo_stdin_invocation(command: str) -> bool:
         # Pipe/semicolon/subshell operators start a new command.  Bash process
         # substitution tokens also introduce an inner command, unlike plain
         # redirections (<, >), which only introduce filename/fd arguments.
-        if set(word) <= set(";&|()`") or word in {"<(", ">(", "{", "}", "\n"}:
-            expect_command = True
-            continue
+        if set(word) <= set(";&|()`") or word in {"{", "<(", ">("}:
             expect_command = True
             continue
         if not expect_command:

@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -244,10 +244,117 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS context_message_parts (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    part_index INTEGER NOT NULL,
+    part_type TEXT NOT NULL,
+    content_inline TEXT,
+    content_ref TEXT,
+    sha256 TEXT,
+    size_bytes INTEGER,
+    token_estimate INTEGER,
+    metadata_json TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (message_id, part_index)
+);
+
+CREATE TABLE IF NOT EXISTS context_summary_nodes (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    source_hash TEXT,
+    summary_hash TEXT,
+    prompt_version TEXT,
+    summary_model TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    token_estimate INTEGER,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS context_summary_edges (
+    parent_id TEXT NOT NULL REFERENCES context_summary_nodes(id) ON DELETE CASCADE,
+    child_id TEXT NOT NULL REFERENCES context_summary_nodes(id) ON DELETE CASCADE,
+    edge_order INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE TABLE IF NOT EXISTS context_summary_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary_id TEXT NOT NULL REFERENCES context_summary_nodes(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL DEFAULT '',
+    start_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    end_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    start_offset INTEGER NOT NULL DEFAULT -1,
+    end_offset INTEGER NOT NULL DEFAULT -1,
+    metadata_json TEXT,
+    created_at REAL NOT NULL,
+    UNIQUE (summary_id, source_type, source_id, start_message_id, end_message_id, start_offset, end_offset)
+);
+
+CREATE TABLE IF NOT EXISTS context_projection (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    engine_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    projection_json TEXT NOT NULL,
+    fresh_tail_start_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    latest_raw_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    token_estimate INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT,
+    UNIQUE (session_id, engine_version, status)
+);
+
+CREATE TABLE IF NOT EXISTS context_checkpoints (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    last_ingested_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    last_projection_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    last_anchor_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    anchor_hash TEXT,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS context_mutation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    operation TEXT NOT NULL,
+    status TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_json TEXT,
+    error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT,
+    UNIQUE (session_id, idempotency_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_context_message_parts_sha256 ON context_message_parts(sha256);
+CREATE INDEX IF NOT EXISTS idx_context_summary_nodes_session_status_created ON context_summary_nodes(session_id, status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_summary_nodes_idempotent ON context_summary_nodes(session_id, kind, source_hash, prompt_version) WHERE source_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_context_summary_edges_child ON context_summary_edges(child_id);
+CREATE INDEX IF NOT EXISTS idx_context_summary_sources_summary ON context_summary_sources(summary_id);
+CREATE INDEX IF NOT EXISTS idx_context_summary_sources_span ON context_summary_sources(start_message_id, end_message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_summary_sources_identity ON context_summary_sources(
+    summary_id,
+    source_type,
+    source_id,
+    COALESCE(start_message_id, -1),
+    COALESCE(end_message_id, -1),
+    start_offset,
+    end_offset
+);
+CREATE INDEX IF NOT EXISTS idx_context_projection_session_status ON context_projection(session_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_context_mutation_log_session_operation_status ON context_mutation_log(session_id, operation, status);
 """
 
 FTS_SQL = """
@@ -1517,6 +1624,70 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    @staticmethod
+    def _detach_context_dag_message_refs(conn: sqlite3.Connection, session_id: str) -> None:
+        """Clear DAG references to message rows before transcript rewrites.
+
+        PR1 DAG tables may reference ``messages.id``. Existing databases can
+        predate the ON DELETE actions in SCHEMA_SQL, so transcript rewrite paths
+        explicitly detach/delete dependent DAG rows before deleting messages.
+        """
+        conn.execute(
+            "DELETE FROM context_message_parts WHERE message_id IN (SELECT id FROM messages WHERE session_id = ?)",
+            (session_id,),
+        )
+        conn.execute(
+            """
+            UPDATE context_summary_sources
+            SET start_message_id = CASE
+                    WHEN start_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE start_message_id
+                END,
+                end_message_id = CASE
+                    WHEN end_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE end_message_id
+                END
+            WHERE summary_id IN (SELECT id FROM context_summary_nodes WHERE session_id = ?)
+              AND (start_message_id IN (SELECT id FROM messages WHERE session_id = ?)
+                   OR end_message_id IN (SELECT id FROM messages WHERE session_id = ?))
+            """,
+            (session_id, session_id, session_id, session_id, session_id),
+        )
+        conn.execute(
+            """
+            UPDATE context_projection
+            SET fresh_tail_start_message_id = CASE
+                    WHEN fresh_tail_start_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE fresh_tail_start_message_id
+                END,
+                latest_raw_message_id = CASE
+                    WHEN latest_raw_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE latest_raw_message_id
+                END
+            WHERE session_id = ?
+            """,
+            (session_id, session_id, session_id),
+        )
+        conn.execute(
+            """
+            UPDATE context_checkpoints
+            SET last_ingested_message_id = CASE
+                    WHEN last_ingested_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE last_ingested_message_id
+                END,
+                last_projection_message_id = CASE
+                    WHEN last_projection_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE last_projection_message_id
+                END,
+                last_anchor_message_id = CASE
+                    WHEN last_anchor_message_id IN (SELECT id FROM messages WHERE session_id = ?) THEN NULL
+                    ELSE last_anchor_message_id
+                END
+            WHERE session_id = ?
+            """,
+            (session_id, session_id, session_id, session_id),
+        )
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 
@@ -1526,6 +1697,7 @@ class SessionDB:
         """
 
         def _do(conn):
+            self._detach_context_dag_message_refs(conn, session_id)
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
@@ -2237,6 +2409,7 @@ class SessionDB:
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):
+            self._detach_context_dag_message_refs(conn, session_id)
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )

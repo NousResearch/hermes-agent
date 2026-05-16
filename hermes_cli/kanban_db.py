@@ -1525,11 +1525,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
+        # If child was ready but parent is not yet done nor running, demote child to todo.
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
-        if parent_status != "done":
+        if parent_status not in ("done", "running"):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -1844,7 +1844,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in {"done", "archived"} for p in parents):
+            if all(p["status"] in {"done", "archived", "running"} for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),

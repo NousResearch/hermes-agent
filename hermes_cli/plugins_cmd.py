@@ -762,11 +762,12 @@ def _discover_all_plugins() -> list:
                     except Exception:
                         pass
                 key = f"{prefix}/{d.name}" if prefix else manifest_name
-                if key in seen and source == "bundled":
-                    continue
                 src_label = source
                 if source == "user" and (d / ".git").exists():
                     src_label = "git"
+                # Bundled is scanned before user, so the user pass overwrites
+                # bundled entries with the same key — matches
+                # PluginManager.discover_and_load's "user wins" semantics.
                 seen[key] = (key, version, description, src_label, d)
                 continue
 

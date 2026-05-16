@@ -265,14 +265,41 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
-    """Return metadata for the most recent sessions (no LLM calls)."""
+def _resolve_session_source(db, current_session_id: str = None) -> Optional[str]:
+    """Return the current session source when available."""
+    if not current_session_id:
+        return None
     try:
-        sessions = db.list_sessions_rich(
-            limit=limit + 5,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            order_by_last_active=True,
-        )  # fetch extra to skip current
+        session = db.get_session(current_session_id)
+    except Exception:
+        logging.debug(
+            "Unable to resolve session_search source for %s",
+            current_session_id,
+            exc_info=True,
+        )
+        return None
+    if not isinstance(session, dict):
+        return None
+    source = session.get("source")
+    return source if isinstance(source, str) and source else None
+
+
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    session_source: str = None,
+) -> str:
+    """Return same-source recent session metadata without LLM calls."""
+    try:
+        list_kwargs = {
+            "limit": limit + 5,
+            "exclude_sources": list(_HIDDEN_SESSION_SOURCES),
+            "order_by_last_active": True,
+        }
+        if session_source:
+            list_kwargs["source"] = session_source
+        sessions = db.list_sessions_rich(**list_kwargs)  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -328,6 +355,7 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    session_source: str = None,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
@@ -356,10 +384,18 @@ def session_search(
             limit = 3
     limit = max(1, min(limit, 5))  # Clamp to [1, 5]
 
+    if not session_source:
+        session_source = _resolve_session_source(db, current_session_id)
+
     # Recent sessions mode: when query is empty, return metadata for recent sessions.
     # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(
+            db,
+            limit,
+            current_session_id,
+            session_source=session_source,
+        )
 
     query = query.strip()
 
@@ -372,6 +408,7 @@ def session_search(
         # FTS5 search -- get matches ranked by relevance
         raw_results = db.search_messages(
             query=query,
+            source_filter=[session_source] if session_source else None,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # Get more matches to find unique sessions
@@ -606,7 +643,9 @@ registry.register(
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
         db=kw.get("db"),
-        current_session_id=kw.get("current_session_id")),
+        current_session_id=kw.get("current_session_id"),
+        session_source=kw.get("session_source"),
+    ),
     check_fn=check_session_search_requirements,
     emoji="🔍",
 )

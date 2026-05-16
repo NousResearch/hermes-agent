@@ -49,16 +49,20 @@ Do not use this skill for general Q&A, coding help, or non-memory tasks.
 
 | User intent | Action |
 |---|---|
-| "Remember that X" / "save this as a flashcard" | Generate a Q/A card, call `memento_cards.py add` |
+| "Remember that X" / "save this as a flashcard" | Generate a Q/A card, call `memento_cards.py json` with `command: add` |
 | Sends a fact without mentioning flashcards | Ask "Want me to save this as a Memento flashcard?" — only create if confirmed |
-| "Create a flashcard" | Ask for Q, A, collection; call `memento_cards.py add` |
-| "Review my cards" | Call `memento_cards.py due`, present cards one-by-one |
-| "Quiz me on [YouTube URL]" | Call `youtube_quiz.py fetch VIDEO_ID`, generate 5 questions, call `memento_cards.py add-quiz` |
-| "Export my cards" | Call `memento_cards.py export --output PATH` |
-| "Import cards from CSV" | Call `memento_cards.py import --file PATH --collection NAME` |
+| "Create a flashcard" | Ask for Q, A, collection; call `memento_cards.py json` with `command: add` |
+| "Review my cards" | Call `memento_cards.py due` without filters, or `memento_cards.py json` with `command: due` for collection filters; present cards one-by-one |
+| "Quiz me on [YouTube URL]" | Call `youtube_quiz.py fetch VIDEO_ID`, generate 5 questions, call `memento_cards.py json` with `command: add-quiz` |
+| "Export my cards" | Call `memento_cards.py json` with `command: export` |
+| "Import cards from CSV" | Call `memento_cards.py json` with `command: import` |
 | "Show my stats" | Call `memento_cards.py stats` |
 | "Delete a card" | Call `memento_cards.py delete --id ID` |
-| "Delete a collection" | Call `memento_cards.py delete-collection --collection NAME` |
+| "Delete a collection" | Call `memento_cards.py json` with `command: delete-collection` |
+
+## Shell Safety
+
+For any value that may come from a user, transcript, web page, file, model output, or collection title, use `memento_cards.py json <<'MEMENTO_JSON'` and put the value in the JSON payload. Do not interpolate those values into command-line flags. The heredoc delimiter must be single-quoted so the shell treats payload contents literally.
 
 ## Card Storage
 
@@ -101,13 +105,12 @@ Rules:
 - The question should test recall of the key fact
 - The answer should be concise and direct
 
-**Step 2:** Call the script to store the card:
+**Step 2:** Call the script to store the card using the JSON stdin interface. Do not place user-provided or model-generated question, answer, or collection text directly in shell arguments. Use a single-quoted heredoc delimiter so the shell does not expand `$()`, backticks, quotes, or other metacharacters inside the JSON payload:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add \
-  --question "What year did World War 2 end?" \
-  --answer "1945" \
-  --collection "History"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"add","question":"What year did World War 2 end?","answer":"1945","collection":"History"}
+MEMENTO_JSON
 ```
 
 If the user doesn't specify a collection, use `"General"` as the default.
@@ -121,7 +124,7 @@ When the user explicitly asks to create a flashcard, ask them for:
 2. The answer (back of card)
 3. The collection name (optional — default to `"General"`)
 
-Then call `memento_cards.py add` as above.
+Then call `memento_cards.py json` with `command: add` as above.
 
 ### Reviewing Due Cards
 
@@ -134,7 +137,9 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 This returns a JSON array of cards where `next_review_at <= now`. If a collection filter is needed:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due --collection "History"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"due","collection":"History"}
+MEMENTO_JSON
 ```
 
 **Review flow (free-text grading):**
@@ -148,7 +153,7 @@ Here is an example of the EXACT interaction pattern you must follow. The user an
 > **User:** 1991
 >
 > **Agent:** Not quite. The Berlin Wall fell in 1989. Next review is tomorrow.
-> *(agent calls: memento_cards.py rate --id ABC --rating hard --user-answer "1991")*
+> *(agent calls `memento_cards.py json` with `command: rate`, the card id, rating, and user answer in a single-quoted heredoc)*
 >
 > Next question: Who was the first person to walk on the moon?
 
@@ -167,15 +172,16 @@ Here is an example of the EXACT interaction pattern you must follow. The user an
 5. Then show the next question.
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
-  --id CARD_ID --rating easy --user-answer "what the user said"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"rate","id":"CARD_ID","rating":"easy","user_answer":"what the user said"}
+MEMENTO_JSON
 ```
 
 **Never skip step 3.** The user must always see the correct answer and feedback before you move on.
 
 If no cards are due, tell the user: "No cards due for review right now. Check back later!"
 
-**Retire override:** At any point the user can say "retire this card" to permanently remove it from reviews. Use `--rating retire` for this.
+**Retire override:** At any point the user can say "retire this card" to permanently remove it from reviews. Use `rating: "retire"` in the JSON rate payload for this.
 
 ### Spaced Repetition Algorithm
 
@@ -243,10 +249,9 @@ Use the first 15,000 characters of the transcript as context. Generate the quest
 **Step 5:** Store quiz cards:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add-quiz \
-  --video-id "VIDEO_ID" \
-  --questions '[{"question":"...","answer":"..."},...]' \
-  --collection "Quiz - Episode Title"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"add-quiz","video_id":"VIDEO_ID","questions":[{"question":"...","answer":"..."}],"collection":"Quiz - Episode Title"}
+MEMENTO_JSON
 ```
 
 The script deduplicates by `video_id` — if cards for that video already exist, it skips creation and reports the existing cards.
@@ -258,8 +263,9 @@ The script deduplicates by `video_id` — if cards for that video already exist,
 4. **IMPORTANT: You MUST reply to the user with feedback before doing anything else.** Show the grade, the correct answer, and when the card is next due. Do NOT silently skip to the next question. Keep it short and plain-text. Example: "Not quite. Answer: {answer}. Next review tomorrow."
 5. **After showing feedback**, call the rate command and then show the next question in the same message:
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
-  --id CARD_ID --rating easy --user-answer "what the user said"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"rate","id":"CARD_ID","rating":"easy","user_answer":"what the user said"}
+MEMENTO_JSON
 ```
 6. Repeat. Every answer MUST receive visible feedback before the next question.
 
@@ -267,20 +273,21 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 
 **Export:**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py export \
-  --output ~/flashcards.csv
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"export","output":"~/flashcards.csv"}
+MEMENTO_JSON
 ```
 
 Produces a 3-column CSV: `question,answer,collection` (no header row).
 
 **Import:**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py import \
-  --file ~/flashcards.csv \
-  --collection "Imported"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"import","file":"~/flashcards.csv","collection":"Imported"}
+MEMENTO_JSON
 ```
 
-Reads a CSV with columns: question, answer, and optionally collection (column 3). If the collection column is missing, uses the `--collection` argument.
+Reads a CSV with columns: question, answer, and optionally collection (column 3). If the collection column is missing, uses the `collection` value from the JSON payload.
 
 ### Statistics
 
@@ -309,7 +316,9 @@ Verify the helper scripts directly:
 
 ```bash
 python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add --question "Capital of France?" --answer "Paris" --collection "General"
+python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py json <<'MEMENTO_JSON'
+{"command":"add","question":"Capital of France?","answer":"Paris","collection":"General"}
+MEMENTO_JSON
 python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due
 ```
 

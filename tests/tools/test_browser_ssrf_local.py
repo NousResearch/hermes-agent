@@ -371,3 +371,98 @@ class TestAllowPrivateUrlsConfig:
         )
 
         assert browser_tool._allow_private_urls() is False
+
+
+class TestPostActionSsrf:
+    """Navigation-capable browser actions must not leave cloud sessions on private URLs."""
+
+    METADATA_URL = "http://169.254.169.254/latest/meta-data/"
+    INTERNAL_SNAPSHOT = "INTERNAL_METADATA"
+
+    @pytest.fixture()
+    def _cloud_patches(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: url == self.METADATA_URL)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: url != self.METADATA_URL)
+        monkeypatch.setattr(
+            browser_tool,
+            "_get_session_info",
+            lambda task_id: {
+                "session_name": f"s_{task_id}",
+                "bb_session_id": "remote-session",
+                "cdp_url": "wss://firecrawl.example/devtools/browser/1",
+                "features": {"firecrawl": True},
+                "_first_nav": False,
+            },
+        )
+
+    def test_click_resets_cloud_browser_after_metadata_navigation(self, monkeypatch, _cloud_patches):
+        calls = []
+
+        def fake_run(task_id, command, args=None, **kwargs):
+            calls.append((command, args or []))
+            if command == "click":
+                return {"success": True, "data": {}}
+            if command == "eval":
+                return {"success": True, "data": {"result": self.METADATA_URL}}
+            if command == "open" and args == ["about:blank"]:
+                return {"success": True, "data": {"url": "about:blank"}}
+            raise AssertionError(f"unexpected browser command: {command} {args}")
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+        result = json.loads(browser_tool.browser_click("@e1", task_id="task"))
+
+        assert result["success"] is False
+        assert "cloud metadata endpoint" in result["error"]
+        assert ("open", ["about:blank"]) in calls
+
+    def test_snapshot_refuses_to_read_cloud_browser_on_metadata_url(self, monkeypatch, _cloud_patches):
+        calls = []
+
+        def fake_run(task_id, command, args=None, **kwargs):
+            calls.append((command, args or []))
+            if command == "eval":
+                return {"success": True, "data": {"result": self.METADATA_URL}}
+            if command == "open" and args == ["about:blank"]:
+                return {"success": True, "data": {"url": "about:blank"}}
+            if command == "snapshot":
+                return {"success": True, "data": {"snapshot": self.INTERNAL_SNAPSHOT, "refs": {}}}
+            raise AssertionError(f"unexpected browser command: {command} {args}")
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+        result = json.loads(browser_tool.browser_snapshot(task_id="task"))
+
+        assert result["success"] is False
+        assert "cloud metadata endpoint" in result["error"]
+        assert ("snapshot", ["-c"]) not in calls
+        assert ("open", ["about:blank"]) in calls
+
+    def test_console_eval_resets_cloud_browser_after_metadata_navigation(self, monkeypatch, _cloud_patches):
+        calls = []
+
+        def fake_run(task_id, command, args=None, **kwargs):
+            calls.append((command, args or []))
+            if command == "eval" and args == ["location.href = 'http://169.254.169.254/latest/meta-data/'"]:
+                return {"success": True, "data": {"result": "undefined"}}
+            if command == "eval" and args == ["window.location.href"]:
+                return {"success": True, "data": {"result": self.METADATA_URL}}
+            if command == "open" and args == ["about:blank"]:
+                return {"success": True, "data": {"url": "about:blank"}}
+            raise AssertionError(f"unexpected browser command: {command} {args}")
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
+
+        result = json.loads(
+            browser_tool.browser_console(
+                expression="location.href = 'http://169.254.169.254/latest/meta-data/'",
+                task_id="task",
+            )
+        )
+
+        assert result["success"] is False
+        assert "cloud metadata endpoint" in result["error"]
+        assert ("open", ["about:blank"]) in calls

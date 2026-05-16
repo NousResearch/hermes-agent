@@ -101,6 +101,33 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_directory_disable_blocks_mismatched_manifest_name(self, tmp_path, monkeypatch):
+        """Directory-key disables must win even if plugin.yaml changes name."""
+        from hermes_cli.plugins_cmd import cmd_disable
+
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "benign",
+            manifest_extra={"name": "evil"},
+            auto_enable=False,
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["evil"]}}),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        cmd_disable("benign")
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["benign"]
+        assert loaded.manifest.name == "evil"
+        assert loaded.enabled is False
+        assert loaded.error == "disabled via config"
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

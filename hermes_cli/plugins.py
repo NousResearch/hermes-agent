@@ -986,7 +986,7 @@ class PluginManager:
             data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
-            key = f"{prefix}/{plugin_dir.name}" if prefix else name
+            key = f"{prefix}/{plugin_dir.name}" if prefix else plugin_dir.name
 
             raw_kind = data.get("kind", "standalone")
             if not isinstance(raw_kind, str):

@@ -975,6 +975,11 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+_LEGACY_PLATFORM_TOOLSET_ALIASES = {
+    "qqbot": ("qq",),
+}
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -986,6 +991,13 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    if toolset_names is None:
+        legacy_platforms = _LEGACY_PLATFORM_TOOLSET_ALIASES.get(platform, ())
+        for legacy_platform in legacy_platforms:
+            legacy_toolset_names = platform_toolsets.get(legacy_platform)
+            if isinstance(legacy_toolset_names, list):
+                toolset_names = legacy_toolset_names
+                break
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1188,8 +1200,8 @@ def _get_platform_tools(
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 
-    Preserves any non-configurable toolset entries (like MCP server names)
-    that were already in the config for this platform.
+    Preserves unknown entries (like MCP server names) that were already in
+    the config for this platform.
     """
     config.setdefault("platform_toolsets", {})
 
@@ -1200,6 +1212,8 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         ts for ts in enabled_toolset_keys
         if _toolset_allowed_for_platform(ts, platform)
     }
+
+    from toolsets import validate_toolset
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -1217,11 +1231,13 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         existing_toolsets = []
     existing_toolsets = [str(ts) for ts in existing_toolsets]
 
-    # Preserve any entries that are NOT configurable toolsets and NOT platform
-    # defaults (i.e. only MCP server names should be preserved)
+    # Preserve unknown entries (typically MCP server names) while dropping any
+    # valid hidden toolset/alias that could override unchecked selections.
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys and entry not in platform_default_keys
+        if entry not in configurable_keys
+        and entry not in platform_default_keys
+        and not validate_toolset(entry)
     }
     # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
     # saving from the picker as consent to clear the "no_mcp" sentinel. The

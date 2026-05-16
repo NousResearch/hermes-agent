@@ -74,6 +74,38 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_get_platform_tools_qqbot_honors_legacy_qq_config():
+    legacy_config = {"platform_toolsets": {"qq": ["web", "no_mcp"]}}
+    migrated_config = {"platform_toolsets": {"qqbot": ["web", "no_mcp"]}}
+
+    legacy_enabled = _get_platform_tools(
+        legacy_config, "qqbot", include_default_mcp_servers=False
+    )
+    migrated_enabled = _get_platform_tools(
+        migrated_config, "qqbot", include_default_mcp_servers=False
+    )
+
+    assert legacy_enabled == migrated_enabled
+    assert "web" in legacy_enabled
+    assert "terminal" not in legacy_enabled
+    assert "file" not in legacy_enabled
+    assert "code_execution" not in legacy_enabled
+
+
+def test_get_platform_tools_qqbot_prefers_canonical_config_over_legacy_qq():
+    config = {
+        "platform_toolsets": {
+            "qq": ["terminal", "no_mcp"],
+            "qqbot": ["web", "no_mcp"],
+        }
+    }
+
+    enabled = _get_platform_tools(config, "qqbot", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "terminal" not in enabled
+
+
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
@@ -453,6 +485,27 @@ def test_save_platform_tools_does_not_preserve_hermes_telegram():
     saved = config["platform_toolsets"]["telegram"]
     assert "hermes-telegram" not in saved
     assert "web" in saved
+
+
+def test_save_platform_tools_does_not_preserve_hidden_valid_toolsets():
+    """Hidden valid toolsets and aliases must not survive a picker save.
+
+    Otherwise entries like ``all`` or ``debugging`` can re-enable tools the
+    operator unchecked in the visible configurable list.
+    """
+    hidden_toolsets = {"all", "*", "debugging", "hermes-gateway", "search"}
+    config = {
+        "platform_toolsets": {
+            "telegram": ["web", "terminal", *sorted(hidden_toolsets)]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", {"web"})
+
+    saved = set(config["platform_toolsets"]["telegram"])
+    assert saved == {"web"}
+    assert saved.isdisjoint(hidden_toolsets)
 
 
 def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():

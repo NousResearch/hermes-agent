@@ -335,3 +335,22 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+def test_allowed_kinds_prevents_disallowed_file_reads(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("DO_NOT_ATTACH\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "read @file:secret.txt",
+        cwd=tmp_path,
+        context_length=100_000,
+        allowed_kinds={"url"},
+    )
+
+    assert result.expanded
+    assert "DO_NOT_ATTACH" not in result.message
+    assert "@file:secret.txt" in result.message
+    assert any("expansion is disabled" in warning for warning in result.warnings)

@@ -113,6 +113,38 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def render_account_usage_compact(snapshot: Optional[AccountUsageSnapshot]) -> str:
+    """Return a terse one-line quota summary suitable for a status bar."""
+    if not snapshot or snapshot.unavailable_reason:
+        return ""
+
+    preferred_labels = {"session", "current session", "primary", "five hour"}
+    window = None
+    for candidate in snapshot.windows:
+        if (candidate.label or "").strip().lower() in preferred_labels:
+            window = candidate
+            break
+    if window is None and snapshot.windows:
+        window = snapshot.windows[0]
+    if window is None or window.used_percent is None:
+        return ""
+
+    remaining = max(0, round(100 - float(window.used_percent)))
+    provider = (snapshot.provider or "").strip().lower()
+    if provider == "openai-codex":
+        return f"quota {remaining}%"
+    if provider == "deepseek":
+        # DeepSeek uses monetary balance, not percentage. Show primary balance.
+        for window in snapshot.windows:
+            if window.detail:
+                return window.detail
+        for detail in snapshot.details:
+            if detail:
+                return detail
+        return "DS"
+    return f"acct {remaining}%"
+
+
 def _resolve_codex_usage_url(base_url: str) -> str:
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -233,6 +265,87 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
+def _fetch_deepseek_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Fetch DeepSeek account balance from the user/balance endpoint.
+
+    DeepSeek uses a prepaid credit system. The balance endpoint returns
+    multi-currency balances (CNY, USD). We surface the primary balance
+    in the status bar and full details via /usage.
+    """
+    runtime = resolve_runtime_provider(
+        requested="deepseek",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get("https://api.deepseek.com/user/balance", headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+
+    is_available = payload.get("is_available", False)
+    balance_infos = payload.get("balance_infos") or []
+
+    if not is_available or not balance_infos:
+        return AccountUsageSnapshot(
+            provider="deepseek",
+            source="balance_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="Balance information not available",
+        )
+
+    # Build full detail lines for /usage display
+    details: list[str] = []
+    for info in balance_infos:
+        currency = (info.get("currency") or "").strip()
+        total = info.get("total_balance", "0")
+        topped_up = info.get("topped_up_balance")
+        granted = info.get("granted_balance")
+        if currency == "CNY":
+            symbol = "¥"
+        elif currency == "USD":
+            symbol = "$"
+        else:
+            symbol = f"{currency} "
+        parts = [f"{symbol}{total}"]
+        extra: list[str] = []
+        if topped_up is not None:
+            extra.append(f"topped up {symbol}{topped_up}")
+        if granted is not None:
+            extra.append(f"granted {symbol}{granted}")
+        if extra:
+            parts.append(f"({', '.join(extra)})")
+        details.append(" ".join(parts))
+
+    # Pick a primary balance for compact status-bar display.
+    # Prefer USD if present; otherwise use the first currency listed.
+    primary_detail = None
+    for info in balance_infos:
+        if (info.get("currency") or "").strip() == "USD":
+            primary_detail = f"DS ${float(info['total_balance']):.2f}"
+            break
+    if primary_detail is None and balance_infos:
+        info = balance_infos[0]
+        cur = (info.get("currency") or "").strip()
+        primary_detail = f"DS {cur} {info['total_balance']}"
+
+    return AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=_utc_now(),
+        title="DeepSeek balance",
+        windows=(AccountUsageWindow(label="Balance", detail=primary_detail),),
+        details=tuple(details),
+    )
+
+
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(
         requested="openrouter",
@@ -321,6 +434,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "deepseek":
+            return _fetch_deepseek_account_usage(base_url, api_key)
     except Exception:
         return None
     return None

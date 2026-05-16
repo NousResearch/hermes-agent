@@ -2849,6 +2849,10 @@ class HermesCLI:
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        self._status_bar_account_quota_label = ""
+        self._status_bar_account_usage_signature = None
+        self._status_bar_account_usage_fetched_at = 0.0
+        self._status_bar_account_usage_fetching = False
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -3030,6 +3034,50 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _status_bar_quota_label(rate_limit_state: Any) -> Optional[str]:
+        """Return a compact remaining-quota label for the status bar.
+
+        The status bar renders on every keystroke, so it must only use the
+        already-captured provider rate-limit headers from the last API response
+        and never perform a fresh account/quota network lookup here.
+        """
+        if not rate_limit_state or not getattr(rate_limit_state, "has_data", False):
+            return None
+
+        def _pick_bucket(minute_bucket: Any, hour_bucket: Any):
+            # Hourly windows are closer to what users think of as remaining
+            # quota; fall back to minute windows for providers that only expose
+            # short rolling windows.
+            if getattr(hour_bucket, "limit", 0) > 0:
+                return "h", hour_bucket
+            if getattr(minute_bucket, "limit", 0) > 0:
+                return "m", minute_bucket
+            return None, None
+
+        parts: list[str] = []
+        req_scope, req_bucket = _pick_bucket(
+            getattr(rate_limit_state, "requests_min", None),
+            getattr(rate_limit_state, "requests_hour", None),
+        )
+        if req_bucket is not None:
+            remaining = format_token_count_compact(getattr(req_bucket, "remaining", 0) or 0)
+            limit = format_token_count_compact(getattr(req_bucket, "limit", 0) or 0)
+            parts.append(f"{remaining}/{limit} req/{req_scope}")
+
+        tok_scope, tok_bucket = _pick_bucket(
+            getattr(rate_limit_state, "tokens_min", None),
+            getattr(rate_limit_state, "tokens_hour", None),
+        )
+        if tok_bucket is not None:
+            remaining = format_token_count_compact(getattr(tok_bucket, "remaining", 0) or 0)
+            limit = format_token_count_compact(getattr(tok_bucket, "limit", 0) or 0)
+            parts.append(f"{remaining}/{limit} tok/{tok_scope}")
+
+        if not parts:
+            return None
+        return "quota " + " · ".join(parts)
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -3108,6 +3156,8 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "quota_label": None,
+            "account_quota_label": "",
         }
 
         if not agent:
@@ -3121,6 +3171,12 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        try:
+            get_rate_limit_state = getattr(agent, "get_rate_limit_state", None)
+            if callable(get_rate_limit_state):
+                snapshot["quota_label"] = self._status_bar_quota_label(get_rate_limit_state())
+        except Exception:
+            snapshot["quota_label"] = None
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -3132,7 +3188,62 @@ class HermesCLI:
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        snapshot["account_quota_label"] = self._get_status_bar_account_quota_label(agent)
         return snapshot
+
+    def _get_status_bar_account_quota_label(self, agent: Any) -> str:
+        """Return cached compact account-quota text for the status bar.
+
+        Refreshes asynchronously so the hot render path never blocks on a
+        provider API call. This revives the older Codex quota-status PR while
+        keeping status-bar rendering itself cheap.
+        """
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider not in {"openai-codex", "deepseek"}:
+            return ""
+
+        base_url = str(getattr(agent, "base_url", "") or "")
+        signature = (provider, base_url)
+        now = time.time()
+        ttl_seconds = 60.0
+
+        cached_label = getattr(self, "_status_bar_account_quota_label", "") or ""
+        cached_sig = getattr(self, "_status_bar_account_usage_signature", None)
+        fetched_at = float(getattr(self, "_status_bar_account_usage_fetched_at", 0.0) or 0.0)
+        fetching = bool(getattr(self, "_status_bar_account_usage_fetching", False))
+
+        stale = (cached_sig != signature) or ((now - fetched_at) > ttl_seconds)
+        if stale and not fetching:
+            self._status_bar_account_usage_fetching = True
+
+            def _refresh_quota() -> None:
+                label = ""
+                try:
+                    from agent.account_usage import fetch_account_usage, render_account_usage_compact
+
+                    snapshot = fetch_account_usage(
+                        provider,
+                        base_url=getattr(agent, "base_url", None),
+                        api_key=getattr(agent, "api_key", None),
+                    )
+                    label = render_account_usage_compact(snapshot)
+                except Exception:
+                    label = ""
+                finally:
+                    self._status_bar_account_quota_label = label
+                    self._status_bar_account_usage_signature = signature
+                    self._status_bar_account_usage_fetched_at = time.time()
+                    self._status_bar_account_usage_fetching = False
+                    try:
+                        self._invalidate(min_interval=0.0)
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_refresh_quota, daemon=True, name="status-bar-account-usage").start()
+
+        if cached_sig == signature:
+            return cached_label
+        return ""
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
@@ -3361,6 +3472,10 @@ class HermesCLI:
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
+            account_quota_label = snapshot.get("account_quota_label")
+            quota_label = account_quota_label or snapshot.get("quota_label")
+            if quota_label and (account_quota_label or width >= 108):
+                parts.append(quota_label)
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -3441,6 +3556,11 @@ class HermesCLI:
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    account_quota_label = snapshot.get("account_quota_label")
+                    quota_label = account_quota_label or snapshot.get("quota_label")
+                    if quota_label and (account_quota_label or width >= 108):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", quota_label))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),

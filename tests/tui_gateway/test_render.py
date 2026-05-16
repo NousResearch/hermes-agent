@@ -21,8 +21,11 @@ def test_renderer_does_not_import_agent_rich_output(monkeypatch):
 
     def tracking_import(name, *args, **kwargs):
         imported.append(name)
+        fromlist = args[2] if len(args) > 2 else kwargs.get("fromlist", ())
         if name == "agent.rich_output":
-            raise AssertionError("agent.rich_output must not be imported")
+            raise AssertionError("agent.rich_output must not be imported (absolute)")
+        if name == "agent" and "rich_output" in (fromlist or ()):
+            raise AssertionError("agent.rich_output must not be imported (from-import)")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", tracking_import)

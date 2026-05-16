@@ -61,18 +61,73 @@ Use `git cherry-pick <sha>` for future upstream integration.
 
 ## Unreachable (need fetch)
 
-These commits are on upstream main but not in our local object store (after last fetch cutoff):
+- `4e89c530` fix(async): close unscheduled coroutines in threadsafe bridges (May 15) — 6 conflicts, cross-cutting, skipped
 
-- `627f8a5f` security: sanitize tool error strings before injecting into model context (May 16)
-- `585d6b64` fix(gateway): merge rapid TEXT follow-ups during active sessions (May 16)
-- `068c24f8` feat(deepseek): add thinking.type + reasoning_effort mapping for DeepSeek API (Apr 24)
-- `518f3955` fix(gateway): keep running when platforms fail; per-platform circuit breaker (May 15)
-- `2d7182f7` fix(delegate): prevent orphan heartbeat thread (May 15)
-- `60683633` fix(delegate): guard heartbeat join against unstarted thread (May 15)
-- `6ba35ec3` terminal: tighten dangerous-command detection (May 16)
-- `016c772e` feat(plugins): tool override flag for replacing built-in tools (May 16)
-- `395e9dd9` feat: supports_parallel_tool_calls for MCP servers (May 16)
-- `4e89c530` fix(async): close unscheduled coroutines in threadsafe bridges (May 15)
+### P167 — DeepSeek thinking.type + reasoning_effort mapping
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `068c24f8` feat(deepseek): add thinking.type + reasoning_effort mapping for DeepSeek API
+- **Local:** `8c8eeddf5`
+- **Files:** agent/transports/chat_completions.py, run_agent.py
+- **Why:** We use DeepSeek V4 — better reasoning control via thinking.type parameter.
+
+### P168 — Gateway: keep running when platforms fail + circuit breaker
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `518f3955` fix(gateway): keep running when platforms fail; add per-platform circuit breaker + /platform
+- **Local:** `3f8886c4d`
+- **Files:** gateway/run.py (major), +8 other files
+- **Why:** Gateway survives platform failures instead of dying. Critical for our gateway restart (MOL-576).
+- **Conflict:** gateway/run.py (2 conflicts — startup failure handling + reconnect retry logic, accepted incoming)
+
+### P169 — Delegate: prevent orphan heartbeat thread
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `2d7182f7` fix(delegate): move heartbeat thread start inside try block to prevent orphan
+- **Local:** `278afdc74`
+- **Files:** tools/delegate_tool.py
+- **Why:** delegate_task heartbeat threads don't leak when delegation fails.
+
+### P170 — Delegate: guard heartbeat join against unstarted thread
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `60683633` fix(delegate): guard heartbeat join against unstarted thread
+- **Local:** `3b2af6ac3`
+- **Files:** tools/delegate_tool.py
+- **Why:** Companion to P169 — prevents crash when joining a heartbeat that never started.
+
+### P171 — Terminal: tighten dangerous-command detection
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `6ba35ec3` Inspired by Claude Code: tighten dangerous-command detection
+- **Local:** `745eaf985`
+- **Files:** tools/approval.py, tests/tools/test_approval.py
+- **Why:** Claude Code-inspired security hardening for terminal command approval.
+- **Conflict:** test_approval.py (test additions — accepted incoming)
+
+### P172 — Plugins: tool override flag
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `016c772e` feat(plugins): tool override flag for replacing built-in tools
+- **Local:** `58044c3ef`
+- **Files:** tools/registry.py, hermes_cli/plugins.py, +2 others
+- **Why:** Clean way to layer our patches — override built-in tools via plugins instead of modifying source.
+- **Conflict:** tools/registry.py (new register() params — accepted incoming)
+
+### P173 — MCP: supports_parallel_tool_calls
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `395e9dd9` feat: add supports_parallel_tool_calls for MCP servers
+- **Local:** `e38111236`
+- **Files:** tools/mcp_tool.py, run_agent.py, +4 others
+- **Why:** MCP servers can declare parallel tool call support — faster multi-tool operations.
+
+### P174 — Security: sanitize tool error strings
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `627f8a5f` security: sanitize tool error strings before injecting into model context
+- **Local:** `fa0813f7e`
+- **Files:** model_tools.py, tools/registry.py
+- **Why:** Prevents error stack traces and sensitive data from entering context. Directly addresses memory budget concern.
+
+### P175 — Gateway: merge rapid TEXT follow-ups
+- **Cherry-picked:** 2026-05-16
+- **Upstream:** `585d6b64` fix(gateway): merge rapid TEXT follow-ups during active sessions
+- **Local:** `cdf42b532`
+- **Files:** gateway/platforms/base.py
+- **Why:** Rapid-fire messages get merged into one turn instead of separate turns — reduces context bloat and API calls.
 
 ### P159 — Skip providers without credentials
 - **Cherry-picked:** 2026-05-16

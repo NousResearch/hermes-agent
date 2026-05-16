@@ -839,7 +839,7 @@ def test_ws_transport_disconnect_respects_idle_reap_grace(monkeypatch):
         server._sessions.pop("sid", None)
 
 
-def test_ws_transport_disconnect_detaches_running_session(monkeypatch):
+def test_ws_transport_disconnect_detaches_running_session_for_deferred_close(monkeypatch):
     transport = object()
     worker = types.SimpleNamespace(
         close=lambda: (_ for _ in ()).throw(AssertionError("closed running worker"))
@@ -856,6 +856,42 @@ def test_ws_transport_disconnect_detaches_running_session(monkeypatch):
         assert closed == 0
         assert "sid" in server._sessions
         assert server._sessions["sid"]["transport"] is server._stdio_transport
+        assert server._sessions["sid"]["_close_when_idle"] == "tui_disconnect"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_orphaned_running_session_closes_after_turn_clears_running(monkeypatch):
+    calls = {"ended": [], "worker_closed": 0, "agent_closed": 0}
+
+    class _DB:
+        def end_session(self, session_id, end_reason):
+            calls["ended"].append((session_id, end_reason))
+
+    class _Worker:
+        def close(self):
+            calls["worker_closed"] += 1
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.close = lambda: calls.__setitem__("agent_closed", calls["agent_closed"] + 1)
+    agent.commit_memory_session = lambda _history: None
+    session = _session(
+        agent=agent,
+        slash_worker=_Worker(),
+        running=False,
+        _close_when_idle="tui_disconnect",
+    )
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *args: None)
+
+    try:
+        assert server._close_session_if_marked_idle("sid", session) is True
+
+        assert "sid" not in server._sessions
+        assert calls["ended"] == [("session-key", "tui_disconnect")]
+        assert calls["worker_closed"] == 1
+        assert calls["agent_closed"] == 1
     finally:
         server._sessions.pop("sid", None)
 

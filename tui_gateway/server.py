@@ -379,12 +379,14 @@ def _close_sessions_for_transport(
     ``session.close``.  Leaving their sessions attached to a dead transport
     keeps slash workers alive and leaves state.db rows open.  Running sessions
     are detached to stdio so in-flight turns can finish without writing to a
-    dead WS. Idle sessions are reaped only after the confirmed-idle grace
-    window; a quick reconnect can reattach them before closeout.
+    dead WS, then marked for closeout as soon as that turn clears ``running``.
+    Idle sessions are reaped only after the confirmed-idle grace window; a
+    quick reconnect can reattach them before closeout.
     """
     for _sid, session in list(_sessions.items()):
         if session.get("transport") is transport and session.get("running"):
             session["transport"] = _stdio_transport
+            session["_close_when_idle"] = end_reason
     return _reap_confirmed_idle_sessions(
         grace_seconds=grace_seconds,
         end_reason=end_reason,
@@ -420,6 +422,24 @@ def _session_transport_is_closed(session: dict) -> bool:
         and transport is not _stdio_transport
         and getattr(transport, "is_closed", False)
     )
+
+
+def _close_session_if_marked_idle(sid: str, session: dict) -> bool:
+    """Close a running session that was orphaned by a transport disconnect.
+
+    Running dashboard sessions are detached from their dead WebSocket so their
+    in-flight turn can finish.  Once the turn clears ``running``, this helper
+    performs the deferred closeout so the DB row and slash worker do not leak.
+    """
+    close_when_idle = session.pop("_close_when_idle", None)
+    if not close_when_idle:
+        return False
+    popped = _sessions.pop(sid, None)
+    _close_session_resources(
+        popped or session,
+        end_reason=str(close_when_idle),
+    )
+    return True
 
 
 def _reap_confirmed_idle_sessions(
@@ -3596,6 +3616,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
+            if _close_session_if_marked_idle(sid, session):
+                return
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

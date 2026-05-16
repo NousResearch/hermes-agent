@@ -925,6 +925,44 @@ class TestIsPaymentError:
         exc = Exception("connection reset")
         assert _is_payment_error(exc) is False
 
+    # ── Daily / monthly quota exhaustion (#26803) ────────────────────────────
+
+    def test_429_quota_exceeded(self):
+        """Cloud provider quota exhaustion (e.g. Vertex AI) is a payment error."""
+        exc = Exception("RESOURCE_EXHAUSTED: quota exceeded for project")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_too_many_tokens_per_day(self):
+        """Bedrock / LiteLLM daily token limit is a payment error."""
+        exc = Exception("Too many tokens per day: 1000000 used, 1000000 limit")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_daily_limit_phrase(self):
+        """Generic 'daily limit' phrasing is a payment error."""
+        exc = Exception("You have exceeded your daily limit.")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_resource_exhausted_grpc(self):
+        """Vertex AI gRPC RESOURCE_EXHAUSTED maps to payment error."""
+        exc = Exception("resource exhausted")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_daily_quota_phrase(self):
+        """'daily quota' phrasing is a payment error."""
+        exc = Exception("Daily quota of 500 requests reached.")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_transient_rate_limit_not_quota(self):
+        """Transient 429 rate limit without quota keywords is NOT a payment error."""
+        exc = Exception("Rate limit exceeded. Retry after 10s.")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
 
 class TestIsRateLimitError:
     """_is_rate_limit_error detects 429 rate-limit errors warranting fallback."""

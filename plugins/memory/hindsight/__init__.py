@@ -254,6 +254,14 @@ RETAIN_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional per-call tags to merge with configured default retain tags.",
             },
+            "memory_type": {
+                "type": "string",
+                "description": "Metadata type for the retained fact (e.g. durable_preference, failure_mode, decision, session_summary).",
+            },
+            "decay_hint": {
+                "type": "string",
+                "description": "Metadata hint for retention/curation (e.g. short_lived, episodic, long_lived).",
+            },
         },
         "required": ["content"],
     },
@@ -573,6 +581,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_every_n_turns = 1
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
+        self._session_type = "normal"
+        self._retain_disabled_session_types = ["eval", "bench", "benchmark"]
+        self._retain_memory_type = "session_turn"
+        self._retain_decay_hint = "episodic"
+        self._retain_allowed_memory_types: list[str] = []
+        self._retain_excluded_memory_types: list[str] = []
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
 
@@ -852,6 +866,12 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
+            {"key": "session_type", "description": "Session type metadata for memory gating (normal, eval, bench, benchmark)", "default": "normal"},
+            {"key": "retain_disabled_session_types", "description": "Session types for which Hindsight retain is structurally disabled", "default": ["eval", "bench", "benchmark"]},
+            {"key": "retain_memory_type", "description": "Default memory_type metadata for automatic retained turns", "default": "session_turn"},
+            {"key": "retain_decay_hint", "description": "Default decay_hint metadata for automatic retained turns", "default": "episodic"},
+            {"key": "retain_allowed_memory_types", "description": "Optional allowlist for retained memory_type values; empty means allow all except excluded", "default": []},
+            {"key": "retain_excluded_memory_types", "description": "Optional denylist for retained memory_type values", "default": []},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
@@ -1172,6 +1192,37 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
         ).strip()
+        self._session_type = str(
+            kwargs.get("session_type")
+            or self._config.get("session_type")
+            or os.environ.get("HERMES_SESSION_TYPE")
+            or os.environ.get("HERMES_RUN_TYPE")
+            or "normal"
+        ).strip().lower() or "normal"
+        if "retain_disabled_session_types" in self._config:
+            disabled_session_types = self._config.get("retain_disabled_session_types")
+            default_disabled_session_types: list[str] = []
+        else:
+            disabled_session_types = ["eval", "bench", "benchmark"]
+            default_disabled_session_types = ["eval", "bench", "benchmark"]
+        self._retain_disabled_session_types = [
+            item.lower()
+            for item in _normalize_retain_tags(disabled_session_types)
+        ] or default_disabled_session_types
+        self._retain_memory_type = str(
+            self._config.get("retain_memory_type") or "session_turn"
+        ).strip() or "session_turn"
+        self._retain_decay_hint = str(
+            self._config.get("retain_decay_hint") or "episodic"
+        ).strip() or "episodic"
+        self._retain_allowed_memory_types = [
+            item.lower()
+            for item in _normalize_retain_tags(self._config.get("retain_allowed_memory_types", []))
+        ]
+        self._retain_excluded_memory_types = [
+            item.lower()
+            for item in _normalize_retain_tags(self._config.get("retain_excluded_memory_types", []))
+        ]
         self._retain_user_prefix = str(
             self._config.get("retain_user_prefix") or os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User")
         ).strip() or "User"
@@ -1205,9 +1256,11 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, session_type=%s, disabled_session_types=%s, "
+                     "recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._retain_context, self._session_type,
+                     self._retain_disabled_session_types, self._recall_max_tokens, self._recall_max_input_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1357,10 +1410,15 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
+        retained_at = _utc_timestamp()
         metadata: Dict[str, str] = {
-            "retained_at": _utc_timestamp(),
+            "retained_at": retained_at,
+            "observed_at": retained_at,
             "message_count": str(message_count),
             "turn_index": str(turn_index),
+            "memory_type": self._retain_memory_type,
+            "decay_hint": self._retain_decay_hint,
+            "session_type": self._session_type,
         }
         if self._retain_source:
             metadata["source"] = self._retain_source
@@ -1383,6 +1441,22 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
         return metadata
+
+    def _retain_blocked_reason(self) -> str | None:
+        """Return a reason string when Hindsight retention is disabled for this session."""
+        if self._session_type in self._retain_disabled_session_types:
+            return f"Hindsight retain disabled for session_type={self._session_type}"
+        return None
+
+    def _memory_type_blocked_reason(self, memory_type: str) -> str | None:
+        normalized = (memory_type or "").strip().lower()
+        if not normalized:
+            return "Hindsight retain requires memory_type metadata"
+        if normalized in self._retain_excluded_memory_types:
+            return f"Hindsight retain memory_type={normalized} is excluded"
+        if self._retain_allowed_memory_types and normalized not in self._retain_allowed_memory_types:
+            return f"Hindsight retain memory_type={normalized} is not allowed"
+        return None
 
     def _build_retain_kwargs(
         self,
@@ -1423,6 +1497,14 @@ class HindsightMemoryProvider(MemoryProvider):
         """
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
+            return
+        blocked_reason = self._retain_blocked_reason()
+        if blocked_reason:
+            logger.info("sync_turn: skipped (%s)", blocked_reason)
+            return
+        blocked_reason = self._memory_type_blocked_reason(self._retain_memory_type)
+        if blocked_reason:
+            logger.info("sync_turn: skipped (%s)", blocked_reason)
             return
         if self._shutting_down.is_set():
             logger.debug("sync_turn: skipped (shutting down)")
@@ -1500,11 +1582,23 @@ class HindsightMemoryProvider(MemoryProvider):
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            blocked_reason = self._retain_blocked_reason()
+            if blocked_reason:
+                return tool_error(blocked_reason)
+            memory_type = str(args.get("memory_type") or self._retain_memory_type).strip()
+            blocked_reason = self._memory_type_blocked_reason(memory_type)
+            if blocked_reason:
+                return tool_error(blocked_reason)
             context = args.get("context")
             try:
+                metadata = self._build_metadata(message_count=1, turn_index=self._turn_index)
+                metadata["memory_type"] = memory_type
+                if args.get("decay_hint"):
+                    metadata["decay_hint"] = str(args.get("decay_hint")).strip()
                 retain_kwargs = self._build_retain_kwargs(
                     content,
                     context=context,
+                    metadata=metadata,
                     tags=args.get("tags"),
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",

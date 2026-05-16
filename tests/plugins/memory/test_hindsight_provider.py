@@ -40,6 +40,7 @@ def _clean_env(monkeypatch):
         "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
+        "HERMES_SESSION_TYPE", "HERMES_RUN_TYPE",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -161,6 +162,8 @@ class TestSchemas:
         assert RETAIN_SCHEMA["name"] == "hindsight_retain"
         assert "content" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "tags" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "memory_type" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "decay_hint" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
     def test_recall_schema_has_query(self):
@@ -200,6 +203,12 @@ class TestConfig:
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+        assert provider._session_type == "normal"
+        assert provider._retain_disabled_session_types == ["eval", "bench", "benchmark"]
+        assert provider._retain_memory_type == "session_turn"
+        assert provider._retain_decay_hint == "episodic"
+        assert provider._retain_allowed_memory_types == []
+        assert provider._retain_excluded_memory_types == []
 
     def test_custom_config_values(self, provider_with_config):
         p = provider_with_config(
@@ -214,6 +223,12 @@ class TestConfig:
             retain_every_n_turns=3,
             retain_context="custom-ctx",
             bank_retain_mission="Extract key facts",
+            session_type="eval",
+            retain_disabled_session_types=["eval", "bench"],
+            retain_memory_type="durable_preference",
+            retain_decay_hint="long_lived",
+            retain_allowed_memory_types=["durable_preference", "failure_mode"],
+            retain_excluded_memory_types=["raw_eval_transcript"],
             recall_max_tokens=2048,
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
@@ -232,11 +247,49 @@ class TestConfig:
         assert p._retain_every_n_turns == 3
         assert p._retain_context == "custom-ctx"
         assert p._bank_retain_mission == "Extract key facts"
+        assert p._session_type == "eval"
+        assert p._retain_disabled_session_types == ["eval", "bench"]
+        assert p._retain_memory_type == "durable_preference"
+        assert p._retain_decay_hint == "long_lived"
+        assert p._retain_allowed_memory_types == ["durable_preference", "failure_mode"]
+        assert p._retain_excluded_memory_types == ["raw_eval_transcript"]
         assert p._recall_max_tokens == 2048
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+
+    def test_session_type_can_come_from_env(self, provider_with_config, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_TYPE", "BENCH")
+
+        p = provider_with_config()
+
+        assert p._session_type == "bench"
+
+    def test_run_type_env_fallback_used_when_session_type_absent(self, provider_with_config, monkeypatch):
+        monkeypatch.setenv("HERMES_RUN_TYPE", "Benchmark")
+
+        p = provider_with_config()
+
+        assert p._session_type == "benchmark"
+
+    def test_empty_disabled_session_types_disables_session_gate(self, provider_with_config):
+        p = provider_with_config(
+            session_type="eval",
+            retain_disabled_session_types=[],
+        )
+
+        assert p._retain_disabled_session_types == []
+        assert p._retain_blocked_reason() is None
+
+    def test_memory_type_lists_are_case_normalized(self, provider_with_config):
+        p = provider_with_config(
+            retain_allowed_memory_types=["Durable_Preference"],
+            retain_excluded_memory_types=["Raw_Eval_Transcript"],
+        )
+
+        assert p._memory_type_blocked_reason("DURABLE_PREFERENCE") is None
+        assert "excluded" in p._memory_type_blocked_reason("RAW_EVAL_TRANSCRIPT")
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""
@@ -282,6 +335,7 @@ class TestConfig:
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
@@ -540,6 +594,46 @@ class TestToolHandlers:
         assert "error" in result
         assert "connection failed" in result["error"]
 
+    def test_retain_tool_blocked_for_eval_session(self, provider_with_config):
+        p = provider_with_config(session_type="eval")
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_retain", {"content": "do not store eval data"}
+        ))
+
+        assert "error" in result
+        assert "disabled for session_type=eval" in result["error"]
+        p._client.aretain.assert_not_called()
+
+    def test_retain_tool_rejects_disallowed_memory_type(self, provider_with_config):
+        p = provider_with_config(retain_allowed_memory_types=["durable_preference"])
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_retain",
+            {"content": "raw transcript", "memory_type": "raw_eval_transcript"},
+        ))
+
+        assert "error" in result
+        assert "memory_type=raw_eval_transcript is not allowed" in result["error"]
+        p._client.aretain.assert_not_called()
+
+    def test_retain_tool_accepts_allowed_memory_type_metadata(self, provider_with_config):
+        p = provider_with_config(retain_allowed_memory_types=["durable_preference"])
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": "User prefers concise updates",
+                "memory_type": "durable_preference",
+                "decay_hint": "long_lived",
+            },
+        ))
+
+        assert result["result"] == "Memory stored successfully."
+        metadata = p._client.aretain.call_args.kwargs["metadata"]
+        assert metadata["memory_type"] == "durable_preference"
+        assert metadata["decay_hint"] == "long_lived"
+
     def test_recall_error_handling(self, provider):
         provider._client.arecall.side_effect = RuntimeError("timeout")
         result = json.loads(provider.handle_tool_call(
@@ -698,12 +792,34 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
+        assert item["metadata"]["observed_at"] == item["metadata"]["retained_at"]
+        assert item["metadata"]["memory_type"] == "session_turn"
+        assert item["metadata"]["decay_hint"] == "episodic"
+        assert item["metadata"]["session_type"] == "normal"
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
 
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
         p = provider_with_config(auto_retain=False)
         p.sync_turn("hello", "hi")
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_skipped_for_eval_session_type(self, provider_with_config):
+        p = provider_with_config(session_type="eval")
+
+        p.sync_turn("benchmark prompt", "benchmark response")
+
+        assert p._session_turns == []
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_skipped_when_default_memory_type_is_excluded(self, provider_with_config):
+        p = provider_with_config(retain_excluded_memory_types=["session_turn"])
+
+        p.sync_turn("raw prompt", "raw response")
+
+        assert p._session_turns == []
         assert p._sync_thread is None
         p._client.aretain_batch.assert_not_called()
 

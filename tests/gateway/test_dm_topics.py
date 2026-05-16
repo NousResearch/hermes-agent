@@ -205,6 +205,28 @@ async def test_create_dm_topic_returns_none_without_bot():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_creates_on_demand_and_persists():
+    """Named delivery targets should create missing private DM topics on demand."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=444)
+    adapter._persist_dm_topic_thread_id = MagicMock()
+
+    result = await adapter.ensure_dm_topic("111", "On Demand")
+
+    assert result == "444"
+    adapter._bot.create_forum_topic.assert_called_once_with(
+        chat_id=111,
+        name="On Demand",
+    )
+    assert adapter._dm_topics["111:On Demand"] == 444
+    assert adapter._dm_topics_config == [
+        {"chat_id": 111, "topics": [{"name": "On Demand", "thread_id": 444}]}
+    ]
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(111, "On Demand", 444)
+
+
 # ── _persist_dm_topic_thread_id ──
 
 

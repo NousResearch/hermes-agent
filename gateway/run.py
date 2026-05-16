@@ -7821,6 +7821,12 @@ class GatewayRunner:
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                # ``output_tokens`` is the cumulative session-completion-token
+                # count surfaced by run_agent.py via ``agent_result``; pair it
+                # with the wall-clock _response_time computed above to feed the
+                # optional ``tps`` footer field (#26877).  Both kwargs are
+                # ``None``-tolerant so the footer is unchanged for users who
+                # don't include ``tps`` in ``display.runtime_footer.fields``.
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -7828,6 +7834,8 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    response_tokens=int(agent_result.get("output_tokens") or 0) or None,
+                    elapsed_ms=_response_time * 1000.0 if _response_time else None,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

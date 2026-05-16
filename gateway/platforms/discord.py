@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -3876,6 +3877,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        user_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Create a Discord thread under a text channel for a handoff.
 
@@ -3915,6 +3918,48 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
 
+        async def _add_thread_members(thread: Any) -> None:
+            """Best-effort: make handoff threads visible/followed for users.
+
+            Discord only auto-adds the bot that created a thread. For CLI
+            handoffs into a Discord home channel this means the operator may
+            not see the new thread in the channel's thread list. Adding the
+            initiating user (when known) fixes that without needing a visible
+            @mention in the seed message. We intentionally do not fall back to
+            every allowed user: that would make automated handoff/Kanban
+            threads noisy in multi-operator servers.
+            """
+            candidates = user_ids or []
+            seen: set[str] = set()
+            add_user = getattr(thread, "add_user", None)
+            if not callable(add_user):
+                return
+            for raw_user_id in candidates:
+                user_id = _clean_discord_id(str(raw_user_id or ""))
+                if not user_id or not user_id.isdigit() or user_id in seen:
+                    continue
+                seen.add(user_id)
+                try:
+                    user_int = int(user_id)
+                    guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
+                    user_obj = None
+                    if guild is not None and hasattr(guild, "get_member"):
+                        user_obj = guild.get_member(user_int)
+                    if user_obj is None and self._client is not None and hasattr(self._client, "get_user"):
+                        user_obj = self._client.get_user(user_int)
+                    if user_obj is None and discord is not None:
+                        user_obj = discord.Object(id=user_int)
+                    if user_obj is None:
+                        continue
+                    result = add_user(user_obj)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Handoff thread: failed to add user %s to thread %s: %s",
+                        self.name, user_id, getattr(thread, "id", "?"), exc,
+                    )
+
         # First try: create a thread directly on the channel.
         try:
             create = getattr(parent, "create_thread", None)
@@ -3924,6 +3969,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
+                await _add_thread_members(thread)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -3942,6 +3988,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=1440,
                 reason=reason,
             )
+            await _add_thread_members(thread)
             return str(thread.id)
         except Exception as fallback_error:
             logger.warning(

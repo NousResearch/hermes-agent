@@ -445,3 +445,43 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_adds_requested_discord_members():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    member = SimpleNamespace(id=123)
+    guild = SimpleNamespace(get_member=lambda user_id: member if user_id == 123 else None)
+    thread = SimpleNamespace(id=555, guild=guild, add_user=AsyncMock())
+    parent = SimpleNamespace(id=999, guild=guild, create_thread=AsyncMock(return_value=thread))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+        get_user=lambda _user_id: None,
+    )
+
+    thread_id = await adapter.create_handoff_thread("999", "queued handoff", user_ids=["123", "123", ""])
+
+    assert thread_id == "555"
+    parent.create_thread.assert_awaited_once()
+    thread.add_user.assert_awaited_once_with(member)
+
+
+@pytest.mark.asyncio
+async def test_create_handoff_thread_does_not_add_allowed_users_when_no_explicit_user():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._allowed_user_ids = {"123", "not-a-snowflake"}
+    member = SimpleNamespace(id=123)
+    guild = SimpleNamespace(get_member=lambda user_id: member if user_id == 123 else None)
+    thread = SimpleNamespace(id=555, guild=guild, add_user=AsyncMock())
+    parent = SimpleNamespace(id=999, guild=guild, create_thread=AsyncMock(return_value=thread))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+        get_user=lambda _user_id: None,
+    )
+
+    thread_id = await adapter.create_handoff_thread("999", "queued handoff")
+
+    assert thread_id == "555"
+    thread.add_user.assert_not_awaited()

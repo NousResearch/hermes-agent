@@ -987,6 +987,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        user_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Create a forum topic for a session handoff.
 

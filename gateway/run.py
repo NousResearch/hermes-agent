@@ -3923,9 +3923,21 @@ class GatewayRunner:
         # synthetic turn still lands; just without thread isolation.
         thread_name = f"Hermes — {cli_title}"
         try:
-            new_thread_id = await adapter.create_handoff_thread(
-                str(home.chat_id), thread_name,
-            )
+            create_handoff = adapter.create_handoff_thread
+            handoff_user_id = str(row.get("user_id") or "").strip()
+            create_kwargs: dict[str, Any] = {}
+            try:
+                if "user_ids" in inspect.signature(create_handoff).parameters and handoff_user_id:
+                    create_kwargs["user_ids"] = [handoff_user_id]
+            except (TypeError, ValueError):
+                if handoff_user_id:
+                    create_kwargs["user_ids"] = [handoff_user_id]
+            try:
+                new_thread_id = await create_handoff(str(home.chat_id), thread_name, **create_kwargs)
+            except TypeError:
+                if not create_kwargs:
+                    raise
+                new_thread_id = await create_handoff(str(home.chat_id), thread_name)
         except Exception as exc:
             logger.debug(
                 "Handoff: create_handoff_thread raised on %s: %s",

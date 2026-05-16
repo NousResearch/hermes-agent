@@ -1583,6 +1583,8 @@ class BasePlatformAdapter(ABC):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        user_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a session handoff.
 
@@ -1590,6 +1592,11 @@ class BasePlatformAdapter(ABC):
         session to a thread-capable platform — the new thread isolates the
         handed-off conversation from any pre-existing chat in the home
         channel and gives users a clean per-handoff scrollback.
+
+        ``user_ids`` is optional platform-specific context: adapters that
+        support explicit thread membership (Discord) can add/follow the
+        operator immediately after creation. Platforms without membership
+        APIs ignore it.
 
         Returns the new thread/topic id (as a string) on success, or
         ``None`` if the platform doesn't support threading or the

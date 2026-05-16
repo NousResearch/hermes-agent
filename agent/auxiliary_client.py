@@ -3077,6 +3077,9 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _entry_extra_headers = custom_entry.get("extra_headers")
+                if isinstance(_entry_extra_headers, dict) and _entry_extra_headers:
+                    _extra2["default_headers"] = dict(_entry_extra_headers)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")

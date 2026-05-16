@@ -1708,6 +1708,24 @@ class AIAgent:
                             client_kwargs["default_headers"] = dict(_ph.default_headers)
                     except Exception:
                         pass
+                    # Also read extra_headers from config for named custom providers
+                    # (e.g. x-claw-id for ai-service). Match by base_url because
+                    # the runtime resolves all custom providers to provider="custom".
+                    if "default_headers" not in client_kwargs:
+                        try:
+                            from hermes_cli.config import load_config as _lc
+                            _clean_base = base_url.rstrip("/")
+                            for _pentry in (_lc().get("providers") or {}).values():
+                                if not isinstance(_pentry, dict):
+                                    continue
+                                _pbase = (_pentry.get("base_url") or _pentry.get("api") or _pentry.get("url") or "").rstrip("/")
+                                if _pbase and _pbase == _clean_base:
+                                    _eh = _pentry.get("extra_headers")
+                                    if isinstance(_eh, dict) and _eh:
+                                        client_kwargs["default_headers"] = {str(k): str(v) for k, v in _eh.items()}
+                                    break
+                        except Exception:
+                            pass
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -7499,6 +7517,21 @@ class AIAgent:
                     _ph_headers = dict(_ph2.default_headers)
             except Exception:
                 pass
+            if not _ph_headers:
+                try:
+                    from hermes_cli.config import load_config as _lc2
+                    _clean_base2 = base_url.rstrip("/")
+                    for _pentry2 in (_lc2().get("providers") or {}).values():
+                        if not isinstance(_pentry2, dict):
+                            continue
+                        _pbase2 = (_pentry2.get("base_url") or _pentry2.get("api") or _pentry2.get("url") or "").rstrip("/")
+                        if _pbase2 and _pbase2 == _clean_base2:
+                            _eh2 = _pentry2.get("extra_headers")
+                            if isinstance(_eh2, dict) and _eh2:
+                                _ph_headers = {str(k): str(v) for k, v in _eh2.items()}
+                            break
+                except Exception:
+                    pass
             if _ph_headers:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:

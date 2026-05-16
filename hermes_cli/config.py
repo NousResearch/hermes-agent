@@ -2903,6 +2903,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "extra_headers",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2992,6 +2993,10 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    extra_headers = entry.get("extra_headers")
+    if isinstance(extra_headers, dict) and extra_headers:
+        normalized["extra_headers"] = {str(k): str(v) for k, v in extra_headers.items()}
 
     return normalized
 

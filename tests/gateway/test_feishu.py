@@ -1379,6 +1379,72 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, [])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_interactive_message_refetches_full_card_when_event_has_only_title(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _MessageAPI:
+            def get(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        items=[
+                            SimpleNamespace(
+                                msg_type="interactive",
+                                body=SimpleNamespace(
+                                    content=json.dumps(
+                                        {
+                                            "card": {
+                                                "header": {"title": {"tag": "plain_text", "content": "saber-cn"}},
+                                                "elements": [
+                                                    {
+                                                        "tag": "div",
+                                                        "text": {
+                                                            "tag": "plain_text",
+                                                            "content": "完整卡片内容",
+                                                        },
+                                                    },
+                                                    {
+                                                        "tag": "action",
+                                                        "actions": [
+                                                            {
+                                                                "tag": "button",
+                                                                "text": {"tag": "plain_text", "content": "Open"},
+                                                            }
+                                                        ],
+                                                    },
+                                                ],
+                                            }
+                                        }
+                                    )
+                                ),
+                                mentions=None,
+                            )
+                        ]
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+        message = SimpleNamespace(
+            message_type="interactive",
+            content=json.dumps({"title": "saber-cn"}),
+            message_id="om_interactive_title_only",
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertEqual(text, "saber-cn\n完整卡片内容\nOpen\nActions: Open")
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_image_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -1508,6 +1574,55 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertEqual(shared, "Shared chat: Platform Ops\nChat ID: oc_shared")
         self.assertEqual(attachment, "[Attachment: report.pdf]")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_fetch_message_text_handles_interactive_card_message_type_field(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _MessageAPI:
+            def get(self, request):
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(
+                        items=[
+                            SimpleNamespace(
+                                message_type="interactive",
+                                body=SimpleNamespace(
+                                    content=json.dumps(
+                                        {
+                                            "card": {
+                                                "header": {"title": {"tag": "plain_text", "content": "Quoted Card"}},
+                                                "elements": [
+                                                    {
+                                                        "tag": "div",
+                                                        "text": {
+                                                            "tag": "plain_text",
+                                                            "content": "引用卡片正文",
+                                                        },
+                                                    }
+                                                ],
+                                            }
+                                        }
+                                    )
+                                ),
+                                mentions=None,
+                            )
+                        ]
+                    ),
+                )
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            text = asyncio.run(adapter._fetch_message_text("om_card_parent"))
+
+        self.assertEqual(text, "Quoted Card\n引用卡片正文")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_message_starting_with_slash_becomes_command(self):

@@ -4293,6 +4293,10 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+        if self._should_refetch_interactive_message(raw_content, normalized) and message_id:
+            fetched = await self._fetch_message_normalized(message_id)
+            if self._should_prefer_fetched_message(normalized, fetched):
+                normalized = fetched
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,
@@ -4702,38 +4706,92 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
 
-    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+    async def _fetch_message_normalized(self, message_id: str) -> Optional[FeishuNormalizedMessage]:
         if not self._client or not message_id:
             return None
-        if message_id in self._message_text_cache:
-            self._message_text_cache.move_to_end(message_id)
-            return self._message_text_cache[message_id]
         try:
             request = self._build_get_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.get, request)
             if not response or getattr(response, "success", lambda: False)() is False:
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
-                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+                logger.warning("[Feishu] Failed to fetch message %s: [%s] %s", message_id, code, msg)
                 return None
             items = getattr(getattr(response, "data", None), "items", None) or []
-            parent = items[0] if items else None
-            body = getattr(parent, "body", None)
-            msg_type = getattr(parent, "msg_type", "") or ""
-            raw_content = getattr(body, "content", "") or ""
-            parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
-                raw_content=raw_content,
-                mentions=parent_mentions,
+            item = items[0] if items else None
+            if item is None:
+                return None
+            body = getattr(item, "body", None)
+            msg_type = (
+                getattr(item, "msg_type", "")
+                or getattr(item, "message_type", "")
+                or ""
             )
-            self._message_text_cache[message_id] = text
-            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
-                self._message_text_cache.popitem(last=False)
-            return text
+            raw_content = (
+                getattr(body, "content", "")
+                or getattr(item, "content", "")
+                or ""
+            )
+            mentions = getattr(item, "mentions", None)
+            return normalize_feishu_message(
+                message_type=msg_type,
+                raw_content=raw_content,
+                mentions=mentions,
+                bot=self._bot_identity(),
+            )
         except Exception:
-            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            logger.warning("[Feishu] Failed to fetch message %s", message_id, exc_info=True)
             return None
+
+    @staticmethod
+    def _should_refetch_interactive_message(raw_content: str, normalized: FeishuNormalizedMessage) -> bool:
+        if normalized.raw_type not in {"interactive", "card"}:
+            return False
+        text = (normalized.text_content or "").strip()
+        if not text or text == FALLBACK_INTERACTIVE_TEXT:
+            return True
+        payload = _load_feishu_payload(raw_content)
+        card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+        if not isinstance(card_payload, dict):
+            return True
+        return not any(key in card_payload for key in ("elements", "body", "i18n_elements"))
+
+    @staticmethod
+    def _should_prefer_fetched_message(
+        current: FeishuNormalizedMessage,
+        fetched: Optional[FeishuNormalizedMessage],
+    ) -> bool:
+        if fetched is None:
+            return False
+        fetched_text = (fetched.text_content or "").strip()
+        if not fetched_text:
+            return False
+        current_text = (current.text_content or "").strip()
+        if not current_text:
+            return True
+        if current_text == FALLBACK_INTERACTIVE_TEXT and fetched_text != current_text:
+            return True
+        if current.raw_type in {"interactive", "card"} and fetched.raw_type in {"interactive", "card"}:
+            return fetched_text != current_text and (
+                len(fetched_text) > len(current_text)
+                or ("\n" in fetched_text and "\n" not in current_text)
+            )
+        return False
+
+    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        if not self._client or not message_id:
+            return None
+        if message_id in self._message_text_cache:
+            return self._message_text_cache[message_id]
+        normalized = await self._fetch_message_normalized(message_id)
+        if normalized is None:
+            return None
+        text = normalized.text_content
+        if not text:
+            placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
+            text = str(placeholder).strip() if placeholder else ""
+        self._message_text_cache[message_id] = text
+        return text
 
     def _extract_text_from_raw_content(
         self,

@@ -345,7 +345,12 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
 
-    def test_child_inherits_runtime_credentials(self):
+    @patch("tools.delegate_tool._load_config")
+    def test_child_inherits_runtime_credentials(self, mock_load_config):
+        mock_load_config.return_value = {
+            "base_url": "http://127.0.0.1:8091/v1",
+            "max_iterations": 50,
+        }
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key="***"
@@ -889,6 +894,17 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
+
+    def test_direct_endpoint_ignored_when_parent_is_codex_and_delegation_is_not(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.provider = "openai-codex"
+        cfg = {"base_url": "http://127.0.0.1:8091/v1"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+        self.assertIsNone(creds["api_mode"])
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so

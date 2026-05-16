@@ -2452,7 +2452,91 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "smart":
+            return "smart"
         return "interrupt"
+
+    async def _classify_busy_intent(self, event_text: str, session_key: str) -> str:
+        """Use a fast LLM to classify a busy-session message intent.
+
+        Returns one of: "interrupt", "queue", "steer", "ignore".
+        On timeout/error, falls back to "queue" (safe default).
+        """
+        text = (event_text or "").strip()
+        if not text or len(text) > 2000:
+            return "queue"
+        if len(text) < 3:
+            return "queue"
+
+        try:
+            import asyncio
+
+            classifier_model = os.getenv(
+                "HERMES_GATEWAY_BUSY_SMART_MODEL",
+                "openrouter/deepseek/deepseek-chat:free",
+            )
+
+            instructions = (
+                "You are a busy-session message classifier. A user is sending a message "
+                "while their Hermes AI agent is already processing a previous request. "
+                "Classify the intent into EXACTLY ONE category. Reply with ONLY the category name, "
+                "no explanation or punctuation.\n\n"
+                "Categories:\n"
+                "- interrupt: The user wants to STOP the current processing and handle this new "
+                "message instead. Keywords: stop, cancel, hold on, wait, nevermind (urgent).\n"
+                "- queue: The user wants to ADD this message to the queue for AFTER the current "
+                "processing finishes. Keywords: also, and, as well, additionally, "
+                "when you're done, later, after this, in addition.\n"
+                "- steer: The user wants to GUIDE or MODIFY the current processing mid-run. "
+                "Keywords: actually use Y, instead of X, consider, think about, "
+                "also include, make sure to, remember to.\n"
+                "- ignore: The message is noise, empty, or not meant for the agent. "
+                "Keywords: single word, OK, thanks, emoji-only.\n\n"
+                f"User message: {text[:500]}"
+            )
+
+            from run_agent import AIAgent
+
+            classifier = AIAgent(
+                model=classifier_model,
+                max_iterations=1,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            response = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, lambda: classifier.chat(instructions)
+                ),
+                timeout=5.0,
+            )
+
+            if not response:
+                return "queue"
+
+            reply = response.strip().lower()[:20]
+            for candidate in ("interrupt", "queue", "steer", "ignore"):
+                if candidate in reply:
+                    logger.debug(
+                        "Smart busy intent for session %s: %s (text=%s)",
+                        session_key, candidate, text[:50],
+                    )
+                    return candidate
+
+            return "queue"
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Smart intent classification timed out for session %s, falling back to queue",
+                session_key,
+            )
+            return "queue"
+        except Exception as exc:
+            logger.debug(
+                "Smart intent classification failed for session %s: %s, falling back to queue",
+                session_key, exc,
+            )
+            return "queue"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -2621,6 +2705,16 @@ class GatewayRunner:
         # to queue semantics so nothing is lost.
         effective_mode = self._busy_input_mode
         steered = False
+        if effective_mode == "smart":
+            # Classify intent using fast LLM
+            smart_intent = await self._classify_busy_intent(
+                event.text or "", session_key
+            )
+            logger.debug(
+                "Smart busy mode for session %s: classified as %s",
+                session_key, smart_intent,
+            )
+            effective_mode = smart_intent
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
             can_steer = (
@@ -6471,7 +6565,40 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
-            if self._busy_input_mode == "queue":
+            if self._busy_input_mode == "smart":
+                # Classify intent using fast LLM
+                smart_intent = await self._classify_busy_intent(
+                    event.text or "", _quick_key
+                )
+                logger.debug(
+                    "Smart busy priority for session %s: classified as %s",
+                    _quick_key, smart_intent,
+                )
+                if smart_intent == "ignore":
+                    logger.debug("PRIORITY smart ignore for session %s", _quick_key)
+                    return None
+                if smart_intent == "steer":
+                    steer_text = (event.text or "").strip()
+                    steered = False
+                    if steer_text and hasattr(running_agent, "steer"):
+                        try:
+                            steered = bool(running_agent.steer(steer_text))
+                        except Exception as exc:
+                            logger.warning("PRIORITY smart steer failed for session %s: %s", _quick_key, exc)
+                            steered = False
+                    if steered:
+                        logger.debug("PRIORITY smart steer for session %s", _quick_key)
+                        return None
+                    logger.debug("PRIORITY smart steer-fallback-to-queue for session %s", _quick_key)
+                    self._queue_or_replace_pending_event(_quick_key, event)
+                    return None
+                if smart_intent == "queue":
+                    logger.debug("PRIORITY smart queue for session %s", _quick_key)
+                    self._queue_or_replace_pending_event(_quick_key, event)
+                    return None
+                # Fall through to interrupt
+                logger.debug("PRIORITY smart interrupt for session %s (default)", _quick_key)
+            elif self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None

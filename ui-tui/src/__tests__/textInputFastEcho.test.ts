@@ -163,10 +163,12 @@ describe('canFastBackspaceShape', () => {
     expect(canFastBackspaceShape('abcdefghi', 9, 6)).toBe(true) // visual line 1, col 3 → ok
   })
 
-  it('keeps the old contract when columns is not provided', () => {
-    // Callers that don't know the wrap width get the conservative
-    // "no wrap-boundary guard" behavior (still rejects everything else
-    // a real wrap boundary would have rejected via the other checks).
+  it('skips the wrap-boundary check when columns is omitted (legacy contract)', () => {
+    // Callers that don't pass `columns` fall back to the pre-wrap-aware
+    // behavior — the function does NOT magically reject anything that
+    // could be a wrap boundary without the width. Production callers
+    // must always pass `columns`; this case is for unit tests of the
+    // pre-wrap shape contract.
     expect(canFastBackspaceShape('hello ', 'hello '.length)).toBe(true)
   })
 })

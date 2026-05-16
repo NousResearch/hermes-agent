@@ -248,9 +248,12 @@ export function canFastAppendShape(
  * line. That desyncs both Ink's `displayCursor` model and the user-
  * visible position. Closes Copilot PR #26717 round 3 follow-up.
  *
- * `columns` is the composer's render width; when omitted we conservatively
- * reject everything that could be a wrap boundary so unit tests of the
- * pre-wrap shape contract keep working.
+ * `columns` is the composer's render width — pass it from the live
+ * TextInput state so the wrap-boundary check can fire. When omitted
+ * (e.g. unit tests of the pre-wrap shape contract, callers that don't
+ * track render width), the wrap-boundary check is SKIPPED and the
+ * function falls back to the legacy non-wrap-aware contract; do NOT
+ * rely on the wrap-boundary protection unless you actually pass it.
  */
 export function canFastBackspaceShape(current: string, cursor: number, columns?: number): boolean {
   if (cursor !== current.length) {

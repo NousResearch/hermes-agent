@@ -2299,18 +2299,6 @@ export default class Ink {
       }
     }
   }
-  /** Test-only accessor for the internally-tracked physical cursor. */
-  __getDisplayCursorForTest(): { x: number; y: number } | null {
-    return this.displayCursor
-  }
-  /** Test-only accessor for the front frame's parked cursor (post-render). */
-  __getFrontFrameCursorForTest(): { x: number; y: number } {
-    return { x: this.frontFrame.cursor.x, y: this.frontFrame.cursor.y }
-  }
-  /** Test-only accessor for the currently-declared cursor target. */
-  __getCursorDeclarationForTest(): CursorDeclaration | null {
-    return this.cursorDeclaration
-  }
   render(node: ReactNode): void {
     this.currentNode = node
 

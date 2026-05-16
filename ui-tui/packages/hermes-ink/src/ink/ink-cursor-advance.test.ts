@@ -36,6 +36,15 @@ function makeInk() {
   return { ink, stdout, stdin, stderr }
 }
 
+// Cast helper instead of exposing __get*ForTest methods on production Ink —
+// these are internal frame/cursor caches we only inspect from tests.
+type InkPrivate = {
+  displayCursor: { x: number; y: number } | null
+  cursorDeclaration: { node: unknown; relativeX: number; relativeY: number } | null
+  frontFrame: { cursor: { x: number; y: number } }
+}
+const peek = (ink: Ink): InkPrivate => ink as unknown as InkPrivate
+
 // Closes the cursor-drift bug: when TextInput's fast-echo path writes a
 // printable character directly to stdout, the hardware cursor advances by
 // one cell BUT Ink's `displayCursor` cache (used as the basis for the
@@ -54,16 +63,16 @@ describe('Ink.noteExternalCursorAdvance', () => {
     // Seed a known parked position directly. In production this is set by
     // the cursor-park branch in onRender when a useDeclaredCursor caller
     // commits a declaration; this test bypasses React for hermeticity.
-    ;(ink as unknown as { displayCursor: { x: number; y: number } | null }).displayCursor = { x: 5, y: 0 }
+    peek(ink).displayCursor = { x: 5, y: 0 }
 
     ink.noteExternalCursorAdvance(3)
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 8, y: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 8, y: 0 })
 
     ink.noteExternalCursorAdvance(-1)
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 7, y: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 7, y: 0 })
 
     ink.noteExternalCursorAdvance(0, 2)
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 7, y: 2 })
+    expect(peek(ink).displayCursor).toEqual({ x: 7, y: 2 })
 
     ink.unmount()
   })
@@ -74,11 +83,11 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.render(React.createElement(Text, null, 'hello'))
     ink.onRender()
 
-    expect(ink.__getDisplayCursorForTest()).toBeNull()
-    const base = ink.__getFrontFrameCursorForTest()
+    expect(peek(ink).displayCursor).toBeNull()
+    const base = { x: peek(ink).frontFrame.cursor.x, y: peek(ink).frontFrame.cursor.y }
 
     ink.noteExternalCursorAdvance(4)
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: base.x + 4, y: base.y })
+    expect(peek(ink).displayCursor).toEqual({ x: base.x + 4, y: base.y })
 
     ink.unmount()
   })
@@ -90,10 +99,10 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.onRender()
 
     ink.noteExternalCursorAdvance(0)
-    expect(ink.__getDisplayCursorForTest()).toBeNull()
+    expect(peek(ink).displayCursor).toBeNull()
 
     ink.noteExternalCursorAdvance(0, 0)
-    expect(ink.__getDisplayCursorForTest()).toBeNull()
+    expect(peek(ink).displayCursor).toBeNull()
 
     ink.unmount()
   })
@@ -104,11 +113,11 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.setAltScreenActive(true)
     ink.render(React.createElement(Text, null, 'hi'))
     ink.onRender()
-    ;(ink as unknown as { displayCursor: { x: number; y: number } | null }).displayCursor = { x: 5, y: 0 }
+    peek(ink).displayCursor = { x: 5, y: 0 }
 
     ink.noteExternalCursorAdvance(3)
 
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 5, y: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 5, y: 0 })
 
     ink.unmount()
   })
@@ -129,33 +138,31 @@ describe('Ink.noteExternalCursorAdvance', () => {
 
     const fakeNode = {} as unknown as Record<string, unknown>
 
-    const inkAny = ink as unknown as {
-      cursorDeclaration: { node: unknown; relativeX: number; relativeY: number } | null
-      displayCursor: { x: number; y: number } | null
-    }
-
-    inkAny.cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
-    inkAny.displayCursor = { x: 12, y: 0 }
+    peek(ink).cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
+    peek(ink).displayCursor = { x: 12, y: 0 }
 
     ink.noteExternalCursorAdvance(3)
 
     // displayCursor untouched on alt-screen
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 12, y: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 12, y: 0 })
     // declaration still advanced — onRender's alt-screen park reads this
-    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
+    expect(peek(ink).cursorDeclaration).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
 
     ink.unmount()
   })
 
-  // Closes Copilot review feedback on PR #26717: the fast-echo path
-  // defers TextInput's React `cur` state for 16ms, so during that
-  // window `cursorDeclaration.relativeX` (which `useDeclaredCursor`
-  // sets from `cursorLayout(display, cur, columns)`) still points at
-  // the PRE-keystroke caret column. If we advanced only `displayCursor`,
-  // an unrelated re-render in that window would re-run onRender's
-  // cursor-park branch with the stale declaration and visually undo
-  // the fast-echo's advance. We must bump BOTH so the cursor stays
-  // anchored to the physical caret until React state catches up.
+  // Closes Copilot review feedback on PR #26717: even after the
+  // TextInput-level fix where layout reads `curRef.current` directly,
+  // there's still a window where a fast-echo wrote to stdout but the
+  // current cursor declaration on Ink (set by an earlier render's
+  // useDeclaredCursor commit) points at the PRE-keystroke caret
+  // column. If we advanced only `displayCursor`, an unrelated re-render
+  // in that window would re-run onRender's cursor-park branch with the
+  // stale declaration and visually undo the fast-echo's advance. We
+  // must bump BOTH so the cursor stays anchored to the physical caret
+  // until the next React commit publishes a fresh declaration
+  // (computed from `curRef.current` via the cursorLayout call in
+  // textInput.tsx) that supersedes the bump.
   it('advances the active cursorDeclaration in lock-step with displayCursor', () => {
     const { ink } = makeInk()
 
@@ -164,22 +171,17 @@ describe('Ink.noteExternalCursorAdvance', () => {
 
     const fakeNode = {} as unknown as Record<string, unknown>
 
-    const inkAny = ink as unknown as {
-      cursorDeclaration: { node: unknown; relativeX: number; relativeY: number } | null
-      displayCursor: { x: number; y: number } | null
-    }
-
-    inkAny.cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
-    inkAny.displayCursor = { x: 12, y: 0 }
+    peek(ink).cursorDeclaration = { node: fakeNode, relativeX: 7, relativeY: 0 }
+    peek(ink).displayCursor = { x: 12, y: 0 }
 
     ink.noteExternalCursorAdvance(3)
 
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 15, y: 0 })
-    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 15, y: 0 })
+    expect(peek(ink).cursorDeclaration).toEqual({ node: fakeNode, relativeX: 10, relativeY: 0 })
 
     ink.noteExternalCursorAdvance(-1)
-    expect(ink.__getDisplayCursorForTest()).toEqual({ x: 14, y: 0 })
-    expect(ink.__getCursorDeclarationForTest()).toEqual({ node: fakeNode, relativeX: 9, relativeY: 0 })
+    expect(peek(ink).displayCursor).toEqual({ x: 14, y: 0 })
+    expect(peek(ink).cursorDeclaration).toEqual({ node: fakeNode, relativeX: 9, relativeY: 0 })
 
     ink.unmount()
   })
@@ -190,11 +192,11 @@ describe('Ink.noteExternalCursorAdvance', () => {
     ink.render(React.createElement(Text, null, 'hi'))
     ink.onRender()
 
-    expect(ink.__getCursorDeclarationForTest()).toBeNull()
+    expect(peek(ink).cursorDeclaration).toBeNull()
 
     ink.noteExternalCursorAdvance(3)
 
-    expect(ink.__getCursorDeclarationForTest()).toBeNull()
+    expect(peek(ink).cursorDeclaration).toBeNull()
 
     ink.unmount()
   })

@@ -133,6 +133,29 @@ class TestEagerFallbackWithPool:
 
         agent._try_activate_fallback.assert_called_once()
 
+    def test_billing_fires_eager_fallback_even_with_multi_entry_pool(self):
+        """402 billing must not be blocked by a multi-entry credential pool."""
+        from agent.error_classifier import FailoverReason
+        from run_agent import _pool_may_recover_from_rate_limit
+
+        agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
+        agent._credential_pool.entries.return_value = [MagicMock(), MagicMock()]
+        agent.provider = "deepseek"
+        agent.base_url = "https://api.deepseek.com/v1"
+
+        is_rate_limited = True
+        if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+            pool_may_recover = _pool_may_recover_from_rate_limit(
+                agent._credential_pool,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                reason=FailoverReason.billing,
+            )
+            if not pool_may_recover:
+                agent._try_activate_fallback()
+
+        agent._try_activate_fallback.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # 5. Full 429 rotation cycle via _recover_with_credential_pool

@@ -221,6 +221,20 @@ class TestPoolRotationRoom:
     def test_many_credentials_available_returns_true(self):
         assert _pool_may_recover_from_rate_limit(_pool(10)) is True
 
+    def test_billing_reason_never_waits_for_pool_rotation(self):
+        """402 billing exhaustion should prefer eager fallback even with a
+        multi-entry pool; account-level depletion is not recoverable by
+        rotating credentials.
+        """
+        from agent.error_classifier import FailoverReason
+
+        assert _pool_may_recover_from_rate_limit(
+            _pool(10),
+            provider="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            reason=FailoverReason.billing,
+        ) is False
+
 
 # ── Skip-self dedup (#22548) ───────────────────────────────────────────────
 

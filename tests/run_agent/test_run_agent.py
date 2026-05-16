@@ -2867,6 +2867,53 @@ class TestRunConversation:
         failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
         assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
 
+    def test_billing_error_triggers_eager_fallback_before_retry_budget(self, agent):
+        """A primary HTTP 402 should switch to fallback immediately."""
+        self._setup_agent(agent)
+        agent.provider = "deepseek"
+        agent.model = "deepseek-v4-pro"
+        agent.base_url = "https://api.deepseek.com/v1"
+        agent._fallback_chain = [{"provider": "openrouter", "model": "openai/gpt-oss-120b:free"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        billing_error = RuntimeError("HTTP 402: Insufficient Balance")
+        billing_error.status_code = 402
+        billing_error.body = {"error": {"message": "Insufficient Balance"}}
+
+        success_resp = _mock_response(
+            content="Fallback recovered the request.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            billing_error,
+            success_resp,
+        ]
+
+        fallback_called = {"count": 0}
+
+        def _mock_fallback(reason=None):
+            fallback_called["count"] += 1
+            assert reason == FailoverReason.billing
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.provider = "openrouter"
+            agent.model = "openai/gpt-oss-120b:free"
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert fallback_called["count"] == 1
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback recovered the request."
+
     def test_partial_stream_recovery_uses_streamed_content(self, agent):
         """When streaming fails after partial delivery, recovered partial content becomes final response."""
         self._setup_agent(agent)

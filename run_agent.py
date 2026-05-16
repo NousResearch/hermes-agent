@@ -1063,7 +1063,11 @@ def _routermint_headers() -> dict:
 
 
 def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
+    pool,
+    *,
+    provider: str | None = None,
+    base_url: str | None = None,
+    reason=None,
 ) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -1081,14 +1085,20 @@ def _pool_may_recover_from_rate_limit(
     throttles — even a multi-entry pool shares the same quota window, so
     rotation won't recover.  Skip straight to the fallback for those (#13636).
 
+    Billing exhaustion is different again: even when a credential pool has
+    multiple entries, a 402 typically reflects account-level depletion, so
+    rotation should not block eager fallback.
+
     In those cases we must fall back to the configured ``fallback_model``
-    instead.  Returns True only when rotation has somewhere to go.
+    instead. Returns True only when rotation has somewhere to go.
 
     See issues #11314 and #13636.
     """
     if pool is None:
         return False
     if not pool.has_available():
+        return False
+    if reason == FailoverReason.billing:
         return False
     # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
     # the same throttle window, so rotation can't recover.  Prefer fallback.
@@ -14297,6 +14307,7 @@ class AIAgent:
                             self._credential_pool,
                             provider=self.provider,
                             base_url=getattr(self, "base_url", None),
+                            reason=classified.reason,
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")

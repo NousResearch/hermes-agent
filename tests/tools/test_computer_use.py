@@ -29,7 +29,8 @@ def _reset_backend():
 @pytest.fixture
 def noop_backend():
     """Return the active noop backend instance so tests can inspect calls."""
-    from tools.computer_use.tool import _get_backend
+    from tools.computer_use.tool import _get_backend, set_approval_callback
+    set_approval_callback(lambda _action, _args, _summary: "approve_once")
     return _get_backend()
 
 
@@ -154,6 +155,24 @@ class TestDispatch:
         handle_computer_use({"action": "right_click", "element": 3})
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
+
+    def test_destructive_action_fails_closed_without_approval_callback(self):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "type", "text": "echo should not run"})
+        parsed = json.loads(out)
+
+        assert parsed["error"] == "approval required but no approval callback is registered"
+        assert parsed["action"] == "type"
+
+    def test_destructive_action_runs_with_approval_callback(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "type", "text": "echo approved"})
+        parsed = json.loads(out)
+
+        assert parsed["ok"] is True
+        assert ("type", {"text": "echo approved"}) in noop_backend.calls
 
 
 # ---------------------------------------------------------------------------

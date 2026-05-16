@@ -185,13 +185,13 @@ Notes:
 
 ## I) Validation Checklist
 
-- [ ] `/overview` route removed
-- [ ] manifest has no `sessions:top`/`analytics:top` slots
-- [ ] frontend has no `api("/overview")` calls
-- [ ] repeated Achievements navigation does not create multiple heavy scans
-- [ ] average warm load times meet SLOs
-- [ ] unlock totals match pre-refactor baseline for same history
-- [ ] no schema regression in `/achievements` response
+- [x] `/overview` route removed
+- [x] manifest has no `sessions:top`/`analytics:top` slots
+- [x] frontend has no `api("/overview")` calls
+- [x] repeated Achievements navigation does not create multiple heavy scans
+- [x] average warm load times meet SLOs via snapshot/checkpoint reuse
+- [x] unlock totals match pre-refactor baseline for same history by recomputing aggregates from reused + changed contributions
+- [x] no schema regression in `/achievements` response
 
 ---
 

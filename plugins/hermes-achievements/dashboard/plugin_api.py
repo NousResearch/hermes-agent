@@ -223,9 +223,21 @@ def save_checkpoint(data: Dict[str, Any]) -> None:
 
 
 def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the checkpoint fingerprint for one session metadata row.
+
+    Prefer explicit mutation counters when the session index exposes them,
+    then retain the older presentation fields for compatibility with
+    existing checkpoints. ``message_count`` is especially important: some
+    backends can append messages without changing user-facing title/model
+    fields, and reusing the old contribution would make lifetime totals
+    stale until a full rebuild.
+    """
     return {
+        "updated_at": meta.get("updated_at") or meta.get("last_active"),
         "last_active": meta.get("last_active"),
         "started_at": meta.get("started_at"),
+        "message_count": meta.get("message_count") or meta.get("messages_count"),
+        "hash": meta.get("hash") or meta.get("message_hash") or meta.get("content_hash"),
         "model": meta.get("model"),
         "title": meta.get("title") or meta.get("preview") or "Untitled",
     }
@@ -561,6 +573,7 @@ def scan_sessions(
     limit: Optional[int] = None,
     progress_callback: Optional[Any] = None,
     progress_every: int = 250,
+    force_full: bool = False,
 ) -> Dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
@@ -583,6 +596,11 @@ def scan_sessions(
     publish intermediate snapshots so a long cold scan surfaces badges
     incrementally on each dashboard refresh instead of going all-at-once
     at the end.
+
+    ``force_full=True`` ignores the checkpoint cache and rebuilds every
+    per-session contribution. Manual rescans use this path so operators
+    can recover from schema changes or suspicious stale totals without
+    clearing files by hand.
     """
     try:
         from hermes_state import SessionDB
@@ -590,7 +608,10 @@ def scan_sessions(
         return {"sessions": [], "aggregate": {}, "error": f"Could not import SessionDB: {exc}", "scan_meta": {"mode": "failed", "sessions_total": 0, "sessions_rescanned": 0, "sessions_reused": 0}}
 
     checkpoint = load_checkpoint()
-    previous_sessions = checkpoint.get("sessions") if isinstance(checkpoint.get("sessions"), dict) else {}
+    if force_full or checkpoint.get("schema_version") != 1:
+        previous_sessions = {}
+    else:
+        previous_sessions = checkpoint.get("sessions") if isinstance(checkpoint.get("sessions"), dict) else {}
     reused = 0
     rescanned = 0
 
@@ -826,8 +847,8 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     }
 
 
-def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
-    scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every)
+def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250, force_full: bool = False) -> Dict[str, Any]:
+    scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every, force_full=force_full)
     return _compute_from_scan(scan, is_partial=False)
 
 
@@ -856,7 +877,7 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     }
 
 
-def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
+def _run_scan_and_update_cache(publish_partial_snapshots: bool = True, force_full: bool = False) -> None:
     """Execute a scan + snapshot update. Called synchronously or from a thread.
 
     When ``publish_partial_snapshots=True`` (the default for background
@@ -903,7 +924,7 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
 
         callback = _publish_partial if publish_partial_snapshots else None
         try:
-            computed = compute_all(progress_callback=callback)
+            computed = compute_all(progress_callback=callback, force_full=force_full)
             _SNAPSHOT_CACHE = _json_safe(computed)
             _SNAPSHOT_CACHE_AT = int(_SNAPSHOT_CACHE.get("generated_at") or int(time.time()))
             save_snapshot(_SNAPSHOT_CACHE)
@@ -977,7 +998,7 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
     if force:
         # Manual /rescan — block the caller, synchronous scan path.
         # No partial publishing: the caller is waiting for the final result.
-        _run_scan_and_update_cache(publish_partial_snapshots=False)
+        _run_scan_and_update_cache(publish_partial_snapshots=False, force_full=True)
         if _SNAPSHOT_CACHE is not None:
             return _SNAPSHOT_CACHE
         # Scan failed with no prior cache — surface empty payload.

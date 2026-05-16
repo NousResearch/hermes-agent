@@ -1,4 +1,7 @@
 import importlib.util
+import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -150,6 +153,115 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(stats["config_events"], 0)
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
+
+    def test_incremental_scan_reuses_unchanged_sessions_and_rescans_message_count_changes(self):
+        class FakeSessionDB:
+            metas = []
+            messages = {}
+            get_message_counts = {}
+
+            def list_sessions_rich(self, **_kwargs):
+                return [dict(meta) for meta in self.metas]
+
+            def get_messages(self, session_id):
+                self.get_message_counts[session_id] = self.get_message_counts.get(session_id, 0) + 1
+                return list(self.messages[session_id])
+
+            def close(self):
+                pass
+
+        def install_fake_db():
+            fake_module = types.ModuleType("hermes_state")
+            setattr(fake_module, "SessionDB", FakeSessionDB)
+            sys.modules["hermes_state"] = fake_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_get_home = plugin_api.get_hermes_home
+            original_module = sys.modules.get("hermes_state")
+            plugin_api.get_hermes_home = lambda: Path(tmpdir)
+            install_fake_db()
+            try:
+                FakeSessionDB.metas = [
+                    {"id": "s1", "title": "First", "started_at": 1, "updated_at": 10, "message_count": 1},
+                    {"id": "s2", "title": "Second", "started_at": 2, "updated_at": 20, "message_count": 1},
+                ]
+                FakeSessionDB.messages = {
+                    "s1": [{"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]}],
+                    "s2": [{"role": "assistant", "tool_calls": [{"function": {"name": "web_search"}}]}],
+                }
+                FakeSessionDB.get_message_counts = {}
+
+                first = plugin_api.scan_sessions()
+
+                self.assertEqual(first["scan_meta"]["sessions_rescanned"], 2)
+                self.assertEqual(first["scan_meta"]["sessions_reused"], 0)
+                self.assertEqual(FakeSessionDB.get_message_counts, {"s1": 1, "s2": 1})
+
+                second = plugin_api.scan_sessions()
+
+                self.assertEqual(second["scan_meta"]["sessions_rescanned"], 0)
+                self.assertEqual(second["scan_meta"]["sessions_reused"], 2)
+                self.assertEqual(FakeSessionDB.get_message_counts, {"s1": 1, "s2": 1})
+
+                FakeSessionDB.metas[0]["message_count"] = 2
+                FakeSessionDB.messages["s1"] = [
+                    {"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]},
+                    {"role": "assistant", "tool_calls": [{"function": {"name": "patch"}}]},
+                ]
+
+                third = plugin_api.scan_sessions()
+                checkpoint = plugin_api.load_checkpoint()
+
+                self.assertEqual(third["scan_meta"]["sessions_rescanned"], 1)
+                self.assertEqual(third["scan_meta"]["sessions_reused"], 1)
+                self.assertEqual(FakeSessionDB.get_message_counts, {"s1": 2, "s2": 1})
+                self.assertEqual(third["aggregate"]["total_tool_calls"], 3)
+                self.assertEqual(checkpoint["sessions"]["s1"]["fingerprint"]["message_count"], 2)
+            finally:
+                plugin_api.get_hermes_home = original_get_home
+                if original_module is None:
+                    sys.modules.pop("hermes_state", None)
+                else:
+                    sys.modules["hermes_state"] = original_module
+
+    def test_force_full_scan_ignores_existing_checkpoint_cache(self):
+        class FakeSessionDB:
+            metas = [{"id": "s1", "title": "First", "started_at": 1, "updated_at": 10, "message_count": 1}]
+            get_message_count = 0
+
+            def list_sessions_rich(self, **_kwargs):
+                return [dict(meta) for meta in self.metas]
+
+            def get_messages(self, _session_id):
+                type(self).get_message_count += 1
+                return [{"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]}]
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_get_home = plugin_api.get_hermes_home
+            original_module = sys.modules.get("hermes_state")
+            plugin_api.get_hermes_home = lambda: Path(tmpdir)
+            fake_module = types.ModuleType("hermes_state")
+            setattr(fake_module, "SessionDB", FakeSessionDB)
+            sys.modules["hermes_state"] = fake_module
+            try:
+                first = plugin_api.scan_sessions()
+                second = plugin_api.scan_sessions()
+                forced = plugin_api.scan_sessions(force_full=True)
+
+                self.assertEqual(first["scan_meta"]["sessions_rescanned"], 1)
+                self.assertEqual(second["scan_meta"]["sessions_reused"], 1)
+                self.assertEqual(forced["scan_meta"]["mode"], "full")
+                self.assertEqual(forced["scan_meta"]["sessions_rescanned"], 1)
+                self.assertEqual(FakeSessionDB.get_message_count, 2)
+            finally:
+                plugin_api.get_hermes_home = original_get_home
+                if original_module is None:
+                    sys.modules.pop("hermes_state", None)
+                else:
+                    sys.modules["hermes_state"] = original_module
 
 
 if __name__ == "__main__":

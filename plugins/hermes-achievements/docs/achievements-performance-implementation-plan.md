@@ -97,26 +97,31 @@ Acceptance:
 
 ## Phase 4 — Incremental Scanning (optional but recommended)
 
+Status: Shipped
+
 ### Task 4.1: Add per-session checkpoint file
 Objective: Track session-level changes, not just global scan time.
 
 Acceptance:
 - Checkpoint persisted at `~/.hermes/plugins/hermes-achievements/scan_checkpoint.json`.
 - For each session: `session_id`, fingerprint (`updated_at`/message_count/hash), and cached contribution.
+- Regression coverage asserts `message_count` changes invalidate only the changed session.
 
 ### Task 4.2: Incremental aggregation
 Objective: Recompute only changed/new sessions and reuse unchanged contributions.
 
 Acceptance:
 - Typical refresh time drops materially below full scan.
-- Aggregate rebuild uses: subtract old contribution + add new contribution for changed sessions.
+- Aggregate rebuild reuses unchanged per-session contributions and recomputes aggregate totals from the current contribution set.
+- Regression coverage asserts unchanged sessions avoid `get_messages(...)` while changed sessions are rescanned.
 
 ### Task 4.3: Full rebuild fallback
 Objective: Preserve correctness.
 
 Acceptance:
-- Manual full rescan always possible.
-- Schema/version changes invalidate checkpoint and force full rebuild.
+- Manual full rescan is available through the force/full scan path used by `/rescan`.
+- Schema/version changes invalidate checkpoint reuse and force a full rebuild.
+- Regression coverage asserts `scan_sessions(force_full=True)` ignores existing checkpoint entries.
 
 ---
 

@@ -145,6 +145,8 @@ python3 -m py_compile dashboard/plugin_api.py
 python3 -m unittest tests/test_achievement_engine.py -v
 ```
 
+The performance checkpoint tests cover incremental reuse, message-count invalidation, and the force-full scan path used by manual `/rescan`.
+
 ## License
 
 MIT

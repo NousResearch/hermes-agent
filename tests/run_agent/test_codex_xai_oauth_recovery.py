@@ -163,7 +163,12 @@ def test_codex_stream_postlude_error_still_falls_back():
 
 
 def test_summarize_api_error_decorates_xai_entitlement_403():
-    """xAI's OAuth 403 must end with the subscribe-or-switch hint."""
+    """xAI's OAuth 403 must end with the neutral 4-cause hint.
+
+    Wording is deliberately ambiguous because xAI returns the SAME body for:
+    no subscription, wrong tier, exhausted quota, or API access not enabled.
+    Picking one (e.g. "you're not subscribed") would insult subscribers.
+    """
     from run_agent import AIAgent
 
     error = RuntimeError(
@@ -173,10 +178,39 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
         "subscriptions at https://grok.com'}"
     )
     summary = AIAgent._summarize_api_error(error)
+    # The original xAI text must survive — it's still useful diagnostic info.
     assert "do not have an active Grok subscription" in summary
-    assert "SuperGrok" in summary
+    # The hint must NOT confidently assert "lacks subscription"; it must
+    # acknowledge the 4 possible causes.
+    assert "Could be a missing subscription" in summary
+    assert "tier that doesn't include this model" in summary
+    assert "exhausted quota" in summary
+    assert "API access not enabled" in summary
+    # The hint must point at the usage page where the user can verify which.
+    assert "https://grok.com/?_s=usage" in summary
+    # Switching providers is still a valid escape hatch.
     assert "/model" in summary
-    assert "https://grok.com" in summary
+
+
+def test_summarize_api_error_does_not_accuse_subscribers():
+    """Hint must not confidently say the user has no subscription.
+
+    Don Piedro reported his subscription is active. The hint must not
+    contradict him — it must list all 4 possible causes and let him
+    check which one applies.
+    """
+    from run_agent import AIAgent
+
+    error = RuntimeError(
+        "HTTP 403: do not have an active Grok subscription"
+    )
+    summary = AIAgent._summarize_api_error(error)
+    # MUST NOT contain language that assumes the user is unsubscribed.
+    assert "lacks SuperGrok" not in summary
+    assert "lacks subscription" not in summary
+    assert "your account doesn't have" not in summary.lower()
+    # MUST contain the neutral framing.
+    assert "Could be" in summary or "could be" in summary
 
 
 def test_summarize_api_error_decorates_xai_body_message():
@@ -197,7 +231,7 @@ def test_summarize_api_error_decorates_xai_body_message():
 
     summary = AIAgent._summarize_api_error(_XaiErr("403"))
     assert "HTTP 403" in summary
-    assert "SuperGrok / X Premium" in summary
+    assert "Could be a missing subscription" in summary
 
 
 def test_summarize_api_error_idempotent_for_entitlement_hint():
@@ -208,6 +242,8 @@ def test_summarize_api_error_idempotent_for_entitlement_hint():
     once = AIAgent._decorate_xai_entitlement_error(raw)
     twice = AIAgent._decorate_xai_entitlement_error(once)
     assert once == twice
+    # Sanity: the hint did fire on the first pass.
+    assert "Could be a missing subscription" in once
 
 
 def test_summarize_api_error_passes_through_unrelated_errors():

@@ -121,6 +121,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'apple',
+                  key: 'skills-bundled-apple',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/apple/apple-apple-notes',
@@ -133,6 +134,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'autonomous-ai-agents',
+                  key: 'skills-bundled-autonomous-ai-agents',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
@@ -144,6 +146,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'creative',
+                  key: 'skills-bundled-creative',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/creative/creative-architecture-diagram',
@@ -170,6 +173,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'data-science',
+                  key: 'skills-bundled-data-science',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
@@ -178,6 +182,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'devops',
+                  key: 'skills-bundled-devops',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
@@ -188,6 +193,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'dogfood',
+                  key: 'skills-bundled-dogfood',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/dogfood/dogfood-dogfood',
@@ -196,6 +202,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'email',
+                  key: 'skills-bundled-email',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/email/email-himalaya',
@@ -204,6 +211,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'gaming',
+                  key: 'skills-bundled-gaming',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/gaming/gaming-minecraft-modpack-server',
@@ -213,6 +221,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'github',
+                  key: 'skills-bundled-github',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/github/github-codebase-inspection',
@@ -226,6 +235,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'mcp',
+                  key: 'skills-bundled-mcp',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/mcp/mcp-native-mcp',
@@ -234,6 +244,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'media',
+                  key: 'skills-bundled-media',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/media/media-gif-search',
@@ -246,6 +257,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'mlops',
+                  key: 'skills-bundled-mlops',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/mlops/mlops-models-audiocraft',
@@ -262,6 +274,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'note-taking',
+                  key: 'skills-bundled-note-taking',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/note-taking/note-taking-obsidian',
@@ -270,6 +283,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'productivity',
+                  key: 'skills-bundled-productivity',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
@@ -286,6 +300,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'red-teaming',
+                  key: 'skills-bundled-red-teaming',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/red-teaming/red-teaming-godmode',
@@ -294,6 +309,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'research',
+                  key: 'skills-bundled-research',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
@@ -306,6 +322,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'smart-home',
+                  key: 'skills-bundled-smart-home',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/smart-home/smart-home-openhue',
@@ -314,6 +331,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'social-media',
+                  key: 'skills-bundled-social-media',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/social-media/social-media-xurl',
@@ -322,6 +340,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'software-development',
+                  key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands',
@@ -340,6 +359,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'yuanbao',
+                  key: 'skills-bundled-yuanbao',
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/yuanbao/yuanbao-yuanbao',
@@ -355,6 +375,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'autonomous-ai-agents',
+                  key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
@@ -364,6 +385,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'blockchain',
+                  key: 'skills-optional-blockchain',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/blockchain/blockchain-evm',
@@ -374,6 +396,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'communication',
+                  key: 'skills-optional-communication',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/communication/communication-one-three-one-rule',
@@ -382,6 +405,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'creative',
+                  key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-blender-mcp',
@@ -394,6 +418,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'devops',
+                  key: 'skills-optional-devops',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/devops/devops-cli',
@@ -404,6 +429,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'dogfood',
+                  key: 'skills-optional-dogfood',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/dogfood/dogfood-adversarial-ux-test',
@@ -412,6 +438,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'email',
+                  key: 'skills-optional-email',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/email/email-agentmail',
@@ -420,6 +447,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'finance',
+                  key: 'skills-optional-finance',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/finance/finance-3-statement-model',
@@ -435,6 +463,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'health',
+                  key: 'skills-optional-health',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/health/health-fitness-nutrition',
@@ -444,6 +473,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'mcp',
+                  key: 'skills-optional-mcp',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/mcp/mcp-fastmcp',
@@ -453,6 +483,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'migration',
+                  key: 'skills-optional-migration',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/migration/migration-openclaw-migration',
@@ -461,6 +492,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'mlops',
+                  key: 'skills-optional-mlops',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/mlops/mlops-accelerate',
@@ -496,6 +528,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'productivity',
+                  key: 'skills-optional-productivity',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
@@ -510,6 +543,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'research',
+                  key: 'skills-optional-research',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/research/research-bioinformatics',
@@ -526,6 +560,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'security',
+                  key: 'skills-optional-security',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/security/security-1password',
@@ -536,6 +571,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'software-development',
+                  key: 'skills-optional-software-development',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
@@ -544,6 +580,7 @@ const sidebars: SidebarsConfig = {
                 {
                   type: 'category',
                   label: 'web-development',
+                  key: 'skills-optional-web-development',
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/web-development/web-development-page-agent',

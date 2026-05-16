@@ -663,7 +663,7 @@ export const zhHant: Translations = {
     columnHelp: {
       triage: "原始想法 — 規格制定者將完善規格",
       todo: "等待相依項目或尚未指派",
-      ready: "已指派，等待排程器輪詢",
+      ready: "相依項目已滿足；指派設定檔以便排程",
       running: "已被工作者領取 — 執行中",
       blocked: "工作者請求人工輸入",
       done: "已完成",

@@ -659,7 +659,7 @@ export const zh: Translations = {
     columnHelp: {
       triage: "原始想法 — 规范制定者将完善规格",
       todo: "等待依赖项或未分配",
-      ready: "已分配，等待调度器轮询",
+      ready: "依赖项已满足；分配一个配置文件以便调度",
       running: "已被工作者认领 — 执行中",
       blocked: "工作者请求人工输入",
       done: "已完成",

@@ -810,21 +810,35 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
+            _print_info("    Installing Camofox browser package...")
+            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
-            else:
-                _print_warning("    npm install failed - run manually: npm install")
+            # Install @askjo/camofox-browser on-demand. It is NOT in
+            # package.json so that `hermes update` does not silently pull
+            # the ~300MB Camoufox Firefox-fork binary for every user.
+            # Stream output (no capture, no --silent) so the long-running
+            # postinstall download is visible instead of looking frozen.
+            try:
+                result = subprocess.run(
+                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
+                     "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(PROJECT_ROOT),
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning(
+                        "    npm install failed — run manually: "
+                        "npm install @askjo/camofox-browser"
+                    )
+            except Exception as exc:
+                _print_warning(f"    Camofox install failed: {exc}")
+                _print_info(
+                    "    Run manually: npm install @askjo/camofox-browser"
+                )
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
-            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")

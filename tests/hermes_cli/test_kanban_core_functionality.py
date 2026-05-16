@@ -1319,6 +1319,42 @@ def test_cli_create_max_runtime_via_duration(kanban_home):
         conn.close()
 
 
+def test_cli_create_max_runtime_defaults_to_720_for_non_triage(kanban_home):
+    """Without --max-runtime, non-triage creates should default to 12 minutes."""
+    out = run_slash("create 'default runtime task' --json")
+    data = json.loads(out)
+    tid = data["id"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.max_runtime_seconds == 12 * 60
+    finally:
+        conn.close()
+
+
+def test_cli_create_max_runtime_stays_none_for_triage_without_flag(kanban_home):
+    """Triage creates keep max_runtime unset unless explicitly provided."""
+    out = run_slash("create 'triage runtime task' --triage --json")
+    data = json.loads(out)
+    tid = data["id"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.max_runtime_seconds is None
+    finally:
+        conn.close()
+
+
+def test_cli_show_json_includes_max_runtime_seconds(kanban_home):
+    """`kanban show --json` should expose max_runtime_seconds for DoD verification."""
+    out = run_slash("create 'show runtime task' --json")
+    tid = json.loads(out)["id"]
+
+    shown = json.loads(run_slash(f"show {tid} --json"))
+
+    assert shown["task"]["max_runtime_seconds"] == 12 * 60
+
+
 def test_cli_create_max_runtime_bad_format_exits_nonzero(kanban_home):
     out = run_slash("create 'bad' --max-runtime fish")
     assert "max-runtime" in out.lower() or "malformed" in out.lower()

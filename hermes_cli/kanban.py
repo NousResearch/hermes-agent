@@ -70,6 +70,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "max_runtime_seconds": t.max_runtime_seconds,
         "max_retries": t.max_retries,
     }
 
@@ -1085,11 +1086,14 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    triage = bool(getattr(args, "triage", False))
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
         print(f"kanban: --max-runtime: {exc}", file=sys.stderr)
         return 2
+    if max_runtime is None and not triage:
+        max_runtime = 12 * 60
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         print(
@@ -1110,7 +1114,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
-            triage=bool(getattr(args, "triage", False)),
+            triage=triage,
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,

@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: badMade/hermes-agent
+  IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ jobs:
   # On releases it produces :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'badMade/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
     needs: [build-amd64, build-arm64]
     timeout-minutes: 10
@@ -239,15 +239,11 @@ jobs:
       # commit gets its own immutable tag); releases use the release tag name.
       - name: Compute tag
         id: tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          GITHUB_SHA_VALUE: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "release" ]; then
-            printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           else
-            printf 'tag=sha-%s\n' "$GITHUB_SHA_VALUE" >> "$GITHUB_OUTPUT"
+            echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create manifest list and push
@@ -304,7 +300,7 @@ jobs:
   # ---------------------------------------------------------------------------
   move-latest:
     if: |
-      github.repository == 'badMade/hermes-agent'
+      github.repository == 'NousResearch/hermes-agent'
       && github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && needs.merge.outputs.pushed_sha_tag == 'true'

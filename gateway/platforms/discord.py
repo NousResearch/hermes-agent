@@ -389,23 +389,23 @@ class VoiceReceiver:
         """Try to infer user_id for an unmapped SSRC.
 
         When the bot rejoins a voice channel, Discord may not resend
-        SPEAKING events for users already speaking.  Only map when the
-        channel has exactly one possible non-bot speaker, and that user is
-        allowed when an allowlist is configured.
+        SPEAKING events for users already speaking.  If exactly one
+        allowed user is in the channel, map the SSRC to them.
         """
         try:
             channel = self._vc.channel
             if not channel:
                 return 0
             bot_id = self._vc.user.id if self._vc.user else 0
-            candidates = [m.id for m in channel.members if m.id != bot_id]
+            allowed = self._allowed_user_ids
+            candidates = [
+                m.id for m in channel.members
+                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+            ]
             if len(candidates) == 1:
                 uid = candidates[0]
-                allowed = self._allowed_user_ids
-                if allowed and str(uid) not in allowed:
-                    return 0
                 self._ssrc_to_user[ssrc] = uid
-                logger.info("Auto-mapped ssrc=%d -> user=%d (sole voice member)", ssrc, uid)
+                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
                 return uid
         except Exception:
             pass

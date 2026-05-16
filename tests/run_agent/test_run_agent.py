@@ -48,6 +48,45 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
+class _FakeProviderMemoryManager:
+    """Minimal memory manager double for tool dispatch tests."""
+
+    def __init__(self, tool_name="ext_retain"):
+        self.tool_name = tool_name
+        self.calls = []
+
+    def has_tool(self, tool_name):
+        return tool_name == self.tool_name
+
+    def handle_tool_call(self, tool_name, args):
+        self.calls.append((tool_name, args))
+        return json.dumps({"handled": tool_name})
+
+
+class _FakeMemoryProvider:
+    """Minimal provider loaded through AIAgent's memory provider path."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.initialized = False
+
+    def is_available(self):
+        return True
+
+    def get_tool_schemas(self):
+        return [
+            {
+                "name": "ext_retain",
+                "description": "External retain",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+    def initialize(self, session_id, **kwargs):
+        self.initialized = True
+
+
 def test_is_destructive_command_treats_cp_as_mutating():
     assert run_agent._is_destructive_command("cp .env.local .env") is True
 
@@ -97,6 +136,60 @@ def agent_with_memory_tool():
         )
         a.client = MagicMock()
         return a
+
+
+def test_memory_provider_tools_hidden_when_memory_toolset_excluded():
+    """External memory provider schemas should honor toolset filtering."""
+    cfg = {"memory": {"provider": "fake"}, "agent": {}}
+    provider = _FakeMemoryProvider()
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("todo")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            enabled_toolsets=["todo"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+    assert "memory" not in agent.valid_tool_names
+    assert "ext_retain" not in agent.valid_tool_names
+    assert all(t["function"]["name"] != "ext_retain" for t in agent.tools)
+
+
+def test_memory_provider_tools_visible_when_memory_toolset_enabled():
+    """External memory provider schemas remain available with the memory toolset."""
+    cfg = {"memory": {"provider": "fake"}, "agent": {}}
+    provider = _FakeMemoryProvider()
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("memory")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            enabled_toolsets=["memory"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+    assert "memory" in agent.valid_tool_names
+    assert "ext_retain" in agent.valid_tool_names
+    assert any(t["function"]["name"] == "ext_retain" for t in agent.tools)
 
 
 def test_aiagent_reuses_existing_errors_log_handler():
@@ -2172,6 +2265,41 @@ class TestConcurrentToolExecution:
         for m in messages:
             assert len(m["content"]) < 150_000
             assert "Truncated" in m["content"] or "<persisted-output>" in m["content"]
+
+    def test_invoke_tool_does_not_dispatch_unexposed_memory_provider_tool(self, agent):
+        """Concurrent helper must not bypass valid_tool_names for memory providers."""
+        manager = _FakeProviderMemoryManager()
+        agent._memory_manager = manager
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value='{"error":"Unknown tool"}',
+        ) as mock_hfc:
+            result = agent._invoke_tool("ext_retain", {"content": "x"}, "task-1")
+
+        assert manager.calls == []
+        assert json.loads(result) == {"error": "Unknown tool"}
+        mock_hfc.assert_called_once()
+
+    def test_sequential_does_not_dispatch_unexposed_memory_provider_tool(self, agent):
+        """Sequential path must not bypass valid_tool_names for memory providers."""
+        manager = _FakeProviderMemoryManager()
+        agent._memory_manager = manager
+        tool_call = _mock_tool_call(
+            name="ext_retain", arguments='{"content":"x"}', call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        with patch(
+            "run_agent.handle_function_call",
+            return_value='{"error":"Unknown tool"}',
+        ) as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert manager.calls == []
+        assert json.loads(messages[0]["content"]) == {"error": "Unknown tool"}
+        mock_hfc.assert_called_once()
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""

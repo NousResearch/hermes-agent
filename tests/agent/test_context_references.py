@@ -26,7 +26,6 @@ def sample_repo(tmp_path: Path) -> Path:
     _git(repo, "init")
     _git(repo, "config", "user.name", "Hermes Tests")
     _git(repo, "config", "user.email", "tests@example.com")
-    _git(repo, "config", "commit.gpgsign", "false")
 
     (repo / "src").mkdir()
     (repo / "src" / "main.py").write_text(

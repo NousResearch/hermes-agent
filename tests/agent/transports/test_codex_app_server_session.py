@@ -186,6 +186,50 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
+    def test_seed_context_only_applies_to_first_turn(self):
+        client = FakeClient()
+        s = make_session(client)
+
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "first"},
+            threadId="t",
+            turnId="tu1",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s.run_turn(
+            "hello",
+            seed_context="[SYSTEM]\nBe Hermes",
+            turn_timeout=2.0,
+        )
+
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m2", "text": "second"},
+            threadId="t",
+            turnId="tu2",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu2", "status": "completed", "error": None},
+        )
+        s.run_turn(
+            "again",
+            seed_context="[SYSTEM]\nBe Hermes",
+            turn_timeout=2.0,
+        )
+
+        turn_starts = [params for (method, params) in client.requests if method == "turn/start"]
+        assert len(turn_starts) == 2
+        assert "[SYSTEM]\nBe Hermes" in turn_starts[0]["input"][0]["text"]
+        assert "[CURRENT USER MESSAGE]\nhello" in turn_starts[0]["input"][0]["text"]
+        assert turn_starts[1]["input"][0]["text"] == "again"
+
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
         # Two completed exec items + one final agent message

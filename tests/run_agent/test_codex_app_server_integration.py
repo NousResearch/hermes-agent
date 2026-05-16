@@ -130,6 +130,42 @@ class TestRunConversationCodexPath:
         )
         assert user_count == 1, f"user message appeared {user_count}× in {result['messages']}"
 
+    def test_seed_context_includes_system_and_prior_history(self, monkeypatch):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["user_input"] = user_input
+            captured["seed_context"] = kwargs.get("seed_context", "")
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-ctx",
+                thread_id="thread-stub-ctx",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-ctx"
+        )
+
+        agent = _make_codex_agent()
+        history = [
+            {"role": "user", "content": "earlier user"},
+            {"role": "assistant", "content": "earlier assistant"},
+        ]
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation(
+                "current turn",
+                system_message="SOUL: Stay in persona.",
+                conversation_history=history,
+            )
+
+        assert captured["user_input"] == "current turn"
+        assert "[SYSTEM]\nSOUL: Stay in persona." in captured["seed_context"]
+        assert "[USER]\nearlier user" in captured["seed_context"]
+        assert "[ASSISTANT]\nearlier assistant" in captured["seed_context"]
+        assert "current turn" not in captured["seed_context"]
+
     def test_background_review_NOT_invoked_below_threshold(self, fake_session):
         """A single turn shouldn't trigger background review — counters
         haven't reached the nudge interval (default 10)."""

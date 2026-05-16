@@ -12475,6 +12475,7 @@ class AIAgent:
         if self.api_mode == "codex_app_server":
             return self._run_codex_app_server_turn(
                 user_message=user_message,
+                system_message=system_message,
                 original_user_message=original_user_message,
                 messages=messages,
                 effective_task_id=effective_task_id,
@@ -15984,10 +15985,83 @@ class AIAgent:
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
 
+    @staticmethod
+    def _coerce_codex_app_server_content_to_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            pieces: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    pieces.append(part)
+                    continue
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        pieces.append(text)
+            return "\n".join(piece for piece in pieces if piece)
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return text
+            alt = content.get("content")
+            if isinstance(alt, str):
+                return alt
+        return str(content)
+
+    def _build_codex_app_server_seed_context(
+        self,
+        messages: List[Dict[str, Any]],
+        system_message: str = "",
+    ) -> str:
+        """Serialize Hermes-assembled context for the first Codex app-server turn.
+
+        The Codex subprocess owns its own thread state after startup, so we only
+        need to seed the pre-existing Hermes context once: system prompt, SOUL,
+        injected memory/context files, and any conversation history that
+        existed before the current user message was appended.
+        """
+        if not messages:
+            return ""
+
+        seed_messages = list(messages)
+        if seed_messages and seed_messages[-1].get("role") == "user":
+            seed_messages = seed_messages[:-1]
+
+        rendered: List[str] = []
+        custom_system_message = str(system_message or "").strip()
+        if custom_system_message:
+            rendered.append(f"[SYSTEM]\n{custom_system_message}")
+        system_prompt = str(getattr(self, "_cached_system_prompt", "") or "").strip()
+        if system_prompt and system_prompt != custom_system_message:
+            rendered.append(f"[HERMES_SYSTEM_PROMPT]\n{system_prompt}")
+        for msg in seed_messages:
+            role = str(msg.get("role") or "unknown").upper()
+            text = self._coerce_codex_app_server_content_to_text(
+                msg.get("content")
+            ).strip()
+            if not text:
+                continue
+            rendered.append(f"[{role}]\n{text}")
+
+        if not rendered:
+            return ""
+
+        return (
+            "Hermes session context. Preserve this identity, instructions, and "
+            "conversation state when answering in the Codex runtime.\n\n"
+            + "\n\n".join(rendered)
+        )
+
     def _run_codex_app_server_turn(
         self,
         *,
         user_message: str,
+        system_message: str,
         original_user_message: Any,
         messages: List[Dict[str, Any]],
         effective_task_id: str,
@@ -16023,9 +16097,16 @@ class AIAgent:
         # NOTE: the user message is ALREADY appended to messages by the
         # standard run_conversation() flow (line ~11823) before the early
         # return reaches us. Do NOT append again — that would duplicate.
+        seed_context = self._build_codex_app_server_seed_context(
+            messages,
+            system_message=system_message,
+        )
 
         try:
-            turn = self._codex_session.run_turn(user_input=user_message)
+            turn = self._codex_session.run_turn(
+                user_input=user_message,
+                seed_context=seed_context,
+            )
         except Exception as exc:
             logger.exception("codex app-server turn failed")
             # Crash → unconditionally drop the session so the next turn

@@ -196,6 +196,7 @@ class CodexAppServerSession:
         # to surface a real summary in the approval prompt (quirk #4).
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
+        self._seed_context_sent = False
 
     # ---------- lifecycle ----------
 
@@ -329,6 +330,7 @@ class CodexAppServerSession:
         self,
         user_input: str,
         *,
+        seed_context: str = "",
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -365,6 +367,14 @@ class CodexAppServerSession:
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
+        input_text = user_input
+        if seed_context and not self._seed_context_sent:
+            input_text = (
+                f"{seed_context}\n\n"
+                "[CURRENT USER MESSAGE]\n"
+                f"{user_input}"
+            )
+
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
@@ -372,10 +382,12 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input}],
+                    "input": [{"type": "text", "text": input_text}],
                 },
                 timeout=10,
             )
+            if seed_context and not self._seed_context_sent:
+                self._seed_context_sent = True
         except CodexAppServerError as exc:
             # Classify auth/refresh failures so the user gets a clear
             # `codex login` pointer instead of a raw RPC error string.

@@ -280,6 +280,14 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+.hermes-kanban-needs-assignee {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
+  color: var(--color-foreground);
+}
+
 .hermes-kanban-assignee {
   font-weight: 500;
   color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));

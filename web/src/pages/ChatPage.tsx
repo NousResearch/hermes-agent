@@ -59,16 +59,17 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
+// Colors for the terminal body.  Keep the xterm canvas aligned with Glen's
+// Gunny Command dashboard: near-black base, warm/amber foreground and
+// selection accents.  The TUI skin engine still paints the content; the
+// terminal chrome should sit quietly inside the dashboard instead of pulling
+// the chat pane back toward the old teal palette.
 const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
+  background: "#070806",
+  foreground: "#fff7ed",
+  cursor: "#fbbf24",
+  cursorAccent: "#120a02",
+  selectionBackground: "#f59e0b55",
 };
 
 /**
@@ -156,7 +157,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(
+    () => `${resumeParam ? "resume" : "chat"}-${generateChannelId()}`,
+    [resumeParam],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;

@@ -928,6 +928,8 @@ def build_tool_start(
     tool_call_id: str,
     tool_name: str,
     arguments: Dict[str, Any],
+    *,
+    edit_diff: Any = None,
 ) -> ToolCallStart:
     """Create a ToolCallStart event for the given hermes tool invocation."""
     kind = get_tool_kind(tool_name)
@@ -935,16 +937,34 @@ def build_tool_start(
     locations = extract_locations(arguments)
 
     if tool_name == "patch":
-        mode = arguments.get("mode", "replace")
-        path = arguments.get("path") or "patch input"
-        content = [_text(f"Preparing {mode} edit for {path}. Approval prompt shows the diff.")]
+        if edit_diff is not None:
+            content = [
+                acp.tool_diff_content(
+                    path=edit_diff.path,
+                    old_text=edit_diff.old_text,
+                    new_text=edit_diff.new_text,
+                )
+            ]
+        else:
+            mode = arguments.get("mode", "replace")
+            path = arguments.get("path") or "patch input"
+            content = [_text(f"Preparing {mode} edit for {path}. Approval prompt shows the diff.")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "write_file":
-        path = arguments.get("path", "")
-        content = [_text(f"Preparing write to {path}. Approval prompt shows the diff." if path else "Preparing file write. Approval prompt shows the diff.")]
+        if edit_diff is not None:
+            content = [
+                acp.tool_diff_content(
+                    path=edit_diff.path,
+                    old_text=edit_diff.old_text,
+                    new_text=edit_diff.new_text,
+                )
+            ]
+        else:
+            path = arguments.get("path", "")
+            content = [_text(f"Preparing write to {path}. Approval prompt shows the diff." if path else "Preparing file write. Approval prompt shows the diff.")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )

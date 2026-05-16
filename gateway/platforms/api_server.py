@@ -45,6 +45,13 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.role_gating import (
+    filter_toolsets_by_role,
+    hash_api_key,
+    load_role_map,
+    load_role_tools,
+    resolve_role,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -857,6 +864,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        role: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -882,7 +890,9 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        enabled_toolsets = _get_platform_tools(user_config, "api_server")
+        enabled_toolsets = filter_toolsets_by_role(enabled_toolsets, role=role)
+        enabled_toolsets = sorted(enabled_toolsets)
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -1025,6 +1035,11 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Role-based tool gating: resolve role from authenticated identity.
+        _role: Optional[str] = None
+        if self._api_key:
+            _role = resolve_role(hash_api_key(self._api_key))
 
         # Parse request body
         try:
@@ -1220,6 +1235,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                role=_role,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1239,6 +1255,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                role=_role,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2743,6 +2760,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        role: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2766,6 +2784,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                role=role,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

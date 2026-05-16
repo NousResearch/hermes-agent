@@ -119,6 +119,14 @@ import re as _re
 
 # Phrases that are reasoning markers when they lead a sentence/clause.
 # Matched at the start of any line (after optional whitespace / list markers).
+#
+# Note: bare "looking at" is NOT here — briefing skill documents
+# "Looking at <topic>" as a legitimate opener pattern
+# (e.g. "Looking at Series B data science openings this morning").
+# Reasoning-shaped "looking at the strategy / the user / etc." variants
+# live in _BRIEFING_MIDCONTENT_REASONING below where they get caught as
+# mid-content fragments instead of false-tripping every topic-leading
+# opener. See Artemis S-0511-07 § Architecture for the rationale.
 _BRIEFING_LEADING_REASONING = (
     "now let me",
     "let me ",
@@ -127,7 +135,6 @@ _BRIEFING_LEADING_REASONING = (
     "i should ",
     "i'll ",
     "i will ",
-    "looking at",
     "the strategy was last updated",
     "the emotional context shows",
     "the emotional context is",
@@ -159,6 +166,18 @@ _BRIEFING_MIDCONTENT_REASONING = (
     "i should send",
     "i'll acknowledge",
     "scanning for executive-level signals",
+    # "looking at <internal-state>" — narrowed from the previous leading
+    # marker so legitimate "Looking at <topic>" openers (Artemis briefing
+    # skill's documented form) pass layer 1, while these reasoning-shape
+    # variants still trip layer 2.
+    "looking at the strategy",
+    "looking at the user",
+    "looking at the user's",
+    "looking at the profile",
+    "looking at the emotional context",
+    "looking at session",
+    "looking at mem0",
+    "looking at what the user",
     # Bare "Wait —" / "Actually," opening a sentence — caught by regex
     # patterns below in addition to substring search.
 )

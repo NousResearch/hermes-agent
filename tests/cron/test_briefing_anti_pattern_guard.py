@@ -121,6 +121,56 @@ def test_mid_content_let_me_write_flagged():
     assert not clean
 
 
+# -----------------------------------------------------------------------------
+# "Looking at <topic>" opener — leading "looking at" was removed from
+# _BRIEFING_LEADING_REASONING so legitimate briefing openers pass layer 1.
+# Reasoning-shape variants stay in _BRIEFING_MIDCONTENT_REASONING and still
+# trip layer 2. See Artemis S-0511-07 § Architecture.
+# -----------------------------------------------------------------------------
+
+def test_topic_leading_looking_at_opener_passes():
+    text = ("Looking at backend roles across the Bay — five strong matches "
+            "surfaced today.\n\n"
+            "```\n📌 Follow-ups\n───────────\n⭐ TODAY  Send the Waymo app\n```\n\n"
+            "💬 **Coach's Take:** Apply today.")
+    clean, reason = _scan_briefing_anti_patterns(text)
+    assert clean, f"expected clean, got reason={reason!r}"
+
+
+def test_topic_leading_looking_at_series_b_passes():
+    text = "Looking at Series B data science openings this morning."
+    clean, reason = _scan_briefing_anti_patterns(text)
+    assert clean, f"expected clean, got reason={reason!r}"
+
+
+def test_looking_at_the_strategy_flagged():
+    text = ("Looking at the strategy, the user has not shared their resume yet "
+            "so I'll keep the surface small.")
+    clean, _ = _scan_briefing_anti_patterns(text)
+    assert not clean
+
+
+def test_looking_at_the_user_flagged():
+    text = ("Quiet day on the board. Looking at the user's emotional context, "
+            "they need rest.")
+    clean, _ = _scan_briefing_anti_patterns(text)
+    assert not clean
+
+
+def test_looking_at_the_emotional_context_flagged():
+    text = ("Looking at the emotional context, the user is in finals overload — "
+            "let me keep this short.")
+    clean, _ = _scan_briefing_anti_patterns(text)
+    assert not clean
+
+
+def test_looking_at_session_flagged():
+    text = ("Quiet day. Looking at session history, the user mentioned a "
+            "deadline last week.")
+    clean, _ = _scan_briefing_anti_patterns(text)
+    assert not clean
+
+
 def test_content_with_user_quote_not_flagged():
     # Quoted user speech inside a brief that begins with a clean opener should
     # not trip the guard. The anti-patterns are detected only at the leading

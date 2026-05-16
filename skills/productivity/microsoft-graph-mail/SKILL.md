@@ -9,8 +9,6 @@ required_credential_files:
     description: Microsoft Entra public-client app metadata for delegated Graph auth
   - path: microsoft_graph_token.json
     description: Microsoft Graph delegated OAuth token for this Hermes profile
-  - path: microsoft_graph_oauth_pending.json
-    description: Temporary OAuth state used between auth-url and auth-code setup steps
 metadata:
   hermes:
     tags: [Microsoft, Graph, Outlook, Email, Mail, OAuth]

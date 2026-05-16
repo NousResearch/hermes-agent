@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import html
 import importlib
 import json
 import re
 import sys
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +17,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+from _log_sanitizer import _sanitize_for_log
 from microsoft_auth import get_valid_access_token
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -30,51 +31,13 @@ except ModuleNotFoundError:
     httpx = None
 
 
-class _HTMLTextExtractor(HTMLParser):
-    """Convert Graph HTML bodies into plain text without script/style content."""
-
-    _BLOCK_TAGS = {"br", "div", "li", "p", "tr"}
-    _SKIP_TAGS = {"script", "style"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs) -> None:  # type: ignore[override]
-        if tag in self._SKIP_TAGS:
-            self._skip_depth += 1
-            return
-        if self._skip_depth == 0 and tag in self._BLOCK_TAGS:
-            self._parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
-        if tag in self._SKIP_TAGS and self._skip_depth > 0:
-            self._skip_depth -= 1
-            return
-        if self._skip_depth == 0 and tag in {"div", "li", "p", "tr"}:
-            self._parts.append("\n")
-
-    def handle_data(self, data: str) -> None:  # type: ignore[override]
-        if self._skip_depth == 0 and data:
-            self._parts.append(data)
-
-    def get_text(self) -> str:
-        return "".join(self._parts)
-
-
-def _sanitize_line(value: object) -> str:
-    if value is None:
-        return ""
-    text = str(value)
-    return "".join(" " if (ord(char) < 0x20 or ord(char) == 0x7F) else char for char in text)
-
-
 def _strip_html(value: str) -> str:
-    parser = _HTMLTextExtractor()
-    parser.feed(value)
-    parser.close()
-    text = parser.get_text().replace("\xa0", " ")
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", value, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text).replace("\xa0", " ")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -152,7 +115,7 @@ def _graph_get(client: Any, token: str, path_or_url: str, params: dict | None = 
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
     except Exception as exc:
-        print(f"ERROR: Microsoft Graph request failed: {_sanitize_line(exc)}", file=sys.stderr)
+        print(f"ERROR: Microsoft Graph request failed: {_sanitize_for_log(exc)}", file=sys.stderr)
         sys.exit(1)
 
     if response.status_code >= 400:
@@ -163,13 +126,13 @@ def _graph_get(client: Any, token: str, path_or_url: str, params: dict | None = 
             message = error.get("message") or error.get("code") or message
         except Exception:
             pass
-        print(f"ERROR: Microsoft Graph request failed ({response.status_code}): {_sanitize_line(message)}", file=sys.stderr)
+        print(f"ERROR: Microsoft Graph request failed ({response.status_code}): {_sanitize_for_log(message)}", file=sys.stderr)
         sys.exit(1)
 
     try:
         return response.json()
     except Exception as exc:
-        print(f"ERROR: Microsoft Graph response was not JSON: {_sanitize_line(exc)}", file=sys.stderr)
+        print(f"ERROR: Microsoft Graph response was not JSON: {_sanitize_for_log(exc)}", file=sys.stderr)
         sys.exit(1)
 
 

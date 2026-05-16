@@ -26,6 +26,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import display_hermes_home, get_hermes_home
+from _log_sanitizer import _sanitize_for_log
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "microsoft_graph_token.json"
@@ -42,13 +43,6 @@ try:
     httpx = importlib.import_module("httpx")
 except ModuleNotFoundError:
     httpx = None
-
-
-def _sanitize_line(value: object) -> str:
-    if value is None:
-        return ""
-    text = str(value)
-    return "".join(" " if (ord(char) < 0x20 or ord(char) == 0x7F) else char for char in text)
 
 
 def _token_endpoint(tenant: str) -> str:
@@ -174,7 +168,7 @@ def _load_pending_auth() -> dict:
     try:
         data = json.loads(PENDING_AUTH_PATH.read_text())
     except Exception as exc:
-        print(f"ERROR: Could not read pending OAuth session: {_sanitize_line(exc)}")
+        print(f"ERROR: Could not read pending OAuth session: {_sanitize_for_log(exc)}")
         print("Run --auth-url again to start a fresh OAuth session.")
         sys.exit(1)
     if not data.get("state") or not data.get("code_verifier"):
@@ -192,9 +186,9 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     if "error" in params:
         error = params.get("error", ["authorization_error"])[0]
         description = params.get("error_description", [""])[0]
-        print(f"ERROR: Microsoft authorization failed: {_sanitize_line(error)}")
+        print(f"ERROR: Microsoft authorization failed: {_sanitize_for_log(error)}")
         if description:
-            print(_sanitize_line(description))
+            print(_sanitize_for_log(description))
         sys.exit(1)
     if "code" not in params:
         print("ERROR: No 'code' parameter found in URL.")
@@ -233,7 +227,7 @@ def _request_token(tenant: str, data: dict) -> dict:
             timeout=30,
         )
     except Exception as exc:
-        print(f"ERROR: Microsoft token request failed: {_sanitize_line(exc)}")
+        print(f"ERROR: Microsoft token request failed: {_sanitize_for_log(exc)}")
         sys.exit(1)
 
     if response.status_code >= 400:
@@ -243,13 +237,13 @@ def _request_token(tenant: str, data: dict) -> dict:
             message = error.get("error_description") or error.get("error") or message
         except Exception:
             pass
-        print(f"ERROR: Microsoft token request failed ({response.status_code}): {_sanitize_line(message)}")
+        print(f"ERROR: Microsoft token request failed ({response.status_code}): {_sanitize_for_log(message)}")
         sys.exit(1)
 
     try:
         return response.json()
     except Exception as exc:
-        print(f"ERROR: Microsoft token response was not JSON: {_sanitize_line(exc)}")
+        print(f"ERROR: Microsoft token response was not JSON: {_sanitize_for_log(exc)}")
         sys.exit(1)
 
 

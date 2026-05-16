@@ -10,6 +10,8 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
+import asyncio
+
 from tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
@@ -20,6 +22,7 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _redirect_handler,
 )
 
 
@@ -239,6 +242,64 @@ class TestUtilities:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setattr(os, "name", "posix")
         assert _can_open_browser() is True
+
+
+class TestRedirectHandlerSshHint:
+    """_redirect_handler must print an SSH tunnel hint on remote sessions."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49200)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth?foo=bar"))
+
+        err = capsys.readouterr().err
+        assert "49200" in err
+        assert "ssh -N -L" in err
+        assert "Remote session detected" in err
+
+    def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49201)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "49201" in err
+        assert "ssh -N -L" in err
+
+    def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49202)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
+
+    def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", None)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "ssh -N -L" not in err
 
 
 # ---------------------------------------------------------------------------

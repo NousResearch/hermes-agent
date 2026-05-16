@@ -74,3 +74,7 @@ hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
 tinker-atropos/
+
+# Runtime agent artifacts (auto-generated during self-hosting)
+research/
+workspace/

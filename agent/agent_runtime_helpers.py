@@ -606,7 +606,22 @@ def recover_with_credential_pool(
         return False, True
 
     if effective_reason == FailoverReason.auth:
-        if agent._is_entitlement_failure(error_context, status_code):
+        # Subscription/entitlement 403s look like auth failures on the wire
+        # but refresh cannot fix them — the OAuth token is already valid,
+        # the account simply lacks the entitlement.  Without this guard,
+        # ``try_refresh_current()`` keeps minting fresh tokens against the
+        # same unsubscribed account and the main agent loop spins re-issuing
+        # the same 403 until the user Ctrl+C's.
+        #
+        # Defense-in-depth for #26847: xAI's backend has been seen to 403
+        # standard SuperGrok subscribers with bodies that don't match the
+        # existing entitlement keyword set in ``_is_entitlement_failure``.
+        # Any 403 against ``xai-oauth`` is treated as entitlement here so
+        # the refresh loop can't spin in those cases either.
+        is_entitlement = agent._is_entitlement_failure(error_context, status_code)
+        if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
+            is_entitlement = True
+        if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
                 "skipping pool refresh (account lacks subscription, "

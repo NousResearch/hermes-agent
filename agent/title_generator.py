@@ -81,8 +81,9 @@ def _extract_title_from_reasoning(raw: str) -> str:
         if 3 <= len(clean) <= 80:
             return clean
 
-    # Step 4: Fallback
-    return raw.strip()[:80]
+    # Step 4: Fallback — don't truncate here; let generate_title() handle
+    # the 80-char limit so it can append "..." consistently.
+    return raw.strip()
 
 
 def generate_title(

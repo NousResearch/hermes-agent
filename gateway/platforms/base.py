@@ -827,6 +827,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".toml": "application/toml",
     ".ini": "text/plain",
     ".cfg": "text/plain",
+    ".py": "text/x-python",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

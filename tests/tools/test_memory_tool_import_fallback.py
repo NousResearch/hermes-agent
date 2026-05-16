@@ -19,6 +19,9 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
     monkeypatch.delitem(sys.modules, "tools.memory_tool", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
+    # Set KNOWLEDGE_HOME BEFORE re-import so _KNOWLEDGE_DIR resolves to temp
+    monkeypatch.setenv("KNOWLEDGE_HOME", str(tmp_path / "knowledge"))
+
     memory_tool = importlib.import_module("tools.memory_tool")
     monkeypatch.setattr(memory_tool, "get_memory_dir", lambda: tmp_path)
 

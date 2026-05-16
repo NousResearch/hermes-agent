@@ -2,16 +2,21 @@
 """
 Memory Tool Module - Persistent Curated Memory
 
-Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
+Provides bounded, curated memory that persists across sessions. Two stores:
+  - memory: agent's personal notes and observations (environment facts, project
     conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
+  - user: what the agent knows about the user (preferences, communication style,
     expectations, workflow habits)
 
 Both are injected into the system prompt as a frozen snapshot at session start.
-Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
-The snapshot refreshes on the next session start.
+Mid-session writes persist to the knowledge store immediately (durable) but do
+NOT change the system prompt — this preserves the prefix cache for the entire
+session. The snapshot refreshes on the next session start.
+
+Durable storage is handled by the knowledge DB (~/.hermes/bin/knowledge or
+~/.hermes/bin/knowledge-py fallback). Facts stored in the 'facts' category,
+user profile in the 'user' category. The old MEMORY.md / USER.md files are
+no longer used — they exist only for backward compatibility during migration.
 
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
@@ -27,6 +32,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -104,6 +110,98 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Knowledge store helpers — all durable memory is now stored in the knowledge
+# DB (~/.hermes/bin/knowledge) rather than MEMORY.md / USER.md files.
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_BIN = os.path.expanduser("~/.hermes/bin/knowledge")
+_KNOWLEDGE_PY = os.path.expanduser("~/.hermes/bin/knowledge-py")
+_KNOWLEDGE_DIR = Path(os.environ.get("KNOWLEDGE_HOME", os.path.expanduser("~/.hermes/knowledge")))
+
+
+def _knowledge_binary() -> Optional[str]:
+    """Return the knowledge binary path, preferring Rust over Python fallback."""
+    if os.path.exists(_KNOWLEDGE_BIN):
+        return _KNOWLEDGE_BIN
+    if os.path.exists(_KNOWLEDGE_PY):
+        return _KNOWLEDGE_PY
+    return None
+
+
+def _knowledge_read_entries(category: str) -> List[str]:
+    """Read all entries from knowledge store category. Returns list of source texts."""
+    binary = _knowledge_binary()
+    if not binary:
+        return []
+    try:
+        result = subprocess.run(
+            [binary, "read", category],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+
+    entries: List[str] = []
+    for block in re.split(r"\n---\n", result.stdout):
+        block = block.strip()
+        if not block:
+            continue
+        # Extract source field value (the original memory entry)
+        entry_text = block
+        m = re.search(r"^## source\n(.*?)(?=\n## |\Z)", block, re.DOTALL)
+        if m:
+            entry_text = m.group(1).strip()
+        if entry_text:
+            entries.append(entry_text)
+    return entries
+
+
+def _knowledge_append(category: str, content: str) -> bool:
+    """Append an entry to knowledge store. Returns True on success."""
+    binary = _knowledge_binary()
+    if not binary:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "append", category, f"## source\n{content}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _knowledge_find_and_delete(category: str, old_text: str) -> int:
+    """Find entries in knowledge store matching old_text substring, delete them.
+    Returns count of deleted files."""
+    cat_dir = _KNOWLEDGE_DIR / category
+    if not cat_dir.exists():
+        return 0
+    deleted = 0
+    for f in cat_dir.glob("*.md"):
+        try:
+            if old_text in f.read_text():
+                f.unlink()
+                deleted += 1
+        except Exception:
+            pass
+    # Force index rebuild after deletions (delete cached .index file)
+    if deleted > 0:
+        index_file = _KNOWLEDGE_DIR / ".index"
+        try:
+            index_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return deleted
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -124,12 +222,22 @@ class MemoryStore:
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        """Load entries from knowledge store, capture system prompt snapshot.
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        Reads 'facts' category for memory_entries and 'user' category for
+        user_entries. Falls back to legacy MEMORY.md / USER.md files if the
+        knowledge store has no entries — preserves backward compatibility
+        for tests and pre-migration setups.
+        """
+        self.memory_entries = _knowledge_read_entries("facts")
+        self.user_entries = _knowledge_read_entries("user")
+
+        # Fall back to legacy files if knowledge store is empty
+        mem_dir = get_memory_dir()
+        if not self.memory_entries:
+            self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
+        if not self.user_entries:
+            self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -222,7 +330,7 @@ class MemoryStore:
         return self.memory_char_limit
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new entry. Persists to knowledge store, updates in-memory state."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -232,42 +340,43 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+        entries = self._entries_for(target)
+        limit = self._char_limit(target)
 
-            entries = self._entries_for(target)
-            limit = self._char_limit(target)
+        # Reject exact duplicates
+        if content in entries:
+            return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+        # Calculate what the new total would be
+        new_entries = entries + [content]
+        new_total = len(ENTRY_DELIMITER.join(new_entries))
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+        if new_total > limit:
+            current = self._char_count(target)
+            return {
+                "success": False,
+                "error": (
+                    f"Memory at {current:,}/{limit:,} chars. "
+                    f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                    f"Replace or remove existing entries first."
+                ),
+                "current_entries": entries,
+                "usage": f"{current:,}/{limit:,}",
+            }
 
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+        # Persist to knowledge store
+        cat = "user" if target == "user" else "facts"
+        _knowledge_append(cat, content)
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        entries.append(content)
+        self._set_entries(target, entries)
+        self.save_to_disk(target)  # legacy backup
 
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Find entry containing old_text substring, replace it with new_content.
+        Persists to knowledge store: deletes old file, appends new."""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -280,81 +389,86 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        entries = self._entries_for(target)
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if not matches:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
-
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = {e for _, e in matches}
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to replace just the first
-
-            idx = matches[0][0]
-            limit = self._char_limit(target)
-
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
-
-            if new_total > limit:
+        if len(matches) > 1:
+            # If all matches are identical (exact duplicates), operate on the first one
+            unique_texts = {e for _, e in matches}
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                 return {
                     "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
+                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                    "matches": previews,
                 }
+            # All identical -- safe to replace just the first
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        idx = matches[0][0]
+        limit = self._char_limit(target)
+
+        # Check that replacement doesn't blow the budget
+        test_entries = entries.copy()
+        test_entries[idx] = new_content
+        new_total = len(ENTRY_DELIMITER.join(test_entries))
+
+        if new_total > limit:
+            return {
+                "success": False,
+                "error": (
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
+                    f"Shorten the new content or remove other entries first."
+                ),
+            }
+
+        # Persist to knowledge store: delete old, append new
+        cat = "user" if target == "user" else "facts"
+        _knowledge_find_and_delete(cat, matches[0][1])
+        _knowledge_append(cat, new_content)
+
+        entries[idx] = new_content
+        self._set_entries(target, entries)
+        self.save_to_disk(target)  # legacy backup
 
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """Remove the entry containing old_text substring.
+        Persists to knowledge store: deletes matching file."""
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        entries = self._entries_for(target)
+        matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+        if not matches:
+            return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+        if len(matches) > 1:
+            # If all matches are identical (exact duplicates), remove the first one
+            unique_texts = {e for _, e in matches}
+            if len(unique_texts) > 1:
+                previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                return {
+                    "success": False,
+                    "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                    "matches": previews,
+                }
+            # All identical -- safe to remove just the first
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = {e for _, e in matches}
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to remove just the first
+        idx = matches[0][0]
 
-            idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+        # Persist to knowledge store: delete matching file
+        cat = "user" if target == "user" else "facts"
+        _knowledge_find_and_delete(cat, matches[0][1])
+
+        entries.pop(idx)
+        self._set_entries(target, entries)
+        self.save_to_disk(target)  # legacy backup
 
         return self._success_response(target, "Entry removed.")
 

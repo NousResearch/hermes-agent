@@ -2096,7 +2096,13 @@ def _is_payment_error(exc: Exception) -> bool:
     """Detect payment/credit/quota exhaustion errors.
 
     Returns True for HTTP 402 (Payment Required) and for 429/other errors
-    whose message indicates billing exhaustion rather than rate limiting.
+    whose message indicates billing exhaustion or daily quota exhaustion
+    rather than transient rate limiting.
+
+    Daily token quota errors (e.g. Bedrock "Too many tokens per day",
+    Vertex AI "quota exceeded") are functionally equivalent to credit
+    exhaustion — the provider cannot serve the request until the quota
+    resets — and should trigger the same provider-fallback logic.
     """
     status = getattr(exc, "status_code", None)
     if status == 402:
@@ -2104,10 +2110,19 @@ def _is_payment_error(exc: Exception) -> bool:
     err_lower = str(exc).lower()
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
+    # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
+    # uses different language but is semantically identical to credit exhaustion.
     if status in {402, 429, None}:
-        if any(kw in err_lower for kw in ("credits", "insufficient funds",
-                                           "can only afford", "billing",
-                                           "payment required")):
+        if any(kw in err_lower for kw in (
+            "credits", "insufficient funds",
+            "can only afford", "billing",
+            "payment required",
+            # Daily / monthly quota exhaustion keywords
+            "quota exceeded", "quota_exceeded",
+            "too many tokens per day", "daily limit",
+            "tokens per day", "daily quota",
+            "resource exhausted",  # Vertex AI / gRPC quota errors
+        )):
             return True
     return False
 
@@ -4538,11 +4553,17 @@ def call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
-        # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
+        # Respect explicit provider choice for transient errors (auth, request
+        # validation, etc.) but allow fallback when the provider clearly cannot
+        # serve the request due to capacity: payment/quota exhaustion and
+        # connection failures are capacity problems, not request constraints.
+        # See #26803: daily token quota (429 + "too many tokens per day") must
+        # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        # Capacity errors bypass the explicit-provider gate: the provider
+        # literally cannot serve this request regardless of user intent.
+        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4870,8 +4891,12 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
+        # Capacity errors (payment/quota/connection) bypass the explicit-provider
+        # gate — the provider cannot serve the request regardless of user intent.
+        # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(

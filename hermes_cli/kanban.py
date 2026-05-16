@@ -229,14 +229,16 @@ def _validate_task_log_access(task_id: str) -> tuple[bool, str | None]:
         return True, None
     with kb.connect() as conn:
         task = kb.get_task(conn, task_id)
-    if task is None or not task.assignee:
+    if task is None:
         return True, None
-    if _assignee_policy_allows(task.assignee):
+    # Use assignee if present, fall back to creator for unassigned tasks.
+    owner = task.assignee or task.created_by
+    if owner and _assignee_policy_allows(owner):
         return True, None
     return (
         False,
         f"profile {active!r} is not allowed to read worker logs for "
-        f"task {task_id} assigned to {task.assignee!r}",
+        f"task {task_id} owned by {owner!r}",
     )
 
 # ---------------------------------------------------------------------------

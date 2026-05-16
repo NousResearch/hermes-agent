@@ -49,15 +49,28 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
     previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``,
     so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
+
+    feat/nemocode: Extended to trust provider aliases that map to ``custom``
+    (ollama, vllm, llamacpp, llama-cpp, llama.cpp) so that LAN/remote endpoints
+    (e.g. a DGX Spark at 192.168.x.x) work when set via config.yaml rather than
+    requiring the CUSTOM_BASE_URL env var workaround.
     """
+    # Aliases from auth.py _PROVIDER_ALIASES that all resolve to "custom"
+    # Aliases from auth.py _PROVIDER_ALIASES that all resolve to "custom"
+    _CUSTOM_PROVIDER_ALIASES = {
+        "custom", "ollama", "vllm", "llamacpp", "llama-cpp", "llama.cpp",
+    }
     cfg_provider_norm = (cfg_provider or "").strip().lower()
     bu = (cfg_base_url or "").strip()
     if not bu:
         return False
-    if cfg_provider_norm == "custom":
-        return True
+    # Never trust an OpenRouter URL regardless of declared provider — a stale
+    # config.yaml could leave openrouter.ai in base_url even after switching to
+    # a local backend.
     if base_url_host_matches(bu, "openrouter.ai"):
         return False
+    if cfg_provider_norm in _CUSTOM_PROVIDER_ALIASES:
+        return True
     return _loopback_hostname(base_url_hostname(bu))
 
 

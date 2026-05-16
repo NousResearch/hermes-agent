@@ -889,14 +889,17 @@ class HermesACPAgent(acp.Agent):
         ).strip()
 
     async def _replay_session_history(self, state: SessionState) -> None:
-        """Send persisted user/assistant history to clients during session/load.
+        """Replay persisted user/assistant history during session/load or session/resume.
 
-        Zed's ACP history UI calls ``session/load`` after the user picks an item
-        from the Agents sidebar. The agent must then replay the full conversation
-        as user/assistant chunks, thinking-mode thought chunks, plus reconstructed
-        tool-call start/completion notifications; merely restoring server-side
-        state makes Hermes remember context, but leaves the editor looking like a
-        clean thread.
+        Invoked inline (``await``) from both ``load_session`` and
+        ``resume_session`` so that spec-compliant ACP clients receive the
+        full transcript within the request's lifetime — see the comment at
+        the call sites for the rationale and prior-art citations.
+
+        Replays the conversation as user/assistant chunks, thinking-mode
+        thought chunks, plus reconstructed tool-call start/completion
+        notifications. Merely restoring server-side state makes Hermes
+        remember context, but leaves the editor looking like a clean thread.
         """
         if not self._conn or not state.history:
             return
@@ -991,18 +994,6 @@ class HermesACPAgent(acp.Agent):
             models=self._build_model_state(state),
         )
 
-    def _schedule_history_replay(self, state: SessionState) -> None:
-        """Replay persisted history after session/load or session/resume returns.
-
-        Zed only attaches streamed transcript/tool updates once the load/resume
-        response has completed. Sending replay notifications while the request is
-        still in-flight can make the server look correct in logs while the editor
-        drops or fails to attach the tool-call history.
-        """
-        loop = asyncio.get_running_loop()
-        replay_coro = self._replay_session_history(state)
-        loop.call_soon(asyncio.create_task, replay_coro)
-
     async def load_session(
         self,
         cwd: str,
@@ -1016,7 +1007,30 @@ class HermesACPAgent(acp.Agent):
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
-        self._schedule_history_replay(state)
+        # Per ACP spec, `session/load` must stream the prior conversation back
+        # to the client via `session/update` notifications BEFORE responding,
+        # so the client receives the full transcript within the load request's
+        # lifetime. Awaiting the replay here matches Codex / Claude Code /
+        # OpenCode / Pi and the Zed client (which registers the session-update
+        # routing entry before awaiting the loadSession RPC specifically so
+        # in-call history replay updates can find the thread). Deferring this
+        # via `loop.call_soon` (as we did briefly in May 2026) broke every
+        # spec-compliant ACP client that measures notifications synchronously
+        # against the load response — see #12285 follow-up.
+        try:
+            await self._replay_session_history(state)
+        except Exception:
+            # Replay is best-effort — a corrupted or unexpected message shape
+            # must not turn a successful session/load into a JSON-RPC error
+            # response. Per-notification failures are already caught inside
+            # ``_replay_session_history``; this outer guard covers anything
+            # raised by the helpers themselves before reaching ``_send``.
+            logger.warning(
+                "ACP history replay raised during session/load for %s — "
+                "load will still succeed, partial transcript may be missing",
+                session_id,
+                exc_info=True,
+            )
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
         return LoadSessionResponse(models=self._build_model_state(state))
@@ -1034,7 +1048,18 @@ class HermesACPAgent(acp.Agent):
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
-        self._schedule_history_replay(state)
+        # See `load_session` above for the spec rationale — replay must
+        # complete before the response so clients receive the full transcript
+        # within the request's lifetime.
+        try:
+            await self._replay_session_history(state)
+        except Exception:
+            logger.warning(
+                "ACP history replay raised during session/resume for %s — "
+                "resume will still succeed, partial transcript may be missing",
+                state.session_id,
+                exc_info=True,
+            )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(models=self._build_model_state(state))

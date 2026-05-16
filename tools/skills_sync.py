@@ -416,6 +416,136 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
+
+def dedup_profile_skills(
+    profile_dir: "Path" = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+) -> dict:
+    """Replace duplicate skill directories in named profiles with symlinks.
+
+    For each skill directory in a named profile that is byte-identical to the
+    corresponding skill in the default (canonical) profile, the copy is removed
+    and replaced with a symlink pointing to the default profile's copy.
+
+    Safety guarantees:
+      - Only replaces when content is byte-identical (same hash).
+      - Never touches user-modified skills (hash mismatch -> skip).
+      - Never touches skills that don't exist in the default profile.
+      - Skips skills that are already symlinks.
+
+    Parameters
+    ----------
+    profile_dir:
+        The named-profile directory to dedup.  If ``None``, dedup *all*
+        named profiles under ``~/.hermes/profiles/``.
+    dry_run:
+        If True, report what *would* be deduped without making changes.
+    quiet:
+        Suppress stdout output.
+
+    Returns
+    -------
+    dict with keys:
+        deduped  -- list of (profile_name, skill_name) tuples replaced
+        skipped  -- list of (profile_name, skill_name) tuples skipped (modified)
+        symlinks -- list of (profile_name, skill_name) already symlinked
+        missing  -- list of (profile_name, skill_name) not in default profile
+        errors   -- list of (profile_name, skill_name, error_msg) tuples
+    """
+    from hermes_constants import get_default_hermes_root
+
+    default_home = get_default_hermes_root()
+    default_skills = default_home / "skills"
+
+    if not default_skills.is_dir():
+        return {"deduped": [], "skipped": [], "symlinks": [],
+                "missing": [], "errors": []}
+
+    # Build hash index of default profile skills
+    default_hashes: dict = {}
+    for skill_md in default_skills.rglob("SKILL.md"):
+        skill_dir = skill_md.parent
+        rel = skill_dir.relative_to(default_skills)
+        default_hashes[str(rel)] = _dir_hash(skill_dir)
+
+    if not default_hashes:
+        return {"deduped": [], "skipped": [], "symlinks": [],
+                "missing": [], "errors": []}
+
+    # Determine which profiles to scan
+    profiles_root = default_home / "profiles"
+    if profile_dir is not None:
+        targets = [profile_dir]
+    elif profiles_root.is_dir():
+        targets = [d for d in profiles_root.iterdir() if d.is_dir()]
+    else:
+        return {"deduped": [], "skipped": [], "symlinks": [],
+                "missing": [], "errors": []}
+
+    deduped = []
+    skipped = []
+    symlinks = []
+    missing = []
+    errors = []
+
+    for target in targets:
+        profile_name = target.name
+        target_skills = target / "skills"
+        if not target_skills.is_dir():
+            continue
+
+        for skill_md in target_skills.rglob("SKILL.md"):
+            skill_dir = skill_md.parent
+            rel = str(skill_dir.relative_to(target_skills))
+
+            # Skip if already a symlink
+            if skill_dir.is_symlink():
+                symlinks.append((profile_name, rel))
+                continue
+
+            # Skip if no matching default skill
+            if rel not in default_hashes:
+                missing.append((profile_name, rel))
+                continue
+
+            target_hash = _dir_hash(skill_dir)
+            default_hash = default_hashes[rel]
+
+            if target_hash != default_hash:
+                skipped.append((profile_name, rel))
+                continue
+
+            # Byte-identical -> safe to replace with symlink
+            default_skill_path = default_skills / rel
+            if dry_run:
+                deduped.append((profile_name, rel))
+                if not quiet:
+                    print(f"  would dedup: {profile_name}/{rel}")
+                continue
+
+            try:
+                # Remove the copy and create symlink
+                shutil.rmtree(skill_dir)
+                skill_dir.symlink_to(default_skill_path)
+                deduped.append((profile_name, rel))
+                if not quiet:
+                    print(f"  \u2713 {profile_name}/{rel} -> {default_skill_path}")
+            except (OSError, IOError) as e:
+                errors.append((profile_name, rel, str(e)))
+                if not quiet:
+                    print(f"  \u2717 {profile_name}/{rel}: {e}")
+
+    return {
+        "deduped": deduped,
+        "skipped": skipped,
+        "symlinks": symlinks,
+        "missing": missing,
+        "errors": errors,
+    }
+
+
 if __name__ == "__main__":
     print("Syncing bundled skills into ~/.hermes/skills/ ...")
     result = sync_skills(quiet=False)

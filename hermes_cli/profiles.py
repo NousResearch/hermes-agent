@@ -630,6 +630,60 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
+
+def _clone_skills(
+    source_skills: Path,
+    dest_skills: Path,
+    source_dir: Path,
+    profile_dir: Path,
+) -> None:
+    """Copy skills from source profile, using symlinks for bundled/shared skills.
+
+    For each skill that exists in the default profile and is byte-identical to
+    the source profile's copy, a symlink is created instead of a full copy.
+    User-specific or modified skills are always fully copied.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    default_home = get_default_hermes_root()
+
+    # If source IS the default profile, we can't symlink to ourselves.
+    # In that case just copy everything (symlinks would be circular).
+    try:
+        source_dir.relative_to(default_home)
+        is_default_source = True
+    except ValueError:
+        is_default_source = False
+
+    dest_skills.mkdir(parents=True, exist_ok=True)
+
+    for skill_md in source_skills.rglob("SKILL.md"):
+        skill_dir = skill_md.parent
+        rel = skill_dir.relative_to(source_skills)
+        dest = dest_skills / rel
+
+        if dest.exists():
+            continue  # don't overwrite
+
+        # Try to symlink to default profile if source is NOT default
+        if not is_default_source:
+            default_skill = default_home / "skills" / rel
+            if default_skill.is_dir():
+                # Check if source and default are identical
+                try:
+                    from tools.skills_sync import _dir_hash
+                    if _dir_hash(skill_dir) == _dir_hash(default_skill):
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.symlink_to(default_skill)
+                        continue
+                except Exception:
+                    pass  # Fall through to full copy
+
+        # Full copy for modified/default-source skills
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_dir, dest, dirs_exist_ok=True)
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -728,7 +782,8 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                _clone_skills(source_skills, profile_dir / "skills",
+                              source_dir, profile_dir)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

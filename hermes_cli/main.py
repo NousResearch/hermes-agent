@@ -9134,6 +9134,45 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
+    elif action == "dedup":
+        from hermes_cli.profiles import get_profile_dir
+        from tools.skills_sync import dedup_profile_skills
+
+        profile_name = getattr(args, "profile", None)
+        target_dir = None
+        if profile_name:
+            target_dir = get_profile_dir(profile_name)
+            if not target_dir.is_dir():
+                print(f"Error: Profile '{profile_name}' not found.")
+                sys.exit(1)
+
+        dry_run = getattr(args, "dry_run", False)
+        label = "would be " if dry_run else ""
+        print(f"Scanning for duplicate skills ({label}dedup)...")
+        result = dedup_profile_skills(
+            target_dir, dry_run=dry_run, quiet=False
+        )
+
+        n = len(result["deduped"])
+        s = len(result["skipped"])
+        sl = len(result["symlinks"])
+        m = len(result["missing"])
+        e = len(result["errors"])
+
+        if dry_run:
+            print(f"\nDry-run summary:")
+        else:
+            print(f"\nDedup complete:")
+        print(f"  {n} skills {label}replaced with symlinks")
+        if s:
+            print(f"  {s} user-modified (kept as copies)")
+        if sl:
+            print(f"  {sl} already symlinked")
+        if m:
+            print(f"  {m} profile-specific (no default match)")
+        if e:
+            print(f"  {e} errors")
+
     elif action == "delete":
         name = args.profile_name
         yes = getattr(args, "yes", False)
@@ -12269,6 +12308,20 @@ Examples:
         help="Show a profile's distribution manifest (version, requirements, source)",
     )
     profile_info.add_argument("profile_name", help="Profile to inspect")
+
+    profile_dedup = profile_subparsers.add_parser(
+        "dedup",
+        help="Replace duplicate skills with symlinks to default profile",
+    )
+    profile_dedup.add_argument(
+        "--profile", "-p",
+        help="Only dedup a specific named profile (default: all profiles)",
+    )
+    profile_dedup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be deduped without making changes",
+    )
 
     profile_parser.set_defaults(func=cmd_profile)
 

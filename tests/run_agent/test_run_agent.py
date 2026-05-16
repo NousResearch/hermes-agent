@@ -2528,6 +2528,40 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
+    def test_chat_completions_ack_stop_message_auto_continues(self, agent):
+        self._setup_agent(agent)
+        ack = _mock_response(
+            content="Absolutely — I'll inspect ~/project and report back with findings.",
+            finish_reason="stop",
+        )
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_turn = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        final = _mock_response(content="Architecture summary complete.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ack, tool_turn, final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("look into ~/project and summarize architecture")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Architecture summary complete."
+        assert result["api_calls"] == 3
+        assert any(
+            msg.get("role") == "assistant"
+            and msg.get("finish_reason") == "incomplete"
+            and "inspect ~/project" in (msg.get("content") or "")
+            for msg in result["messages"]
+        )
+        assert any(
+            msg.get("role") == "user"
+            and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
+            for msg in result["messages"]
+        )
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None

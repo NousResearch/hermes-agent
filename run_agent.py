@@ -15524,7 +15524,7 @@ class AIAgent:
                     self._thinking_prefill_retries = 0
 
                     if (
-                        self.api_mode == "codex_responses"
+                        self.api_mode in {"codex_responses", "chat_completions", "anthropic_messages"}
                         and self.valid_tool_names
                         and codex_ack_continuations < 2
                         and self._looks_like_codex_intermediate_ack(

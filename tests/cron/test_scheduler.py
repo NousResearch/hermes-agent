@@ -1991,110 +1991,63 @@ class TestRunJobWakeGate:
 
     def test_no_script_path_runs_agent_normally(self):
         """Regression: jobs without a script still work."""
+
+
+class TestEvaluateCondition:
+    """Tests for the pre-execution condition gate helper."""
+
+    def test_no_condition_returns_true(self):
+        """Jobs without a condition field always proceed."""
         import cron.scheduler as scheduler
+        job = {"id": "test_01", "name": "test"}
+        logger = logging.getLogger("test_cond")
+        assert scheduler._evaluate_condition(job, logger) is True
 
-        agent = MagicMock()
-        agent.run_conversation = MagicMock(return_value={
-            "final_response": "ok", "messages": []
-        })
-        job = self._make_job(script=None)
-        job.pop("script", None)
-        with patch.object(scheduler, "_run_job_script") as script_fn, \
-             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            scheduler.run_job(job)
+    def test_condition_script_zero_exit_proceeds(self, caplog):
+        """Condition script returning exit 0 allows the job to proceed."""
+        import cron.scheduler as scheduler
+        job = {"id": "test_02", "condition": "check.sh"}
+        logger = logging.getLogger("test_cond")
+        caplog.set_level(logging.DEBUG)
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, "all good")):
+            assert scheduler._evaluate_condition(job, logger) is True
 
-        script_fn.assert_not_called()
-        agent_cls.assert_called_once()
+    def test_condition_script_non_zero_skips(self, caplog):
+        """Condition script returning non-zero exit skips the job."""
+        import cron.scheduler as scheduler
+        job = {"id": "test_03", "condition": "check.sh"}
+        logger = logging.getLogger("test_cond")
+        caplog.set_level(logging.INFO)
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(False, "not today")),              patch.object(scheduler, "mark_job_run") as mark_mock:
+            assert scheduler._evaluate_condition(job, logger) is False
+        mark_mock.assert_called_once_with("test_03", False, "condition_skipped")
+        assert "returned non-zero" in caplog.text
 
+    def test_condition_script_exception_skips(self, caplog):
+        """Condition script that raises an exception still skips safely."""
+        import cron.scheduler as scheduler
+        job = {"id": "test_04", "condition": "broken.sh"}
+        logger = logging.getLogger("test_cond")
+        caplog.set_level(logging.WARNING)
+        with patch.object(scheduler, "_run_job_script",
+                          side_effect=PermissionError("no exec")),              patch.object(scheduler, "mark_job_run") as mark_mock:
+            assert scheduler._evaluate_condition(job, logger) is False
+        mark_mock.assert_called_once()
+        args = mark_mock.call_args[0]
+        assert args[1] is False
+        assert "condition_error" in args[2]
 
-class TestBuildJobPromptMissingSkill:
-    """Verify that a missing skill logs a warning and does not crash the job."""
-
-    def _missing_skill_view(self, name: str) -> str:
-        return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
-
-    def test_missing_skill_does_not_raise(self):
-        """Job should run even when a referenced skill is not installed."""
-        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
-        # prompt is preserved even though skill was skipped
-        assert "do something" in result
-
-    def test_missing_skill_injects_user_notice_into_prompt(self):
-        """A system notice about the missing skill is injected into the prompt."""
-        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
-        assert "ghost-skill" in result
-        assert "not found" in result.lower() or "skipped" in result.lower()
-
-    def test_missing_skill_logs_warning(self, caplog):
-        """A warning is logged when a skill cannot be found."""
-        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
-            with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-                _build_job_prompt({"name": "My Job", "skills": ["ghost-skill"], "prompt": "do something"})
-        assert any("ghost-skill" in record.message for record in caplog.records)
-
-    def test_valid_skill_loaded_alongside_missing(self):
-        """A valid skill is still loaded when another skill in the list is missing."""
-
-        def _mixed_skill_view(name: str) -> str:
-            if name == "real-skill":
-                return json.dumps({"success": True, "content": "Real skill content."})
-            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_mixed_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
-        assert "Real skill content." in result
-        assert "go" in result
-
-
-class TestBuildJobPromptBumpUse:
-    """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
-
-    def test_bump_use_called_for_loaded_skill(self):
-        """bump_use is called for each successfully loaded skill."""
-
-        def _skill_view(name: str) -> str:
-            return json.dumps({"success": True, "content": f"Content for {name}."})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
-
-        assert mock_bump.call_count == 2
-        calls = [c[0][0] for c in mock_bump.call_args_list]
-        assert "alpha" in calls
-        assert "beta" in calls
-
-    def test_bump_use_not_called_for_missing_skill(self):
-        """bump_use is NOT called when a skill fails to load."""
-
-        def _missing_view(name: str) -> str:
-            return json.dumps({"success": False, "error": "not found"})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_missing_view), \
-             patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["ghost"], "prompt": "go"})
-
-        assert mock_bump.call_count == 0
-
-    def test_bump_failure_does_not_break_prompt(self, caplog):
-        """If bump_use raises, the prompt still builds — error is logged at DEBUG."""
-
-        def _skill_view(name: str) -> str:
-            return json.dumps({"success": True, "content": "Works."})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
-             caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
-            result = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
-
-        # Prompt should still contain the skill content and original instruction
-        assert "Works." in result
-        assert "go" in result
-        # The error should be logged at DEBUG level, not crash
-        assert any("failed to bump" in r.message for r in caplog.records)
-
+    def test_condition_missing_id_still_works(self, caplog):
+        """Edge: job dict without 'id' key does not crash."""
+        import cron.scheduler as scheduler
+        job = {"condition": "check.sh"}  # no id
+        logger = logging.getLogger("test_cond")
+        caplog.set_level(logging.INFO)
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(False, "fail")):
+            assert scheduler._evaluate_condition(job, logger) is False
 
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""

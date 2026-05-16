@@ -846,6 +846,50 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _evaluate_condition(job: dict, logger: logging.Logger) -> bool:
+    """Evaluate a cron job's pre-execution condition script.
+
+    Runs the condition script (if configured) and returns True if the job
+    should proceed, False if it should be skipped.
+
+    The condition script follows the same resolution and security rules as
+    the regular ``script`` field (``_run_job_script`` handles path traversal
+    guards, timeouts, and interpreter selection).
+
+    On failure (non-zero exit, exception, timeout), the skip is logged and
+    ``mark_job_run`` is called with ``skipped`` status so monitoring can
+    distinguish skipped ticks from actual runs.
+
+    Returns:
+        True if the job should proceed (no condition, or condition passed).
+        False if the condition failed and the job was skipped.
+    """
+    condition_script = job.get("condition")
+    if not condition_script:
+        return True
+    
+    job_id = job.get("id", "?")
+    try:
+        ok, output = _run_job_script(condition_script)
+        if not ok:
+            logger.info(
+                "Job '%s': condition script '%s' returned non-zero — skipping",
+                job_id, condition_script,
+            )
+            # next_run_at was already advanced by tick() before _process_job,
+            # so we just record the skip with marked status rather than
+            # erasing the advancement.
+            mark_job_run(job_id, False, "condition_skipped")
+            return False
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': condition script '%s' raised %s — skipping",
+            job_id, condition_script, exc,
+        )
+        mark_job_run(job_id, False, f"condition_error: {exc}")
+        return False
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1747,21 +1791,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # If the job has a condition script, run it first. A non-zero
                 # exit code means "skip this tick" — no execution, no delivery,
                 # no notification. next_run_at was already advanced above.
-                _condition_script = job.get("condition")
-                if _condition_script:
-                    _cond_ok, _cond_output = _run_job_script(_condition_script)
-                    if not _cond_ok:
-                        logger.info(
-                            "Job '%s': condition script '%s' returned non-zero — skipping",
-                            job["id"], _condition_script,
-                        )
-                        mark_job_run(job["id"], True, None)  # success=True, no error
-                        return True
-                    if _cond_ok and not _cond_output.strip():
-                        # Condition passed with empty output — proceed silently
-                        logger.debug(
-                            "Job '%s': condition passed (no output)", job["id"]
-                        )
+                if not _evaluate_condition(job, logger):
+                    return True
 
                 success, output, final_response, error = run_job(job)
 

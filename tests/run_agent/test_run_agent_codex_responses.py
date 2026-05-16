@@ -125,6 +125,24 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_incomplete_response(text: str):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_partial_max_output",
+                status="incomplete",
+                phase="final_answer",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -1127,6 +1145,36 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_continues_after_max_output_tokens_incomplete(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_incomplete_response("This answer was cut off mid-sentence"),
+        _codex_message_response("and then finished cleanly."),
+    ]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Write a long answer")
+
+    assert len(requests) == 2
+    assert result["completed"] is True
+    assert result["final_response"] == "and then finished cleanly."
+    assert "truncated due to output length limit" not in result.get("error", "")
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "cut off mid-sentence" in (msg.get("content") or "")
+        and msg.get("codex_message_items", [{}])[0].get("status") == "incomplete"
+        and msg.get("codex_message_items", [{}])[0].get("phase") == "final_answer"
+        for msg in result["messages"]
+    )
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

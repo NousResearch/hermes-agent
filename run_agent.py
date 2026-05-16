@@ -13203,17 +13203,17 @@ class AIAgent:
 
                     # Check finish_reason before proceeding
                     if self.api_mode == "codex_responses":
-                        status = getattr(response, "status", None)
-                        incomplete_details = getattr(response, "incomplete_details", None)
-                        incomplete_reason = None
-                        if isinstance(incomplete_details, dict):
-                            incomplete_reason = incomplete_details.get("reason")
-                        else:
-                            incomplete_reason = getattr(incomplete_details, "reason", None)
-                        if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                            finish_reason = "length"
-                        else:
-                            finish_reason = "stop"
+                        # Let the Responses transport decide whether an
+                        # incomplete Codex response is replayable.  In
+                        # particular, status="incomplete" with
+                        # incomplete_details.reason="max_output_tokens" still
+                        # contains structured message/reasoning items that the
+                        # Codex continuation path can resend.  Mapping it to
+                        # generic "length" here bypasses that continuation and
+                        # fails first-turn long outputs as unrecoverable.
+                        _codex_fr = self._get_transport()
+                        _codex_result = _codex_fr.normalize_response(response)
+                        finish_reason = _codex_result.finish_reason
                     elif self.api_mode == "anthropic_messages":
                         _tfr = self._get_transport()
                         finish_reason = _tfr.map_finish_reason(response.stop_reason)

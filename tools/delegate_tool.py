@@ -2442,7 +2442,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     return {
         "model": configured_model or runtime.get("model") or None,
-        "provider": runtime.get("provider"),
+        "provider": configured_provider if runtime.get("provider") == "custom" else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),

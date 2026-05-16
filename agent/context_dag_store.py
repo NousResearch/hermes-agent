@@ -366,6 +366,20 @@ class ContextDAGStore:
             ).fetchone()
         return self._row_to_summary(row) if row else None
 
+    def list_summary_nodes(self, session_id: str, status: str = "valid") -> List[SummaryNode]:
+        """Return summary nodes for a session, ordered deterministically."""
+
+        with self.db._lock:
+            rows = self.db._conn.execute(
+                """
+                SELECT * FROM context_summary_nodes
+                WHERE session_id = ? AND status = ?
+                ORDER BY created_at, id
+                """,
+                (session_id, status),
+            ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
     def _link_summary_source_conn(
         self,
         conn,

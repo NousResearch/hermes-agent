@@ -2337,6 +2337,7 @@ class AIAgent:
         # 3. Check general plugin system (user-installed plugins)
         # 4. Fall back to built-in ContextCompressor
         _selected_engine = None
+        _ctx_cfg = {}
         _engine_name = "compressor"  # default
         try:
             _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -2344,7 +2345,36 @@ class AIAgent:
         except Exception:
             pass
 
-        if _engine_name != "compressor":
+        _engine_name = str(_engine_name).strip().lower()
+        if _engine_name == "dag":
+            try:
+                _dag_cfg = _ctx_cfg.get("dag", {}) if isinstance(_ctx_cfg, dict) else {}
+                if not isinstance(_dag_cfg, dict):
+                    _dag_cfg = {}
+                _platform_name = str(self.platform or "cli").strip().lower()
+                _gateway_enabled = str(
+                    _dag_cfg.get("gateway_enabled", os.getenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED", ""))
+                ).strip().lower() in {"1", "true", "yes", "on"}
+                if _platform_name not in {"", "cli"} and not _gateway_enabled:
+                    logger.warning(
+                        "DAG context engine requested on gateway platform '%s' but "
+                        "context.dag.gateway_enabled is not set — using built-in compressor",
+                        _platform_name,
+                    )
+                else:
+                    from agent.context_dag_engine import DAGContextEngine
+                    _selected_engine = DAGContextEngine(
+                        session_db=self._session_db,
+                        enabled=True,
+                        threshold_percent=compression_threshold,
+                        gateway_enabled=_gateway_enabled,
+                    )
+            except Exception as _dag_load_err:
+                logger.warning(
+                    "Native DAG context engine unavailable — falling back to built-in compressor: %s",
+                    _dag_load_err,
+                )
+        elif _engine_name != "compressor":
             # Try loading from plugins/context_engine/<name>/
             try:
                 from plugins.context_engine import load_context_engine
@@ -10709,11 +10739,49 @@ class AIAgent:
                 pass
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            compressed_result = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+            compressed_result = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        projection_only = bool(getattr(compressed_result, "projection_only", False))
+        preserves_session = bool(getattr(compressed_result, "preserves_session", False))
+        compressed = getattr(compressed_result, "messages", compressed_result)
+        if compressed is None:
+            compressed = []
+        elif not isinstance(compressed, list):
+            compressed = list(compressed)
+        else:
+            compressed = list(compressed)
+        if projection_only and preserves_session:
+            warning = getattr(compressed_result, "warning", None)
+            if warning:
+                self._emit_warning(f"ℹ DAG context fallback: {warning}")
+            todo_snapshot = self._todo_store.format_for_injection()
+            if todo_snapshot:
+                compressed.append({"role": "user", "content": todo_snapshot})
+            self._invalidate_system_prompt()
+            new_system_prompt = self._build_system_prompt(system_message)
+            self._cached_system_prompt = new_system_prompt
+            _compressed_est = estimate_request_tokens_rough(
+                compressed,
+                system_prompt=new_system_prompt or "",
+                tools=self.tools or None,
+            )
+            self.context_compressor.last_prompt_tokens = _compressed_est
+            self.context_compressor.last_completion_tokens = 0
+            try:
+                from tools.file_tools import reset_file_dedup
+                reset_file_dedup(task_id)
+            except Exception:
+                pass
+            logger.info(
+                "DAG projection context assembled without session split: session=%s messages=%d->%d tokens=~%s",
+                self.session_id or "none", _pre_msg_count, len(compressed),
+                f"{_compressed_est:,}",
+            )
+            return compressed, new_system_prompt
 
         summary_error = getattr(self.context_compressor, "_last_summary_error", None)
         if summary_error:

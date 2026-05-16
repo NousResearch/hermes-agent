@@ -7508,9 +7508,17 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    **self._gateway_agent_session_kwargs(source),
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
+
+                                    if getattr(_hyg_agent.context_compressor, "projection_only_compression", False):
+                                        logger.warning(
+                                            "Session hygiene: DAG projection-only compression skipped for gateway session %s",
+                                            session_entry.session_id,
+                                        )
+                                        return
 
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
@@ -11096,6 +11104,28 @@ class GatewayRunner:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
+    def _gateway_agent_session_kwargs(self, source: SessionSource) -> dict:
+        """Return gateway/session identity kwargs for temporary AIAgent instances."""
+        platform = None
+        try:
+            platform = getattr(source.platform, "value", source.platform)
+        except Exception:
+            platform = None
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            session_db = getattr(getattr(self, "session_store", None), "_db", None)
+        return {
+            "session_db": session_db,
+            "platform": platform,
+            "user_id": getattr(source, "user_id", None),
+            "user_name": getattr(source, "user_name", None),
+            "chat_id": getattr(source, "chat_id", None),
+            "chat_name": getattr(source, "chat_name", None),
+            "chat_type": getattr(source, "chat_type", None),
+            "thread_id": getattr(source, "thread_id", None),
+            "gateway_session_key": self._session_key_for_source(source),
+        }
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
@@ -11140,6 +11170,7 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                **self._gateway_agent_session_kwargs(source),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -11155,6 +11186,11 @@ class GatewayRunner:
                 )
 
                 compressor = tmp_agent.context_compressor
+                if getattr(compressor, "projection_only_compression", False):
+                    return (
+                        "DAG context engine is opt-in for CLI only until gateway-safe "
+                        "compression lands; /compress did not rewrite the transcript."
+                    )
                 if not compressor.has_content_to_compress(msgs):
                     return t("gateway.compress.nothing_to_do")
 

@@ -10,7 +10,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import (
+    ACPInvocationError,
+    CLAUDE_RESPONSE_FORMAT_MISMATCH,
+    CopilotACPClient,
+    _DEFAULT_TIMEOUT_SECONDS,
+    _truncate_diagnostic,
+    classify_acp_failure,
+)
 
 
 class _FakeProcess:
@@ -205,3 +212,180 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_create_chat_completion_uses_default_timeout(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    seen = {}
+
+    def _fake_run(prompt_text, *, timeout_seconds):
+        seen["timeout_seconds"] = timeout_seconds
+        return ("ok", "")
+
+    monkeypatch.setattr(client, "_run_prompt", _fake_run)
+    response = client._create_chat_completion(messages=[{"role": "user", "content": "hello"}])
+
+    assert response.choices[0].message.content == "ok"
+    assert seen["timeout_seconds"] == _DEFAULT_TIMEOUT_SECONDS
+
+
+def test_create_chat_completion_respects_explicit_timeout(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    seen = {}
+
+    def _fake_run(prompt_text, *, timeout_seconds):
+        seen["timeout_seconds"] = timeout_seconds
+        return ("ok", "")
+
+    monkeypatch.setattr(client, "_run_prompt", _fake_run)
+    client._create_chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        timeout=45.0,
+    )
+
+    assert seen["timeout_seconds"] == 45.0
+
+
+def test_classify_timeout_failure_retryable():
+    category, retryable, message = classify_acp_failure(
+        exception_text="Timed out waiting for ACP response to session/prompt after 45.0s.",
+        timed_out=True,
+    )
+
+    assert category == "timeout"
+    assert retryable is True
+    assert "timed out" in message.lower()
+
+
+def test_classify_http_500_failure_retryable():
+    category, retryable, message = classify_acp_failure(
+        stderr_text="API Error: 500 upstream exploded",
+    )
+
+    assert category == "http_500"
+    assert retryable is True
+    assert "500" in message
+
+
+def test_classify_claude_response_format_mismatch_retryable():
+    category, retryable, message = classify_acp_failure(
+        stdout_text='event: message\ndata: {"type":"chunk"}',
+        stderr_text='API Error: 500 Unexpected token \'e\', "event: mes"... is not valid JSON',
+    )
+
+    assert category == CLAUDE_RESPONSE_FORMAT_MISMATCH
+    assert retryable is True
+    assert "Expected JSON but received SSE/event-stream style response" in message
+    assert "streaming output to a non-streaming caller" in message
+    assert "not a Bash/Read tool permission problem" in message
+
+
+def test_classify_unsupported_claude_acp_args_non_retryable():
+    category, retryable, message = classify_acp_failure(
+        stderr_text="error: unknown option '--acp'",
+        exception_text="ACP process exited early while waiting for initialize.",
+        command_text="claude",
+        command_args=("--acp", "--stdio"),
+    )
+
+    assert category == "unsupported_cli_args"
+    assert retryable is False
+    assert "ACP subprocess failed before protocol startup." in message
+    assert "does not support the requested ACP args" in message
+    assert "Current claude CLI does not expose --acp." in message
+
+
+def test_classify_non_retryable_permission_failure():
+    category, retryable, message = classify_acp_failure(
+        stderr_text="Permission denied while starting tool",
+    )
+
+    assert category == "non_transient"
+    assert retryable is False
+    assert "non-retryable" in message
+
+
+def test_run_prompt_retries_once_on_transient_failure(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    calls = {"count": 0}
+
+    def _fake_once(prompt_text, *, timeout_seconds):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ACPInvocationError(
+                "ACP subprocess timed out waiting for a response.",
+                category="timeout",
+                retryable=True,
+            )
+        return ("ok", "")
+
+    monkeypatch.setattr(client, "_run_prompt_once", _fake_once)
+    result = client._run_prompt("hello", timeout_seconds=30.0)
+
+    assert result == ("ok", "")
+    assert calls["count"] == 2
+
+
+def test_run_prompt_does_not_retry_non_transient_failure(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    calls = {"count": 0}
+
+    def _fake_once(prompt_text, *, timeout_seconds):
+        calls["count"] += 1
+        raise ACPInvocationError(
+            "Permission denied",
+            category="non_transient",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(client, "_run_prompt_once", _fake_once)
+
+    with pytest.raises(ACPInvocationError, match="Permission denied"):
+        client._run_prompt("hello", timeout_seconds=30.0)
+
+    assert calls["count"] == 1
+
+
+def test_run_prompt_does_not_retry_unsupported_cli_args(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    calls = {"count": 0}
+
+    def _fake_once(prompt_text, *, timeout_seconds):
+        calls["count"] += 1
+        raise ACPInvocationError(
+            "ACP subprocess failed before protocol startup.\n"
+            "The configured command does not support the requested ACP args.\n"
+            "Current claude CLI does not expose --acp.",
+            category="unsupported_cli_args",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(client, "_run_prompt_once", _fake_once)
+    with pytest.raises(ACPInvocationError, match="Current claude CLI does not expose --acp."):
+        client._run_prompt("hello", timeout_seconds=1)
+
+    assert calls["count"] == 1
+
+
+def test_run_prompt_reports_retry_exhaustion(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+
+    def _fake_once(prompt_text, *, timeout_seconds):
+        raise ACPInvocationError(
+            "ACP subprocess returned malformed JSON.",
+            category="malformed_json",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(client, "_run_prompt_once", _fake_once)
+
+    with pytest.raises(ACPInvocationError, match="Retried once and still failed"):
+        client._run_prompt("hello", timeout_seconds=30.0)
+
+
+def test_truncate_diagnostic_marks_output_truncated():
+    text = "x" * 5000
+    truncated = _truncate_diagnostic(text, limit=120)
+
+    assert truncated.endswith("[output truncated]")
+    assert len(truncated) <= 120

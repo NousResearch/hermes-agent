@@ -51,7 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Protocol, runtime_checkable
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -1093,6 +1093,23 @@ def _qwen_portal_headers() -> dict:
         "X-DashScope-UserAgent": _ua,
         "X-DashScope-AuthType": "qwen-oauth",
     }
+
+
+@runtime_checkable
+class TurnRunner(Protocol):
+    """Minimal one-turn runtime seam shared by delivery adapters."""
+
+    def run_conversation(
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run one foreground user turn and return the existing result mapping."""
+        ...
 
 
 class AIAgent:

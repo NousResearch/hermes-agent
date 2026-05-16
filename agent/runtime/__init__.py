@@ -27,7 +27,10 @@ from .acgs_governance import (
     ACGSDecisionReceipt,
     ACGSGovernance,
     ACGSRule,
+    ACGSVerdict,
+    Constitution,
     LocalACGSClient,
+    Severity,
     build_acgs_governance_from_config,
 )
 from .callbacks import CallbackRegistry, StepCallback
@@ -120,12 +123,15 @@ __all__ = [
     "AllowListGovernance",
     "DenyAllGovernance",
     "GovernanceGate",
-    # acgs governance
+    # acgs-lite constitutional governance
     "ACGSClient",
     "ACGSDecisionReceipt",
     "ACGSGovernance",
     "ACGSRule",
+    "ACGSVerdict",
+    "Constitution",
     "LocalACGSClient",
+    "Severity",
     "build_acgs_governance_from_config",
     # transitions
     "LEGAL_TRANSITIONS",

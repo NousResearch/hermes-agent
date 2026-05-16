@@ -1,87 +1,208 @@
-"""ACGS constitutional governance backend.
+"""ACGS-Lite constitutional governance backend.
 
-Treats every tool call as an *action proposal* to be evaluated against a
-constitutional ruleset. Each evaluation produces a typed receipt with a
-deterministic content hash so the audit trail is verifiable: given the
-same rules + the same call, two evaluations produce the same receipt
-hash, and a third party can recompute the hash to confirm the run was
-not tampered with.
-
-The actual rule evaluation is delegated to an ``ACGSClient`` — anything
-satisfying the protocol works. A no-network ``LocalACGSClient`` is
-provided for offline development and tests; production deployments would
-inject a client that talks to the ACGS service over HTTP/gRPC.
+Adapter for the `acgs-lite <https://github.com/dislovelhl/acgs-lite>`_
+fail-closed legitimacy layer. Every tool call the model proposes is
+evaluated against a typed ``Constitution`` (an identified, hash-pinned
+rule set); the evaluator returns one of eight ACGS-Lite verdicts plus a
+replayable ``ACGSDecisionReceipt``. The kernel's three-verdict gate
+(``allow`` / ``deny`` / ``require_approval``) is the downstream
+projection, so the kernel keeps its narrow protocol while the audit
+trail keeps every ACGS verdict and receipt hash.
 
 Design choices:
 
-  * Fail-closed. Any client error, schema mismatch, or unmapped verdict
-    becomes ``deny`` with the exception surfaced in ``reason``.
-  * Deterministic receipts. The hash inputs are sorted JSON; the same
-    inputs always produce the same hash regardless of dict ordering.
-  * Wire shape stable. ``ACGSDecisionReceipt`` is a frozen dataclass and
-    the JSON wire shape is documented — receipts can be emitted to a
-    governance store without coupling to runtime internals.
+  * Fail-closed by construction. Any client exception, schema mismatch,
+    unmapped verdict, or missing receipt becomes ``deny`` with the
+    cause on ``reason`` — matches ACGS-Lite's "fail-closed on any
+    missing/unverifiable input" stance.
+  * Deterministic receipts. ``receipt_hash`` is sha256 over canonical
+    JSON of the inputs, so two evaluations with the same constitution
+    + tool + arguments produce the same hash regardless of dict key
+    ordering.
+  * Pluggable client. ``ACGSClient`` is a Protocol; production
+    deployments inject a client that calls the ACGS service (HTTP /
+    MCP / in-process), and the kernel never reaches into either
+    network code or the upstream ``acgs-lite`` package.
+  * Decision taxonomy mirrors ACGS-Lite v2.x:
+
+        ALLOW
+        ALLOW_WITH_CONTROLS
+        TRANSFORM_REQUIRED
+        REPLAN_REQUIRED
+        STRUCTURED_REVIEW_REQUIRED
+        DENY_OPERATION_WITH_ALTERNATIVE
+        DENY_GOAL
+        HARD_DENY
+
+    These are projected onto the kernel's ``GovernanceVerdict``:
+
+        ALLOW, ALLOW_WITH_CONTROLS                              → "allow"
+        STRUCTURED_REVIEW_REQUIRED                              → "require_approval"
+        TRANSFORM_REQUIRED, REPLAN_REQUIRED,
+        DENY_OPERATION_WITH_ALTERNATIVE, DENY_GOAL, HARD_DENY   → "deny"
+
+    The original ACGS verdict + receipt hash + matched rule ids ride
+    along on the ``GovernanceDecision.reason`` / ``policy`` fields so
+    nothing is lost.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Protocol, runtime_checkable
+from typing import Any, Iterable, Literal, Protocol, runtime_checkable
 
 from .interfaces import GovernanceContext, GovernanceDecision
 from .steps import ToolCall
 
 
-# ----- rule + receipt types --------------------------------------------------
+# ----- decision taxonomy -----------------------------------------------------
+
+
+ACGSVerdict = Literal[
+    "ALLOW",
+    "ALLOW_WITH_CONTROLS",
+    "TRANSFORM_REQUIRED",
+    "REPLAN_REQUIRED",
+    "STRUCTURED_REVIEW_REQUIRED",
+    "DENY_OPERATION_WITH_ALTERNATIVE",
+    "DENY_GOAL",
+    "HARD_DENY",
+]
+
+Severity = Literal["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+
+# Map ACGS-Lite verdicts onto the kernel's narrow gate verdicts.
+_KERNEL_VERDICT: dict[str, str] = {
+    "ALLOW": "allow",
+    "ALLOW_WITH_CONTROLS": "allow",
+    "STRUCTURED_REVIEW_REQUIRED": "require_approval",
+    "TRANSFORM_REQUIRED": "deny",
+    "REPLAN_REQUIRED": "deny",
+    "DENY_OPERATION_WITH_ALTERNATIVE": "deny",
+    "DENY_GOAL": "deny",
+    "HARD_DENY": "deny",
+}
+
+
+# ----- constitution + rule types ---------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class ACGSRule:
     """A single constitutional rule.
 
-    ``rule_id`` is a stable identifier (e.g. ``"R-002-no-shell-rm-rf"``).
-    ``severity`` is informational — actual blocking is driven by
-    ``effect``: ``"deny"`` blocks, ``"require_approval"`` pauses,
-    ``"allow"`` is permissive and only meaningful for explicit allowlists.
+    ``id`` is the stable identifier surfaced on receipts (e.g. ``no-pii``).
+    ``pattern`` is a regex matched against the canonical text composed
+    from a tool call (``"<tool_name> <canonical-json-args>"``).
+    ``effect`` is the ACGS verdict to return when ``pattern`` matches.
+    ``severity`` is informational metadata for downstream telemetry.
     """
 
-    rule_id: str
-    description: str
-    effect: str  # "allow" | "deny" | "require_approval"
-    severity: str = "info"  # "info" | "warn" | "block"
-    applies_to_tools: tuple[str, ...] = ()  # empty tuple → applies to all tools
+    id: str
+    pattern: str
+    description: str = ""
+    effect: ACGSVerdict = "HARD_DENY"
+    severity: Severity = "MEDIUM"
+    applies_to_tools: tuple[str, ...] = ()  # empty → applies to all tools
+
+
+@dataclass(frozen=True, slots=True)
+class Constitution:
+    """A versioned, hash-pinned constitutional rule set.
+
+    Mirrors ACGS-Lite's ``Constitution`` shape — the ``constitutional_hash``
+    is what auditors and replay verifiers anchor on. If a caller supplies
+    an explicit hash that disagrees with the computed hash, the
+    constitution raises at construction time (fail-closed on tamper).
+    """
+
+    constitutional_hash: str
+    rules: tuple[ACGSRule, ...] = ()
+
+    @staticmethod
+    def from_yaml_dict(data: dict[str, Any]) -> "Constitution":
+        """Build from the ACGS-Lite YAML shape (already parsed to dict).
+
+        Expected shape::
+
+            constitutional_hash: "608508a9bd224290"
+            rules:
+              - id: no-pii
+                pattern: "SSN|passport|social security"
+                severity: CRITICAL
+                description: Prevent PII leakage
+                effect: HARD_DENY            # optional, defaults HARD_DENY
+                applies_to_tools: []         # optional, empty → all tools
+        """
+        raw_rules = data.get("rules", []) or []
+        rules = tuple(
+            ACGSRule(
+                id=r["id"],
+                pattern=r["pattern"],
+                description=r.get("description", ""),
+                effect=r.get("effect", "HARD_DENY"),
+                severity=r.get("severity", "MEDIUM"),
+                applies_to_tools=tuple(r.get("applies_to_tools", []) or ()),
+            )
+            for r in raw_rules
+        )
+        declared = data.get("constitutional_hash") or ""
+        computed = _hash_rules(rules)
+        if declared and declared != computed:
+            # Fail-closed on declared/computed mismatch. The caller is
+            # claiming a constitution hash that doesn't match the rules
+            # they shipped — refuse rather than silently re-anchoring.
+            raise ValueError(
+                f"constitutional_hash mismatch: declared={declared!r}, "
+                f"computed={computed!r}"
+            )
+        return Constitution(constitutional_hash=declared or computed, rules=rules)
+
+
+# ----- receipts --------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class ACGSDecisionReceipt:
-    """Verifiable evaluation result for a single proposed action.
+    """Verifiable evaluation result for one proposed action.
 
-    ``receipt_hash`` is sha256 over the canonical JSON of
-    ``{rule_set_id, rule_set_hash, tool_name, arguments_hash, verdict, matched_rules}``.
-    A consumer can recompute the hash to confirm the receipt was not
-    altered after the fact.
+    The receipt is **emitted before execution**, per ACGS-Lite's
+    "replayable receipt before execution" guarantee. ``receipt_hash`` is
+    sha256 over the canonical JSON of:
+
+        {constitutional_hash, tool_name, arguments_hash, verdict, matched_rules}
+
+    A third party can recompute the hash with the same inputs and detect
+    any post-hoc edit to the receipt.
     """
 
     receipt_hash: str
-    rule_set_id: str
-    rule_set_hash: str
+    constitutional_hash: str
     tool_name: str
     arguments_hash: str
-    verdict: str  # "allow" | "deny" | "require_approval"
+    verdict: ACGSVerdict
     reason: str
     matched_rules: tuple[str, ...] = ()
+    severities: tuple[Severity, ...] = ()
+    controls: tuple[str, ...] = ()  # set when verdict == ALLOW_WITH_CONTROLS
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+# ----- client protocol -------------------------------------------------------
 
 
 @runtime_checkable
 class ACGSClient(Protocol):
-    """Pluggable evaluator. The local client below is for dev/tests; the
-    production client should talk to the ACGS service."""
+    """Pluggable evaluator. ``LocalACGSClient`` below is for dev/tests; a
+    production deployment should inject a client that delegates to the
+    central ACGS-Lite service (or runs the upstream ``acgs-lite``
+    package in-process)."""
 
-    rule_set_id: str
-    rule_set_hash: str
+    constitutional_hash: str
 
     def evaluate(
         self,
@@ -91,26 +212,45 @@ class ACGSClient(Protocol):
     ) -> ACGSDecisionReceipt: ...
 
 
-# ----- local (offline) client -------------------------------------------------
+# ----- local (offline) client -----------------------------------------------
 
 
 class LocalACGSClient:
-    """In-process rule evaluator with no network dependency.
+    """In-process evaluator with no network dependency.
 
-    Rules are applied in order. The first ``deny`` rule wins; otherwise
-    the first ``require_approval`` rule wins; otherwise ``allow``. Empty
-    rule list is fail-closed (``deny``) — this matches the kernel's
-    overall stance.
+    Composes the matchable text as ``"<tool_name> <canonical-json-args>"``
+    and runs each rule's regex pattern against it. The first matching
+    rule wins by precedence: HARD_DENY > DENY_* > REPLAN_REQUIRED >
+    TRANSFORM_REQUIRED > STRUCTURED_REVIEW_REQUIRED > ALLOW_WITH_CONTROLS
+    > ALLOW. With no matching rule the evaluator emits ``HARD_DENY``
+    (fail-closed default — same stance ACGS-Lite takes on missing
+    legitimacy inputs).
 
-    Suitable for tests, CI, and air-gapped deployments. Production
-    callers should replace it with a client that talks to the central
-    governance service.
+    Suitable for tests, CI, and air-gapped use. Production callers
+    should swap in a service-backed ``ACGSClient``.
     """
 
-    def __init__(self, rules: Iterable[ACGSRule], *, rule_set_id: str = "local") -> None:
-        self._rules = tuple(rules)
-        self.rule_set_id = rule_set_id
-        self.rule_set_hash = _hash_rules(self._rules)
+    # Higher index = stronger refusal. Used to pick a winner when
+    # several rules match the same call.
+    _PRECEDENCE: tuple[ACGSVerdict, ...] = (
+        "ALLOW",
+        "ALLOW_WITH_CONTROLS",
+        "STRUCTURED_REVIEW_REQUIRED",
+        "TRANSFORM_REQUIRED",
+        "REPLAN_REQUIRED",
+        "DENY_OPERATION_WITH_ALTERNATIVE",
+        "DENY_GOAL",
+        "HARD_DENY",
+    )
+
+    def __init__(self, constitution: Constitution) -> None:
+        self.constitution = constitution
+        self.constitutional_hash = constitution.constitutional_hash
+        # Pre-compile patterns so a malformed regex surfaces at init,
+        # not deep inside an action step.
+        self._compiled: list[tuple[ACGSRule, re.Pattern[str]]] = [
+            (r, re.compile(r.pattern, re.IGNORECASE)) for r in constitution.rules
+        ]
 
     def evaluate(
         self,
@@ -118,50 +258,53 @@ class LocalACGSClient:
         arguments: dict[str, Any],
         context: GovernanceContext,
     ) -> ACGSDecisionReceipt:
-        applicable = [
-            r for r in self._rules
-            if not r.applies_to_tools or tool_name in r.applies_to_tools
-        ]
-        deny = next((r for r in applicable if r.effect == "deny"), None)
-        approval = next((r for r in applicable if r.effect == "require_approval"), None)
-        allow_rules = [r for r in applicable if r.effect == "allow"]
+        haystack = _compose_haystack(tool_name, arguments)
+        matched: list[tuple[ACGSRule, ACGSVerdict]] = []
+        for rule, pattern in self._compiled:
+            if rule.applies_to_tools and tool_name not in rule.applies_to_tools:
+                continue
+            if pattern.search(haystack):
+                matched.append((rule, rule.effect))
 
-        if deny is not None:
-            verdict = "deny"
-            reason = f"rule {deny.rule_id}: {deny.description}"
-            matched = (deny.rule_id,)
-        elif approval is not None:
-            verdict = "require_approval"
-            reason = f"rule {approval.rule_id}: {approval.description}"
-            matched = (approval.rule_id,)
-        elif allow_rules:
-            verdict = "allow"
-            reason = f"rule {allow_rules[0].rule_id}: {allow_rules[0].description}"
-            matched = tuple(r.rule_id for r in allow_rules)
-        else:
-            # No rule matched. Fail-closed.
-            verdict = "deny"
+        if not matched:
+            verdict: ACGSVerdict = "HARD_DENY"
             reason = "no constitutional rule matched (fail-closed default)"
-            matched = ()
+            matched_ids: tuple[str, ...] = ()
+            severities: tuple[Severity, ...] = ()
+            controls: tuple[str, ...] = ()
+        else:
+            # Winner is the matched rule with the strongest refusal.
+            ranked = sorted(matched, key=lambda m: self._PRECEDENCE.index(m[1]))
+            winning_rule, winning_verdict = ranked[-1]
+            verdict = winning_verdict
+            reason = f"rule {winning_rule.id}: {winning_rule.description or winning_rule.pattern}"
+            matched_ids = tuple(r.id for r, _ in matched)
+            severities = tuple(r.severity for r, _ in matched)
+            controls = ()
+            if verdict == "ALLOW_WITH_CONTROLS":
+                # Concrete controls would be defined per-rule in a fuller
+                # client. The local evaluator surfaces the matched rule
+                # ids as the controls that should be enforced downstream.
+                controls = matched_ids
 
-        args_hash = _hash_json({"tool": tool_name, "arguments": arguments})
+        arguments_hash = _hash_json({"tool": tool_name, "arguments": arguments})
         receipt_hash = _hash_json({
-            "rule_set_id": self.rule_set_id,
-            "rule_set_hash": self.rule_set_hash,
+            "constitutional_hash": self.constitutional_hash,
             "tool_name": tool_name,
-            "arguments_hash": args_hash,
+            "arguments_hash": arguments_hash,
             "verdict": verdict,
-            "matched_rules": list(matched),
+            "matched_rules": list(matched_ids),
         })
         return ACGSDecisionReceipt(
             receipt_hash=receipt_hash,
-            rule_set_id=self.rule_set_id,
-            rule_set_hash=self.rule_set_hash,
+            constitutional_hash=self.constitutional_hash,
             tool_name=tool_name,
-            arguments_hash=args_hash,
+            arguments_hash=arguments_hash,
             verdict=verdict,
             reason=reason,
-            matched_rules=matched,
+            matched_rules=matched_ids,
+            severities=severities,
+            controls=controls,
         )
 
 
@@ -171,14 +314,18 @@ class LocalACGSClient:
 class ACGSGovernance:
     """``GovernanceProtocol`` adapter for an ``ACGSClient``.
 
-    Translates ACGS receipts into ``GovernanceDecision`` records and tucks
-    the full receipt into the decision's ``policy`` field so the audit
-    trail keeps every verifiable receipt hash. Fail-closed: any client
-    exception becomes a ``deny`` decision with the exception details on
-    ``reason``.
+    Translates ACGS-Lite receipts into the kernel's 3-verdict
+    ``GovernanceDecision`` shape. The original ACGS verdict, receipt
+    hash prefix, and matched rule ids ride along on ``reason`` /
+    ``policy`` so the audit trail keeps full fidelity. Fail-closed on
+    every error path:
+
+      * client exception          → kernel verdict ``deny``
+      * unmapped ACGS verdict     → kernel verdict ``deny``
+      * receipt with empty hash   → kernel verdict ``deny``
     """
 
-    policy_id = "acgs"
+    policy_id = "acgs-lite"
 
     def __init__(self, client: ACGSClient) -> None:
         self._client = client
@@ -195,23 +342,36 @@ class ACGSGovernance:
                 policy=f"{self.policy_id}:error",
             )
 
-        verdict = receipt.verdict
-        if verdict not in ("allow", "deny", "require_approval"):
-            # Unmapped verdict — refuse to guess, fail closed.
+        if not receipt.receipt_hash:
             return GovernanceDecision(
                 call_id=call.id,
                 tool_name=call.name,
                 verdict="deny",
-                reason=f"acgs_unmapped_verdict: {verdict!r}",
-                policy=f"{self.policy_id}:{receipt.rule_set_id}",
+                reason="acgs_missing_receipt_hash (fail-closed)",
+                policy=f"{self.policy_id}:{receipt.constitutional_hash[:8]}",
             )
 
+        kernel_verdict = _KERNEL_VERDICT.get(receipt.verdict)
+        if kernel_verdict is None:
+            return GovernanceDecision(
+                call_id=call.id,
+                tool_name=call.name,
+                verdict="deny",
+                reason=f"acgs_unmapped_verdict: {receipt.verdict!r}",
+                policy=f"{self.policy_id}:{receipt.constitutional_hash[:8]}",
+            )
+
+        suffix_parts = [f"acgs={receipt.verdict}", f"receipt={receipt.receipt_hash[:12]}"]
+        if receipt.matched_rules:
+            suffix_parts.append(f"rules={','.join(receipt.matched_rules)}")
+        if receipt.controls:
+            suffix_parts.append(f"controls={','.join(receipt.controls)}")
         return GovernanceDecision(
             call_id=call.id,
             tool_name=call.name,
-            verdict=verdict,  # type: ignore[arg-type]
-            reason=f"{receipt.reason} [receipt={receipt.receipt_hash[:12]}…]",
-            policy=f"{self.policy_id}:{receipt.rule_set_id}@{receipt.rule_set_hash[:8]}",
+            verdict=kernel_verdict,  # type: ignore[arg-type]
+            reason=f"{receipt.reason} [{' '.join(suffix_parts)}]",
+            policy=f"{self.policy_id}:{receipt.constitutional_hash[:16]}",
         )
 
 
@@ -219,44 +379,41 @@ class ACGSGovernance:
 
 
 def build_acgs_governance_from_config(config: dict[str, Any]) -> ACGSGovernance:
-    """Build an ``ACGSGovernance`` from ``config['agent']['acgs']``.
+    """Build an ``ACGSGovernance`` from an ACGS-Lite-shaped config block.
 
-    Expected shape::
+    Expected shape in hermes config::
 
         agent:
           governance: acgs
           acgs:
-            rule_set_id: hermes-prod
+            constitutional_hash: "608508a9bd224290"   # optional; computed if absent
             rules:
-              - rule_id: R-001-no-rm
-                description: refuse destructive shell calls
-                effect: deny
-                applies_to_tools: [shell, exec]
-              - rule_id: R-002-default-allow-reads
-                description: read-only tools are allowed
-                effect: allow
-                applies_to_tools: [lookup, search, read_file]
+              - id: no-pii
+                pattern: "SSN|passport|social security"
+                severity: CRITICAL
+                description: Prevent PII leakage
+                effect: HARD_DENY
+              - id: require-approval-transfer
+                pattern: "transfer|payment|wire"
+                severity: HIGH
+                effect: STRUCTURED_REVIEW_REQUIRED
+                applies_to_tools: [bank_transfer]
 
-    Production deployments should replace this with one that constructs
-    a network-backed ``ACGSClient`` from the same config block.
+    Production deployments should replace this with a builder that
+    constructs a service-backed ``ACGSClient`` from the same block —
+    e.g. ``HTTPACGSClient(endpoint=config['acgs']['endpoint'])``.
     """
     block = (config.get("agent", {}) or {}).get("acgs", {}) or {}
-    rule_set_id = block.get("rule_set_id", "local")
-    raw_rules = block.get("rules", []) or []
-    rules = tuple(
-        ACGSRule(
-            rule_id=r["rule_id"],
-            description=r.get("description", ""),
-            effect=r["effect"],
-            severity=r.get("severity", "info"),
-            applies_to_tools=tuple(r.get("applies_to_tools", []) or ()),
-        )
-        for r in raw_rules
-    )
-    return ACGSGovernance(LocalACGSClient(rules, rule_set_id=rule_set_id))
+    constitution = Constitution.from_yaml_dict(block)
+    return ACGSGovernance(LocalACGSClient(constitution))
 
 
 # ----- helpers ---------------------------------------------------------------
+
+
+def _compose_haystack(tool_name: str, arguments: dict[str, Any]) -> str:
+    args_blob = json.dumps(arguments, sort_keys=True, default=str, ensure_ascii=False)
+    return f"{tool_name} {args_blob}"
 
 
 def _hash_json(payload: Any) -> str:
@@ -268,11 +425,12 @@ def _hash_json(payload: Any) -> str:
 def _hash_rules(rules: tuple[ACGSRule, ...]) -> str:
     return _hash_json([
         {
-            "rule_id": r.rule_id,
+            "id": r.id,
+            "pattern": r.pattern,
             "effect": r.effect,
             "severity": r.severity,
-            "applies_to_tools": list(r.applies_to_tools),
             "description": r.description,
+            "applies_to_tools": list(r.applies_to_tools),
         }
         for r in rules
     ])

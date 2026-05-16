@@ -2895,6 +2895,21 @@ def _is_remote_session() -> bool:
     return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
 
 
+def _ssh_user_at_host() -> str:
+    """Return best-effort 'user@hostname' for the SSH tunnel hint command.
+
+    Falls back to placeholder tokens when the values cannot be determined so
+    the hint is always syntactically valid even if not copy-pasteable.
+    """
+    try:
+        import socket as _socket
+        hostname = _socket.gethostname() or "<this-host>"
+    except OSError:
+        hostname = "<this-host>"
+    user = os.getenv("USER") or os.getenv("LOGNAME") or "<user>"
+    return f"{user}@{hostname}"
+
+
 def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) -> None:
     """Print an SSH tunnel hint when running a loopback-redirect OAuth flow on a
     remote host. The auth server (xAI, Spotify, ...) will redirect the user's
@@ -2918,19 +2933,22 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
     port = parsed.port
     if host not in {"127.0.0.1", "::1", "localhost"} or not port:
         return
+    divider = "-" * 60
     print()
-    print("Remote session detected. Your browser will redirect to")
-    print(f"  {redirect_uri}")
-    print("which the loopback listener on THIS machine is waiting on. If your")
-    print("browser is on a different machine, forward the port first from your")
-    print("local machine in a separate terminal:")
+    print(divider)
+    print("Remote session detected — SSH tunnel required")
+    print(divider)
+    print(f"Hermes is waiting for the OAuth callback on {redirect_uri}")
+    print("but your browser is on a different machine. Run this command")
+    print("in a NEW terminal on your local machine BEFORE opening the URL:")
     print()
-    print(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>")
+    print(f"  ssh -N -L {port}:127.0.0.1:{port} {_ssh_user_at_host()}")
     print()
     print("Then open the authorize URL above in your local browser.")
     if docs_url:
         print(f"Provider docs:      {docs_url}")
     print(f"SSH/jump-box guide: {OAUTH_OVER_SSH_DOCS_URL}")
+    print(divider)
     print()
 
 

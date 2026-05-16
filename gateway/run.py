@@ -86,6 +86,164 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+_PR_CREATED_CLAIM_GUARD_NAME = "pr-created-claim-evidence"
+_PR_CREATED_CLAIM_RE = re.compile(
+    r"("
+    r"PR\s*(?:作成済み|作成しました|を作成しました|出しました|発行済み|発行しました)"
+    r"|pull\s+request\s+created"
+    r"|created\s+(?:a\s+)?PR"
+    r"|PR\s+created"
+    r")",
+    re.IGNORECASE,
+)
+_PR_CREATED_DENIAL_RE = re.compile(
+    r"(PR\s*作成(?:は|を)?\s*未実行|PR\s*(?:は|を)?作成してい(?:ない|ません)"
+    r"|PR作成済み.*(?:誤り|虚偽|取り消し|未確認|証跡がない)"
+    r"|(?:誤り|虚偽|取り消し|未確認|証跡がない).*PR作成済み"
+    r"|PR本文案|PR\s*本文案|作成手順|実URL.*成功後)",
+    re.IGNORECASE,
+)
+_PR_PLACEHOLDER_RE = re.compile(
+    r"(仮|placeholder|example|dummy|架空|サンプル|例)",
+    re.IGNORECASE,
+)
+_GITHUB_PR_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*"
+)
+_PR_CREATE_EVIDENCE_RE = re.compile(
+    r"(gh\s+pr\s+create|create_pull_request|pull_request\.create|github[_\.-]?pr[_\.-]?create|github\.create_pr)",
+    re.IGNORECASE,
+)
+_PR_GUARD_REPLACEMENT_RESPONSE = (
+    "PR作成は未実行です。PR本文案と作成手順までは用意できますが、"
+    "実URLは `gh pr create` または GitHub PR作成toolの成功後に提示します。"
+)
+
+
+def _contains_pr_created_claim(text: str) -> bool:
+    value = str(text or "")
+    return bool(_PR_CREATED_CLAIM_RE.search(value) and not _PR_CREATED_DENIAL_RE.search(value))
+
+
+def _extract_concrete_pr_urls(text: str) -> List[str]:
+    return _GITHUB_PR_URL_RE.findall(str(text or ""))
+
+
+def _flatten_pr_guard_text(value: Any) -> str:
+    parts: List[str] = []
+
+    def visit(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                if str(key).lower() in {"final_response", "response"}:
+                    continue
+                parts.append(str(key))
+                visit(nested)
+            return
+        if isinstance(item, (list, tuple)):
+            for nested in item:
+                visit(nested)
+            return
+        parts.append(str(item))
+
+    visit(value)
+    return "\n".join(parts)
+
+
+def _pr_creation_evidence_text(agent_result: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in (
+        "tool_trace",
+        "command_trace",
+        "commands_run",
+        "tools_called",
+        "verification",
+        "tool_results",
+        "runtime_trace",
+    ):
+        if key in agent_result:
+            parts.append(_flatten_pr_guard_text(agent_result.get(key)))
+
+    messages = agent_result.get("messages") or []
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").lower()
+            if role == "tool" or message.get("tool_call_id"):
+                parts.append(_flatten_pr_guard_text(message))
+                continue
+            tool_calls = message.get("tool_calls") or message.get("tool_use")
+            if tool_calls:
+                parts.append(_flatten_pr_guard_text(tool_calls))
+
+    return "\n".join(part for part in parts if part)
+
+
+def validate_pr_created_claim_evidence(
+    final_response: str,
+    agent_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    response_text = str(final_response or "")
+    result: Dict[str, Any] = {
+        "guard": _PR_CREATED_CLAIM_GUARD_NAME,
+        "passed": True,
+        "reason": "no_pr_created_claim",
+        "replacement_response": "",
+    }
+    if not _contains_pr_created_claim(response_text):
+        return result
+
+    result["passed"] = False
+    result["reason"] = "pr_created_claim_without_concrete_pr_url"
+    result["replacement_response"] = _PR_GUARD_REPLACEMENT_RESPONSE
+
+    if _PR_PLACEHOLDER_RE.search(response_text):
+        result["reason"] = "pr_created_claim_with_placeholder_url"
+        return result
+
+    response_urls = _extract_concrete_pr_urls(response_text)
+    if not response_urls:
+        return result
+
+    evidence_text = _pr_creation_evidence_text(agent_result or {})
+    if not _PR_CREATE_EVIDENCE_RE.search(evidence_text):
+        result["reason"] = "pr_created_claim_without_create_trace"
+        return result
+
+    evidence_urls = set(_extract_concrete_pr_urls(evidence_text))
+    if not any(url in evidence_urls for url in response_urls):
+        result["reason"] = "pr_created_claim_url_missing_from_trace"
+        return result
+
+    result["passed"] = True
+    result["reason"] = "pr_created_claim_has_create_trace_and_url"
+    result["replacement_response"] = ""
+    return result
+
+
+def apply_pr_created_claim_guard(final_response: str, agent_result: Dict[str, Any]) -> str:
+    decision = validate_pr_created_claim_evidence(final_response, agent_result)
+    agent_result.setdefault("runtime_guards", []).append(decision)
+    if decision.get("reason") != "no_pr_created_claim":
+        logger.info(
+            "runtime guard evaluated final_response: guard=%s passed=%s reason=%s",
+            decision.get("guard"),
+            decision.get("passed"),
+            decision.get("reason"),
+        )
+    if decision.get("passed"):
+        return final_response
+    logger.warning(
+        "runtime guard blocked final_response: guard=%s reason=%s",
+        decision.get("guard"),
+        decision.get("reason"),
+    )
+    return str(decision.get("replacement_response") or _PR_GUARD_REPLACEMENT_RESPONSE)
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -7785,6 +7943,8 @@ class GatewayRunner:
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
+            response = apply_pr_created_claim_guard(response, agent_result)
+            agent_result["final_response"] = response
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -14365,6 +14525,7 @@ class GatewayRunner:
                         fresh_final_after_seconds=_fresh_final_secs,
                         transport=_scfg.transport or "auto",
                         chat_type=getattr(source, "chat_type", "") or "",
+                        final_text_guard=lambda text: apply_pr_created_claim_guard(text, {"messages": []}),
                     )
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
@@ -15188,6 +15349,7 @@ class GatewayRunner:
                             fresh_final_after_seconds=_fresh_final_secs,
                             transport=_scfg.transport or "auto",
                             chat_type=getattr(source, "chat_type", "") or "",
+                            final_text_guard=lambda text: apply_pr_created_claim_guard(text, {"messages": []}),
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

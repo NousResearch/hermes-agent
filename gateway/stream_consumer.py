@@ -72,6 +72,9 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # Optional last-mile guard for completed text. It runs only once, when the
+    # final accumulated response is complete and before any final send/edit.
+    final_text_guard: Optional[Callable[[str], str]] = None
 
 
 class GatewayStreamConsumer:
@@ -414,6 +417,11 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    if self.cfg.final_text_guard and self._accumulated:
+                        try:
+                            self._accumulated = self.cfg.final_text_guard(self._accumulated)
+                        except Exception as guard_err:
+                            logger.error("Stream final_text_guard failed: %s", guard_err)
 
                 # Decide whether to flush an edit
                 now = time.monotonic()

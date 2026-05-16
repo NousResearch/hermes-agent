@@ -134,6 +134,51 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return SKILLS_DIR
 
 
+def _refuse_external_for_review_fork(
+    skill_path: Path, name: str
+) -> Optional[Dict[str, Any]]:
+    """Return a refusal payload when a background-review fork tries to mutate
+    a skill in an external_dirs path; None when the write is allowed.
+
+    The background self-improvement fork runs autonomously (no user in the
+    loop) and uses skill_manage to consolidate, patch, and prune skills.
+    Foreground callers (CLI users, gateway-routed agents, subagent
+    delegations) deliberately ask for writes and own their consequences;
+    the fork doesn't. Consumers (e.g. Walter desktop) expose
+    ``skills.external_dirs`` as a user-curated read-only surface — vault-
+    resident skills the user has explicitly promoted out of the
+    auto-curated local dir. Letting the review fork silently edit those
+    breaks the user's "this is mine now" contract.
+
+    Refusal scope: applies only when ``is_background_review()`` is True
+    AND the skill lives outside ``SKILLS_DIR``. Foreground writes are
+    unaffected — the same skill_manage call from a non-fork context still
+    operates on external-dir skills.
+    """
+    from tools.skill_provenance import is_background_review
+
+    if not is_background_review():
+        return None
+    try:
+        root = _containing_skills_root(skill_path).resolve()
+        if root == SKILLS_DIR.resolve():
+            return None
+    except OSError:
+        # Path resolution failed — fail open (defensive, matches the
+        # _containing_skills_root default-to-SKILLS_DIR fallback).
+        return None
+    return {
+        "success": False,
+        "error": (
+            f"Skill '{name}' lives in an external skills dir ({root}); "
+            f"the background review fork is not permitted to modify skills "
+            f"outside HERMES_HOME/skills. Foreground writes (user-directed) "
+            f"continue to work normally. Consider creating a new local "
+            f"skill under HERMES_HOME instead."
+        ),
+    }
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -441,6 +486,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    refusal = _refuse_external_for_review_fork(existing["path"], name)
+    if refusal:
+        return refusal
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -480,6 +529,10 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    refusal = _refuse_external_for_review_fork(existing["path"], name)
+    if refusal:
+        return refusal
 
     skill_dir = existing["path"]
 
@@ -570,6 +623,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
+    refusal = _refuse_external_for_review_fork(existing["path"], name)
+    if refusal:
+        return refusal
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -639,6 +696,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    refusal = _refuse_external_for_review_fork(existing["path"], name)
+    if refusal:
+        return refusal
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -672,6 +733,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
+
+    refusal = _refuse_external_for_review_fork(existing["path"], name)
+    if refusal:
+        return refusal
 
     skill_dir = existing["path"]
 

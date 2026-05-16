@@ -304,6 +304,16 @@ tools pass on the live state. Do not accept readiness alone when audit tools
 disagree. Do not propose runner start, registration, or local action mirrors
 while the audit tools report `IMPORT_FAILED_OR_PARTIAL` or are missing.
 
+If the Kanban import audit reports S006 remote state as `pr_absent` while the
+PR/CI audit discovers the matching Gitea PR, repair Hermes control-plane tooling
+before any product task or runner/CI proposal. The durable repair pattern is to
+hydrate Kanban remote lifecycle status from the same live read-only PR/CI audit
+payload used by readiness when no explicit remote-readiness JSON is supplied,
+then classify the result as a valid remote lifecycle block such as
+`IMPORT_VALID_REMOTE_LIFECYCLE_BLOCKED` when PR exists but CI evidence remains
+pending. See `references/control-plane-lifecycle-consistency.md` for the
+session-derived repair recipe, validator quartet, and reporting pattern.
+
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays
 `active` or `repair_attempted` until a later HEAD passes the completion gate and

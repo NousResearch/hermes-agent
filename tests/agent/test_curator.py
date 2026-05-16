@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -289,6 +291,56 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
 # ---------------------------------------------------------------------------
 # run_curator_review orchestration
 # ---------------------------------------------------------------------------
+
+
+def test_llm_review_dry_run_uses_readonly_curator_toolset(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, user_message):
+            return {"final_response": "dry report"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=FakeAgent))
+    importlib.reload(c)
+
+    result = c._run_llm_review(f"{c.CURATOR_DRY_RUN_BANNER}\n\npreview")
+
+    assert result["summary"] == "dry report"
+    assert captured["enabled_toolsets"] == ["curator_readonly"]
+    assert captured["platform"] == "curator"
+
+
+def test_llm_review_live_uses_curator_only_toolset(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, user_message):
+            return {"final_response": "live report"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "run_agent", SimpleNamespace(AIAgent=FakeAgent))
+    importlib.reload(c)
+
+    result = c._run_llm_review("live")
+
+    assert result["summary"] == "live report"
+    assert captured["enabled_toolsets"] == ["curator"]
+    assert captured["platform"] == "curator"
 
 def test_run_review_records_state(curator_env):
     c = curator_env["curator"]

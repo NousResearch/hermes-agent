@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, shouldTokenizePaste } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -55,5 +55,15 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('shouldTokenizePaste', () => {
+  it('keeps normal small pastes inline', () => {
+    expect(shouldTokenizePaste('plain pasted text', 1)).toBe(false)
+  })
+
+  it('tokenizes small pastes containing shell interpolation syntax', () => {
+    expect(shouldTokenizePaste('Summarize this: {!cat ~/.hermes/.env}', 1)).toBe(true)
   })
 })

@@ -339,6 +339,7 @@ def auth_add_command(args) -> None:
         creds = auth_mod._xai_oauth_loopback_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),
+            manual_paste=bool(getattr(args, "manual_paste", False)),
         )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],

@@ -16,13 +16,14 @@ import {
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
+  useCursorAdvance: () => (dx: number, dy?: number) => void
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
   useStdout: () => { stdout?: NodeJS.WriteStream }
   useTerminalFocus: () => boolean
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -333,6 +334,7 @@ export function TextInput({
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
+  const noteCursorAdvance = useCursorAdvance()
 
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
@@ -911,6 +913,12 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
           stdout!.write('\b \b')
+          // The "\b \b" sequence ends with the cursor one column to the
+          // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
+          // (and log-update's relative-move basis on the next frame) stays
+          // in sync — otherwise the cursor parks one cell to the right of
+          // the caret on the next unrelated re-render.
+          noteCursorAdvance(-1)
           commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
           return
@@ -998,6 +1006,14 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
+              // ASCII-printable text advances the physical cursor by exactly
+              // text.length cells (canFastAppendShape rejects non-ASCII,
+              // wide chars, newlines). Notify Ink so the cached displayCursor
+              // / log-update relative-move basis advances with it; otherwise
+              // any unrelated re-render that happens before the 16ms
+              // setCur/setParent flush parks the cursor text.length cells
+              // too far right (#cursor-drift).
+              noteCursorAdvance(text.length)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 
               return

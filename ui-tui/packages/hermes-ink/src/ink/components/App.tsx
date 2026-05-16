@@ -33,6 +33,7 @@ import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../term
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
+import CursorAdvanceContext, { type CursorAdvanceNotifier } from './CursorAdvanceContext.js'
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js'
 import ErrorOverview from './ErrorOverview.js'
 import StdinContext from './StdinContext.js'
@@ -100,6 +101,12 @@ type Props = {
   // Enables IME composition at the input caret and lets screen readers /
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
+  // Receives notifications that the physical cursor was advanced out-of-band
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout) so ink.tsx
+  // can keep `displayCursor` in sync. Without this, the next frame's relative
+  // cursor moves compute from a stale parked position. Optional so testing.tsx
+  // doesn't need to stub it.
+  readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void
@@ -196,7 +203,9 @@ export default class App extends PureComponent<Props, State> {
             <TerminalFocusProvider>
               <ClockProvider>
                 <CursorDeclarationContext.Provider value={this.props.onCursorDeclaration ?? (() => {})}>
-                  {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  <CursorAdvanceContext.Provider value={this.props.onCursorAdvance ?? (() => {})}>
+                    {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  </CursorAdvanceContext.Provider>
                 </CursorDeclarationContext.Provider>
               </ClockProvider>
             </TerminalFocusProvider>

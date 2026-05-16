@@ -16,6 +16,7 @@ import { logError } from '../utils/log.js'
 
 import { colorize } from './colorize.js'
 import App from './components/App.js'
+import type { CursorAdvanceNotifier } from './components/CursorAdvanceContext.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS } from './constants.js'
 import * as dom from './dom.js'
@@ -2219,6 +2220,57 @@ export default class Ink {
 
     this.cursorDeclaration = decl
   }
+  // Caller writes raw bytes to stdout that move the physical terminal
+  // cursor (e.g. TextInput's fast-echo bypass). Without this notification,
+  // Ink's `displayCursor` cache and log-update's prevFrame.cursor stay
+  // unchanged, so the next frame's relative cursor moves compute from a
+  // stale position and the hardware cursor parks `dx` cells offset from
+  // the actual caret. Visible symptom: extra whitespace between the just-
+  // typed character and the cursor block, more pronounced on long
+  // sessions where unrelated components re-render between fast-echo and
+  // the deferred composer re-render.
+  //
+  // If displayCursor was already tracked, just bump it. Otherwise seed it
+  // to (prevFrame.cursor + delta) so the next frame's preamble emits a
+  // (-dx, -dy) relative move that brings the cursor back to log-update's
+  // expected start position before the diff body runs.
+  //
+  // Public so tests can drive it directly without mounting App.
+  noteExternalCursorAdvance: CursorAdvanceNotifier = (dx, dy = 0) => {
+    if (dx === 0 && dy === 0) {
+      return
+    }
+
+    if (this.altScreenActive) {
+      // Alt-screen frames begin with CSI H which absolutely repositions
+      // the cursor, so the stale-parked-position bug doesn't apply.
+      return
+    }
+
+    if (this.displayCursor !== null) {
+      this.displayCursor = {
+        x: this.displayCursor.x + dx,
+        y: this.displayCursor.y + dy
+      }
+
+      return
+    }
+
+    // No prior parked position. Seed from frontFrame.cursor (where
+    // log-update parked the cursor at the end of the last frame) so the
+    // next preamble's relative move correctly cancels the external advance.
+    const baseX = this.frontFrame.cursor.x
+    const baseY = this.frontFrame.cursor.y
+    this.displayCursor = { x: baseX + dx, y: baseY + dy }
+  }
+  /** Test-only accessor for the internally-tracked physical cursor. */
+  __getDisplayCursorForTest(): { x: number; y: number } | null {
+    return this.displayCursor
+  }
+  /** Test-only accessor for the front frame's parked cursor (post-render). */
+  __getFrontFrameCursorForTest(): { x: number; y: number } {
+    return { x: this.frontFrame.cursor.x, y: this.frontFrame.cursor.y }
+  }
   render(node: ReactNode): void {
     this.currentNode = node
 
@@ -2228,6 +2280,7 @@ export default class Ink {
         exitOnCtrlC={this.options.exitOnCtrlC}
         getHyperlinkAt={this.getHyperlinkAt}
         onClickAt={this.dispatchClick}
+        onCursorAdvance={this.noteExternalCursorAdvance}
         onCursorDeclaration={this.setCursorDeclaration}
         onExit={this.unmount}
         onHoverAt={this.dispatchHover}

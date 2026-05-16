@@ -4025,6 +4025,11 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
+        # Browser sessions persist within a conversation — the session name is
+        # generated once per process and reused via _active_sessions cache.
+        # We skip per-turn cleanup so cookies stay alive across turns.
+        # The inactivity reaper still tears down idle sessions to prevent
+        # resource leaks.
         try:
             cleanup_browser(task_id)
         except Exception as e:

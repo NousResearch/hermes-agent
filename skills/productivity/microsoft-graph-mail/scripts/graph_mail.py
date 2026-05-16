@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -21,6 +21,7 @@ from _log_sanitizer import _sanitize_for_log
 from microsoft_auth import get_valid_access_token
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+GRAPH_HOST = urlparse(GRAPH_ROOT).hostname or ""
 MAX_RESULTS = 50
 DEFAULT_RESULTS = 10
 MAX_BODY_LENGTH = 50_000
@@ -106,8 +107,19 @@ def _require_httpx():
     return httpx
 
 
+def _graph_url(path_or_url: str) -> str:
+    if not path_or_url.startswith("http"):
+        return f"{GRAPH_ROOT}{path_or_url}"
+
+    parsed = urlparse(path_or_url)
+    if parsed.scheme != "https" or parsed.hostname != GRAPH_HOST or parsed.port not in (None, 443):
+        print("ERROR: Refusing Microsoft Graph nextLink outside https://graph.microsoft.com.", file=sys.stderr)
+        sys.exit(1)
+    return path_or_url
+
+
 def _graph_get(client: Any, token: str, path_or_url: str, params: dict | None = None) -> dict:
-    url = path_or_url if path_or_url.startswith("http") else f"{GRAPH_ROOT}{path_or_url}"
+    url = _graph_url(path_or_url)
     try:
         response = client.get(
             url,

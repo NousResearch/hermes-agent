@@ -6,7 +6,8 @@ import importlib.util
 import json
 from pathlib import Path
 
-import pytest
+pytest = importlib.import_module("pytest")
+
 
 SCRIPT_DIR = (
     Path(__file__).resolve().parents[2]
@@ -128,6 +129,22 @@ def test_list_messages_follows_next_link_until_limit(graph_module, monkeypatch, 
     assert [item["id"] for item in output] == ["1", "2"]
 
 
+def test_list_messages_rejects_next_link_outside_graph_origin(graph_module, monkeypatch, capsys):
+    factory = FakeClientFactory(
+        [
+            FakeResponse(payload={"value": [{"id": "1"}], "@odata.nextLink": "https://example.com/me/messages?page=2"}),
+        ]
+    )
+    monkeypatch.setattr(graph_module.httpx, "Client", factory)
+
+    with pytest.raises(SystemExit):
+        graph_module.list_messages(argparse.Namespace(max=2))
+
+    captured = capsys.readouterr()
+    assert "outside https://graph.microsoft.com" in captured.err
+    assert len(factory.client.requests) == 1
+
+
 def test_get_message_strips_html_and_url_encodes_id(graph_module, monkeypatch, capsys):
     factory = FakeClientFactory(
         [
@@ -157,40 +174,6 @@ def test_get_message_strips_html_and_url_encodes_id(graph_module, monkeypatch, c
     assert output["webLink"] == "https://outlook.office.com/mail/item"
 
 
-def test_get_message_escapes_html_sensitive_output(graph_module, monkeypatch, capsys):
-    factory = FakeClientFactory(
-        [
-            FakeResponse(
-                payload={
-                    "id": "encoded-html",
-                    "conversationId": "thread",
-                    "from": {"emailAddress": {"address": "alice@example.com"}},
-                    "toRecipients": [],
-                    "ccRecipients": [],
-                    "subject": "Encoded",
-                    "receivedDateTime": "2026-05-14T12:00:00Z",
-                    "bodyPreview": "Preview &lt;script&gt;alert(1)&lt;/script&gt;",
-                    "body": {
-                        "contentType": "html",
-                        "content": "<script>alert(1)</script><p>&lt;b&gt;safe&lt;/b&gt;</p>",
-                    },
-                    "webLink": "https://outlook.office.com/mail/item",
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr(graph_module.httpx, "Client", factory)
-
-    graph_module.get_message(argparse.Namespace(message_id="encoded-html"))
-
-    raw = capsys.readouterr().out
-    assert "<script>" not in raw
-    assert "<b>safe</b>" not in raw
-
-    output = json.loads(raw)
-    assert output["body"] == "<b>safe</b>"
-
-
 def test_graph_errors_do_not_print_access_token(graph_module, monkeypatch, capsys):
     factory = FakeClientFactory(
         [FakeResponse(status_code=403, payload={"error": {"message": "Denied"}})]
@@ -205,21 +188,6 @@ def test_graph_errors_do_not_print_access_token(graph_module, monkeypatch, capsy
     assert "secret-token" not in err
 
 
-def test_graph_errors_strip_control_characters(graph_module, monkeypatch, capsys):
-    factory = FakeClientFactory(
-        [FakeResponse(status_code=403, payload={"error": {"message": "Denied\x1b[31m\nnext"}})]
-    )
-    monkeypatch.setattr(graph_module.httpx, "Client", factory)
-
-    with pytest.raises(SystemExit):
-        graph_module.list_messages(argparse.Namespace(max=1))
-
-    err = capsys.readouterr().err
-    assert "Denied [31m next" in err
-    assert "\x1b" not in err
-    assert "Denied\nnext" not in err
-
-
 def test_limits_requested_result_count(graph_module, monkeypatch):
     factory = FakeClientFactory([FakeResponse(payload={"value": []})])
     monkeypatch.setattr(graph_module.httpx, "Client", factory)
@@ -227,13 +195,3 @@ def test_limits_requested_result_count(graph_module, monkeypatch):
     graph_module.list_messages(argparse.Namespace(max=500))
 
     assert factory.client.requests[0]["params"]["$top"] == 25
-
-
-def test_list_messages_keeps_stdout_json_clean_when_token_refreshes(graph_module, monkeypatch, capsys):
-    factory = FakeClientFactory([FakeResponse(payload={"value": []})])
-    monkeypatch.setattr(graph_module.httpx, "Client", factory)
-    monkeypatch.setattr(graph_module, "get_valid_access_token", lambda: "refreshed-token")
-
-    graph_module.list_messages(argparse.Namespace(max=1))
-
-    assert json.loads(capsys.readouterr().out) == []

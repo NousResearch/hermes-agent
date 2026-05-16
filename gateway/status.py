@@ -924,7 +924,15 @@ def get_running_pid(
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
-        _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+        # Only force-cleanup when there is on-disk evidence (a lock file
+        # that nobody holds) that a dead process left things behind.  When
+        # the lock file is simply missing — e.g. mid-handoff during
+        # ``hermes update --replace`` — a live gateway may still own the
+        # PID file, and unlinking it here is what causes ``send_message``
+        # to disappear from CLI sessions until the next manual restart
+        # (#26643).
+        if resolved_lock_path.exists():
+            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
     primary_record = _read_pid_record(resolved_pid_path)

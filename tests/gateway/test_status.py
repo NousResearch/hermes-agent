@@ -167,23 +167,6 @@ class TestGatewayPidState:
 
         assert status.is_gateway_runtime_lock_active() is False
 
-    def test_get_running_pid_treats_pid_file_as_stale_without_runtime_lock(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        pid_path = tmp_path / "gateway.pid"
-        pid_path.write_text(json.dumps({
-            "pid": os.getpid(),
-            "kind": "hermes-gateway",
-            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
-            "start_time": 123,
-        }))
-
-        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
-        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
-        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
-
-        assert status.get_running_pid() is None
-        assert not pid_path.exists()
-
     def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
         """Stale PID file from a *different* PID (crashed process) must still be cleaned.
 

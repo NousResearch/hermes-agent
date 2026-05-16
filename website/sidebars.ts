@@ -547,6 +547,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/research/research-bioinformatics',
+                    'user-guide/skills/optional/research/research-darwinian-evolver',
                     'user-guide/skills/optional/research/research-domain-intel',
                     'user-guide/skills/optional/research/research-drug-discovery',
                     'user-guide/skills/optional/research/research-duckduckgo-search',

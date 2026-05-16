@@ -78,9 +78,10 @@ class TestResolveToolset:
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
 
-    def test_browser_toolset_includes_browser_use_sidecar_tool(self):
+    def test_browser_use_sidecar_tool_is_opt_in_only(self):
         tools = resolve_toolset("browser")
-        assert "browser_use" in tools
+        assert "browser_use" not in tools
+        assert "browser_use" not in resolve_toolset("hermes-telegram")
         assert resolve_toolset("browser_use") == ["browser_use"]
 
     def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):

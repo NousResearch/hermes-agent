@@ -272,6 +272,77 @@ class TestBusySessionAck:
         assert "Queued for the next turn" in content
 
     @pytest.mark.asyncio
+    async def test_stop_command_overrides_steer_mode_and_interrupts(self):
+        """Regression for #26813: ``/stop`` in steer mode must interrupt
+        the agent instead of being fed into ``running_agent.steer()`` as
+        mid-turn user text — otherwise the agent reads the slash command
+        as more instructions and keeps running.
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="/stop")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_called_once_with("/stop")
+
+    @pytest.mark.asyncio
+    async def test_interrupt_command_overrides_queue_mode_and_interrupts(self):
+        """``/interrupt`` (and the bot-mention variant) must also bypass
+        queue mode — without it the agent runs to completion while the
+        message sits silently in the next-turn queue (#26813).
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        # Telegram-style ``/interrupt@hermesbot`` — get_command() strips
+        # the suffix so the override must still fire.
+        event = _make_event(text="/interrupt@hermesbot")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_called_once_with("/interrupt@hermesbot")
+
+    @pytest.mark.asyncio
+    async def test_non_control_slash_command_still_obeys_steer_mode(self):
+        """The override is scoped: only ``/stop`` / ``/interrupt`` flip
+        the mode. Other slash commands (``/status``, ``/sethome``, …)
+        keep the configured ``busy_input_mode`` semantics — otherwise we
+        accidentally interrupt for every command the user types.
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="/status")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once_with("/status")
+        agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
         """Second message within 30s should NOT send another ack."""
         runner, sentinel = _make_runner()

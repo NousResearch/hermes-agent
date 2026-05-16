@@ -65,7 +65,7 @@ MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 # Agent pool configuration — caches AIAgent instances per session to skip
 # the ~1-3s cold-start penalty of agent initialisation on every request.
 # Prewarming creates agents at startup for brand-new sessions (opt-in).
-DEFAULT_PREWARM_COUNT = 3  # agents pre-created at startup (0 to disable; set via PREWARM_COUNT env or config)
+DEFAULT_PREWARM_COUNT = 3  # agents pre-created at startup (0 to disable; set via API_SERVER_PREWARM_COUNT env)
 DEFAULT_AGENT_POOL_SIZE = 10  # max concurrent cached agents
 DEFAULT_AGENT_TTL = 300  # idle eviction in seconds
 
@@ -3675,7 +3675,7 @@ class APIServerAdapter(BasePlatformAdapter):
             extra = self.config.extra or {}
             pool_size = int(extra.get("agent_pool_size", os.getenv("AGENT_POOL_SIZE", str(DEFAULT_AGENT_POOL_SIZE))))
             pool_ttl = int(extra.get("agent_pool_ttl", os.getenv("AGENT_POOL_TTL", str(DEFAULT_AGENT_TTL))))
-            prewarm = int(extra.get("prewarm_count", os.getenv("PREWARM_COUNT", str(DEFAULT_PREWARM_COUNT))))
+            prewarm = int(extra.get("prewarm_count", os.getenv("API_SERVER_PREWARM_COUNT", str(DEFAULT_PREWARM_COUNT))))
             self._agent_pool = AgentPool(max_size=pool_size, ttl=pool_ttl, prewarm_count=prewarm)
 
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]

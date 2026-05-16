@@ -22,6 +22,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PLAN = SKILL_DIR / "fixtures" / "sample-plan.json"
 DEFAULT_OUT_DIR = SKILL_DIR / "samples" / "fixture-run"
 BOOTSTRAP = SKILL_DIR / "scripts" / "bootstrap_pipeline.py"
+VALIDATOR_MARKER = ".kanban-video-orchestrator-validator"
 REQUIRED_SNIPPETS = {
     "setup.sh": [
         "set -euo pipefail",
@@ -131,6 +132,31 @@ def build_manifest(plan: Path, outputs: dict[str, Path], validation_log: Path) -
     }
 
 
+def prepare_out_dir(out_dir: Path) -> None:
+    if not out_dir.exists():
+        return
+    if out_dir == DEFAULT_OUT_DIR.resolve() or (out_dir / VALIDATOR_MARKER).is_file():
+        shutil.rmtree(out_dir)
+        return
+    if out_dir.is_dir() and not any(out_dir.iterdir()):
+        out_dir.rmdir()
+        return
+    raise RuntimeError(
+        "refusing to replace non-validator-owned output directory: "
+        f"{out_dir}\n"
+        "Use an absent/empty directory, the default sample directory, or rerun "
+        "against a directory containing the validator marker."
+    )
+
+
+def write_marker(out_dir: Path) -> None:
+    if out_dir == DEFAULT_OUT_DIR.resolve():
+        return
+    (out_dir / VALIDATOR_MARKER).write_text(
+        "owned by kanban-video-orchestrator fixture validator\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", default=str(DEFAULT_PLAN), help="Fixture plan JSON")
@@ -140,9 +166,13 @@ def main() -> int:
 
     plan = Path(args.plan).resolve()
     out_dir = Path(args.out_dir).resolve()
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+    try:
+        prepare_out_dir(out_dir)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     outputs = run_generator(plan, out_dir)
+    write_marker(out_dir)
     failures = validate_outputs(outputs)
 
     if args.check_determinism:

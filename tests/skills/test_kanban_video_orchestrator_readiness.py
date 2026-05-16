@@ -72,3 +72,27 @@ def test_fixture_validator_generates_deterministic_sample_artifacts(tmp_path):
     ]
     assert (out_dir / "setup.sh").stat().st_mode & 0o777 == 0o755
     assert "workspace_kind=\"dir\"" in (out_dir / "TEAM.md").read_text()
+
+
+def test_fixture_validator_refuses_populated_unowned_out_dir(tmp_path):
+    out_dir = tmp_path / "projects"
+    out_dir.mkdir()
+    sentinel = out_dir / "keep.txt"
+    sentinel.write_text("unrelated local work\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR_PATH),
+            "--out-dir",
+            str(out_dir),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "refusing to replace non-validator-owned output directory" in result.stderr
+    assert sentinel.read_text() == "unrelated local work\n"
+    assert not (out_dir / "setup.sh").exists()

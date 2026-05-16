@@ -128,10 +128,15 @@ class TestPlatformNameCaseInsensitivity:
 class RecordingAdapter:
     def __init__(self):
         self.calls = []
+        self.ensure_dm_topic_calls = []
 
     async def send(self, chat_id, content, metadata=None):
         self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return {"success": True}
+
+    async def ensure_dm_topic(self, chat_id, topic_name):
+        self.ensure_dm_topic_calls.append({"chat_id": chat_id, "topic_name": topic_name})
+        return "38049"
 
 
 @pytest.mark.asyncio
@@ -145,6 +150,30 @@ async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, 
         await router._deliver_to_platform(target, "hello", metadata=None)
 
     assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Hermes API Test"}
+    ]
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "thread_id": "38049",
+                "telegram_dm_topic_created_for_send": True,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

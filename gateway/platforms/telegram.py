@@ -584,6 +584,8 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         if cls._metadata_direct_messages_topic_id(metadata) is not None:
             return False
+        if metadata and metadata.get("telegram_dm_topic_created_for_send"):
+            return False
         return bool(
             thread_id
             and (
@@ -1190,6 +1192,59 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = await self._create_dm_topic(chat_id_int, name=name)
         return str(thread_id) if thread_id else None
 
+    async def ensure_dm_topic(self, chat_id: str, topic_name: str) -> Optional[str]:
+        """Return a private DM topic thread id, creating and persisting it if needed."""
+        name = str(topic_name or "").strip()
+        if not name:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        cache_key = f"{chat_id_int}:{name}"
+        cached = self._dm_topics.get(cache_key)
+        if cached:
+            return str(cached)
+
+        topic_conf: Optional[Dict[str, Any]] = None
+        chat_entry: Optional[Dict[str, Any]] = None
+        for entry in self._dm_topics_config:
+            if str(entry.get("chat_id")) != str(chat_id_int):
+                continue
+            chat_entry = entry
+            for candidate in entry.get("topics", []):
+                if candidate.get("name") == name:
+                    topic_conf = candidate
+                    break
+            break
+
+        if topic_conf and topic_conf.get("thread_id"):
+            thread_id = int(topic_conf["thread_id"])
+            self._dm_topics[cache_key] = thread_id
+            return str(thread_id)
+
+        if chat_entry is None:
+            chat_entry = {"chat_id": chat_id_int, "topics": []}
+            self._dm_topics_config.append(chat_entry)
+        if topic_conf is None:
+            topic_conf = {"name": name}
+            chat_entry.setdefault("topics", []).append(topic_conf)
+
+        thread_id = await self._create_dm_topic(
+            chat_id_int,
+            name=name,
+            icon_color=topic_conf.get("icon_color"),
+            icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"),
+        )
+        if not thread_id:
+            return None
+
+        topic_conf["thread_id"] = thread_id
+        self._dm_topics[cache_key] = int(thread_id)
+        self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id))
+        return str(thread_id)
+
     async def rename_dm_topic(
         self,
         chat_id: int,
@@ -1226,25 +1281,43 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
-            # Navigate to platforms.telegram.extra.dm_topics
-            dm_topics = (
-                config.get("platforms", {})
-                .get("telegram", {})
-                .get("extra", {})
-                .get("dm_topics", [])
-            )
-            if not dm_topics:
-                return
+            # Navigate to platforms.telegram.extra.dm_topics, creating the path
+            # when a named delivery target asks us to create a topic that was
+            # not predeclared in config.yaml.
+            platforms = config.setdefault("platforms", {})
+            telegram_config = platforms.setdefault("telegram", {})
+            extra = telegram_config.setdefault("extra", {})
+            dm_topics = extra.setdefault("dm_topics", [])
 
             changed = False
+            matching_chat_entry = None
             for chat_entry in dm_topics:
-                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
+                try:
+                    chat_matches = int(chat_entry.get("chat_id", 0)) == int(chat_id)
+                except (TypeError, ValueError):
+                    chat_matches = False
+                if not chat_matches:
                     continue
-                for t in chat_entry.get("topics", []):
-                    if t.get("name") == topic_name and not t.get("thread_id"):
-                        t["thread_id"] = thread_id
-                        changed = True
+                matching_chat_entry = chat_entry
+                for t in chat_entry.setdefault("topics", []):
+                    if t.get("name") == topic_name:
+                        if not t.get("thread_id"):
+                            t["thread_id"] = thread_id
+                            changed = True
                         break
+                else:
+                    chat_entry.setdefault("topics", []).append(
+                        {"name": topic_name, "thread_id": thread_id}
+                    )
+                    changed = True
+                break
+
+            if matching_chat_entry is None:
+                dm_topics.append({
+                    "chat_id": chat_id,
+                    "topics": [{"name": topic_name, "thread_id": thread_id}],
+                })
+                changed = True
 
             if changed:
                 fd, tmp_path = tempfile.mkstemp(

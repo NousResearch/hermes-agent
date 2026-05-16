@@ -598,6 +598,33 @@ async def test_send_uses_reply_fallback_for_hermes_dm_topics():
 
 
 @pytest.mark.asyncio
+async def test_send_created_private_topic_uses_message_thread_without_anchor():
+    """Topics created via createForumTopic are addressable by message_thread_id directly."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=781)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="created topic message",
+        metadata={
+            "thread_id": "38049",
+            "telegram_dm_topic_created_for_send": True,
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 38049
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
 async def test_send_uses_metadata_reply_fallback_for_streaming_dm_topics():
     """Metadata-only sends still stay in Hermes-created Telegram DM topics."""
     adapter = _make_adapter()

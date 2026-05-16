@@ -895,7 +895,7 @@ def _build_tool_complete_content(
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
 
-    if tool_name in {"write_file", "patch", "skill_manage"}:
+    if tool_name == "skill_manage":
         try:
             from agent.display import extract_edit_diff
 
@@ -936,22 +936,15 @@ def build_tool_start(
 
     if tool_name == "patch":
         mode = arguments.get("mode", "replace")
-        if mode == "replace":
-            path = arguments.get("path", "")
-            old = arguments.get("old_string", "")
-            new = arguments.get("new_string", "")
-            content = [acp.tool_diff_content(path=path, new_text=new, old_text=old)]
-        else:
-            patch_text = arguments.get("patch", "")
-            content = _build_patch_mode_content(patch_text)
+        path = arguments.get("path") or "patch input"
+        content = [_text(f"Preparing {mode} edit for {path}. Approval prompt shows the diff.")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "write_file":
         path = arguments.get("path", "")
-        file_content = arguments.get("content", "")
-        content = [acp.tool_diff_content(path=path, new_text=file_content)]
+        content = [_text(f"Preparing write to {path}. Approval prompt shows the diff." if path else "Preparing file write. Approval prompt shows the diff.")]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )

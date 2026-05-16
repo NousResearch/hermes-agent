@@ -1139,3 +1139,156 @@ def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
     out = kt._handle_complete({"task_id": tid, "summary": "orchestrator close"})
     d = json.loads(out)
     assert d.get("ok") is True and d.get("task_id") == tid
+
+
+# ---------------------------------------------------------------------------
+# Origin auto-subscribe on kanban_create
+#
+# When a task is created inside a gateway-routed agent run, the originating
+# conversation (Discord thread, Telegram topic, Slack thread, etc.) should
+# be auto-subscribed so terminal events phone home to that exact thread —
+# no cron, no skill, no manual /kanban notify-subscribe step.
+#
+# When a kanban worker fans out child cards, the children should inherit
+# the parent's subscriptions so the originating conversation stays the
+# manager of the whole subtree.
+# ---------------------------------------------------------------------------
+
+def _create_and_get_subs(monkeypatch=None, **create_kwargs):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": create_kwargs.pop("title", "child"),
+        "assignee": create_kwargs.pop("assignee", "test-worker"),
+        **create_kwargs,
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    tid = d["task_id"]
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    return tid, subs
+
+
+def test_create_auto_subscribes_live_discord_thread(monkeypatch, worker_env):
+    """Live gateway session sets HERMES_SESSION_* → new task gets a
+    notify_sub pointing at the exact (platform, chat, thread)."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "1501836547777888346")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "1505284820404539452")
+
+    _, subs = _create_and_get_subs(title="discord-origin")
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "discord"
+    assert str(s["chat_id"]) == "1501836547777888346"
+    assert str(s["thread_id"]) == "1505284820404539452"
+
+
+def test_create_auto_subscribes_channel_root_when_no_thread(monkeypatch, worker_env):
+    """No thread (channel-root message) still subscribes, with empty thread_id."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "999")
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+
+    _, subs = _create_and_get_subs(title="channel-root")
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert str(subs[0]["chat_id"]) == "999"
+    assert str(subs[0]["thread_id"] or "") == ""
+
+
+def test_create_no_subscribe_when_no_session_and_no_parent(monkeypatch, tmp_path):
+    """CLI usage with no live session and no HERMES_KANBAN_TASK → no sub.
+    Silent is correct — there is no originating conversation to notify."""
+    home = tmp_path / ".hermes"; home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    for v in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_THREAD_ID"):
+        monkeypatch.delenv(v, raising=False)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    _, subs = _create_and_get_subs(title="silent")
+    assert subs == []
+
+
+def test_create_inherits_parent_subscriptions_on_worker_fanout(monkeypatch, worker_env):
+    """Worker (HERMES_KANBAN_TASK set) calling kanban_create with no live
+    session → child inherits parent's subs. The originating conversation
+    stays the manager of the whole subtree."""
+    parent_tid = worker_env  # fixture set HERMES_KANBAN_TASK to this
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn, task_id=parent_tid, platform="discord",
+            chat_id="111", thread_id="222", user_id="333",
+            notifier_profile="test-worker",
+        )
+    finally:
+        conn.close()
+
+    # No live session vars — fall back to parent inheritance.
+    for v in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_THREAD_ID"):
+        monkeypatch.delenv(v, raising=False)
+
+    _, child_subs = _create_and_get_subs(title="child-of-worker")
+    assert len(child_subs) == 1
+    s = child_subs[0]
+    assert s["platform"] == "discord"
+    assert str(s["chat_id"]) == "111"
+    assert str(s["thread_id"]) == "222"
+
+
+def test_create_live_session_wins_over_parent_inheritance(monkeypatch, worker_env):
+    """When both signals exist, live session wins — operator may have
+    moved the conversation to a different thread mid-flight, and the
+    new thread is now the manager."""
+    parent_tid = worker_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn, task_id=parent_tid, platform="discord",
+            chat_id="OLD_CHAT", thread_id="OLD_THREAD",
+        )
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "NEW_CHAT")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "NEW_THREAD")
+
+    _, subs = _create_and_get_subs(title="live-wins")
+    assert len(subs) == 1
+    assert str(subs[0]["chat_id"]) == "NEW_CHAT"
+    assert str(subs[0]["thread_id"]) == "NEW_THREAD"
+
+
+def test_create_subscribe_is_idempotent_on_duplicate(monkeypatch, worker_env):
+    """Re-creating an effectively-identical sub (same task/platform/chat/
+    thread) is a no-op at the DB layer — UNIQUE constraint protects us."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "C")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "T")
+    tid, subs1 = _create_and_get_subs(title="once")
+    # Manually re-trigger the helper to simulate a retry.
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kt._auto_subscribe_origin(kb, conn, tid)
+        subs2 = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs1) == 1
+    assert len(subs2) == 1

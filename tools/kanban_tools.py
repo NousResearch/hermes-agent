@@ -551,11 +551,118 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _resolve_origin_subscriptions(kb, conn) -> list[dict[str, Any]]:
+    """Resolve the (platform, chat_id, thread_id, user_id) tuples that
+    represent the *originating conversation* for a new kanban task.
+
+    Priority order:
+
+    1. **Live session context** — when a gateway-routed agent run is
+       active, ``gateway.session_context`` exposes the platform / chat /
+       thread the user is currently in via contextvars (mirrored into
+       ``HERMES_SESSION_*`` env vars for legacy callers). This is the
+       Discord thread / Telegram topic / Slack thread the user actually
+       sent the message in. Returns at most one subscription.
+
+    2. **Parent task inheritance** — when a kanban worker is fanning out
+       child cards (``HERMES_KANBAN_TASK`` set), copy the parent task's
+       current ``kanban_notify_subs`` so the entire subtree phones home
+       to whichever conversation originally spawned the work. Returns
+       all of the parent's subscriptions.
+
+    Returns an empty list when neither source yields anything (e.g. raw
+    CLI usage with no live session and no parent task) — in which case
+    no notify subscription is created and the task simply runs silently.
+    """
+    # --- 1. Live session (gateway-routed agent run) ----------------------
+    platform = ""
+    chat_id = ""
+    thread_id = ""
+    user_id: Optional[str] = None
+    try:
+        from gateway.session_context import get_session_env
+        platform = (get_session_env("HERMES_SESSION_PLATFORM") or "").strip().lower()
+        chat_id = (get_session_env("HERMES_SESSION_CHAT_ID") or "").strip()
+        thread_id = (get_session_env("HERMES_SESSION_THREAD_ID") or "").strip()
+        user_id = (get_session_env("HERMES_SESSION_USER_ID") or "").strip() or None
+    except Exception:
+        # Fall back to bare env vars (CLI / cron contexts).
+        platform = (os.environ.get("HERMES_SESSION_PLATFORM") or "").strip().lower()
+        chat_id = (os.environ.get("HERMES_SESSION_CHAT_ID") or "").strip()
+        thread_id = (os.environ.get("HERMES_SESSION_THREAD_ID") or "").strip()
+        user_id = (os.environ.get("HERMES_SESSION_USER_ID") or "").strip() or None
+
+    if platform and chat_id:
+        return [{
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": thread_id or "",
+            "user_id": user_id,
+        }]
+
+    # --- 2. Parent task inheritance (kanban worker fan-out) --------------
+    parent_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not parent_tid:
+        return []
+    try:
+        parent_subs = kb.list_notify_subs(conn, parent_tid)
+    except Exception as exc:
+        logger.debug("kanban auto-subscribe: parent lookup failed: %s", exc)
+        return []
+    inherited: list[dict[str, Any]] = []
+    for sub in parent_subs:
+        plat = (sub.get("platform") or "").strip().lower()
+        cid = str(sub.get("chat_id") or "").strip()
+        if not plat or not cid:
+            continue
+        inherited.append({
+            "platform": plat,
+            "chat_id": cid,
+            "thread_id": str(sub.get("thread_id") or "").strip(),
+            "user_id": sub.get("user_id") or None,
+        })
+    return inherited
+
+
+def _auto_subscribe_origin(kb, conn, task_id: str) -> None:
+    """Best-effort: subscribe the originating conversation(s) to *task_id*.
+
+    Never raises — a failed auto-subscribe must not break task creation.
+    The kanban_notify_subs UNIQUE constraint (task/platform/chat/thread)
+    makes this idempotent, so retries / duplicate origins are safe.
+    """
+    subs = _resolve_origin_subscriptions(kb, conn)
+    if not subs:
+        return
+    notifier_profile = os.environ.get("HERMES_PROFILE") or None
+    for s in subs:
+        try:
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=s["platform"],
+                chat_id=s["chat_id"],
+                thread_id=s["thread_id"] or None,
+                user_id=s.get("user_id"),
+                notifier_profile=notifier_profile,
+            )
+        except Exception as exc:
+            logger.debug(
+                "kanban auto-subscribe failed for task=%s platform=%s chat=%s: %s",
+                task_id, s.get("platform"), s.get("chat_id"), exc,
+            )
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
+
+    On successful create, auto-subscribes the originating conversation
+    (live gateway session, else parent task's subs) to terminal events
+    via :func:`_auto_subscribe_origin`. Failures there are swallowed —
+    the task is still created.
     """
     title = args.get("title")
     if not title or not str(title).strip():
@@ -614,6 +721,18 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
             )
             new_task = kb.get_task(conn, new_tid)
+            # Auto-subscribe the originating conversation (Discord thread,
+            # Telegram topic, Slack thread, etc.) so terminal events
+            # (completed/blocked/gave_up) land back in the chat that
+            # spawned the task. Two sources, in priority order:
+            #   1. The live session contextvars (HERMES_SESSION_*) — set
+            #      when a gateway-routed agent run produced this task.
+            #   2. The parent task's existing subscriptions — set when a
+            #      kanban worker (HERMES_KANBAN_TASK in env) is fanning
+            #      out child cards. The thread that owns the parent owns
+            #      the children too. This makes the originating
+            #      conversation the durable manager of its subtree.
+            _auto_subscribe_origin(kb, conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,

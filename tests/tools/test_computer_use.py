@@ -188,7 +188,6 @@ class TestDispatch:
         assert ("type", {"text": "echo first"}) in backend.calls
         assert ("type", {"text": "echo second"}) in backend.calls
 
-
 class TestActionSummaries:
     def test_set_value_summary_includes_element_when_present(self):
         from tools.computer_use.tool import _summarize_action
@@ -199,7 +198,6 @@ class TestActionSummaries:
         from tools.computer_use.tool import _summarize_action
         out = _summarize_action("set_value", {"value": "abc"})
         assert out == "set_value to 'abc'"
-
 
 # ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)

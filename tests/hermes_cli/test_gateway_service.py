@@ -1443,7 +1443,13 @@ class TestGeneratedUnitUsesDetectedVenv:
 
         unit = gateway_cli.generate_systemd_unit(system=False)
 
-        assert f"VIRTUAL_ENV={dot_venv}" in unit
+        # VIRTUAL_ENV must NOT be set on the gateway unit — it leaks into
+        # every subprocess and causes `uv`/`pip`/`poetry` from agent terminal
+        # tool calls (in any user project) to rebuild the Hermes venv against
+        # that project's pyproject.toml, wiping all Hermes deps. The gateway
+        # invokes python by absolute path, so sys.prefix resolves correctly
+        # without VIRTUAL_ENV being set.
+        assert "VIRTUAL_ENV" not in unit
         assert f"{dot_venv}/bin" in unit
         # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit

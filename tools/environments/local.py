@@ -184,6 +184,25 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+        # Venv / package-manager activation markers. If these leak into a
+        # terminal subprocess, `uv sync`, `uv run --active`, `pip install`,
+        # and `poetry install` treat Hermes' own venv as the active install
+        # target and rebuild it against whatever pyproject.toml the agent's
+        # cwd happens to contain — wiping every Hermes runtime dependency.
+        # The systemd unit no longer sets VIRTUAL_ENV (defense layer 1);
+        # this blocklist catches the case where the user invokes Hermes
+        # interactively with VIRTUAL_ENV already set in their shell.
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+        "UV_PROJECT_ENVIRONMENT",
+        "POETRY_ACTIVE",
+        "PIPENV_ACTIVE",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
     })
     return frozenset(blocked)
 

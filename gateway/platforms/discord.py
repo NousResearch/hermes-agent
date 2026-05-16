@@ -4949,7 +4949,26 @@ def _component_check_auth(
     return False
 
 
-if DISCORD_AVAILABLE:
+# Module-level placeholders — overwritten by _define_discord_views()
+# when discord.py is available. Prevents ImportError on test imports.
+ExecApprovalView = None  # type: ignore[assignment,misc]
+SlashConfirmView = None  # type: ignore[assignment,misc]
+UpdatePromptView = None  # type: ignore[assignment,misc]
+ModelPickerView = None  # type: ignore[assignment,misc]
+ClarifyChoiceView = None  # type: ignore[assignment,misc]
+
+
+def _define_discord_views():
+    """Define Discord View classes.
+
+    Called at module load and from check_discord_requirements()
+    after lazy install to ensure classes exist regardless of
+    when discord.py becomes available.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView
+    global ModelPickerView, ClarifyChoiceView
+    if not DISCORD_AVAILABLE or discord is None:
+        return
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5649,3 +5668,9 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+
+
+# Define View classes at module load if discord.py is pre-installed.
+# When discord.py is lazily installed, check_discord_requirements()
+# calls _define_discord_views() again to define them post-install.
+_define_discord_views()

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import ssl
@@ -530,6 +531,11 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     if len(cleaned) < min_length:
         return False
     if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
+        return False
+    # Unresolved config placeholders such as ${API_SERVER_KEY} must never
+    # become bearer/HMAC secrets. They are predictable and indicate a missing
+    # environment variable rather than real authentication material.
+    if re.search(r"\$\{[^}]+\}", cleaned):
         return False
     return True
 

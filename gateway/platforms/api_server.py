@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_cli.auth import has_usable_secret
 
 logger = logging.getLogger(__name__)
 
@@ -578,6 +579,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._api_key_usable: bool = has_usable_secret(self._api_key, min_length=1)
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -682,6 +684,21 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
+        if not self._api_key_usable:
+            logger.warning(
+                "[%s] Rejecting request: configured API key is a placeholder",
+                self.name,
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Invalid API key",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }
+                },
+                status=401,
+            )
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -3361,19 +3378,15 @@ class APIServerAdapter(BasePlatformAdapter):
             # Refuse to start network-accessible with a placeholder key.
             # Ported from openclaw/openclaw#64586.
             if is_network_accessible(self._host) and self._api_key:
-                try:
-                    from hermes_cli.auth import has_usable_secret
-                    if not has_usable_secret(self._api_key, min_length=8):
-                        logger.error(
-                            "[%s] Refusing to start: API_SERVER_KEY is set to a "
-                            "placeholder value. Generate a real secret "
-                            "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
-                            "before exposing the API server on %s.",
-                            self.name, self._host,
-                        )
-                        return False
-                except ImportError:
-                    pass
+                if not has_usable_secret(self._api_key, min_length=8):
+                    logger.error(
+                        "[%s] Refusing to start: API_SERVER_KEY is set to a "
+                        "placeholder value. Generate a real secret "
+                        "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                        "before exposing the API server on %s.",
+                        self.name, self._host,
+                    )
+                    return False
 
             # Port conflict detection — fail fast if port is already in use
             try:

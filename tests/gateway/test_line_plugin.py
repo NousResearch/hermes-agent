@@ -1,6 +1,6 @@
 """Tests for the LINE platform adapter plugin.
 
-Covers the seven synthesis areas from the PR review:
+Covers LINE adapter behavior from the PR review:
 
 1. webhook signature verification (HMAC-SHA256, base64) + tampering rejection
 2. inbound chat-id resolution for user / group / room sources
@@ -8,8 +8,9 @@ Covers the seven synthesis areas from the PR review:
 4. inbound dedup via webhookEventId
 5. RequestCache state machine (PENDING → READY → DELIVERED, ERROR)
 6. Markdown stripping with URL preservation + LINE-sized chunking
-7. send routing: reply token preferred → push fallback → batched at 5/call
-8. register() metadata + standalone_send shape
+7. inbound media normalization to gateway message types and MIME metadata
+8. send routing: reply token preferred → push fallback → batched at 5/call
+9. register() metadata + standalone_send shape
 """
 
 from __future__ import annotations
@@ -298,7 +299,84 @@ class TestMarkdownAndChunking:
 
 
 # ---------------------------------------------------------------------------
-# 7. Send routing (reply -> push fallback, batching, system-bypass)
+# 7. Inbound media normalization
+# ---------------------------------------------------------------------------
+
+class TestInboundMedia:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"line-bytes")
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def _event(self, msg_type, **message):
+        payload = {"type": msg_type, "id": f"{msg_type}-1"}
+        payload.update(message)
+        return {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cline", "userId": "Uline"},
+            "message": payload,
+        }
+
+    def _captured_event(self, adapter):
+        adapter.handle_message.assert_awaited_once()
+        return adapter.handle_message.await_args.args[0]
+
+    def test_image_message_uses_photo_type_and_image_mime(self, adapter):
+        with patch.object(_line, "cache_image_from_bytes", return_value="/cache/image.jpg") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("image")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".jpg")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.PHOTO
+        assert event.media_urls == ["/cache/image.jpg"]
+        assert event.media_types == ["image/jpeg"]
+
+    def test_audio_message_uses_voice_type_and_audio_cache(self, adapter):
+        with patch.object(_line, "cache_audio_from_bytes", return_value="/cache/audio.m4a") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("audio")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".m4a")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.VOICE
+        assert event.media_urls == ["/cache/audio.m4a"]
+        assert event.media_types[0].startswith("audio/")
+
+    def test_video_message_uses_video_type_and_video_cache(self, adapter):
+        with patch.object(_line, "cache_video_from_bytes", return_value="/cache/video.mp4") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("video")))
+
+        cache.assert_called_once_with(b"line-bytes", ext=".mp4")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.VIDEO
+        assert event.media_urls == ["/cache/video.mp4"]
+        assert event.media_types == ["video/mp4"]
+
+    def test_file_message_uses_document_type_and_original_filename(self, adapter):
+        with patch.object(_line, "cache_document_from_bytes", return_value="/cache/report.pdf") as cache:
+            asyncio.run(adapter._handle_message_event(self._event("file", fileName="report.pdf")))
+
+        cache.assert_called_once_with(b"line-bytes", "report.pdf")
+        event = self._captured_event(adapter)
+        assert event.message_type is _line.MessageType.DOCUMENT
+        assert event.media_urls == ["/cache/report.pdf"]
+        assert event.media_types == ["application/pdf"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Send routing (reply -> push fallback, batching, system-bypass)
 # ---------------------------------------------------------------------------
 
 class TestSendRouting:
@@ -401,7 +479,7 @@ class TestSendRouting:
 
 
 # ---------------------------------------------------------------------------
-# 8. Register() metadata + plugin entry points
+# 9. Register() metadata + plugin entry points
 # ---------------------------------------------------------------------------
 
 class TestRegister:

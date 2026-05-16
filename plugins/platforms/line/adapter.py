@@ -92,7 +92,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 from gateway.session import SessionSource
@@ -549,6 +552,24 @@ def _video_message(url: str, preview_url: str) -> Dict[str, Any]:
     }
 
 
+def _line_message_type(msg_type: str) -> MessageType:
+    if msg_type == "text":
+        return MessageType.TEXT
+    if msg_type == "image":
+        return MessageType.PHOTO
+    if msg_type == "audio":
+        return MessageType.VOICE
+    if msg_type == "video":
+        return MessageType.VIDEO
+    if msg_type == "file":
+        return MessageType.DOCUMENT
+    if msg_type == "sticker":
+        return MessageType.STICKER
+    if msg_type == "location":
+        return MessageType.LOCATION
+    return MessageType.TEXT
+
+
 def build_postback_button_message(
     text: str, button_label: str, request_id: str
 ) -> Dict[str, Any]:
@@ -940,10 +961,14 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in ("image", "audio", "video", "file"):
-            local_path = await self._download_media(message_id, msg_type)
+            local_path, media_type = await self._download_media(
+                message_id,
+                msg_type,
+                filename=msg.get("fileName") or msg.get("file_name"),
+            )
             if local_path:
                 media_urls.append(local_path)
-                media_types.append(msg_type)
+                media_types.append(media_type)
             text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
@@ -969,7 +994,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_line_message_type(msg_type),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
@@ -1038,14 +1063,20 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self,
+        message_id: str,
+        msg_type: str,
+        *,
+        filename: Optional[str] = None,
+    ) -> Tuple[Optional[str], str]:
         if not self._client or not message_id:
-            return None
+            return None, ""
         try:
             data = await self._client.fetch_content(message_id)
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
-            return None
+            return None, ""
         ext = {
             "image": ".jpg",
             "audio": ".m4a",
@@ -1053,10 +1084,22 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return cache_image_from_bytes(data, ext=ext), "image/jpeg"
+            if msg_type == "audio":
+                media_type = mimetypes.guess_type(f"audio{ext}")[0] or "audio/mp4"
+                return cache_audio_from_bytes(data, ext=ext), media_type
+            if msg_type == "video":
+                media_type = mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
+                return cache_video_from_bytes(data, ext=ext), media_type
+            document_name = filename or f"line_file{ext}"
+            return (
+                cache_document_from_bytes(data, document_name),
+                mimetypes.guess_type(document_name)[0] or "application/octet-stream",
+            )
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
-            return None
+            return None, ""
 
     # ------------------------------------------------------------------
     # Outbound send (text)

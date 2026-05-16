@@ -4502,7 +4502,8 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             )
         )
         event = adapter._dispatch_inbound_event.call_args.args[0]
-        self.assertEqual(event.text, "stop pinging @Hermes please")
+        self.assertTrue(event.text.endswith("stop pinging @Hermes please"))
+        self.assertIn("[Feishu group message from Alice (user_id=u1)]", event.text)
 
     def test_pure_self_mention_message_is_ignored(self):
         """A message containing only '@Bot' (no body, no media) must not dispatch.
@@ -4720,7 +4721,8 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
             "who are you @_user_1",
             [{"key": "@_user_1", "open_id": "ou_bot", "name": "Hermes"}],
         )
-        self.assertEqual(event.text, "who are you")
+        self.assertTrue(event.text.endswith("who are you"))
+        self.assertIn("[Feishu group message from Alice (user_id=u1)]", event.text)
 
     def test_scenario_mid_text_self_mention_preserved(self):
         """Self mention in the middle of a sentence (followed by a non-terminal
@@ -4731,12 +4733,14 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
             "please don't @_user_1 anymore",
             [{"key": "@_user_1", "open_id": "ou_bot", "name": "Hermes"}],
         )
-        self.assertEqual(event.text, "please don't @Hermes anymore")
+        self.assertTrue(event.text.endswith("please don't @Hermes anymore"))
+        self.assertIn("[Feishu group message from Alice (user_id=u1)]", event.text)
 
     def test_scenario_no_mentions_zero_regression(self):
         adapter = self._build_adapter()
         event = self._run(adapter, "plain message", [])
-        self.assertEqual(event.text, "plain message")
+        self.assertTrue(event.text.endswith("plain message"))
+        self.assertIn("[Feishu group message from Alice (user_id=u1)]", event.text)
         self.assertNotIn("[Mentioned:", event.text)
 
     def test_scenario_post_at_alice_exposes_open_id(self):

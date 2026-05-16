@@ -11,7 +11,7 @@ Supports:
 - Processing status reactions: Typing while working, removed on success,
   swapped for CrossMark on failure
 - Reaction events routed as synthetic text events (matches openclaw)
-- Interactive card button-click events routed as synthetic COMMAND events
+- Interactive card button-click events routed as synthetic text events
 - Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
 - Verification token validation as second auth layer (matches openclaw)
 
@@ -1234,6 +1234,33 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
 
 
+def _prefix_group_sender_context(
+    text: str,
+    *,
+    chat_type: str,
+    user_id: Optional[str],
+    user_name: Optional[str],
+) -> str:
+    """Add explicit sender attribution to Feishu group/forum message text.
+
+    MessageEvent.source carries sender metadata, but gateway sessions feed the
+    model primarily with message text. In small family/group chats, pronoun and
+    relationship resolution depends on knowing which human spoke, so keep a
+    compact text-level prefix for non-command group/forum messages.
+    """
+    if chat_type not in {"group", "forum"}:
+        return text
+    label = (user_name or user_id or "unknown").strip() or "unknown"
+    sender_id = (user_id or "unknown").strip() or "unknown"
+    prefix = f"[Feishu group message from {label} (user_id={sender_id})]"
+    if not text:
+        return prefix
+    if text.startswith("[Mentioned:"):
+        first_line, sep, rest = text.partition("\n")
+        return f"{first_line}\n{prefix}{sep}{rest}" if sep else f"{first_line}\n{prefix}"
+    return f"{prefix}\n{text}"
+
+
 def _strip_edge_self_mentions(
     text: str,
     mentions: Sequence[FeishuMentionRef],
@@ -1846,6 +1873,31 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def send_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any] | str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a generic Feishu/Lark interactive card message."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = card if isinstance(card, str) else json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "card send failed")
+        except Exception as exc:
+            logger.warning("[Feishu] send_card failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -1895,16 +1947,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 ],
             }
 
-            payload = json.dumps(card, ensure_ascii=False)
-            response = await self._feishu_send_with_retry(
+            result = await self.send_card(
                 chat_id=chat_id,
-                msg_type="interactive",
-                payload=payload,
+                card=card,
                 reply_to=None,
                 metadata=metadata,
             )
-
-            result = self._finalize_send_result(response, "send_exec_approval failed")
             if result.success:
                 self._approval_state[approval_id] = {
                     "session_key": session_key,
@@ -1960,19 +2008,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             prompt_id = next(self._update_prompt_counter)
-            payload = json.dumps(
-                self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id),
-                ensure_ascii=False,
-            )
-            response = await self._feishu_send_with_retry(
+            result = await self.send_card(
                 chat_id=chat_id,
-                msg_type="interactive",
-                payload=payload,
+                card=self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id),
                 reply_to=None,
                 metadata=metadata,
             )
-
-            result = self._finalize_send_result(response, "send_update_prompt failed")
             if result.success:
                 self._update_prompt_state[prompt_id] = {
                     "session_key": session_key,
@@ -2721,7 +2762,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+        """Route Feishu interactive card button clicks as synthetic text events."""
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2740,12 +2781,13 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
+        synthetic_text = f"card_action:{action_tag}"
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
+        open_message_id = str(getattr(context, "open_message_id", "") or "")
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)
@@ -2761,13 +2803,13 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         synthetic_event = MessageEvent(
             text=synthetic_text,
-            message_type=MessageType.COMMAND,
+            message_type=MessageType.TEXT,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            message_id=open_message_id or token or str(uuid.uuid4()),
             timestamp=datetime.now(),
         )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
+        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic text", action_tag, open_id, chat_id)
         await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================
@@ -3007,10 +3049,18 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+        source_chat_type = self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type)
+        if inbound_type != MessageType.COMMAND:
+            text = _prefix_group_sender_context(
+                text,
+                chat_type=source_chat_type,
+                user_id=sender_profile["user_id"],
+                user_name=sender_profile["user_name"],
+            )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
+            chat_type=source_chat_type,
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
             thread_id=thread_id,

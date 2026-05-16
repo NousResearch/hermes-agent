@@ -38,6 +38,7 @@ def _ensure_feishu_mocks():
 _ensure_feishu_mocks()
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 import gateway.platforms.feishu as feishu_module
 from gateway.platforms.feishu import FeishuAdapter
 
@@ -59,12 +60,13 @@ def _make_card_action_data(
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
+    open_message_id: str = "om_card_message",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
-            context=SimpleNamespace(open_chat_id=chat_id),
+            context=SimpleNamespace(open_chat_id=chat_id, open_message_id=open_message_id),
             operator=SimpleNamespace(open_id=open_id),
             action=SimpleNamespace(
                 tag="button",
@@ -78,6 +80,56 @@ def _close_submitted_coro(coro, _loop):
     """Close scheduled coroutines in sync-handler tests to avoid unawaited warnings."""
     coro.close()
     return SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
+
+
+# ===========================================================================
+# Generic interactive cards and group sender attribution
+# ===========================================================================
+
+class TestFeishuGenericCardsAndSenderContext:
+    """Regression tests for local Feishu extensions that must survive upgrades."""
+
+    @pytest.mark.asyncio
+    async def test_send_card_sends_interactive_payload(self):
+        adapter = _make_adapter()
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "Hermes 测试卡片"}},
+            "elements": [{"tag": "markdown", "content": "hello"}],
+        }
+        mock_response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_card"))
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_card(
+                chat_id="oc_chat",
+                card=card,
+                reply_to="om_parent",
+                metadata={"thread_id": "omt-thread"},
+            )
+
+        assert result.success is True
+        assert result.message_id == "om_card"
+        mock_send.assert_awaited_once()
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["chat_id"] == "oc_chat"
+        assert kwargs["msg_type"] == "interactive"
+        assert kwargs["reply_to"] == "om_parent"
+        assert kwargs["metadata"] == {"thread_id": "omt-thread"}
+        assert json.loads(kwargs["payload"]) == card
+
+    def test_prefix_group_sender_context_preserves_mention_hint(self):
+        text = feishu_module._prefix_group_sender_context(
+            "[Mentioned: 臭宝机器人]\n\n今天怎么安排？",
+            chat_type="group",
+            user_id="921g931d",
+            user_name="大笨钟",
+        )
+
+        assert text.startswith("[Mentioned: 臭宝机器人]\n")
+        assert "[Feishu group message from 大笨钟 (user_id=921g931d)]" in text
+        assert text.endswith("今天怎么安排？")
 
 
 # ===========================================================================
@@ -381,10 +433,10 @@ class TestResolveApproval:
 # ===========================================================================
 
 class TestNonApprovalCardAction:
-    """Non-approval card actions should still route as synthetic commands."""
+    """Non-approval card actions should route as synthetic text."""
 
     @pytest.mark.asyncio
-    async def test_routes_as_synthetic_command(self):
+    async def test_routes_as_synthetic_text_with_open_message_id_reply_anchor(self):
         adapter = _make_adapter()
 
         data = _make_card_action_data(
@@ -404,7 +456,10 @@ class TestNonApprovalCardAction:
 
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        assert event.message_type == MessageType.TEXT
+        assert event.message_id == "om_card_message"
+        assert event.text.startswith("card_action:button")
+        assert '"custom_action": "something_else"' in event.text
 
 
 # ===========================================================================

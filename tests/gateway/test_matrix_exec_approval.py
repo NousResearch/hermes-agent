@@ -62,6 +62,8 @@ class TestMatrixExecApprovalReactions:
     @pytest.mark.asyncio
     async def test_reaction_ignores_user_not_authorized_by_gateway_allowlist(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("MATRIX_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "@authorized:example.org")
         from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
 

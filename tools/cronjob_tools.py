@@ -13,8 +13,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
-
 logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
@@ -58,9 +56,9 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     # pattern that talks to api.github.com.
     (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
     (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
-    (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
+    (rf'curl\s+[^\n]*(?:(?:--data(?:-raw|-binary|-urlencode|-ascii)?|--form(?:-string)?|--json)(?:\s+|=)|(?<!\S)(?:-d|-F)(?:\s*|=)?)[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
     (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
-    (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
+    (rf'curl\s+[^\n;&|]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
 _CRON_INVISIBLE_CHARS = {
@@ -68,28 +66,37 @@ _CRON_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+_CRON_ALLOWED_GITHUB_AUTH_CURL_RE = (
+    rf'\bcurl\b[^\n;&|]*'
+    rf'(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
+    r'\s+(?:"https://api\.github\.com(?::\d+)?(?:[/?#][^"\s]*)?"'
+    r"|'https://api\.github\.com(?::\d+)?(?:[/?#][^'\s]*)?'"
+    r'|https://api\.github\.com(?::\d+)?(?:[/?#][^\s]*)?)\s*$'
+)
+
+
+def _is_allowed_github_auth_curl(prompt: str, match: re.Match) -> bool:
+    """Return true when an auth-header curl match is scoped to GitHub's API."""
+    command_start = match.start()
+    command_line_end = prompt.find("\n", match.end())
+    if command_line_end < 0:
+        command_line_end = len(prompt)
+    command_line = prompt[command_start:command_line_end]
+    return bool(re.fullmatch(_CRON_ALLOWED_GITHUB_AUTH_CURL_RE, command_line, re.IGNORECASE))
+
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
-        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
-        prompt,
-        re.IGNORECASE,
-    )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_to_scan:
+        if char in prompt:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
-        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+        if re.search(pattern, prompt, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
-        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+        for match in re.finditer(pattern, prompt, re.IGNORECASE):
+            if pid == "exfil_curl_auth_header" and _is_allowed_github_auth_curl(prompt, match):
+                continue
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
 
@@ -302,6 +309,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    allow_script: bool = False,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -309,6 +317,14 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+
+        if not allow_script and (script is not None or no_agent is not None):
+            return tool_error(
+                "Cron script execution is an operator-approved admin capability. "
+                "It cannot be configured through the model-callable cronjob tool; "
+                "use the `hermes cron` CLI to set or clear script/no_agent fields.",
+                success=False,
+            )
 
         if normalized == "create":
             if not schedule:
@@ -589,28 +605,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     }
                 },
                 "required": ["model"]
-            },
-            "script": {
-                "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
-            },
-            "no_agent": {
-                "type": "boolean",
-                "default": False,
-                "description": (
-                    "Default: False (LLM-driven job — the agent runs the prompt each tick). "
-                    "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
-                    "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
-                    "\n\n"
-                    "DELIVERY SEMANTICS when True: "
-                    "(a) non-empty stdout is sent verbatim as the message; "
-                    "(b) EMPTY stdout means SILENT — nothing is sent to the user and they won't see anything happened, so design your script to stay quiet when there's nothing to report (the watchdog pattern); "
-                    "(c) non-zero exit / timeout sends an error alert so a broken watchdog can't fail silently. "
-                    "\n\n"
-                    "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
-                    "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
-                ),
             },
             "context_from": {
                 "type": "array",

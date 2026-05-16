@@ -10426,6 +10426,19 @@ class AIAgent:
         # genuine reasoning content is not overwritten (#15812 regression in
         # PR #15478).
         if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            # Custom/vLLM providers: vLLM's OpenAI-compat endpoint does NOT
+            # consume reasoning_content on incoming messages — it expects
+            # <think> blocks inline in content (MiniMax M2.7, DeepSeek-R1,
+            # GLM-4.x on vLLM).  Reconstruct the think blocks so the
+            # model's chain-of-thought is preserved across turns.  See #20577.
+            _provider = (getattr(self, "provider", None) or "").strip().lower()
+            if _provider == "custom":
+                _content = api_msg.get("content") or ""
+                if isinstance(_content, str) and normalized_reasoning not in _content:
+                    api_msg["content"] = (
+                        f"<think>\n{normalized_reasoning}\n</think>\n{_content}"
+                    )
+                return
             api_msg["reasoning_content"] = normalized_reasoning
             return
 

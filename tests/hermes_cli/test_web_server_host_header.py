@@ -83,6 +83,42 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_bracketed_ipv6_host_headers_strip_port(self):
+        """IPv6 Host headers use bracket notation when a port is present."""
+        from hermes_cli.web_server import _host_header_name, _is_accepted_host
+
+        assert _host_header_name("[::1]") == "::1"
+        assert _host_header_name("[::1]:9119") == "::1"
+        assert _host_header_name("[2001:db8::1]") == "2001:db8::1"
+        assert _host_header_name("[2001:db8::1]:9119") == "2001:db8::1"
+        assert _is_accepted_host("[::1]:9119", "::1")
+        assert _is_accepted_host("[2001:db8::1]:9119", "2001:db8::1")
+
+    def test_explicit_allowed_host_env_for_trusted_proxy(self, monkeypatch):
+        """Trusted local proxies can opt in an external Host while the
+        dashboard remains bound to loopback."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "dashboard.example.ts.net")
+
+        assert _is_accepted_host("dashboard.example.ts.net", "127.0.0.1")
+        assert _is_accepted_host("dashboard.example.ts.net:443", "127.0.0.1")
+        assert not _is_accepted_host("evil.example", "127.0.0.1")
+
+    def test_allowed_host_env_normalizes_multiple_hosts(self, monkeypatch):
+        """The proxy allowlist accepts comma/semicolon-delimited hosts and ports."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "Dashboard.Example.TS.net:443, other.example.ts.net; [2001:db8::1]:443",
+        )
+
+        assert _is_accepted_host("dashboard.example.ts.net", "127.0.0.1")
+        assert _is_accepted_host("OTHER.EXAMPLE.TS.NET:8443", "127.0.0.1")
+        assert _is_accepted_host("[2001:db8::1]:8443", "127.0.0.1")
+        assert not _is_accepted_host("unlisted.example.ts.net", "127.0.0.1")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware

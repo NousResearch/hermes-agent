@@ -97,7 +97,10 @@ _REVEAL_WINDOW_SECONDS = 30
 
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+# read/modify config and secrets.  Trusted reverse-proxy hostnames allowed via
+# HERMES_DASHBOARD_ALLOWED_HOSTS are intentionally not added here: navigating
+# directly to a proxied dashboard origin (for example via Tailscale Serve) is
+# not a cross-origin browser fetch.
 
 app.add_middleware(
     CORSMiddleware,
@@ -159,6 +162,38 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _host_header_name(host_header: str) -> str:
+    """Return the hostname portion of a Host header, lower-cased.
+
+    Accepts plain hosts, host:port, [IPv6], and [IPv6]:port forms.
+    """
+    h = host_header.strip()
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()
+        return h.strip("[]").lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
+def _configured_allowed_host_values() -> set[str]:
+    """Explicit extra Host values accepted for trusted reverse proxies.
+
+    This is intentionally opt-in so loopback dashboard binds keep their DNS
+    rebinding protection by default, while local tailnet proxies such as
+    ``tailscale serve`` can forward requests using their public tailnet
+    hostname without requiring the dashboard itself to bind to 0.0.0.0.
+    Values are matched literally after host/port normalization; wildcards
+    and globs are not expanded.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    return {
+        _host_header_name(part)
+        for part in raw.replace(";", ",").split(",")
+        if part.strip()
+    }
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -176,17 +211,10 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Plain hosts/v4:
     #   localhost:9119
     #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _host_header_name(host_header)
+
+    if host_only in _configured_allowed_host_values():
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer

@@ -16,6 +16,16 @@ hermes dashboard
 
 This starts a local web server and opens `http://127.0.0.1:9119` in your browser. The dashboard runs entirely on your machine — no data leaves localhost.
 
+### Reverse proxies and Tailscale Serve
+
+Keep the dashboard bound to `127.0.0.1` when publishing it through a trusted local reverse proxy such as Tailscale Serve. The dashboard validates the HTTP `Host` header to defend against DNS rebinding attacks, so proxied requests with an external hostname must be explicitly allowed:
+
+```bash
+HERMES_DASHBOARD_ALLOWED_HOSTS=dashboard.example.ts.net hermes dashboard --no-open
+```
+
+`HERMES_DASHBOARD_ALLOWED_HOSTS` accepts comma- or semicolon-delimited hostnames. Ports are normalized away, and values are matched literally; wildcards such as `*.example.ts.net` are not expanded. Only add hostnames from reverse proxies you trust.
+
 ### Options
 
 | Flag | Default | Description |

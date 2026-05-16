@@ -136,6 +136,155 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
+# ── Kanban→TUI notification FIFO (event-driven, zero polling) ─────────
+_KANBAN_FIFO_PATH = os.path.expanduser("~/.hermes/tui_kanban.fifo")
+
+# Create FIFO on import (idempotent). Clean up at exit so stale FIFOs
+# don't block future TUI starts (open() on a stale FIFO blocks forever).
+try:
+    os.mkfifo(_KANBAN_FIFO_PATH, 0o600)
+except FileExistsError:
+    pass  # Leftover from prior run — safe to reuse
+except Exception:
+    pass  # FIFO not available on this platform (e.g. Windows)
+
+import atexit as _atexit
+
+
+def _cleanup_kanban_fifo() -> None:
+    try:
+        if os.path.exists(_KANBAN_FIFO_PATH):
+            os.unlink(_KANBAN_FIFO_PATH)
+    except Exception:
+        pass
+
+
+_atexit.register(_cleanup_kanban_fifo)
+
+
+def _format_kanban_notification(ev, sub) -> "str | None":
+    """Format a kanban task event into a [IMPORTANT: ...] message."""
+    kind = ev.kind if hasattr(ev, 'kind') else ev.get('kind')
+    task_id = sub["task_id"]
+
+    if kind == "completed":
+        handoff = ""
+        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        if payload and payload.get("summary"):
+            h = str(payload["summary"]).strip().splitlines()[0][:200]
+            handoff = f"\n{h}"
+        return f"[IMPORTANT: Kanban task {task_id} done{handoff}]"
+    elif kind == "blocked":
+        reason = ""
+        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        if payload and payload.get("reason"):
+            reason = f": {str(payload['reason'])[:160]}"
+        return f"[IMPORTANT: Kanban task {task_id} blocked{reason}]"
+    elif kind == "crashed":
+        return f"[IMPORTANT: Kanban task {task_id} worker crashed; dispatcher will retry]"
+    elif kind == "timed_out":
+        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        limit = int(payload.get("limit_seconds", 0)) if payload else 0
+        return f"[IMPORTANT: Kanban task {task_id} timed out (max_runtime={limit}s); will retry]"
+    elif kind == "gave_up":
+        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        err = ""
+        if payload and payload.get("error"):
+            err = f"\n{str(payload['error'])[:200]}"
+        return f"[IMPORTANT: Kanban task {task_id} gave up after repeated spawn failures{err}]"
+    return None
+
+
+def _start_kanban_fifo_reader(sid: str, session: dict) -> None:
+    """Start daemon thread that reads kanban notifications from a FIFO.
+
+    Blocks at the OS level on open() — zero polling, zero CPU when idle.
+    When data arrives, queries kanban DB for CLI-subscribed events and
+    injects a notification into the agent session.
+    """
+    import json
+
+    def _fifo_reader() -> None:
+        _FMT_KINDS = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
+        _cursors: dict[tuple, int] = {}
+        while not session.get("_finalized"):
+            try:
+                # open() blocks until a writer opens the FIFO.
+                # for line in fifo blocks until a full line is written.
+                # Both are OS-level sleeps — zero polling.
+                with open(_KANBAN_FIFO_PATH, "r") as _fifo:
+                    for _line in _fifo:
+                        if session.get("_finalized"):
+                            return
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _data = json.loads(_line)
+                        except Exception:
+                            continue
+                        _task_id = _data.get("task_id", "")
+                        if not _task_id:
+                            continue
+
+                        # Found a kanban event — query DB for CLI subscriptions
+                        try:
+                            from hermes_cli import kanban_db as _kb
+                            _conn = _kb.connect()
+                            try:
+                                _subs = _kb.list_notify_subs(_conn)
+                                for _sub in _subs:
+                                    if _sub.get("platform") != "cli":
+                                        continue
+                                    if _sub["task_id"] != _task_id:
+                                        continue
+                                    _ckey = (_task_id, _sub.get("chat_id", sid))
+                                    _last = _cursors.get(_ckey, _sub.get("last_event_id", 0))
+                                    _, _events = _kb.unseen_events_for_sub(
+                                        _conn, task_id=_task_id,
+                                        platform="cli", chat_id=_sub["chat_id"],
+                                        thread_id=_sub.get("thread_id") or "",
+                                        kinds=_FMT_KINDS,
+                                    )
+                                    if _events:
+                                        _max_id = max(
+                                            _last,
+                                            max(
+                                                e.id if hasattr(e, "id") else e["id"]
+                                                for e in _events
+                                            ),
+                                        )
+                                        _cursors[_ckey] = _max_id
+                                    for _ev in _events:
+                                        _msg = _format_kanban_notification(_ev, _sub)
+                                        if _msg:
+                                            # Same delivery pattern as process_registry
+                                            _emit("status.update", sid, {"kind": "process", "text": _msg})
+                                            with session["history_lock"]:
+                                                if session.get("running"):
+                                                    continue  # defer until idle
+                                                session["running"] = True
+                                            _rid = f"__kanban__{int(time.time() * 1000)}"
+                                            try:
+                                                _emit("message.start", sid)
+                                                _run_prompt_submit(_rid, sid, session, _msg)
+                                            except Exception:
+                                                with session["history_lock"]:
+                                                    session["running"] = False
+                            finally:
+                                _conn.close()
+                        except Exception:
+                            pass  # Non-fatal — don't break the reader loop
+            except (OSError, IOError):
+                # FIFO removed or TUI shutting down — retry next cycle
+                # without spinning (open will block on re-try)
+                pass
+
+    # Start the daemon reader thread
+    _t = threading.Thread(target=_fifo_reader, daemon=True, name="kanban-fifo")
+    _t.start()
+
+
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
@@ -585,6 +734,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             _wire_callbacks(sid)
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+            _start_kanban_fifo_reader(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -2417,6 +2567,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         pass
     _wire_callbacks(sid)
     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+    _start_kanban_fifo_reader(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions[sid]))
 

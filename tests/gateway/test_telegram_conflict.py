@@ -309,3 +309,83 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_conflict_retry_network_failure_schedules_recovery(monkeypatch):
+    """A conflict retry whose start_polling() fails with a network error must
+    self-schedule recovery via the network reconnect ladder.
+
+    Regression: previously the conflict handler's retry ``except`` block just
+    ``return``ed, expecting a "next conflict" callback to drive another retry.
+    But once start_polling() fails, polling is dead and no error callback can
+    ever fire again — so the bot stayed wedged until a manual restart.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+    call_count = {"n": 0}
+    timed_out = type("TimedOut", (OSError,), {})
+
+    async def start_polling(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Initial connect succeeds and captures the error callback.
+            captured["error_callback"] = kwargs["error_callback"]
+        else:
+            # The conflict-retry reconnect fails with a transient network error.
+            raise timed_out("Timed out")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    network_handler = AsyncMock()
+    monkeypatch.setattr(adapter, "_handle_polling_network_error", network_handler)
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    # Drain the scheduled recovery task(s).
+    if adapter._background_tasks:
+        await asyncio.gather(*list(adapter._background_tasks))
+
+    assert network_handler.await_count >= 1, (
+        "a conflict retry that fails with a network error must route into "
+        "the network reconnect ladder instead of dead-ending"
+    )
+    assert adapter.has_fatal_error is False

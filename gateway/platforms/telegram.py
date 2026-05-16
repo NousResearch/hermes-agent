@@ -910,8 +910,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             except Exception as retry_err:
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
-                # Don't fall through to fatal yet — wait for the next conflict
-                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
+                # start_polling() failed, so polling is dead and no further
+                # error callback will fire — there is no "next conflict" to
+                # drive another retry. Self-schedule recovery, mirroring the
+                # network-error handler: a transient network failure
+                # (TimedOut/NetworkError) goes through the network reconnect
+                # ladder (which can escalate to a retryable-fatal gateway
+                # restart); anything else re-enters the conflict ladder.
+                if not self.has_fatal_error:
+                    if self._looks_like_network_error(retry_err):
+                        recover = self._handle_polling_network_error(retry_err)
+                    else:
+                        recover = self._handle_polling_conflict(retry_err)
+                    task = asyncio.ensure_future(recover)
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                 return
 
         # Exhausted retries — fatal

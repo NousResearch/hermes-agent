@@ -28,11 +28,14 @@ This skill sets up a scheduled workflow that monitors GitHub repository Pull Req
 Use the built-in `cronjob` tool to schedule this workflow. For example, to run it every hour:
 
 ```python
-cronjob("create", {
-    "name": "jules-github-pr-reviewer",
-    "schedule": "0 * * * *",
-    "command": "hermes run automated-pr-reviewer"
-})
+cronjob(
+    "create",
+    {
+        "name": "jules-github-pr-reviewer",
+        "schedule": "0 * * * *",
+        "command": "hermes run automated-pr-reviewer",
+    },
+)
 ```
 
 ## The Workflow Script
@@ -81,7 +84,7 @@ while read PR_NUMBER; do
 
   # 3. Reply to the PR acknowledging completion
   # Note for Agent: Make sure the actual code review is also submitted using the github-code-review standard.
-  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the `reviewed` label."
+  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the \`reviewed\` label."
 
   echo "Completed PR #$PR_NUMBER"
 

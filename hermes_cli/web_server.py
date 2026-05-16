@@ -1688,8 +1688,8 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    from hermes_cli.secure_files import write_sensitive_json
-    write_sensitive_json(_HERMES_OAUTH_FILE, payload)
+    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -3001,19 +3001,13 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
-
-
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    WebSocket endpoints expose interactive chat/control surfaces and use the
+    same session token that the unauthenticated SPA HTML needs to bootstrap.
+    Keep them loopback-only even when the HTTP dashboard is publicly bound.
     """
-    if _is_public_bind():
-        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -3380,25 +3374,16 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index(request: Request, prefix: str = ""):
-        """Return index.html with runtime dashboard settings injected.
+    def _serve_index(prefix: str = ""):
+        """Return index.html with the session token + base-path injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
-        or empty string when served at root. Public binds require the session
-        token in the launch URL before exposing it to the SPA.
+        or empty string when served at root.
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        require_spa_token = bool(getattr(app.state, "require_spa_token", False))
-        launch_token = request.query_params.get("token", "")
-        can_inject_token = (
-            not require_spa_token
-            or hmac.compare_digest(launch_token.encode(), _SESSION_TOKEN.encode())
-            or _has_valid_session_token(request)
-        )
-        session_token = _SESSION_TOKEN if can_inject_token else ""
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{session_token}";'
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
@@ -3454,7 +3439,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(request, prefix)
+        return _serve_index(prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -4253,17 +4238,13 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
-    app.state.require_spa_token = bool(allow_public)
 
     if open_browser:
         import webbrowser
 
         def _open():
             time.sleep(1.0)
-            url = f"http://{host}:{port}"
-            if allow_public:
-                url = f"{url}/?token={_SESSION_TOKEN}"
-            webbrowser.open(url)
+            webbrowser.open(f"http://{host}:{port}")
 
         threading.Thread(target=_open, daemon=True).start()
 

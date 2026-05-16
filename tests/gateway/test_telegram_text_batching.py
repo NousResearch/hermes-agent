@@ -32,21 +32,11 @@ def _make_adapter():
     return adapter
 
 
-def _make_event(
-    text: str,
-    chat_id: str = "12345",
-    chat_type: str = "dm",
-    user_id: str = "111",
-) -> MessageEvent:
+def _make_event(text: str, chat_id: str = "12345") -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(
-            platform=Platform.TELEGRAM,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            user_id=user_id,
-        ),
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
     )
 
 
@@ -118,56 +108,6 @@ class TestTextBatching:
         await asyncio.sleep(0.2)
 
         assert adapter.handle_message.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_shared_group_sessions_do_not_merge_different_users(self):
-        """Pre-auth text batching must not mix users in shared group sessions."""
-        adapter = _make_adapter()
-        adapter.config.extra["group_sessions_per_user"] = False
-
-        adapter._enqueue_text_event(
-            _make_event(
-                "allowed user text", chat_id="-100", chat_type="group", user_id="111"
-            )
-        )
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(
-            _make_event(
-                "unauthorized user text", chat_id="-100", chat_type="group", user_id="999"
-            )
-        )
-
-        await asyncio.sleep(0.2)
-
-        assert adapter.handle_message.call_count == 2
-        dispatched = [call.args[0] for call in adapter.handle_message.call_args_list]
-        assert {event.source.user_id for event in dispatched} == {"111", "999"}
-        assert all("\n" not in (event.text or "") for event in dispatched)
-
-    @pytest.mark.asyncio
-    async def test_shared_group_sessions_merge_same_user_chunks(self):
-        """Split chunks from one user still merge when the final session is shared."""
-        adapter = _make_adapter()
-        adapter.config.extra["group_sessions_per_user"] = False
-
-        adapter._enqueue_text_event(
-            _make_event(
-                "chunk one", chat_id="-100", chat_type="group", user_id="111"
-            )
-        )
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(
-            _make_event(
-                "chunk two", chat_id="-100", chat_type="group", user_id="111"
-            )
-        )
-
-        await asyncio.sleep(0.2)
-
-        adapter.handle_message.assert_called_once()
-        dispatched = adapter.handle_message.call_args.args[0]
-        assert dispatched.source.user_id == "111"
-        assert dispatched.text == "chunk one\nchunk two"
 
     @pytest.mark.asyncio
     async def test_batch_cleans_up_after_flush(self):

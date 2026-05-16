@@ -105,25 +105,6 @@ def bind_gateway_runtime(gateway: Any) -> bool:
     if getattr(gateway, "_teams_pipeline_runtime", None) is not None:
         return True
 
-    if not bool(getattr(adapter, "client_state_configured", False)):
-        error_message = (
-            "MSGRAPH_WEBHOOK_CLIENT_STATE (or msgraph_webhook.extra.client_state) "
-            "is required before binding the Teams pipeline runtime."
-        )
-        gateway._teams_pipeline_runtime_error = error_message
-        logger.warning("Teams pipeline runtime not bound: %s", error_message)
-
-        async def _drop(notification: dict[str, Any], event: Any) -> None:
-            logger.debug(
-                "Dropping Graph notification because clientState verification "
-                "is not configured: id=%s resource=%s",
-                notification.get("id"),
-                notification.get("resource"),
-            )
-
-        adapter.set_notification_scheduler(_drop)
-        return False
-
     try:
         runtime = build_pipeline_runtime(gateway)
     except Exception as exc:

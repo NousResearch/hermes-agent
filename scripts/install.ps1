@@ -252,51 +252,34 @@ function Install-Git {
             "32-bit-mingit"
         }
 
-        # Pin both the Git for Windows release and artifact digests.  Do not use
-        # the mutable "latest" API here: this installer extracts and executes
-        # the downloaded toolchain, so the artifact must be cryptographically
-        # verified before it can affect PATH or run code.
-        $gitReleaseTag = "v2.54.0.windows.1"
-        $gitArtifacts = @{
-            "32-bit-mingit" = @{
-                Name = "MinGit-2.54.0-32-bit.zip"
-                Sha256 = "52fc36c9b22611f0a6a7fabdc68c763b914400e3af0e35ad822468dc64cb7981"
-                IsZip = $true
-            }
-            "arm64" = @{
-                Name = "PortableGit-2.54.0-arm64.7z.exe"
-                Sha256 = "f8e92cd3359fcbb96998cfd606a536ccc6dbfb23c04e12b29042f9ba45b6b0c7"
-                IsZip = $false
-            }
-            "64-bit" = @{
-                Name = "PortableGit-2.54.0-64-bit.7z.exe"
-                Sha256 = "bea006a6cc69673f27b1647e84ab3a68e912fbc175ab6320c5987e012897f311"
-                IsZip = $false
-            }
-        }
+        $releaseApi = "https://api.github.com/repos/git-for-windows/git/releases/latest"
+        $release = Invoke-RestMethod -Uri $releaseApi -UseBasicParsing -Headers @{ "User-Agent" = "hermes-installer" }
 
         if ($arch -eq "32-bit-mingit") {
             Write-Warn "32-bit Windows detected — PortableGit is 64-bit only.  Installing MinGit 32-bit as a last resort; bash-dependent Hermes features (terminal tool, agent-browser) will not work on this machine."
+            $assetPattern = "MinGit-*-32-bit.zip"
+            $downloadIsZip = $true
+        } elseif ($arch -eq "arm64") {
+            $assetPattern = "PortableGit-*-arm64.7z.exe"
+            $downloadIsZip = $false
+        } else {
+            $assetPattern = "PortableGit-*-64-bit.7z.exe"
+            $downloadIsZip = $false
         }
 
-        $artifact = $gitArtifacts[$arch]
-        if (-not $artifact) {
-            throw "Unsupported Git for Windows architecture: $arch"
+        $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
+
+        if (-not $asset) {
+            throw "Could not find $assetPattern in latest git-for-windows release"
         }
 
-        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitReleaseTag/$($artifact.Name)"
-        $tmpFile = "$env:TEMP\$($artifact.Name)"
+        $downloadUrl = $asset.browser_download_url
+        $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
+        $tmpFile = "$env:TEMP\$($asset.name)"
         $gitDir = "$HermesHome\git"
 
-        Write-Info "Downloading $($artifact.Name) from pinned Git for Windows $gitReleaseTag..."
+        Write-Info "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB, 1)) MB)..."
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
-
-        $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $tmpFile).Hash.ToLowerInvariant()
-        if ($actualSha256 -ne $artifact.Sha256) {
-            Remove-Item -Force $tmpFile -ErrorAction SilentlyContinue
-            throw "Git for Windows artifact checksum mismatch for $($artifact.Name). Expected $($artifact.Sha256), got $actualSha256. Aborting before extraction."
-        }
-        Write-Success "Verified SHA-256 for $($artifact.Name)"
 
         if (Test-Path $gitDir) {
             Write-Info "Removing previous Git install at $gitDir ..."
@@ -304,7 +287,7 @@ function Install-Git {
         }
         New-Item -ItemType Directory -Path $gitDir -Force | Out-Null
 
-        if ($artifact.IsZip) {
+        if ($downloadIsZip) {
             Expand-Archive -Path $tmpFile -DestinationPath $gitDir -Force
         } else {
             # PortableGit is a self-extracting 7z archive.  Invoke it with

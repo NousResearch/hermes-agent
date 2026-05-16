@@ -14185,29 +14185,35 @@ class AIAgent:
                         }
                     
                     # Actionable hint for GitHub Models (Azure) 413 errors.
-                    # The free tier enforces a hard 8K token limit per request,
-                    # which Hermes' system prompt alone can exceed.  Compression
-                    # won't help — surface a clear message so the user doesn't
-                    # wait through three futile compression attempts.
+                    # The free tier enforces a hard 8K token cap per request,
+                    # which Hermes' system prompt + tool schemas alone exceed.
+                    # Compression can't help — the floor is the system prompt
+                    # itself, not the conversation — so surface a clear "not
+                    # compatible" message instead of looping into three futile
+                    # compression attempts.
                     if (
                         status_code == 413
                         and isinstance(_base, str)
                         and "models.inference.ai.azure.com" in _base
                     ):
                         self._vprint(
-                            f"{self.log_prefix}   💡 GitHub Models (Azure) enforces a hard per-request token limit (often 8K).",
+                            f"{self.log_prefix}   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
                             force=True,
                         )
                         self._vprint(
-                            f"{self.log_prefix}      Hermes' system prompt alone may exceed this limit.  This endpoint is not",
+                            f"{self.log_prefix}      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
                             force=True,
                         )
                         self._vprint(
-                            f"{self.log_prefix}      compatible with Hermes Agent.  Use https://models.github.ai or the GitHub",
+                            f"{self.log_prefix}      exceeds that floor, so this endpoint cannot run an agentic loop.",
                             force=True,
                         )
                         self._vprint(
-                            f"{self.log_prefix}      Copilot provider instead, which have higher token limits.",
+                            f"{self.log_prefix}      Use the `copilot` provider with a Copilot subscription token (`hermes",
+                            force=True,
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}      setup` → GitHub Copilot), or pick any other provider.",
                             force=True,
                         )
 

@@ -2549,6 +2549,13 @@ def systemd_restart(system: bool = False):
         drain_timeout = _get_restart_drain_timeout()
 
         print(f"⏳ {scope_label} service restarting gracefully (PID {pid})...")
+        if _request_gateway_self_restart(pid):
+            print("✓ Service restart requested")
+            print(
+                "  Running inside the gateway process tree; returning immediately "
+                "so the active agent can finish and the drain can complete."
+            )
+            return
         if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
             # The gateway exits with code 75 for a planned service restart.
             # RestartSec can otherwise delay the relaunch even though the

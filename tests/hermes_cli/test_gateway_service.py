@@ -204,6 +204,37 @@ class TestSystemdServiceRefresh:
         assert "still restarting after 90s" in output
         assert "hermes gateway status" in output
 
+    def test_systemd_restart_from_gateway_child_requests_async_restart(self, monkeypatch, capsys):
+        """A terminal tool running inside the gateway must not wait on its own drain."""
+        calls = []
+        pid = 4321
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: pid)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda p: calls.append(("self", p)) or True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda p, drain_timeout: calls.append(("wait", p, drain_timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: calls.append(("systemctl", args)),
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert calls == [("self", pid)]
+        output = capsys.readouterr().out
+        assert "restart requested" in output.lower()
+        assert "inside the gateway process tree" in output
+
     def test_run_gateway_refreshes_outdated_unit_on_boot(self, tmp_path, monkeypatch):
         """run_gateway() should refresh the systemd unit on boot so that
         restart settings take effect even when the process was respawned

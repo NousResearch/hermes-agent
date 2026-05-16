@@ -78,6 +78,15 @@ def _make_413_error(*, use_status_code=True, message="Request entity too large")
     return err
 
 
+EPHEMERAL_CONTEXT = "EPHEMERAL USER CONTEXT"
+
+
+def _plugin_context_hook(hook_name, **kwargs):
+    if hook_name == "pre_llm_call":
+        return [{"context": EPHEMERAL_CONTEXT}]
+    return []
+
+
 @pytest.fixture()
 def agent():
     with (
@@ -108,6 +117,44 @@ def agent():
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 
+    def test_compress_context_for_turn_supports_legacy_override_signature(self):
+        """The wrapper must not pass new optional kwargs to old overrides."""
+
+        class LegacyCompressionAgent(AIAgent):
+            def _compress_context(
+                self,
+                messages,
+                system_message,
+                approx_tokens=None,
+                task_id=None,
+            ):
+                self.received = (messages, system_message, approx_tokens, task_id)
+                return (
+                    [
+                        {"role": "assistant", "content": "summary"},
+                        {"role": "user", "content": "current"},
+                    ],
+                    "legacy prompt",
+                )
+
+        agent = LegacyCompressionAgent.__new__(LegacyCompressionAgent)
+        compressed, system_prompt, current_user_idx = agent._compress_context_for_turn(
+            [{"role": "user", "content": "hello"}],
+            "system",
+            approx_tokens=123,
+            task_id="task-1",
+        )
+
+        assert compressed[-1] == {"role": "user", "content": "current"}
+        assert system_prompt == "legacy prompt"
+        assert current_user_idx == 1
+        assert agent.received == (
+            [{"role": "user", "content": "hello"}],
+            "system",
+            123,
+            "task-1",
+        )
+
     def test_413_triggers_compression(self, agent):
         """A 413 error should call _compress_context and retry, not abort."""
         # First call raises 413; second call succeeds after compression.
@@ -137,6 +184,41 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result["final_response"] == "Success after compression"
+
+    def test_413_retry_preserves_ephemeral_user_context(self, agent):
+        """Compressed retry requests keep API-call-time user context."""
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_plugin_context_hook),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        assert result["completed"] is True
+        retry_messages = agent.client.chat.completions.create.call_args_list[-1].kwargs["messages"]
+        current_user = [m for m in retry_messages if m.get("role") == "user"][-1]
+        assert "hello" in current_user["content"]
+        assert current_user["content"].endswith(
+            f"\n\n{EPHEMERAL_CONTEXT}"
+        )
 
     def test_413_not_treated_as_generic_4xx(self, agent):
         """413 must NOT hit the generic 4xx abort path; it should attempt compression."""
@@ -493,6 +575,45 @@ class TestPreflightCompression:
             for ev, msg in status_messages
         )
 
+    def test_preflight_compression_preserves_ephemeral_user_context(self, agent):
+        """Ephemeral user context must survive preflight message replacement."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} " + "x" * 40})
+            big_history.append({"role": "assistant", "content": f"Response {i} " + "y" * 40})
+
+        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.estimate_request_tokens_rough", side_effect=[500, 50]),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_plugin_context_hook),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        current_user = [m for m in sent_messages if m.get("role") == "user"][-1]
+        assert "hello" in current_user["content"]
+        assert current_user["content"].endswith(
+            f"\n\n{EPHEMERAL_CONTEXT}"
+        )
+
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""
         agent.compression_enabled = True
@@ -584,6 +705,53 @@ class TestToolResultPreflightCompression:
 
         mock_compress.assert_called_once()
         assert result["completed"] is True
+
+    def test_post_tool_compression_preserves_ephemeral_user_context(self, agent):
+        """Post-tool auto-compression keeps user context on the next request."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 130_000
+        agent.context_compressor.last_prompt_tokens = 130_000
+        agent.context_compressor.last_completion_tokens = 5_000
+
+        tc = SimpleNamespace(
+            id="tc1", type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
+        )
+        tool_resp = _mock_response(
+            content=None, finish_reason="stop", tool_calls=[tc],
+            usage={"prompt_tokens": 130_000, "completion_tokens": 5_000, "total_tokens": 135_000},
+        )
+        ok_resp = _mock_response(
+            content="Done after compression", finish_reason="stop",
+            usage={"prompt_tokens": 50_000, "completion_tokens": 100, "total_tokens": 50_100},
+        )
+        agent.client.chat.completions.create.side_effect = [tool_resp, ok_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="x" * 100_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_plugin_context_hook),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        retry_messages = agent.client.chat.completions.create.call_args_list[-1].kwargs["messages"]
+        current_user = [m for m in retry_messages if m.get("role") == "user"][-1]
+        assert "hello" in current_user["content"]
+        assert current_user["content"].endswith(
+            f"\n\n{EPHEMERAL_CONTEXT}"
+        )
 
     def test_anthropic_prompt_too_long_safety_net(self, agent):
         """Anthropic 'prompt is too long' error triggers compression as safety net."""

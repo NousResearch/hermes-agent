@@ -10387,6 +10387,39 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    @staticmethod
+    def _last_user_message_index(messages: list) -> int:
+        for idx in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
+                return idx
+        return -1
+
+    def _compress_context_for_turn(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: int = None,
+        task_id: str = "default",
+        focus_topic: str = None,
+    ) -> tuple:
+        compress_kwargs = {
+            "approx_tokens": approx_tokens,
+            "task_id": task_id,
+        }
+        if focus_topic is not None:
+            compress_kwargs["focus_topic"] = focus_topic
+        compressed, new_system_prompt = self._compress_context(
+            messages,
+            system_message,
+            **compress_kwargs,
+        )
+        return (
+            compressed,
+            new_system_prompt,
+            self._last_user_message_index(compressed),
+        )
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -11848,7 +11881,6 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
-                    or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -12133,7 +12165,11 @@ class AIAgent:
                 # context windows (each pass summarises the middle N turns).
                 for _pass in range(3):
                     _orig_len = len(messages)
-                    messages, active_system_prompt = self._compress_context(
+                    (
+                        messages,
+                        active_system_prompt,
+                        current_turn_user_idx,
+                    ) = self._compress_context_for_turn(
                         messages, system_message, approx_tokens=_preflight_tokens,
                         task_id=effective_task_id,
                     )
@@ -12165,9 +12201,9 @@ class AIAgent:
                         break  # Under threshold
 
         # Plugin hook: pre_llm_call
-        # Fired once per turn before the tool-calling loop.  Plugins can
-        # return a dict with a ``context`` key (or a plain string) whose
-        # value is appended to the current turn's user message.
+        # Fired once per turn before the tool-calling loop. Plugins can return
+        # a dict with a ``context`` key (or a plain string) whose value is
+        # appended to the current turn's user message.
         #
         # Context is ALWAYS injected into the user message, never the
         # system prompt.  This preserves the prompt cache prefix — the
@@ -12415,6 +12451,7 @@ class AIAgent:
                     repaired_seq,
                     self.session_id or "-",
                 )
+                current_turn_user_idx = self._last_user_message_index(messages)
 
             api_messages = []
             for idx, msg in enumerate(messages):
@@ -12422,7 +12459,7 @@ class AIAgent:
 
                 # Inject ephemeral context into the current turn's user message.
                 # Sources: memory manager prefetch + plugin pre_llm_call hooks
-                # with target="user_message" (the default).  Both are
+                # with target="user_message" (the default). Both are
                 # API-call-time only — the original message in `messages` is
                 # never mutated, so nothing leaks into session persistence.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
@@ -12435,8 +12472,13 @@ class AIAgent:
                         _injections.append(_plugin_user_context)
                     if _injections:
                         _base = api_msg.get("content", "")
+                        _context_text = "\n\n".join(_injections)
                         if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            api_msg["content"] = _base + "\n\n" + _context_text
+                        elif isinstance(_base, list):
+                            api_msg["content"] = list(_base) + [
+                                {"type": "text", "text": _context_text}
+                            ]
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -12469,7 +12511,7 @@ class AIAgent:
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt
-            # cache prefix.  The system prompt is reserved for Hermes internals.
+            # cache prefix. The system prompt is reserved for Hermes internals.
             #
             # Hermes invariant: the system prompt is built ONCE per session
             # (cached on ``_cached_system_prompt``) and replayed verbatim on
@@ -13960,7 +14002,11 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts <= max_compression_attempts:
                             original_len = len(messages)
-                            messages, active_system_prompt = self._compress_context(
+                            (
+                                messages,
+                                active_system_prompt,
+                                current_turn_user_idx,
+                            ) = self._compress_context_for_turn(
                                 messages, system_message,
                                 approx_tokens=approx_tokens,
                                 task_id=effective_task_id,
@@ -14094,7 +14140,11 @@ class AIAgent:
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        (
+                            messages,
+                            active_system_prompt,
+                            current_turn_user_idx,
+                        ) = self._compress_context_for_turn(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -14251,7 +14301,11 @@ class AIAgent:
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
+                        (
+                            messages,
+                            active_system_prompt,
+                            current_turn_user_idx,
+                        ) = self._compress_context_for_turn(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -15023,7 +15077,11 @@ class AIAgent:
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")
-                        messages, active_system_prompt = self._compress_context(
+                        (
+                            messages,
+                            active_system_prompt,
+                            current_turn_user_idx,
+                        ) = self._compress_context_for_turn(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,

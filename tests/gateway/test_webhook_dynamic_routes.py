@@ -6,7 +6,11 @@ import pytest
 from pathlib import Path
 
 from gateway.config import PlatformConfig
-from gateway.platforms.webhook import WebhookAdapter, _DYNAMIC_ROUTES_FILENAME
+from gateway.platforms.webhook import (
+    WebhookAdapter,
+    _DYNAMIC_ROUTES_FILENAME,
+    _INSECURE_NO_AUTH,
+)
 
 
 def _make_adapter(routes=None, extra=None):
@@ -67,6 +71,52 @@ class TestDynamicRouteLoading:
         adapter._reload_dynamic_routes()
         assert "v2" in adapter._dynamic_routes
         assert "v1" not in adapter._dynamic_routes
+
+    def test_skips_dynamic_route_without_resolved_secret(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"hot-nosig": {"prompt": "test"}})
+        )
+
+        adapter = _make_adapter(extra={"secret": ""})
+        adapter._reload_dynamic_routes()
+
+        assert "hot-nosig" not in adapter._routes
+        assert adapter._dynamic_routes == {}
+
+    def test_skips_dynamic_route_with_empty_secret(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"hot-empty": {"secret": "", "prompt": "test"}})
+        )
+
+        adapter = _make_adapter(extra={"secret": ""})
+        adapter._reload_dynamic_routes()
+
+        assert "hot-empty" not in adapter._routes
+        assert adapter._dynamic_routes == {}
+
+    def test_skips_dynamic_route_with_insecure_no_auth(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps(
+                {"hot-insecure": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+            )
+        )
+
+        adapter = _make_adapter(extra={"host": "127.0.0.1"})
+        adapter._reload_dynamic_routes()
+
+        assert "hot-insecure" not in adapter._routes
+        assert adapter._dynamic_routes == {}
+
+    def test_skips_dynamic_route_that_is_not_mapping(self, tmp_path):
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"hot-bad": "not-a-route"})
+        )
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+
+        assert "hot-bad" not in adapter._routes
+        assert adapter._dynamic_routes == {}
 
     def test_file_removal_clears(self, tmp_path):
         path = tmp_path / _DYNAMIC_ROUTES_FILENAME

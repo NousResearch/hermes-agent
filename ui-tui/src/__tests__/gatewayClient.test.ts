@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { GatewayClient } from '../gatewayClient.js'
+import { GatewayClient, resolveGatewayCwd } from '../gatewayClient.js'
 
 interface ListenerEntry {
   callback: (event: any) => void
@@ -94,10 +94,12 @@ class FakeWebSocket {
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
   let originalGatewayUrl: string | undefined
+  let originalHermesCwd: string | undefined
   let originalSidecarUrl: string | undefined
 
   beforeEach(() => {
     originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
+    originalHermesCwd = process.env.HERMES_CWD
     originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
     FakeWebSocket.reset()
     ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
@@ -114,6 +116,12 @@ describe('GatewayClient websocket attach mode', () => {
       delete process.env.HERMES_TUI_SIDECAR_URL
     } else {
       process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
+    }
+
+    if (originalHermesCwd === undefined) {
+      delete process.env.HERMES_CWD
+    } else {
+      process.env.HERMES_CWD = originalHermesCwd
     }
 
     FakeWebSocket.reset()
@@ -343,6 +351,12 @@ describe('GatewayClient websocket attach mode', () => {
     expect(tail).toContain('ws://gateway.test/api/pub?***')
 
     gw.kill()
+  })
+
+  it('keeps spawned python -m gateway execution rooted at the trusted Hermes source root', () => {
+    process.env.HERMES_CWD = '/tmp/untrusted-project'
+
+    expect(resolveGatewayCwd('/opt/hermes')).toBe('/opt/hermes')
   })
 
   it('redacts user-info credentials even on URLs the WHATWG parser rejects', () => {

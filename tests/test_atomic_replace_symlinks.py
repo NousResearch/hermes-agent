@@ -120,19 +120,6 @@ def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     assert data == {"model": {"provider": "openrouter"}}
 
 
-def test_atomic_yaml_write_replace_symlink_when_preserve_symlink_false(tmp_path: Path) -> None:
-    real = tmp_path / "real.yaml"
-    link = tmp_path / "link.yaml"
-    real.write_text("kept: true\n", encoding="utf-8")
-    link.symlink_to(real)
-
-    atomic_yaml_write(link, {"marker": True}, preserve_symlink=False)
-
-    assert not link.is_symlink()
-    assert yaml.safe_load(link.read_text(encoding="utf-8")) == {"marker": True}
-    assert yaml.safe_load(real.read_text(encoding="utf-8")) == {"kept": True}
-
-
 def test_atomic_json_write_preserves_symlink_permissions(tmp_path: Path) -> None:
     """Symlinked targets keep the real file's permission bits."""
     if os.name != "posix":

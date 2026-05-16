@@ -34,6 +34,88 @@ Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit 
 
 For building a context engine plugin, see [Context Engine Plugins](/docs/developer-guide/context-engine-plugin).
 
+
+## DCP Context Engine
+
+Hermes can also run a DCP-style context engine with:
+
+```yaml
+context:
+  engine: "dcp"
+```
+
+DCP mode is different from the built-in `ContextCompressor`. The built-in
+compressor is host-driven: Hermes decides that the session is too large, calls
+an auxiliary summarization model, and replaces the stored message list with a
+compressed transcript. DCP mode is model-guided: Hermes exposes a `compress`
+tool, adds stable message and block references to the outbound request, and
+lets the active model compress completed ranges when it has enough semantic
+context to know what is safe to replace.
+
+The DCP invariant is:
+
+> The canonical session transcript remains complete. DCP transforms only the
+> API-call copy of the messages sent to the provider.
+
+A DCP engine owns separate compression state:
+
+- message refs such as `m0001`, `m0002`
+- compression block refs such as `b1`, `b2`
+- active block summaries
+- duplicate-tool and old-error pruning state
+- compression stats and nudge cadence
+
+### DCP `compress` tool
+
+When DCP mode is active, the context engine may expose a `compress` tool. The
+tool does not rewrite the stored transcript. Instead, it records compression
+blocks. The next API-call transform applies those blocks to the outbound copy.
+
+DCP supports two modes:
+
+- `range`: compress one or more contiguous spans using `{startId, endId, summary}`.
+- `message`: compress individual high-volume messages using `{messageId, topic, summary}`.
+
+Range mode is the default because it preserves chronology and usually gives
+the model enough context to summarize closed work accurately. Message mode is
+more surgical and should be treated as experimental until provider-format and
+cache behavior are well tested.
+
+### DCP nudges and automatic strategies
+
+DCP mode can inject ephemeral nudges when context pressure rises. Nudges tell
+the model to call `compress` before continuing if a completed topic is safe to
+compact. The engine may also run cheap automatic strategies over the outbound
+copy:
+
+- deduplicate repeated tool calls with the same tool name and arguments, keeping
+  the latest output
+- purge bulky old failed-tool inputs while preserving the error text
+- protect recent user turns and configured protected tools
+
+These strategies are DCP-state transformations, not transcript edits.
+
+### Interaction with existing compression
+
+When `context.engine: "dcp"`, the built-in `compression:` settings do not drive
+normal compaction. DCP should return `False` from `should_compress()` during
+normal operation and rely on nudges plus the `compress` tool. The built-in
+`ContextCompressor` may still be used as an emergency fallback for hard context
+limit failures, but it should not run as a parallel primary compressor.
+
+Gateway session hygiene remains a safety net. Because hygiene compression
+operates before the agent starts and may mutate gateway history, DCP-aware
+hygiene behavior must be handled deliberately rather than implicitly reusing
+the built-in compressor path.
+
+### Prompt caching
+
+DCP must run before provider cache-control markers are applied so prompt caching
+sees the actual outgoing request. The transform should be deterministic and
+should avoid modifying old stable content on every turn. Compression blocks and
+automatic pruning should change the cached prefix only when compression state
+changes, not as a side effect of moving counters or timestamps.
+
 ## Dual Compression System
 
 Hermes has two separate compression layers that operate independently:

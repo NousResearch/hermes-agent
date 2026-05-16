@@ -158,6 +158,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.dcp_context_engine import DCPContextEngine
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -2305,7 +2306,15 @@ class AIAgent:
         except Exception:
             pass
 
-        if _engine_name != "compressor":
+        if _engine_name == "dcp":
+            _selected_engine = DCPContextEngine(
+                config=_ctx_cfg.get("dcp", {}) if isinstance(_ctx_cfg, dict) else {},
+                model=self.model,
+                provider=self.provider,
+                quiet_mode=self.quiet_mode,
+            )
+
+        if _engine_name != "compressor" and _selected_engine is None:
             # Try loading from plugins/context_engine/<name>/
             try:
                 from plugins.context_engine import load_context_engine
@@ -12754,6 +12763,24 @@ class AIAgent:
                 sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            # Let the active context engine transform the provider-bound copy.
+            # DCP uses this to add refs, compression block placeholders, and
+            # nudges without mutating the canonical `messages` transcript.
+            if self.context_compressor is not None:
+                try:
+                    api_messages = self.context_compressor.transform_api_messages(
+                        api_messages,
+                        canonical_messages=messages,
+                        system_prompt=effective_system,
+                        tools=self.tools,
+                        api_call_count=api_call_count,
+                        model=self.model,
+                        provider=self.provider,
+                        session_id=self.session_id,
+                    )
+                except Exception as _ctx_transform_err:
+                    logger.warning("Context engine API-message transform failed: %s", _ctx_transform_err)
 
             # Apply Anthropic prompt caching for Claude models on native
             # Anthropic, OpenRouter, and third-party Anthropic-compatible

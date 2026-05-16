@@ -110,6 +110,26 @@ class ContextEngine(ABC):
         """
         return False
 
+    def transform_api_messages(
+        self,
+        api_messages: List[Dict[str, Any]],
+        *,
+        canonical_messages: List[Dict[str, Any]],
+        system_prompt: str,
+        tools: List[Dict[str, Any]] | None,
+        api_call_count: int,
+        model: str,
+        provider: str | None,
+        session_id: str | None,
+    ) -> List[Dict[str, Any]]:
+        """Transform the provider-bound API-call copy of the transcript.
+
+        Default returns ``api_messages`` unchanged. Engines may override this
+        to add ephemeral refs, compression placeholders, or other context
+        layers without mutating ``canonical_messages``.
+        """
+        return api_messages
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:

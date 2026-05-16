@@ -30,7 +30,7 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘               │
 │         │                 │                 │                       │
 │  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐               │
-│  │ Compression  │  │ 3 API Modes  │  │ Tool Registry│               │
+│  │ Context Mgmt │  │ 3 API Modes  │  │ Tool Registry│               │
 │  │ & Caching    │  │ chat_compl.  │  │ (registry.py)│               │
 │  │              │  │ codex_resp.  │  │ 70+ tools    │               │
 │  │              │  │ anthropic    │  │ 28 toolsets  │               │
@@ -64,6 +64,7 @@ hermes-agent/
 │   ├── prompt_builder.py     # System prompt assembly
 │   ├── context_engine.py     # ContextEngine ABC (pluggable)
 │   ├── context_compressor.py # Default engine — lossy summarization
+│   ├── dcp_context_engine.py  # Optional DCP-style model-guided context engine
 │   ├── prompt_caching.py     # Anthropic prompt caching
 │   ├── auxiliary_client.py   # Auxiliary LLM for side tasks (vision, summarization)
 │   ├── model_metadata.py     # Model context lengths, token estimation
@@ -132,6 +133,15 @@ hermes-agent/
 ├── website/                  # Docusaurus documentation site
 └── tests/                    # Pytest suite (~3,000+ tests)
 ```
+
+
+### Context management
+
+Context management is handled through the `ContextEngine` interface. The default
+engine is `ContextCompressor`, which performs host-triggered summarization. Other
+engines can expose tools and transform the provider-bound API message copy. A
+DCP-style engine uses that path to keep the stored transcript complete while
+sending compressed blocks, refs, and nudges to the model.
 
 ## Data Flow
 

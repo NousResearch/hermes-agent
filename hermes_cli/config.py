@@ -1122,6 +1122,55 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        "dcp": {
+            "enabled": True,
+            "debug": False,
+            "pruneNotification": "detailed",
+            "pruneNotificationType": "chat",
+            "commands": {
+                "enabled": True,
+                "protectedTools": [],
+            },
+            "manualMode": {
+                "enabled": False,
+                "automaticStrategies": True,
+            },
+            "turnProtection": {
+                "enabled": False,
+                "turns": 4,
+            },
+            "experimental": {
+                "allowSubAgents": False,
+                "customPrompts": False,
+            },
+            "protectedFilePatterns": [],
+            "compress": {
+                "mode": "range",
+                "permission": "allow",
+                "showCompression": False,
+                "summaryBuffer": True,
+                "maxContextLimit": 100000,
+                "minContextLimit": 50000,
+                "modelMaxLimits": {},
+                "modelMinLimits": {},
+                "nudgeFrequency": 5,
+                "iterationNudgeThreshold": 15,
+                "nudgeForce": "soft",
+                "protectedTools": [],
+                "protectUserMessages": False,
+            },
+            "strategies": {
+                "deduplication": {
+                    "enabled": True,
+                    "protectedTools": [],
+                },
+                "purgeErrors": {
+                    "enabled": True,
+                    "turns": 4,
+                    "protectedTools": [],
+                },
+            },
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

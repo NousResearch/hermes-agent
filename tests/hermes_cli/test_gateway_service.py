@@ -1197,6 +1197,29 @@ class TestDetectVenvDir:
         assert result is None
 
 
+class TestPathUsableBindir:
+    """Regression: optional PATH probes must not crash on inaccessible paths."""
+
+    def test_returns_false_when_is_dir_raises_permission_error(self):
+        from unittest.mock import MagicMock
+
+        p = MagicMock()
+        p.is_dir.side_effect = PermissionError(13, "Permission denied")
+        assert gateway_cli._path_usable_bindir(p) is False
+
+    def test_returns_false_when_is_dir_raises_oserror(self):
+        from unittest.mock import MagicMock
+
+        p = MagicMock()
+        p.is_dir.side_effect = OSError(5, "Input/output error")
+        assert gateway_cli._path_usable_bindir(p) is False
+
+    def test_returns_true_for_existing_directory(self, tmp_path):
+        d = tmp_path / "bin"
+        d.mkdir()
+        assert gateway_cli._path_usable_bindir(d) is True
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 

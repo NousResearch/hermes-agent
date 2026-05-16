@@ -2104,11 +2104,16 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
 
 
 def _path_usable_bindir(path: Path) -> bool:
-    """True iff ``path`` exists as a dir and we could stat/read it.
+    """True iff ``path.is_dir()`` succeeds and returns True.
+
+    This is a stat-style directory existence check (whatever ``Path.is_dir()``
+    resolves to on the platform); it does not iterate the directory or validate
+    readability beyond that probe.
 
     systemd unit generation may run under simulated ``sudo`` in tests via
     ``Path.home()`` → ``/root``; unprivileged users get ``PermissionError`` on
-    ``/root/.hermes/…`` probes. Missing/unreadable dirs are treated as absent.
+    ``/root/.hermes/…`` probes. Any ``OSError`` from ``is_dir()`` is treated as
+    "not usable" so PATH construction skips the entry instead of aborting.
     """
     try:
         return path.is_dir()

@@ -479,9 +479,17 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Uses ``os.path.realpath`` tracking to prevent infinite loops when
+    ``followlinks=True`` encounters cyclic symlinks.
     """
     matches = []
+    visited: set[str] = set()
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        real_root = os.path.realpath(root)
+        if real_root in visited:
+            dirs.clear()
+            continue
+        visited.add(real_root)
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(Path(root) / filename)

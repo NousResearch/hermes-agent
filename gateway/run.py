@@ -7260,6 +7260,7 @@ class GatewayRunner:
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
+            self._clear_session_model_override(session_key)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
         
@@ -8033,6 +8034,7 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
+                self._clear_session_model_override(session_key)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
                 response = (response or "") + (
@@ -8390,6 +8392,7 @@ class GatewayRunner:
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
+        self._clear_session_model_override(session_key)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 
@@ -9355,6 +9358,12 @@ class GatewayRunner:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        # Persist to DB so override survives gateway restart
+                        if _self._session_db is not None:
+                            try:
+                                _self._session_db.set_model_override(_session_key, _self._session_model_overrides[_session_key])
+                            except Exception as _db_exc:
+                                logger.warning("Failed to persist model override: %s", _db_exc)
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -13996,6 +14005,15 @@ class GatewayRunner:
         """Return True if *agent_model* matches an active /model session override."""
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
+
+    def _clear_session_model_override(self, session_key: str) -> None:
+        """Remove persisted model/reasoning override for a session (e.g. on /new)."""
+        if self._session_db is not None:
+            try:
+                self._session_db.del_model_override(session_key)
+                self._session_db.del_reasoning_override(session_key)
+            except Exception as exc:
+                logger.warning("Failed to delete persisted model override: %s", exc)
 
     def _release_running_agent_state(
         self,

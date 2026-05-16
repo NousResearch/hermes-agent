@@ -248,6 +248,16 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS session_model_overrides (
+    session_key TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_reasoning_overrides (
+    session_key TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+);
 """
 
 FTS_SQL = """
@@ -444,6 +454,66 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+
+    # ── Session model override persistence ────────────────────────
+
+    def get_all_model_overrides(self) -> Dict[str, Dict[str, str]]:
+        """Load all per-session model overrides from DB."""
+        try:
+            rows = self._conn.execute(
+                "SELECT session_key, data FROM session_model_overrides"
+            ).fetchall()
+            return {r["session_key"]: json.loads(r["data"]) for r in rows}
+        except Exception:
+            return {}
+
+    def set_model_override(self, session_key: str, data: Dict[str, str]) -> None:
+        """Persist a per-session model override."""
+        def _write(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO session_model_overrides (session_key, data) VALUES (?, ?)",
+                (session_key, json.dumps(data, ensure_ascii=False)),
+            )
+        self._execute_write(_write)
+
+    def del_model_override(self, session_key: str) -> None:
+        """Remove a per-session model override."""
+        def _write(conn):
+            conn.execute(
+                "DELETE FROM session_model_overrides WHERE session_key = ?",
+                (session_key,),
+            )
+        self._execute_write(_write)
+
+    # ── Session reasoning override persistence ─────────────────────
+
+    def get_all_reasoning_overrides(self) -> Dict[str, Dict]:
+        """Load all per-session reasoning overrides from DB."""
+        try:
+            rows = self._conn.execute(
+                "SELECT session_key, data FROM session_reasoning_overrides"
+            ).fetchall()
+            return {r["session_key"]: json.loads(r["data"]) for r in rows}
+        except Exception:
+            return {}
+
+    def set_reasoning_override(self, session_key: str, data: Dict) -> None:
+        """Persist a per-session reasoning override."""
+        def _write(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO session_reasoning_overrides (session_key, data) VALUES (?, ?)",
+                (session_key, json.dumps(data, ensure_ascii=False)),
+            )
+        self._execute_write(_write)
+
+    def del_reasoning_override(self, session_key: str) -> None:
+        """Remove a per-session reasoning override."""
+        def _write(conn):
+            conn.execute(
+                "DELETE FROM session_reasoning_overrides WHERE session_key = ?",
+                (session_key,),
+            )
+        self._execute_write(_write)
 
     def close(self):
         """Close the database connection.

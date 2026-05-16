@@ -1013,6 +1013,59 @@ setup_venv() {
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
+verify_termux_rust_toolchain() {
+    # Pre-flight check for #26891.
+    #
+    # ``openai==2.24.0`` is a core dependency and transitively requires
+    # ``jiter``, which has no Android (``aarch64-linux-android``) wheel
+    # on PyPI and must be compiled from source via ``maturin`` + Rust.
+    # Upstream ``rustup`` does NOT support the
+    # ``aarch64-unknown-linux-android`` target triple, and on devices
+    # with older kernels (≤ 4.19) Termux's own ``pkg install rust``
+    # also tends to fail.  Without this check, the user only sees a
+    # confusing "Cannot import 'maturin'" / "Target triple not
+    # supported by rustup" error after pip has spent minutes
+    # downloading and trying to build jiter from source.
+    #
+    # Fail fast with an actionable message instead.
+    if [ "$DISTRO" != "termux" ]; then
+        return 0
+    fi
+
+    if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+        log_success "Rust toolchain available ($(rustc --version 2>/dev/null || echo unknown))"
+        return 0
+    fi
+
+    log_warn "Rust toolchain (cargo/rustc) not found — attempting one more 'pkg install rust'..."
+    if pkg install -y rust >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+        log_success "Rust toolchain installed via pkg"
+        return 0
+    fi
+
+    local kernel_version
+    kernel_version="$(uname -r 2>/dev/null || echo unknown)"
+    log_error "Hermes Agent cannot install on this Termux environment."
+    log_info "Reason: openai==2.24.0 (a core dependency) pulls in 'jiter',"
+    log_info "        which requires Rust + maturin to build from source."
+    log_info "        No Android wheel is published on PyPI, and your kernel"
+    log_info "        ($kernel_version) is not supported by upstream rustup's"
+    log_info "        aarch64-unknown-linux-android target. Termux's own"
+    log_info "        'pkg install rust' also failed (mirror or kernel-too-old)."
+    log_info ""
+    log_info "Workarounds (any one is enough):"
+    log_info "  1. Manually retry: pkg update && pkg install -y rust && \\"
+    log_info "       re-run this installer (sometimes a mirror-side hiccup)."
+    log_info "  2. Use a device or chroot with kernel >= 5.4 — that's the"
+    log_info "       lower bound where Termux's Rust packages reliably build."
+    log_info "  3. Use the hosted Hermes service (no local Rust required)."
+    log_info ""
+    log_info "See: https://github.com/NousResearch/hermes-agent/issues/26891"
+    log_info "     and the 'Old Android kernel (< 5.4)' troubleshooting"
+    log_info "     section in website/docs/getting-started/termux.md."
+    exit 1
+}
+
 install_deps() {
     log_info "Installing dependencies..."
 
@@ -1032,6 +1085,10 @@ install_deps() {
             export ANDROID_API_LEVEL
             log_info "Using ANDROID_API_LEVEL=$ANDROID_API_LEVEL for Android wheel builds"
         fi
+
+        # Fail fast on kernels where jiter/maturin can't compile (#26891)
+        # — otherwise pip wastes minutes before surfacing a Rust error.
+        verify_termux_rust_toolchain
 
         "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null
 

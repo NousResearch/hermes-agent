@@ -15,7 +15,6 @@ Environment variables:
                                         bot will only reply when explicitly
                                         @mentioned, a slash command is used, or
                                         another trigger fires.
-    MATTERMOST_SILENT_SESSION_CHANNELS  Alias for MATTERMOST_AMBIENT_CHANNELS.
 """
 
 from __future__ import annotations
@@ -746,17 +745,13 @@ class MattermostAdapter(BasePlatformAdapter):
             is_free_channel = channel_id in free_channels
 
             # Ambient channels: ingest message into session history silently.
-            # Supports both MATTERMOST_AMBIENT_CHANNELS and its alias
-            # MATTERMOST_SILENT_SESSION_CHANNELS.
             ambient_raw = (
                 self.config.extra.get("ambient_channels")
                 if self.config.extra
                 else None
             )
             if ambient_raw is None:
-                ambient_raw = os.getenv("MATTERMOST_AMBIENT_CHANNELS") or os.getenv(
-                    "MATTERMOST_SILENT_SESSION_CHANNELS", ""
-                )
+                ambient_raw = os.getenv("MATTERMOST_AMBIENT_CHANNELS", "")
             if isinstance(ambient_raw, list):
                 ambient_channels = {str(c).strip() for c in ambient_raw if str(c).strip()}
             else:

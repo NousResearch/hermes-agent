@@ -61,6 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -86,7 +87,12 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
+#
+# X search is off by default — gated on xAI credentials (SuperGrok OAuth
+# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
+# which walks them through credential setup. The tool's check_fn means
+# the schema won't appear to the model even if enabled without credentials.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -307,6 +313,39 @@ TOOL_CATEGORIES = {
         # injected by ``_visible_providers``. Mirrors the design we'll
         # converge image_gen toward.
         "providers": [],
+    },
+    "x_search": {
+        "name": "X (Twitter) Search",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Hermes routes X searches through xAI's built-in x_search "
+            "Responses tool. Both credential sources hit the same "
+            "https://api.x.ai/v1/responses endpoint — pick whichever you "
+            "already have. SuperGrok OAuth is preferred when both are set "
+            "(uses your subscription quota instead of API spend)."
+        ),
+        "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
     },
     "browser": {
         "name": "Browser Automation",
@@ -771,21 +810,35 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
+            _print_info("    Installing Camofox browser package...")
+            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
-            else:
-                _print_warning("    npm install failed - run manually: npm install")
+            # Install @askjo/camofox-browser on-demand. It is NOT in
+            # package.json so that `hermes update` does not silently pull
+            # the ~300MB Camoufox Firefox-fork binary for every user.
+            # Stream output (no capture, no --silent) so the long-running
+            # postinstall download is visible instead of looking frozen.
+            try:
+                result = subprocess.run(
+                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
+                     "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(PROJECT_ROOT),
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning(
+                        "    npm install failed — run manually: "
+                        "npm install @askjo/camofox-browser"
+                    )
+            except Exception as exc:
+                _print_warning(f"    Camofox install failed: {exc}")
+                _print_info(
+                    "    Run manually: npm install @askjo/camofox-browser"
+                )
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
-            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")

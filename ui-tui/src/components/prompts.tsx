@@ -12,29 +12,66 @@ const OPTS = ['once', 'session', 'always', 'deny'] as const
 const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') => `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
 const CMD_PREVIEW_LINES = 10
 
+type ApprovalKey = {
+  downArrow?: boolean
+  escape?: boolean
+  return?: boolean
+  upArrow?: boolean
+}
+
+type ApprovalAction =
+  | { kind: 'choose'; choice: (typeof OPTS)[number] }
+  | { kind: 'move'; delta: -1 | 1 }
+  | { kind: 'noop' }
+
+/**
+ * Pure key-dispatch for the approval prompt — exported so the regression
+ * matrix (Esc, Ctrl+C-equivalent, number keys, Enter, ↑↓) is testable
+ * without mounting React + Ink + a fake stdin.  The component just maps the
+ * action onto its own state setters.
+ *
+ * Esc and number keys both terminate the prompt; Esc maps to deny (parity
+ * with the global Ctrl+C handler that already calls cancelOverlayFromCtrlC
+ * for approvals).  Numbers 1..OPTS.length pick the labelled choice.  Enter
+ * confirms the current selection.  ↑/↓ moves the selection within bounds.
+ */
+export function approvalAction(ch: string, key: ApprovalKey, sel: number): ApprovalAction {
+  if (key.escape) {
+    return { kind: 'choose', choice: 'deny' }
+  }
+
+  const n = parseInt(ch, 10)
+
+  if (n >= 1 && n <= OPTS.length) {
+    return { kind: 'choose', choice: OPTS[n - 1]! }
+  }
+
+  if (key.return) {
+    return { kind: 'choose', choice: OPTS[sel]! }
+  }
+
+  if (key.upArrow && sel > 0) {
+    return { kind: 'move', delta: -1 }
+  }
+
+  if (key.downArrow && sel < OPTS.length - 1) {
+    return { kind: 'move', delta: 1 }
+  }
+
+  return { kind: 'noop' }
+}
+
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
   const { t: ti } = useI18n()
 
   useInput((ch, key) => {
-    if (key.upArrow && sel > 0) {
-      setSel(s => s - 1)
-    }
+    const action = approvalAction(ch, key, sel)
 
-    if (key.downArrow && sel < OPTS.length - 1) {
-      setSel(s => s + 1)
-    }
-
-    const n = parseInt(ch, 10)
-
-    if (n >= 1 && n <= OPTS.length) {
-      onChoice(OPTS[n - 1]!)
-
-      return
-    }
-
-    if (key.return) {
-      onChoice(OPTS[sel]!)
+    if (action.kind === 'choose') {
+      onChoice(action.choice)
+    } else if (action.kind === 'move') {
+      setSel(s => s + action.delta)
     }
   })
 
@@ -73,7 +110,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         </Text>
       ))}
 
-      <Text color={t.color.muted}>{ti('prompt.selectHint', { n: '4' })}</Text>
+<Text color={t.color.muted}>{ti('prompt.selectHint', { n: '4' })}</Text>
     </Box>
   )
 }

@@ -999,6 +999,88 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_stream_parser_valueerror_retries_before_delivery(
+        self, mock_replace, monkeypatch,
+    ):
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        class _BadStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                raise ValueError("expected ident at line 1 column 149")
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = [
+            _BadStream(),
+            good_stream,
+        ]
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert mock_replace.call_count == 1
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
+        self, mock_replace, monkeypatch,
+    ):
+        """Only known provider stream parser ValueErrors are treated as transient."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = ValueError(
+            "invalid local request shape"
+        )
+
+        with pytest.raises(ValueError, match="invalid local request shape"):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 1
+        assert mock_replace.call_count == 0
+
 
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after
@@ -1504,4 +1586,3 @@ class TestCopilotACPStreamingDecision:
             _use_streaming = False
 
         assert _use_streaming is True
-

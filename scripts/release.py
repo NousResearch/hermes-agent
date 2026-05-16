@@ -59,6 +59,8 @@ AUTHOR_MAP = {
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
+    "70629228+shaun0927@users.noreply.github.com": "shaun0927",
+    "98262967+Bihruze@users.noreply.github.com": "Bihruze",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
@@ -73,6 +75,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "piyushvp1@gmail.com": "thelumiereguy",
     "421774554@qq.com": "wuli666",
+    "twebefy@gmail.com": "tw2818",
     "harish.kukreja@gmail.com": "counterposition",
     "korkyzer@gmail.com": "Korkyzer",
     "1046611633@qq.com": "zhengyn0001",
@@ -90,6 +93,7 @@ AUTHOR_MAP = {
     "30397170+1000Delta@users.noreply.github.com": "1000Delta",
     "szymonclawd@mac.home": "szymonclawd",
     "257759490+szymonclawd@users.noreply.github.com": "szymonclawd",
+    "101180447+worlldz@users.noreply.github.com": "worlldz",
     "zhanganzhe@tenclass.com": "luoyuctl",
     "51604064+luoyuctl@users.noreply.github.com": "luoyuctl",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
@@ -755,6 +759,7 @@ AUTHOR_MAP = {
     "zhujianxyz@gmail.com": "opriz",
     "tuancanhnguyen706@gmail.com": "xxxigm",
     "asurla@nvidia.com": "anniesurla",
+    "kchantharuan@nvidia.com": "nv-kasikritc",
     "limkuan24@gmail.com": "WideLee",
     "aviralarora002@gmail.com": "AviArora02-commits",
     "draixagent@gmail.com": "draix",
@@ -1076,6 +1081,11 @@ AUTHOR_MAP = {
     "nidhi2894@gmail.com": "nidhi-singh02",  # PR #2752 salvage (slack whitespace-only IndexError guard)
     "38173192+nidhi-singh02@users.noreply.github.com": "nidhi-singh02",
     "Jaaneek@users.noreply.github.com": "Jaaneek",  # PR #26457 (xAI Grok OAuth provider)
+    # v0.14.0 additions
+    "chuang.guo@hopechart.com": "wuwuzhijing",  # PR #21063 salvage (gateway docs mention Weixin)
+    "nightcityblade@gmail.com": "nightcityblade",  # PR #24138 (docs voice/tts table)
+    "pol.kuijken@gmail.com": "polkn",  # PR #6136 salvage (skill_view collision refusal)
+    "robin@soal.org": "rewbs",
 }
 
 

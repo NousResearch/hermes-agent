@@ -40,6 +40,12 @@ _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
 _PERMISSION_REQUEST_IDS = count(1)
 
 
+SENSITIVE_AUTO_APPROVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+AUTO_APPROVE_ASK = "ask"
+AUTO_APPROVE_WORKSPACE = "workspace_session"
+AUTO_APPROVE_SESSION = "session"
+
+
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:
     """Bind an ACP edit approval requester for the current context."""
 
@@ -130,6 +136,40 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
     return None
 
 
+def _is_sensitive_auto_approve_path(path: str) -> bool:
+    parts = Path(path).expanduser().parts
+    lowered = {part.lower() for part in parts}
+    if ".git" in lowered or ".ssh" in lowered:
+        return True
+    return Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+
+
+def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:
+    """Return whether an ACP edit proposal may bypass the prompt for this session.
+
+    This is intentionally session-scoped and conservative: sensitive paths still
+    ask even under autonomous policies.
+    """
+
+    policy = str(policy or AUTO_APPROVE_ASK).strip()
+    if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
+        return False
+    path = Path(proposal.path).expanduser().resolve(strict=False)
+    if policy == AUTO_APPROVE_SESSION:
+        return True
+    if policy == AUTO_APPROVE_WORKSPACE:
+        if str(path).startswith("/tmp/"):
+            return True
+        if cwd:
+            root = Path(cwd).expanduser().resolve(strict=False)
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                return False
+    return False
+
+
 def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> str | None:
     """Run ACP edit approval if bound.
 
@@ -188,12 +228,22 @@ def make_acp_edit_approval_requester(
     loop: asyncio.AbstractEventLoop,
     session_id: str,
     timeout: float = 60.0,
+    auto_approve_getter: Callable[[], tuple[str, str | None]] | None = None,
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
 
     def _requester(proposal: EditProposal) -> bool:
         from acp.schema import PermissionOption
         from agent.async_utils import safe_schedule_threadsafe
+
+        if auto_approve_getter is not None:
+            try:
+                policy, cwd = auto_approve_getter()
+                if should_auto_approve_edit(proposal, policy, cwd):
+                    logger.info("Auto-approved ACP edit under policy %s: %s", policy, proposal.path)
+                    return True
+            except Exception:
+                logger.debug("ACP edit auto-approval policy check failed", exc_info=True)
 
         options = [
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),

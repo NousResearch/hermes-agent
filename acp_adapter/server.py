@@ -44,6 +44,8 @@ from acp.schema import (
     SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
     SessionForkCapabilities,
     SessionListCapabilities,
     SessionModelState,
@@ -494,6 +496,9 @@ class HermesACPAgent(acp.Agent):
         },
     )
 
+    _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+    _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -505,6 +510,49 @@ class HermesACPAgent(acp.Agent):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+
+    def _session_config_options(self, state: SessionState) -> list[Any]:
+        values = getattr(state, "config_options", None)
+        if not isinstance(values, dict):
+            values = {}
+        current = str(values.get(self._EDIT_APPROVAL_POLICY_CONFIG_ID) or self._EDIT_APPROVAL_POLICY_DEFAULT)
+        allowed = {"ask", "workspace_session", "session"}
+        if current not in allowed:
+            current = self._EDIT_APPROVAL_POLICY_DEFAULT
+        return [
+            SessionConfigOptionSelect(
+                id=self._EDIT_APPROVAL_POLICY_CONFIG_ID,
+                name="Edit approvals",
+                description="Control ACP edit approvals for this session.",
+                category="permissions",
+                type="select",
+                current_value=current,
+                options=[
+                    SessionConfigSelectOption(
+                        value="ask",
+                        name="Ask before edits",
+                        description="Require approval for every file edit.",
+                    ),
+                    SessionConfigSelectOption(
+                        value="workspace_session",
+                        name="Auto-allow workspace edits",
+                        description="Allow workspace and /tmp edits for this session; still asks for sensitive paths.",
+                    ),
+                    SessionConfigSelectOption(
+                        value="session",
+                        name="Auto-allow all edits this session",
+                        description="Allow file edits for this session except sensitive paths.",
+                    ),
+                ],
+            )
+        ]
+
+    def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
+        values = getattr(state, "config_options", None)
+        if not isinstance(values, dict):
+            values = {}
+        return str(values.get(self._EDIT_APPROVAL_POLICY_CONFIG_ID) or self._EDIT_APPROVAL_POLICY_DEFAULT), state.cwd
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -940,6 +988,7 @@ class HermesACPAgent(acp.Agent):
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
+            config_options=self._session_config_options(state),
         )
 
     def _schedule_history_replay(self, state: SessionState) -> None:
@@ -970,7 +1019,10 @@ class HermesACPAgent(acp.Agent):
         self._schedule_history_replay(state)
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
-        return LoadSessionResponse(models=self._build_model_state(state))
+        return LoadSessionResponse(
+            models=self._build_model_state(state),
+            config_options=self._session_config_options(state),
+        )
 
     async def resume_session(
         self,
@@ -988,7 +1040,10 @@ class HermesACPAgent(acp.Agent):
         self._schedule_history_replay(state)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
-        return ResumeSessionResponse(models=self._build_model_state(state))
+        return ResumeSessionResponse(
+            models=self._build_model_state(state),
+            config_options=self._session_config_options(state),
+        )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
@@ -1018,7 +1073,11 @@ class HermesACPAgent(acp.Agent):
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
             self._schedule_available_commands_update(new_id)
-        return ForkSessionResponse(session_id=new_id)
+        return ForkSessionResponse(
+            session_id=new_id,
+            models=self._build_model_state(state) if state is not None else None,
+            config_options=self._session_config_options(state) if state is not None else None,
+        )
 
     async def list_sessions(
         self,
@@ -1193,6 +1252,7 @@ class HermesACPAgent(acp.Agent):
                     conn.request_permission,
                     loop,
                     session_id,
+                    auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
@@ -1736,4 +1796,4 @@ class HermesACPAgent(acp.Agent):
         setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))

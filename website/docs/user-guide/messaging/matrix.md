@@ -21,8 +21,8 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
-| **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
-| **Thinking and tool activity** | Matrix sends final answers only by default. Live thinking/tool panes are opt-in because Matrix clients often treat edits as read-marker-relevant events. |
+| **Interactive controls** | Dangerous-command approval and `/model` selection use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
+| **Thinking and tool activity** | Matrix shows live tool activity by default in one edited message. Raw thinking text and response streaming are off by default because Matrix clients often treat edits as read-marker-relevant events. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -440,14 +440,25 @@ Security-sensitive Matrix tool gates:
 If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms even
 when cross-room tool access is enabled.
 
-Reaction controls use:
+### Matrix Interactive Controls
+
+Matrix does not currently provide a portable native button surface equivalent to
+Slack Block Kit, Discord components, or Telegram inline keyboards. Hermes uses
+Matrix reactions for interactive controls because they work across standard
+Matrix homeservers and clients without custom client code:
 
 - ✅ approve once
 - ♾️ approve always
 - ❌ deny
 - number reactions for `/model` choices
 
-Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any
+authorized Matrix user in the room to operate an approval/model picker prompt.
+The default is requester-bound when Hermes knows who requested the action.
+
+Optional homeserver/client extensions can render richer controls, but the
+upstream Matrix adapter keeps the core approval path reaction-based so standard
+Matrix deployments remain compatible.
 
 ### Matrix Progress and Streaming
 

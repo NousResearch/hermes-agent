@@ -765,6 +765,15 @@ def run_conversation(
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
 
+        # Budget pressure is API-call-time-only: it nudges the model to
+        # wrap up before the hard max-iteration fallback, without
+        # polluting persisted session history or the stable system prompt.
+        api_messages = agent._inject_iteration_budget_pressure(
+            api_messages,
+            api_call_count,
+            agent.max_iterations,
+        )
+
         # Drop thinking-only assistant turns (reasoning but no visible
         # output and no tool_calls) and merge any adjacent user messages
         # left behind. Prevents Anthropic 400s ("The final block in an

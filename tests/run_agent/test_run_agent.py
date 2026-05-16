@@ -2501,6 +2501,38 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    @pytest.mark.parametrize(
+        ("api_call_count", "max_iterations", "expected"),
+        [
+            (62, 90, None),
+            (63, 90, "budget caution"),
+            (80, 90, "budget caution"),
+            (81, 90, "budget warning"),
+            (9, 10, "budget warning"),
+        ],
+    )
+    def test_iteration_budget_pressure_thresholds(
+        self, agent, api_call_count, max_iterations, expected
+    ):
+        message = agent._iteration_budget_pressure_message(api_call_count, max_iterations)
+
+        if expected is None:
+            assert message is None
+        else:
+            assert expected in message
+            assert f"{api_call_count}/{max_iterations}" in message
+
+    def test_budget_pressure_injection_is_ephemeral_api_copy(self, agent):
+        messages = [{"role": "user", "content": "work on this"}]
+
+        injected = agent._inject_iteration_budget_pressure(messages, 7, 10)
+
+        assert messages == [{"role": "user", "content": "work on this"}]
+        assert injected is not messages
+        assert injected[:-1] == messages
+        assert injected[-1]["role"] == "user"
+        assert "budget caution" in injected[-1]["content"]
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.

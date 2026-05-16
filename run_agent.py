@@ -2179,6 +2179,62 @@ class AIAgent:
         return getattr(fn, "name", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+    _BUDGET_CAUTION_FRACTION = 0.70
+    _BUDGET_WARNING_FRACTION = 0.90
+
+    @staticmethod
+    def _iteration_budget_pressure_message(api_call_count: int, max_iterations: int) -> Optional[str]:
+        """Return an API-call-time-only budget warning for the LLM, if needed.
+
+        The message is intentionally generated from the current call count and
+        not persisted in session history. It gives the model a chance to wrap up
+        before the hard max-iteration fallback has to make a final no-tools
+        summary call.
+        """
+        if max_iterations <= 1 or api_call_count <= 0:
+            return None
+
+        used_fraction = api_call_count / max_iterations
+        if used_fraction < AIAgent._BUDGET_CAUTION_FRACTION:
+            return None
+
+        remaining = max(max_iterations - api_call_count, 0)
+        if used_fraction >= AIAgent._BUDGET_WARNING_FRACTION:
+            if remaining == 0:
+                remaining_text = "this is the final budgeted API call"
+            elif remaining == 1:
+                remaining_text = "1 iteration remains"
+            else:
+                remaining_text = f"{remaining} iterations remain"
+            return (
+                f"[SYSTEM: Iteration budget warning — call {api_call_count}/{max_iterations}; "
+                f"{remaining_text}. You MUST provide a final answer now unless one last tool "
+                "call is absolutely required for correctness.]"
+            )
+
+        return (
+            f"[SYSTEM: Iteration budget caution — call {api_call_count}/{max_iterations}; "
+            f"{remaining} iterations remain. Start consolidating findings and prepare to "
+            "answer soon; avoid exploratory tool calls unless they are necessary.]"
+        )
+
+    @staticmethod
+    def _inject_iteration_budget_pressure(
+        api_messages: List[Dict[str, Any]],
+        api_call_count: int,
+        max_iterations: int,
+    ) -> List[Dict[str, Any]]:
+        """Append an ephemeral budget-pressure note to the API message copy.
+
+        Use a user-role system-reminder style message instead of mutating the
+        stable system prompt. That keeps prompt-cache prefixes intact and lets
+        the existing adjacent-user merge sanitizer clean up low-limit sessions
+        where the last real message is also from the user.
+        """
+        pressure = AIAgent._iteration_budget_pressure_message(api_call_count, max_iterations)
+        if not pressure:
+            return api_messages
+        return api_messages + [{"role": "user", "content": pressure}]
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

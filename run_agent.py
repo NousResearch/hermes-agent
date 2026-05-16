@@ -1274,6 +1274,7 @@ class AIAgent:
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
+            if not model: model = "gpt-4o"
             self.api_mode = "codex_responses"
         elif self.provider in {"xai", "xai-oauth"}:
             self.api_mode = "codex_responses"

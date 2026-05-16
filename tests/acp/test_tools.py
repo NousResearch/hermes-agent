@@ -365,6 +365,10 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-ok", "terminal", "tests failed: 1 assertion error")
         assert result.status == "completed"
 
+    def test_build_tool_complete_marks_structured_polished_tool_error_as_failed(self):
+        result = build_tool_complete("tc-fail", "read_file", '{"error": "File not found"}')
+        assert result.status == "failed"
+
     def test_build_tool_complete_keeps_json_error_without_failure_flag_completed(self):
         result = build_tool_complete("tc-ok", "some_tool", '{"error": "timeout while reading optional source"}')
         assert result.status == "completed"

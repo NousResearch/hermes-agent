@@ -449,6 +449,8 @@ class HermesACPAgent(acp.Agent):
         "compact": "Compress conversation context",
         "steer": "Inject guidance into the currently running agent turn",
         "queue": "Queue a prompt to run after the current turn finishes",
+        "effort": "Show or set reasoning effort (none/low/medium/high/xhigh)",
+        "show_thinking": "Toggle reasoning display (on/off)",
         "version": "Show Hermes version",
     }
 
@@ -487,6 +489,16 @@ class HermesACPAgent(acp.Agent):
             "name": "queue",
             "description": "Queue a prompt to run after the current turn finishes",
             "input_hint": "prompt to run next",
+        },
+        {
+            "name": "effort",
+            "description": "Show or set reasoning effort (none/low/medium/high/xhigh)",
+            "input_hint": "reasoning effort level",
+        },
+        {
+            "name": "show_thinking",
+            "description": "Toggle reasoning display (on/off)",
+            "input_hint": "on or off",
         },
         {
             "name": "version",
@@ -551,16 +563,51 @@ class HermesACPAgent(acp.Agent):
                 )
                 seen_ids.add(choice_id)
 
-            current_model_id = self._encode_model_choice(normalized_provider, model)
+            # If the current model already contains a provider prefix (e.g. "manbu:xxx"),
+            # decode it so we don't double-encode it as "deepseek:manbu:xxx".
+            _model_str = str(model or "")
+            _colon_pos = _model_str.find(":")
+            if _colon_pos > 0:
+                _model_name_for_current = _model_str[_colon_pos + 1:].strip()
+                _provider_for_current = _model_str[:_colon_pos].strip()
+            else:
+                _model_name_for_current = _model_str
+                _provider_for_current = normalized_provider
+            current_model_id = self._encode_model_choice(_provider_for_current, _model_name_for_current)
             if current_model_id and current_model_id not in seen_ids:
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
-                        description=f"Provider: {provider_name} • current",
+                        name=_model_name_for_current,
+                        description=f"Provider: {_provider_for_current} • current",
                     ),
                 )
+
+            # [PATCH] Include model_aliases from config (supports --model-config overrides)
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                aliases = cfg.get("model_aliases", {})
+                if isinstance(aliases, dict):
+                    for alias_name, alias_def in aliases.items():
+                        if not isinstance(alias_def, dict):
+                            continue
+                        alias_model = alias_def.get("model", "")
+                        alias_provider = alias_def.get("provider", "")
+                        if not alias_model or not alias_provider:
+                            continue
+                        choice_id = self._encode_model_choice(alias_provider, alias_model)
+                        if choice_id in seen_ids:
+                            continue
+                        available_models.append(ModelInfo(
+                            model_id=choice_id,
+                            name=alias_model,
+                            description=f"Provider: {alias_provider} · /{alias_name}",
+                        ))
+                        seen_ids.add(choice_id)
+            except Exception:
+                pass
 
             if available_models:
                 return SessionModelState(
@@ -581,9 +628,46 @@ class HermesACPAgent(acp.Agent):
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        """Resolve ``provider:model`` input into the provider and normalized model id.
+
+        Handles custom/user-defined providers from config.yaml ``providers:``
+        that are not in the hardcoded ``_KNOWN_PROVIDER_NAMES`` list.
+        """
         target_provider = current_provider
         new_model = raw_model.strip()
+
+        # Check DIRECT_ALIASES first — these are user-defined aliases from
+        # --model-config / config.yaml model_aliases (e.g. qwen-vision, mm27hs).
+        # Without this, alias names like "qwen-vision" fall through to
+        # parse_model_input() which treats them as raw model names and
+        # routes them to the default provider (deepseek), causing silent failures.
+        try:
+            from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES
+            _ensure_direct_aliases()
+            alias = DIRECT_ALIASES.get(new_model.lower())
+            if alias:
+                return (alias.provider, alias.model)
+        except Exception:
+            pass
+
+        # If raw_model contains a colon, check whether the left part is a
+        # custom provider defined in config.yaml's ``providers:`` section.
+        # This catches names like ``manbu``, ``manbu2``, ``azure-cn`` etc.
+        # that parse_model_input() would miss because they aren't in the
+        # hardcoded _KNOWN_PROVIDER_NAMES.
+        colon = new_model.find(":")
+        if colon > 0:
+            provider_part = new_model[:colon].strip().lower()
+            model_part = new_model[colon + 1:].strip()
+            if provider_part and model_part:
+                try:
+                    from hermes_cli.config import load_config
+                    cfg = load_config()
+                    custom_providers = cfg.get("providers", {})
+                    if isinstance(custom_providers, dict) and provider_part in custom_providers:
+                        return (provider_part, model_part)
+                except Exception:
+                    pass
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
@@ -1174,7 +1258,11 @@ class HermesACPAgent(acp.Agent):
 
         if conn:
             tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            # 思考流式：respect /show_thinking toggle
+            if getattr(state, "show_thinking", True):
+                reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            else:
+                reasoning_cb = None
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
 
@@ -1413,6 +1501,8 @@ class HermesACPAgent(acp.Agent):
             "compact": self._cmd_compact,
             "steer": self._cmd_steer,
             "queue": self._cmd_queue,
+            "effort": self._cmd_effort,
+            "show_thinking": self._cmd_show_thinking,
             "version": self._cmd_version,
         }.get(cmd)
 
@@ -1644,6 +1734,33 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Hermes Agent v{HERMES_VERSION}"
+
+    def _cmd_effort(self, args: str, state: SessionState) -> str:
+        """显示或设置 reasoning effort."""
+        current = getattr(state.agent, "reasoning_config", None) or {}
+        current_effort = current.get("effort", "default") if isinstance(current, dict) else "default"
+        level = (args or "").strip().lower()
+        valid = {"none", "low", "medium", "high", "xhigh"}
+        if level not in valid:
+            return (
+                f"⚡ Reasoning effort: {current_effort}\n"
+                f"   用法: /effort none | low | medium | high | xhigh"
+            )
+        state.agent.reasoning_config = {"effort": level}
+        self.session_manager.save_session(state.session_id)
+        return f"⚡ Reasoning effort 设为: {level} (was: {current_effort})"
+
+    def _cmd_show_thinking(self, args: str, state: SessionState) -> str:
+        toggle = (args or "").strip().lower()
+        if toggle not in ("on", "off"):
+            current = getattr(state, "show_thinking", True)
+            return (
+                f"🧠 Thinking display: {'ON' if current else 'OFF'}\n"
+                f"   用法: /show_thinking on | off"
+            )
+        state.show_thinking = (toggle == "on")
+        self.session_manager.save_session(state.session_id)
+        return f"🧠 Thinking display: {'ON' if state.show_thinking else 'OFF'}"
 
     # ---- Model switching (ACP protocol method) -------------------------------
 

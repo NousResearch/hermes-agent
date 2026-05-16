@@ -139,6 +139,12 @@ def build_top_level_parser():
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
     parser.add_argument(
+        "--model-config",
+        metavar="FILE",
+        default=None,
+        help="Path to a temporary model config YAML (model, model_aliases, providers). Overrides config.yaml for this invocation. Also settable via HERMES_MODEL_CONFIG env var.",
+    )
+    parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION",

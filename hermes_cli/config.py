@@ -4242,6 +4242,27 @@ def load_config() -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
+        # [PATCH] HERMES_MODEL_CONFIG — merge temporary model config
+        _override_path = os.getenv("HERMES_MODEL_CONFIG", "").strip()
+        if _override_path:
+            _override_file = Path(_override_path)
+            if _override_file.exists():
+                try:
+                    with open(_override_file, encoding="utf-8") as _f:
+                        _override = yaml.safe_load(_f) or {}
+                    if "model_aliases" in _override:
+                        config.setdefault("model_aliases", {}).update(_override["model_aliases"])
+                    if "providers" in _override:
+                        config.setdefault("providers", {}).update(_override["providers"])
+                    if "model" in _override:
+                        _ov_model = _override["model"]
+                        config["model"] = {"default": _ov_model} if isinstance(_ov_model, str) else _ov_model
+                    logger.info("HERMES_MODEL_CONFIG: merged %s", _override_path)
+                except Exception as _e:
+                    logger.warning("HERMES_MODEL_CONFIG failed: %s", _e)
+            else:
+                logger.warning("HERMES_MODEL_CONFIG file not found: %s", _override_path)
+
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)

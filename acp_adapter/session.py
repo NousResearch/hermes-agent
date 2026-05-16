@@ -442,6 +442,12 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        # Persist /effort and /show_thinking
+        rc = getattr(state.agent, "reasoning_config", None)
+        if isinstance(rc, dict) and rc.get("effort"):
+            session_meta["effort"] = rc["effort"]
+        if not getattr(state, "show_thinking", True):
+            session_meta["show_thinking"] = False
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -537,10 +543,21 @@ class SessionManager:
             session_id=session_id,
             agent=agent,
             cwd=cwd,
-            model=model or getattr(agent, "model", "") or "",
+            model=getattr(agent, "model", "") or model or "",
             history=history,
             cancel_event=threading.Event(),
         )
+        # 恢复 /effort 和 /show_thinking
+        try:
+            saved_meta = json.loads(mc) if isinstance(mc, str) else (mc if isinstance(mc, dict) else {})
+        except Exception:
+            saved_meta = {}
+        if isinstance(saved_meta, dict):
+            effort = saved_meta.get("effort")
+            if effort:
+                agent.reasoning_config = {"effort": effort}
+            if saved_meta.get("show_thinking") is False:
+                state.show_thinking = False
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -593,6 +610,28 @@ class SessionManager:
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
 
+        # Resolve model alias if present (e.g. mm27hs -> mimxcdpl-MiniMax-M2.7-highspeed)
+        resolved_model = model or default_model
+        resolved_provider = requested_provider or config_provider
+        resolved_base_url = base_url
+        if resolved_model:
+            try:
+                from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES
+                _ensure_direct_aliases()
+                alias = DIRECT_ALIASES.get(resolved_model.lower())
+                if alias:
+                    resolved_model = alias.model
+                    if alias.provider:
+                        resolved_provider = alias.provider
+                    if alias.base_url:
+                        resolved_base_url = alias.base_url
+                    logger.debug(
+                        "Resolved model alias '%s' -> provider=%s model=%s base_url=%s",
+                        model, resolved_provider, resolved_model, resolved_base_url,
+                    )
+            except Exception:
+                logger.debug("Failed to resolve model alias '%s', using as-is", model, exc_info=True)
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
@@ -602,16 +641,16 @@ class SessionManager:
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
-            "model": model or default_model,
+            "model": resolved_model,
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            runtime = resolve_runtime_provider(requested=resolved_provider)
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
                     "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
+                    "base_url": (resolved_base_url or runtime.get("base_url")),
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),

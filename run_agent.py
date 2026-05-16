@@ -5018,20 +5018,21 @@ class AIAgent:
              Manage subscriptions at https://grok.com/?_s=usage or subscribe
              at https://grok.com/supergrok"}
 
-        That body covers at least four real causes we cannot distinguish
-        without more info from xAI:
+        That body covers several real causes we cannot distinguish without
+        more info from xAI.  The most common (and least obvious) one is
+        that **X Premium+ does NOT include API access** — only standalone
+        SuperGrok subscribers can use Hermes against xai-oauth.  Lots of
+        users see Grok in their X app, assume it works here too, and hit
+        this 403 with no idea why.  Lead the hint with that.
 
-          * Account has no Grok subscription at all
-          * Account has SuperGrok but the tier doesn't include the requested
-            model (e.g. grok-4.3 needs SuperGrok Heavy)
-          * Monthly quota for the subscribed tier is exhausted (the
-            ``?_s=usage`` URL hints at this)
-          * SuperGrok is active but the API access add-on isn't enabled
+        Other possible causes:
+          * No Grok subscription at all
+          * SuperGrok tier doesn't include the requested model (e.g.
+            grok-4.3 may need a higher tier)
+          * Monthly quota exhausted (the ``?_s=usage`` URL hints at this)
 
-        Picking one ("you're not subscribed") is wrong for the other three
-        and reads as insulting to subscribers.  Surface the raw xAI text
-        verbatim and point at https://grok.com/?_s=usage where the user
-        can see WHICH of those four it is.
+        Surface the raw xAI text verbatim and point at
+        https://grok.com/?_s=usage where the user can see WHICH applies.
 
         Matched once per detail string — won't double-decorate if the
         upstream already concatenated the same text.
@@ -5047,15 +5048,16 @@ class AIAgent:
         if not is_entitlement:
             return detail
         hint = (
-            " — xAI rejected the request on this OAuth account. Could be a "
-            "missing subscription, a tier that doesn't include this model, an "
-            "exhausted quota, or API access not enabled. Check "
-            "https://grok.com/?_s=usage to see which, or run `/model` to "
-            "switch providers."
+            " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
+            "include xAI API access — only standalone SuperGrok subscribers "
+            "can use this provider. Other possible causes: no Grok "
+            "subscription, your tier doesn't include this model, or your "
+            "quota is exhausted. Check https://grok.com/?_s=usage to see "
+            "which, or run `/model` to switch providers."
         )
         # Idempotency: detect prior decoration by a substring unique to the
         # hint (not present in xAI's own body text).
-        if "Could be a missing subscription" in detail:
+        if "X Premium+ does NOT include" in detail:
             return detail
         return f"{detail}{hint}"
 

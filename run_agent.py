@@ -4967,6 +4967,44 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
+    def _is_entitlement_failure(
+        error_context: Optional[Dict[str, Any]],
+        status_code: Optional[int],
+    ) -> bool:
+        """Detect subscription/entitlement 403s that masquerade as auth failures.
+
+        Returned True only when the body text matches a known entitlement
+        shape AND the status is 401/403.  Refreshing an OAuth token cannot
+        fix an unsubscribed account, so callers should surface the error
+        instead of looping the credential pool.
+
+        Current matches:
+          * xAI OAuth: "do not have an active Grok subscription" /
+            "out of available resources" / "does not have permission" + "grok"
+
+        Extend here for new providers as we discover them (Anthropic's
+        Claude Max OAuth entitlement errors look distinct enough today that
+        the existing 1M-context-beta branch handles them; revisit if other
+        subscription tiers start producing the same loop signature).
+        """
+        if status_code not in (401, 403, None):
+            return False
+        if not isinstance(error_context, dict):
+            return False
+        message = str(error_context.get("message") or "").lower()
+        reason = str(error_context.get("reason") or "").lower()
+        haystack = f"{message} {reason}"
+        if not haystack.strip():
+            return False
+        if "do not have an active grok subscription" in haystack:
+            return True
+        if "out of available resources" in haystack and "grok" in haystack:
+            return True
+        if "does not have permission" in haystack and "grok" in haystack:
+            return True
+        return False
+
+    @staticmethod
     def _decorate_xai_entitlement_error(detail: str) -> str:
         """Append a friendly hint when xAI's OAuth surface returns an
         entitlement-shaped error.
@@ -7551,6 +7589,24 @@ class AIAgent:
             return False, True
 
         if effective_reason == FailoverReason.auth:
+            # Subscription/entitlement 403s look like auth failures on the
+            # wire but refresh cannot fix them — the OAuth token is
+            # already valid; the account simply lacks the entitlement
+            # (e.g. xAI OAuth without SuperGrok/X Premium for grok-4.3).
+            # Without this guard, ``try_refresh_current()`` keeps minting
+            # fresh tokens against the same unsubscribed account and the
+            # main agent loop spins re-issuing the same 403 until the
+            # user Ctrl+C's.  Surface the error instead so the friendly
+            # entitlement hint from ``_summarize_api_error`` can land.
+            if self._is_entitlement_failure(error_context, status_code):
+                logger.info(
+                    "Credential %s — entitlement-shaped 403 from %s; "
+                    "skipping pool refresh (account lacks subscription, "
+                    "not a transient auth failure).",
+                    status_code if status_code is not None else "auth",
+                    self.provider or "provider",
+                )
+                return False, has_retried_429
             refreshed = pool.try_refresh_current()
             if refreshed is not None:
                 logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")

@@ -6948,10 +6948,23 @@ class GatewayRunner:
                     )
 
             if audio_paths:
+                _text_before_stt = message_text
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
                 )
+
+                # Emit stt:complete hook — lets plugin handle echo without core modifications
+                _is_transcription = message_text != _text_before_stt
+                await self.hooks.emit("stt:complete", {
+                    "platform": source.platform.value if source.platform else "",
+                    "chat_id": source.chat_id,
+                    "thread_id": source.thread_id,
+                    "user_id": source.user_id,
+                    "text": message_text,
+                    "is_transcription": _is_transcription,
+                })
+
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",

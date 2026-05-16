@@ -36,6 +36,7 @@ import time
 import yaml
 import logging
 import asyncio
+import aiofiles
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -1149,7 +1150,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print("\n[dim]Writing output files...[/dim]")
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        for file_path in jsonl_files:
+        async def write_output_file(file_path):
             output_path = output_dir / file_path.name
             file_results = results[file_path]
             
@@ -1160,9 +1161,14 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if file_results[idx] is not None
             ]
             
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for entry in sorted_entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            # Pre-serialize to avoid multiple awaited write calls
+            serialized_data = "".join(json.dumps(entry, ensure_ascii=False) + '\n' for entry in sorted_entries)
+
+            async with aiofiles.open(output_path, 'w', encoding='utf-8') as f:
+                await f.write(serialized_data)
+
+        # Run all file writes concurrently
+        await asyncio.gather(*(write_output_file(file_path) for file_path in jsonl_files))
         
         # Record end time
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
@@ -1174,8 +1180,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Save metrics
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w', encoding="utf-8") as f:
-                json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
+            async with aiofiles.open(metrics_path, 'w', encoding="utf-8") as f:
+                await f.write(json.dumps(self.aggregate_metrics.to_dict(), indent=2))
             console.print(f"\n💾 Metrics saved to {metrics_path}")
     
     def _print_summary(self):

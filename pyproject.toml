@@ -60,6 +60,7 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  "aiofiles>=24.1.0",
 ]
 
 [project.optional-dependencies]

@@ -9112,14 +9112,18 @@ class AIAgent:
 
         # Non-vision Anthropic model (rare today, but keep the fallback for
         # compat): replace each image part with a vision_analyze text note.
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
+
+            new_msg = msg.copy()
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
@@ -9140,18 +9144,23 @@ class AIAgent:
         if self._model_supports_vision():
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
+
+            # Shallow copy the message to avoid mutating the original
+            new_msg = msg.copy()
             # Reuse the Anthropic text-fallback preprocessor — the behaviour is
             # identical (walk content parts, replace images with cached
             # descriptions, merge back into a single text or structured
             # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
@@ -9305,33 +9314,37 @@ class AIAgent:
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
-        prepared = copy.deepcopy(api_messages)
-        if not prepared:
-            return prepared
+        if not api_messages:
+            return []
 
-        for msg in prepared:
+        prepared = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                prepared.append(msg)
                 continue
-            content = msg.get("content")
+
+            new_msg = msg.copy()
+            content = new_msg.get("content")
             if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
+                new_msg["content"] = [{"type": "text", "text": content}]
             elif isinstance(content, list):
                 # Normalize: convert bare strings to text dicts, keep dicts as-is.
-                # deepcopy already created independent copies, no need for dict().
                 normalized_parts = []
                 for part in content:
                     if isinstance(part, str):
                         normalized_parts.append({"type": "text", "text": part})
                     elif isinstance(part, dict):
-                        normalized_parts.append(part)
+                        normalized_parts.append(part.copy())
                 if normalized_parts:
-                    msg["content"] = normalized_parts
+                    new_msg["content"] = normalized_parts
+            prepared.append(new_msg)
 
         # Inject cache_control on the last part of the system message.
         for msg in prepared:
             if isinstance(msg, dict) and msg.get("role") == "system":
                 content = msg.get("content")
                 if isinstance(content, list) and content and isinstance(content[-1], dict):
+                    # content[-1] is already a copy from above loop
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 

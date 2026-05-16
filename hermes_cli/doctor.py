@@ -105,6 +105,29 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _active_openrouter_credentials_issue(provider: str | None) -> str | None:
+    """Return a blocking doctor issue when active OpenRouter lacks credentials."""
+    if str(provider or "").strip().lower() != "openrouter":
+        return None
+
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except Exception:  # pragma: no cover - auth import is best-effort in doctor
+        def has_usable_secret(value: object) -> bool:
+            return isinstance(value, str) and bool(value.strip())
+
+    for env_var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if has_usable_secret(os.getenv(env_var)):
+            return None
+
+    return (
+        "No credentials found for active OpenRouter provider. "
+        f"Set OPENROUTER_API_KEY (preferred) or OPENAI_API_KEY in {_DHH}/.env, "
+        "run 'hermes setup', or switch providers with "
+        "'hermes config set model.provider <name>'"
+    )
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -618,6 +641,14 @@ def run_doctor(args):
                     f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
                     "Either set model.provider to 'openrouter', or drop the vendor prefix."
                 )
+
+            openrouter_issue = _active_openrouter_credentials_issue(runtime_provider)
+            if openrouter_issue:
+                check_fail(
+                    "model.provider 'openrouter' is set but no OpenRouter credentials are configured",
+                    "(set OPENROUTER_API_KEY or OPENAI_API_KEY)",
+                )
+                issues.append(openrouter_issue)
 
             # Check credentials for the configured provider.
             # Limit to API-key providers in PROVIDER_REGISTRY — other provider

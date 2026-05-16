@@ -48,6 +48,40 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _resolve_local_initial_cwd(cwd: str) -> str:
+    """Resolve the local backend's initial cwd to an absolute host path.
+
+    ``TERMINAL_CWD`` can be populated from config.yaml before the terminal
+    backend is created.  If that value is relative and happens to match the
+    directory Hermes was already launched from (for example ``hermes-agent``
+    while the process cwd is ``~/.hermes/hermes-agent``), passing it through
+    unchanged makes the wrapper run ``cd hermes-agent`` *inside* the project
+    and fail with a confusing nested-path error.  Anchor relative local cwd
+    values once, up front, so both ``subprocess.Popen(cwd=...)`` and the
+    in-shell ``cd`` use the same absolute directory.
+    """
+    expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
+    if _IS_WINDOWS:
+        expanded = _msys_to_windows_path(expanded)
+    if os.path.isabs(expanded):
+        return expanded
+
+    candidate = os.path.abspath(expanded)
+    current = os.getcwd()
+
+    # Common recovery for config values like ``hermes-agent`` when Hermes was
+    # launched from that directory already.  ``os.path.abspath`` would point at
+    # a nonexistent nested ``./hermes-agent``; use the current directory instead.
+    if not os.path.isdir(candidate):
+        wanted_parts = Path(expanded).parts
+        current_parts = Path(current).parts
+        if wanted_parts and len(wanted_parts) <= len(current_parts):
+            if current_parts[-len(wanted_parts):] == wanted_parts:
+                return current
+
+    return candidate
+
+
 def _windows_to_msys_path(cwd: str) -> str:
     """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
     MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
@@ -1102,9 +1136,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
-        if cwd:
-            cwd = os.path.expanduser(cwd)
-        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        cwd = _resolve_local_initial_cwd(cwd)
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
     def get_temp_dir(self) -> str:

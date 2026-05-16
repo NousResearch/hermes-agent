@@ -577,8 +577,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
-        # Persistent typing indicator loops per channel (DMs don't reliably
-        # show the standard typing gateway event for bots)
+        # Typing-indicator state is intentionally empty: ``send_typing``
+        # now issues a single non-blocking POST per call and lets
+        # ``_keep_typing`` (base.py) drive the cadence.  The dict is
+        # kept (deprecated) so legacy tests / introspection that probe
+        # this attribute don't ``AttributeError`` — see #26854.
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
@@ -2701,50 +2704,49 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Start a persistent typing indicator for a channel.
+        """Send a single typing indicator pulse for a channel.
 
-        Discord's TYPING_START gateway event is unreliable in DMs for bots.
-        Instead, start a background loop that hits the typing endpoint every
-        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
-        stop_typing() is called (after the response is sent).
+        Discord's ``POST /channels/{id}/typing`` endpoint already grants
+        ~10 s of "is typing" status server-side, and ``_keep_typing``
+        (gateway/platforms/base.py) refreshes every 2 s — there's no
+        need for an adapter-side persistent loop on top of that.
+
+        The previous implementation spun a separate 8 s ``_typing_loop``
+        task and tracked it in ``self._typing_tasks``.  When the agent
+        finished, ``stop_typing()`` would cancel that task — but
+        ``_keep_typing`` could call ``send_typing()`` a few millis later,
+        recreating the loop *after* cleanup had already inspected the
+        task dict.  Combined with the 0.5 s cap in ``_stop_typing_task``
+        (base.py), a Discord connection-timeout was enough to leave the
+        recreated loop running indefinitely — see #26854.
+
+        Collapsing this to a single non-blocking request removes the
+        second loop entirely.  When ``_keep_typing`` stops ticking,
+        Discord's native 10 s TTL retires the indicator on its own.
         """
         if not self._client:
             return
-        # Don't start a duplicate loop
-        if chat_id in self._typing_tasks:
-            return
-
-        async def _typing_loop() -> None:
-            try:
-                while True:
-                    try:
-                        route = discord.http.Route(
-                            "POST", "/channels/{channel_id}/typing",
-                            channel_id=chat_id,
-                        )
-                        await self._client.http.request(route)
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
-                        return
-                    await asyncio.sleep(8)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self._typing_tasks.pop(chat_id, None)
-
-        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+        try:
+            route = discord.http.Route(
+                "POST", "/channels/{channel_id}/typing",
+                channel_id=chat_id,
+            )
+            await self._client.http.request(route)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
 
     async def stop_typing(self, chat_id: str) -> None:
-        """Stop the persistent typing indicator for a channel."""
-        task = self._typing_tasks.pop(chat_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        """No-op — typing is refreshed per-tick by ``_keep_typing``.
+
+        Kept for adapter-API symmetry (base.py's ``_keep_typing``
+        ``finally`` block and ``_process_message_background`` cleanup
+        both call ``stop_typing`` when present).  Discord's native
+        ~10 s typing TTL retires the indicator once ``_keep_typing``
+        stops pumping refreshes, so there's nothing to cancel here.
+        """
+        return
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

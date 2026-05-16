@@ -558,6 +558,101 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Interactive card builders (schema 2.0 — 更好的 markdown 渲染效果)
+# ---------------------------------------------------------------------------
+
+# 飞书互动卡片单个 markdown element 的字数上限（超出会被截断）
+_FEISHU_CARD_ELEMENT_MAX_CHARS = 4000
+
+
+def _split_content_for_card(content: str, max_chars: int = _FEISHU_CARD_ELEMENT_MAX_CHARS) -> List[str]:
+    """将长内容按段落拆分成多个片段，每个片段不超过 max_chars。
+
+    优先按 \\n\\n 分段；若单段仍然超限，则按 \\n 再拆。
+    """
+    if len(content) <= max_chars:
+        return [content]
+
+    paragraphs = content.split("\n\n")
+    chunks: List[str] = []
+    current: List[str] = []
+
+    for para in paragraphs:
+        # 如果单段本身就超限，进一步按 \n 拆分
+        if len(para) > max_chars:
+            for line in para.split("\n"):
+                candidate = "\n".join(current + [line]) if current else line
+                if len(candidate) > max_chars and current:
+                    chunks.append("\n\n".join(current))
+                    current = [line] if line else []
+                else:
+                    current.append(line)
+            continue
+
+        candidate = "\n\n".join(current + [para]) if current else para
+        if len(candidate) > max_chars and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+        else:
+            current.append(para)
+
+    if current:
+        chunks.append("\n\n".join(current))
+
+    return chunks if chunks else [content]
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    """将 Markdown 内容构建为飞书互动卡片（interactive card）的 JSON 字符串。
+
+    使用 schema 2.0 格式，body.elements 中使用 tag=markdown 元素。
+    长内容自动分段为多个 markdown element（飞书卡片单个 div 有字数限制）。
+    参考 OpenClaw 的 buildMarkdownCard / buildStructuredCard 实现。
+    """
+    chunks = _split_content_for_card(content)
+    elements: List[Dict[str, str]] = []
+    for chunk in chunks:
+        elements.append({"tag": "markdown", "content": chunk})
+
+    card = {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "body": {"elements": elements},
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+# 检测需要走卡片管线的内容特征：代码块、表格、含 markdown 的较长内容
+_CARD_HINT_RE = re.compile(
+    r"(```)"           # 代码块
+    r"|(\|.*\|.*\|)"   # 表格行（至少3个 |）
+    r"|(^#{1,6}\s)"    # 标题
+    r"|(\*{1,2}[^*\n]+?\*{1,2})",  # 粗体/斜体
+    re.MULTILINE,
+)
+
+
+def _should_use_interactive_card(content: str) -> bool:
+    """判断内容是否应走飞书互动卡片管线。
+
+    条件（满足任一）：
+    1. 包含代码块 (```)
+    2. 包含 markdown 表格（|...|...|）
+    3. 内容超过一定长度且含有 markdown 格式标记
+    """
+    # 代码块 → 必须走卡片
+    if "```" in content:
+        return True
+    # 表格 → 走卡片（post 类型不渲染表格）
+    if _MARKDOWN_TABLE_RE.search(content):
+        return True
+    # 较长内容 + 明显 markdown 格式标记 → 走卡片以获得更好渲染
+    if len(content) > 500 and _CARD_HINT_RE.search(content):
+        return True
+    return False
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -1781,6 +1876,31 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
+                    # interactive 卡片发送异常 → 尝试降级到 post
+                    if msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card send failed; falling back to post: %s", exc)
+                        try:
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="post",
+                                payload=_build_markdown_post_payload(chunk),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                            last_response = response
+                            continue
+                        except Exception as post_exc:
+                            logger.warning("[Feishu] Post fallback also failed; falling back to plain text: %s", post_exc)
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                            last_response = response
+                            continue
+                    # post 发送异常 → 降级到纯文本
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
@@ -1791,6 +1911,27 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                # interactive 卡片 API 返回失败 → 降级到 post
+                if msg_type == "interactive" and not self._response_succeeded(response):
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to post")
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as exc:
+                        logger.warning("[Feishu] Post fallback failed after interactive rejection: %s", exc)
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                # post 类型 API 返回失败 → 降级到纯文本
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -1830,6 +1971,18 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+            # interactive 卡片更新失败 → 降级到 post
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive card update failed; falling back to post")
+                try:
+                    fallback_payload = _build_markdown_post_payload(content)
+                    fallback_body = self._build_update_message_body(msg_type="post", content=fallback_payload)
+                    fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                    fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                    result = self._finalize_send_result(fallback_response, "update failed")
+                except Exception as exc:
+                    logger.warning("[Feishu] Post update fallback also failed: %s", exc)
+            # post 更新失败 → 降级到纯文本
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -4222,12 +4375,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # 优先判断是否应走互动卡片管线（代码块、表格等用卡片渲染更好）
+        if _should_use_interactive_card(content):
+            return "interactive", _build_interactive_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

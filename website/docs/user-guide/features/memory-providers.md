@@ -404,6 +404,8 @@ hermes config set memory.provider holographic
 - `contradict` — automated detection of conflicting facts
 - Trust scoring with asymmetric feedback (+0.05 helpful / -0.10 unhelpful)
 
+Design: [Holographic Memory Design](/docs/developer-guide/holographic-memory-design)
+
 ---
 
 ### RetainDB

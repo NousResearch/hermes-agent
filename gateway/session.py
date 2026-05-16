@@ -366,14 +366,20 @@ def build_session_context_prompt(
             "and offer to elaborate."
         )
     elif context.source.platform == Platform.FEISHU:
-        # Inject chat_id so the agent can determine which persona to use
-        # (e.g., OPC multi-agent setup with different Feishu groups)
-        src = context.source
-        if src.chat_id:
-            lines.append("")
-            lines.append(f"**Feishu Chat ID:** `{src.chat_id}`")
-            if src.chat_type:
-                lines.append(f"**Chat Type:** {src.chat_type}")
+        # Inject chat_id and chat_type so the agent can determine which
+        # persona to use (e.g., multi-agent setup with different Feishu groups).
+        # Fields are independent — chat_type is useful even without chat_id.
+        _chat_id = getattr(context.source, "chat_id", None)
+        _chat_type = getattr(context.source, "chat_type", None)
+        if _chat_id:
+            _safe_id = _chat_id.replace("`", "").strip()
+            if _safe_id:
+                lines.append("")
+                lines.append(f"**Feishu Chat ID:** `{_safe_id}`")
+        if _chat_type:
+            _safe_type = _chat_type.replace("`", "").strip()
+            if _safe_type:
+                lines.append(f"**Chat Type:** {_safe_type}")
     elif context.source.platform == Platform.YUANBAO:
         lines.append("")
         lines.append(

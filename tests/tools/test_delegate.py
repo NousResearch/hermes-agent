@@ -1735,8 +1735,8 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_tool_supplied_acp_args_are_ignored(self, mock_creds, mock_cfg):
-        """Model-controlled ACP command/args must not reach child agents."""
+    def test_caller_supplied_acp_args_ignored(self, mock_creds, mock_cfg):
+        """Caller-supplied ACP transports are not forwarded to child agents."""
         mock_creds.return_value = {
             "provider": None, "base_url": None,
             "api_key": None, "api_mode": None, "model": None,
@@ -1764,6 +1764,28 @@ class TestDispatchDelegateTask(unittest.TestCase):
             _, kwargs = mock_build.call_args
             self.assertIsNone(kwargs["override_acp_command"])
             self.assertIsNone(kwargs["override_acp_args"])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_acp_args_ignored(self, mock_creds, mock_cfg):
+        """Batch task ACP transports are not forwarded to child agents."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
 
             delegate_task(
                 tasks=[{
@@ -2044,8 +2066,8 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
 
-    def test_schema_does_not_expose_acp_transport_overrides(self):
-        """ACP subprocess transport is trusted config, not model input."""
+    def test_acp_transport_overrides_not_exposed_to_model(self):
+        """ACP command selection is local execution and must stay operator-configured."""
         from tools.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
         self.assertNotIn("acp_command", props)

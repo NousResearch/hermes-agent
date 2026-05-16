@@ -1920,6 +1920,12 @@ def delegate_task(
 
     Returns JSON with results array, one entry per task.
     """
+    if acp_command is not None or acp_args is not None:
+        logger.debug(
+            "delegate_task: ignoring caller-supplied ACP transport override; "
+            "ACP child transports must come from trusted configuration"
+        )
+
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -2061,6 +2067,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                # ACP subprocess transports execute local commands, so only
+                # operator-configured provider credentials may select them.
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,

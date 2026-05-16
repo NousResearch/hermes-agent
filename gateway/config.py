@@ -174,10 +174,22 @@ class Platform(Enum):
 
     @classmethod
     def _scan_bundled_plugin_platforms(cls) -> set:
-        """Return names of bundled platform plugins under ``plugins/platforms/``."""
+        """Return names of bundled platform plugins under ``plugins/platforms/``.
+
+        Packaged installs may relocate bundled plugins outside the source tree
+        and advertise that directory through ``HERMES_BUNDLED_PLUGINS``.
+        Keep this scanner aligned with the main plugin loader so dynamic
+        platform enum members are available before plugin adapters import.
+        """
         names: set = set()
         try:
-            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
+            bundled_plugins = os.getenv("HERMES_BUNDLED_PLUGINS")
+            plugins_dir = (
+                Path(bundled_plugins)
+                if bundled_plugins
+                else Path(__file__).parent.parent / "plugins"
+            )
+            platforms_dir = plugins_dir / "platforms"
             if platforms_dir.is_dir():
                 for child in platforms_dir.iterdir():
                     if (

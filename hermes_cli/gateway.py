@@ -2110,22 +2110,28 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
     candidates = []
 
+    def _is_dir_accessible(path: Path) -> bool:
+        try:
+            return path.is_dir()
+        except OSError:
+            return False
+
     venv_bin = project_root / "venv" / "bin"
-    if venv_bin.is_dir():
+    if _is_dir_accessible(venv_bin):
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))
 
     node_bin = project_root / "node_modules" / ".bin"
-    if node_bin.is_dir():
+    if _is_dir_accessible(node_bin):
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
-    if hermes_node.is_dir():
+    if _is_dir_accessible(hermes_node):
         candidates.append(str(hermes_node))
     hermes_nm = hermes_home / "node_modules" / ".bin"
-    if hermes_nm.is_dir():
+    if _is_dir_accessible(hermes_nm):
         candidates.append(str(hermes_nm))
 
     return candidates

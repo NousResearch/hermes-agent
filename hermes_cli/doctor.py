@@ -152,6 +152,30 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     return updated_available, updated_unavailable
 
 
+def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
+    """Return True when a direct API-key probe failure is non-blocking.
+
+    Some provider families support both a direct API-key path and a separate
+    OAuth runtime path. When the OAuth path is already healthy, doctor should
+    still show a failed API-key connectivity row, but it should not promote
+    that direct-key problem into the final blocking summary.
+    """
+    try:
+        from hermes_cli.auth import (
+            get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
+        )
+    except Exception:
+        return False
+
+    normalized = (provider_label or "").strip().lower()
+    if normalized in {"google / gemini", "gemini"}:
+        return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
+    if normalized == "minimax":
+        return bool((get_minimax_oauth_auth_status() or {}).get("logged_in"))
+    return False
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -1594,7 +1618,10 @@ def run_doctor(args):
                 print(f"  {_glyph} {_label} {_detail}")
             else:
                 print(f"  {_glyph} {_label}")
-        for _issue in _r.issues:
+        _issues_to_add = list(_r.issues)
+        if _issues_to_add and _has_healthy_oauth_fallback_for_apikey_provider(_r.label):
+            _issues_to_add = []
+        for _issue in _issues_to_add:
             issues.append(_issue)
 
     # =========================================================================

@@ -170,6 +170,48 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# ---------------------------------------------------------------------------
+# Hallucination-zero grounding contract (mirrors GROUNDING_CONTRACT_V1 in
+# packages/ai-safety/src/factuality-guard.ts).  Injected unconditionally
+# into every Hermes session prompt so the Python-side agent is covered by
+# the same anti-hallucination contract as the TypeScript ModelRouter path.
+# Controlled by AGRV_HALLUCINATION_GUARD_MODE env var (off | observe | warn |
+# block | strict-block).  When mode is "off" the block is omitted entirely.
+# ---------------------------------------------------------------------------
+import os as _os
+
+def _grounding_contract_text() -> str:
+    mode = _os.environ.get("AGRV_HALLUCINATION_GUARD_MODE", "warn")
+    if mode == "off":
+        return ""
+    require_grounded = _os.environ.get("AGRV_REQUIRE_GROUNDED_ANSWERS", "true").lower() in ("1", "true", "yes")
+    require_citations = _os.environ.get("AGRV_REQUIRE_CITATIONS_WITH_SOURCES", "true").lower() in ("1", "true", "yes")
+    lines = [
+        "GROUNDING_CONTRACT_V1: You must not invent facts.",
+        "Treat tool, retrieval, file, database, and explicitly labelled source context as the source of truth.",
+        "If source context is absent or insufficient for a factual claim, say you do not have enough verified information.",
+    ]
+    if require_citations:
+        lines.append("When source context exists, cite or name the source for factual claims.")
+    lines.append(
+        "Do not invent package names, URLs, file paths, metrics, dates, laws, customers, incidents, or versions."
+    )
+    if not require_grounded:
+        lines.append("(Grounding enforcement is advisory for this session.)")
+    lines.append(f"Runtime mode: {mode}.")
+    return "\n".join(lines)
+
+# NOTE: Do NOT cache the contract at import time. The env var AGRV_HALLUCINATION_GUARD_MODE
+# can change after import (multi-tenant sessions, late-loaded .env, dynamic config) and the
+# contract text must reflect the current runtime mode. Callers should invoke
+# get_grounding_contract() per prompt build, not import a frozen constant.
+def get_grounding_contract() -> str:
+    """Return the current grounding contract text, re-evaluating env each call."""
+    return _grounding_contract_text()
+
+# Kept for backward compat with any existing imports; prefer get_grounding_contract().
+GROUNDING_CONTRACT = _grounding_contract_text()
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

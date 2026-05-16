@@ -34,6 +34,16 @@ def _looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
         return False
 
 
+def _looks_like_int(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    try:
+        int(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class DeliveryTarget:
     """
@@ -263,30 +273,50 @@ class DeliveryRouter:
                 "direct_messages_topic_id" in send_metadata
                 or "telegram_direct_messages_topic_id" in send_metadata
             )
-            if (
+            target_thread_id = target.thread_id
+            is_named_telegram_private_topic = (
+                target.platform == Platform.TELEGRAM
+                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and not _looks_like_int(target_thread_id)
+                and "thread_id" not in send_metadata
+                and "message_thread_id" not in send_metadata
+                and not has_explicit_direct_topic
+            )
+            if is_named_telegram_private_topic:
+                ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
+                if ensure_dm_topic is None:
+                    raise RuntimeError(
+                        "Telegram adapter cannot create named private DM topics"
+                    )
+                created_thread_id = await ensure_dm_topic(target.chat_id, target_thread_id)
+                if not created_thread_id:
+                    raise RuntimeError(
+                        f"Failed to create Telegram private DM topic '{target_thread_id}'"
+                    )
+                target_thread_id = str(created_thread_id)
+                send_metadata["thread_id"] = target_thread_id
+                send_metadata["telegram_dm_topic_created_for_send"] = True
+            elif (
                 target.platform == Platform.TELEGRAM
                 and _looks_like_telegram_private_chat_id(target.chat_id)
                 and "thread_id" not in send_metadata
                 and "message_thread_id" not in send_metadata
                 and not has_explicit_direct_topic
             ):
-                # Telegram has two similar-but-not-equivalent private topic modes:
-                # true Bot API Direct Messages topics use direct_messages_topic_id,
-                # while Hermes-created private DM lanes only route reliably with
-                # message_thread_id plus a reply anchor to a message in that lane.
-                # DeliveryRouter often handles proactive/cron sends, so an anchor
-                # may not exist. Refuse the send rather than reporting success for
-                # a message that lands in General/All Messages or is invisible.
+                # Legacy private topic/thread ids that were not created by this
+                # send path may still need a reply anchor to stay visible in the
+                # requested lane. Named targets are created above via
+                # createForumTopic and can use message_thread_id directly.
                 reply_anchor = send_metadata.get("telegram_reply_to_message_id")
                 if reply_anchor is None:
                     raise RuntimeError(
                         "Telegram private DM topic delivery requires telegram_reply_to_message_id; "
                         "send to the bare chat or provide a reply anchor"
                     )
-                send_metadata["thread_id"] = target.thread_id
+                send_metadata["thread_id"] = target_thread_id
                 send_metadata["telegram_dm_topic_reply_fallback"] = True
             elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
-                send_metadata["thread_id"] = target.thread_id
+                send_metadata["thread_id"] = target_thread_id
         result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
         if getattr(result, "success", True) is False:
             raise RuntimeError(getattr(result, "error", None) or f"{target.platform.value} delivery failed")

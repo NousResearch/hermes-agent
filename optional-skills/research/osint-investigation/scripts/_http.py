@@ -24,7 +24,12 @@ def get(
     backoff: float = 1.5,
     timeout: float = 30.0,
 ) -> bytes:
-    """GET with retry on 429/5xx and Retry-After honoring."""
+    """GET with retry on 5xx and Retry-After honoring.
+
+    429 (rate-limit) is raised IMMEDIATELY with a clear message — retrying
+    when the upstream says "you're over quota" just wastes time. The caller
+    should slow down or supply real credentials.
+    """
     if params:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}{urllib.parse.urlencode(params)}"
@@ -39,7 +44,18 @@ def get(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < max_retries:
+            if e.code == 429:
+                # Surface immediately. Read the body so the caller sees the
+                # provider's actual message ("OVER_RATE_LIMIT" etc.).
+                try:
+                    body = e.read(2048).decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    body = ""
+                raise RuntimeError(
+                    f"HTTP 429 rate-limited by {urllib.parse.urlsplit(url).netloc}. "
+                    f"Slow down or supply a real API key. Body: {body[:300]}"
+                ) from e
+            if e.code in (500, 502, 503, 504) and attempt < max_retries:
                 retry_after = e.headers.get("Retry-After") if e.headers else None
                 wait = float(retry_after) if (retry_after and retry_after.isdigit()) else backoff ** (attempt + 1)
                 time.sleep(wait)

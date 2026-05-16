@@ -89,8 +89,9 @@ those first to pick the right pair.
 Each source has a stdlib-only fetch script in `SKILL_DIR/scripts/`:
 
 ```bash
-# FEC individual contributions (federal campaign finance)
-python3 SKILL_DIR/scripts/fetch_fec.py --candidate "SMITH, JOHN" --cycle 2024 \
+# FEC individual contributions (federal campaign finance).
+# `--contributor` filters by donor name. Use uppercase 'LAST, FIRST'.
+python3 SKILL_DIR/scripts/fetch_fec.py --contributor "SMITH, JOHN" --state NY --cycle 2024 \
     --out data/fec_donations.csv
 
 # SEC EDGAR filings (corporate disclosures)
@@ -108,15 +109,27 @@ python3 SKILL_DIR/scripts/fetch_senate_ld.py --client "EXAMPLE CORP" \
 # OFAC SDN sanctions list (full snapshot)
 python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
-# ICIJ Offshore Leaks (entity search)
+# ICIJ Offshore Leaks — downloads ~70 MB bulk CSV on first use,
+# then searches it locally. Cached for 30 days under
+# $HERMES_OSINT_CACHE/icij/ (default: ~/.cache/hermes-osint/icij/).
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 ```
 
 All outputs are normalized CSV with a header row. Re-run scripts idempotently.
 
+When a private individual won't be in a source (e.g. SEC EDGAR for a non-public-
+company person, USAspending for someone who isn't a federal contractor, Senate
+LDA for someone who isn't a lobbying client), the script returns 0 rows with a
+clear warning rather than silently writing an empty CSV. EDGAR specifically
+flags when the company-name resolver matched an individual Form 3/4/5 filer
+rather than a corporate registrant.
+
 Rate-limit notes are in each source's wiki entry. Default fetchers sleep
-politely between paginated requests.
+politely between paginated requests. **DEMO_KEY rate limits exhaust quickly** —
+real investigations should set the matching env var (`FEC_API_KEY`,
+`SENATE_LDA_TOKEN`, etc.). All scripts surface 429 responses immediately with
+the upstream's quota message so the user knows to slow down or supply a key.
 
 ### 3. Resolve entities across sources
 

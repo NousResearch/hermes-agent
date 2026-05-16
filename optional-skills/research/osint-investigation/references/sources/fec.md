@@ -63,8 +63,8 @@ strings are user-typed and vary heavily.
 Path: `scripts/fetch_fec.py`
 
 ```bash
-# By candidate name
-python3 SKILL_DIR/scripts/fetch_fec.py --candidate "SMITH, JOHN" --cycle 2024 \
+# By contributor name (use uppercase "LAST, FIRST" — names are stored this way)
+python3 SKILL_DIR/scripts/fetch_fec.py --contributor "SMITH, JOHN" --state NY --cycle 2024 \
     --out data/fec_donations.csv
 
 # By committee ID
@@ -76,7 +76,13 @@ python3 SKILL_DIR/scripts/fetch_fec.py --employer "EXAMPLE CORP" --cycle 2024 \
     --out data/fec_donations.csv
 ```
 
-Set `FEC_API_KEY` env var (or pass `--api-key`). Defaults to `DEMO_KEY`.
+Set `FEC_API_KEY` env var (or pass `--api-key`). Defaults to `DEMO_KEY`
+(40 calls/hour — exhausted very quickly during real investigations).
+
+**Note**: `--candidate` is a deprecated alias for `--contributor` — FEC searches
+by contributor (donor) name, not candidate name. To search donations TO a
+specific candidate, use `--committee <ID>` after looking up their principal
+campaign committee ID.
 
 ## 8. Legal & Licensing
 

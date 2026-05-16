@@ -9,11 +9,14 @@ with their officers, intermediaries, and addresses.
 
 ## 2. Access Methods
 
-- **Search UI:** `https://offshoreleaks.icij.org/`
-- **Bulk download:** `https://offshoreleaks.icij.org/pages/database` (CSV ZIPs by leak)
-- **JSON-LD entities:** Per-entity URLs return structured data with `Accept: application/json`
+- **Bulk download (primary):** `https://offshoreleaks-data.icij.org/offshoreleaks/csv/full-oldb.LATEST.zip` (~70 MB ZIP, refreshed periodically)
+- **Search UI (human):** `https://offshoreleaks.icij.org/`
 - **Auth:** None
-- **Rate limit:** Not formally published; be polite (~1 req/s)
+- **Note:** The previous Open Refine reconciliation endpoint at
+  `/reconcile` now returns 404. ICIJ has removed it. The bulk ZIP is the
+  remaining stable access path. The skill's `fetch_icij_offshore.py` caches
+  the ZIP locally (default `~/.cache/hermes-osint/icij/`, refreshes after
+  30 days) and searches it offline.
 
 ## 3. Data Schema
 
@@ -65,7 +68,7 @@ referencing within ICIJ. Connections graph traversal is in-script (BFS over
 Path: `scripts/fetch_icij_offshore.py`
 
 ```bash
-# Search by entity name
+# Search by entity name (case-insensitive substring across the bulk DB)
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 
@@ -73,10 +76,17 @@ python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH JOHN" \
     --out data/icij.csv
 
-# Search by jurisdiction
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --jurisdiction "BRITISH VIRGIN ISLANDS" \
-    --out data/icij_bvi.csv
+# Search by jurisdiction (filter on cached results)
+python3 SKILL_DIR/scripts/fetch_icij_offshore.py --officer "SMITH" \
+    --jurisdiction "BRITISH VIRGIN ISLANDS" --out data/icij_bvi.csv
+
+# Force a fresh download (default refresh window is 30 days)
+python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
+    --force-refresh --out data/icij.csv
 ```
+
+First call downloads the ~70 MB ZIP under `~/.cache/hermes-osint/icij/`
+(or `$HERMES_OSINT_CACHE/icij/`). Subsequent calls reuse the cache for 30 days.
 
 ## 8. Legal & Licensing
 

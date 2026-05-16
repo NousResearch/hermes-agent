@@ -45,15 +45,23 @@ def _ua() -> str:
     return ua
 
 
-def _resolve_cik(company: str) -> str:
-    """Resolve a company name to a CIK via EDGAR's atom feed."""
+def _resolve_cik(company: str) -> tuple[str, str]:
+    """Resolve a company name to a CIK via EDGAR's atom feed.
+
+    Returns (cik, resolved_company_name). The feed entries also reveal whether
+    the match is an individual filer (Form 3/4/5 only) — surfaced in the
+    return value so callers can warn.
+    """
     url = "https://www.sec.gov/cgi-bin/browse-edgar"
     params = {"action": "getcompany", "company": company, "output": "atom", "owner": "include"}
     body = get(url, params=params, user_agent=_ua()).decode("utf-8", errors="replace")
     m = re.search(r"CIK=(\d{10})", body)
     if not m:
         raise SystemExit(f"Could not resolve CIK for company={company!r}")
-    return m.group(1)
+    cik = m.group(1)
+    name_m = re.search(r"<title>([^<]+)\s*\((\d{10})\)</title>", body)
+    resolved = name_m.group(1).strip() if name_m else ""
+    return cik, resolved
 
 
 def fetch(
@@ -63,8 +71,14 @@ def fetch(
     since: str | None,
     out_path: str,
 ) -> int:
+    resolved_name = ""
     if not cik and company:
-        cik = _resolve_cik(company)
+        cik, resolved_name = _resolve_cik(company)  # type: ignore[assignment]
+        if resolved_name:
+            print(
+                f"Resolved company={company!r} → CIK {cik} ({resolved_name})",
+                file=sys.stderr,
+            )
     if not cik:
         raise SystemExit("must supply --cik or --company")
     cik = cik.zfill(10)
@@ -79,6 +93,12 @@ def fetch(
     accession = recent.get("accessionNumber", [])
     primary_doc = recent.get("primaryDocument", [])
     period = recent.get("reportDate", [])
+
+    # Histogram of available filing types — useful for surfacing why a filter
+    # returned 0 (e.g. user asked for 10-K on an individual Form 4 filer).
+    type_hist: dict[str, int] = {}
+    for ftype in form:
+        type_hist[ftype] = type_hist.get(ftype, 0) + 1
 
     type_set = {t.strip().upper() for t in types} if types else None
     rows: list[dict[str, str]] = []
@@ -114,6 +134,26 @@ def fetch(
         w = csv.DictWriter(fh, fieldnames=COLUMNS)
         w.writeheader()
         w.writerows(rows)
+
+    if not rows and type_hist:
+        top = sorted(type_hist.items(), key=lambda kv: -kv[1])[:8]
+        hist_str = ", ".join(f"{t}={n}" for t, n in top)
+        print(
+            f"Warning: SEC EDGAR CIK {cik} ({name}) has {sum(type_hist.values())} "
+            f"recent filings but NONE match types={types}. "
+            f"Available form types: {hist_str}.",
+            file=sys.stderr,
+        )
+        # Insider-filer heuristic: only Form 3/4/5 → individual person, not a company.
+        company_types = {"10-K", "10-Q", "8-K", "20-F", "DEF 14A", "S-1"}
+        if not (set(type_hist.keys()) & company_types):
+            print(
+                f"Note: CIK {cik} appears to be an INDIVIDUAL filer "
+                f"(insider Form 3/4/5 only), not a corporate registrant. "
+                f"The resolver may have matched an officer/director named "
+                f"{company!r} rather than a company.",
+                file=sys.stderr,
+            )
     return len(rows)
 
 

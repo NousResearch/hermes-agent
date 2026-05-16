@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shlex
@@ -9,6 +10,8 @@ import shutil
 import subprocess
 
 from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_BROWSER_CDP_PORT = 9222
@@ -38,6 +41,34 @@ _WINDOWS_BIN_NAMES = (
     "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
     "chrome", "msedge", "brave", "chromium",
 )
+
+
+def _is_wsl() -> bool:
+    try:
+        with open("/proc/version") as f:
+            content = f.read()
+        return "microsoft" in content.lower() or "wsl" in content.lower()
+    except Exception:
+        return False
+
+
+def _is_windows_chrome_path(path: str) -> bool:
+    return path.startswith("/mnt/")
+
+
+def _translate_path_to_windows(unix_path: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["wslpath", "-w", unix_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except Exception:
+        return None
 
 
 def get_chrome_debug_candidates(system: str) -> list[str]:
@@ -83,10 +114,17 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
-def _chrome_debug_args(port: int) -> list[str]:
+def _chrome_debug_args(port: int, user_data_dir: str, system: str, chrome_path: str) -> list[str]:
+    chrome_arg_data_dir = user_data_dir
+    if system == "Linux" and _is_wsl() and _is_windows_chrome_path(chrome_path):
+        translated = _translate_path_to_windows(user_data_dir)
+        if translated:
+            chrome_arg_data_dir = translated
+        else:
+            logger.warning("wslpath translation failed; using Unix path for --user-data-dir (Chrome may fail to start)")
     return [
         f"--remote-debugging-port={port}",
-        f"--user-data-dir={chrome_debug_data_dir()}",
+        f"--user-data-dir={chrome_arg_data_dir}",
         "--no-first-run",
         "--no-default-browser-check",
     ]
@@ -97,14 +135,15 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     candidates = get_chrome_debug_candidates(system)
 
     if candidates:
-        argv = [candidates[0], *_chrome_debug_args(port)]
+        user_data_dir = chrome_debug_data_dir()
+        argv = [candidates[0], *_chrome_debug_args(port, user_data_dir, system, candidates[0])]
         return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
     if system == "Darwin":
         data_dir = chrome_debug_data_dir()
         return (
             f'open -a "Google Chrome" --args --remote-debugging-port={port} '
-            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
+            f'--user-data-dir="{data_dir}" --remote-allow-origins=* --no-first-run --no-default-browser-check'
         )
 
     return None
@@ -125,10 +164,12 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
     if not candidates:
         return False
 
-    os.makedirs(chrome_debug_data_dir(), exist_ok=True)
+    user_data_dir = chrome_debug_data_dir()
+    os.makedirs(user_data_dir, exist_ok=True)
+
     try:
         subprocess.Popen(
-            [candidates[0], *_chrome_debug_args(port)],
+            [candidates[0], *_chrome_debug_args(port, user_data_dir, system, candidates[0])],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **_detach_kwargs(system),

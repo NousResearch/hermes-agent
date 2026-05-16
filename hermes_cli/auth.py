@@ -2891,8 +2891,107 @@ def login_spotify_command(args) -> None:
 # =============================================================================
 
 def _is_remote_session() -> bool:
-    """Detect if running in an SSH session where webbrowser.open() won't work."""
-    return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+    """Detect environments where loopback OAuth can't reach the local browser.
+
+    Historically only SSH was checked, but #26923 surfaced that
+    **browser-only remote consoles** (GCP Cloud Shell, GitHub
+    Codespaces, AWS EC2 Instance Connect, Gitpod, Replit, etc.) hit
+    the exact same problem — the user has a browser on their laptop
+    but the loopback listener is bound on the remote VM that the
+    laptop's browser can't reach.  These environments typically don't
+    set ``SSH_CLIENT`` / ``SSH_TTY``, so the SSH-only check left
+    them with no guidance and no fallback.
+    """
+    if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"):
+        return True
+    # Browser-only remote IDEs / cloud shells.  Keep this list narrow
+    # (well-known, documented env vars set by the host platform) so
+    # we don't falsely trip on a developer's local shell.
+    for var in (
+        "CLOUD_SHELL",         # GCP Cloud Shell
+        "CODESPACES",          # GitHub Codespaces
+        "CODESPACE_NAME",      # GitHub Codespaces (alt)
+        "GITPOD_WORKSPACE_ID", # Gitpod
+        "REPL_ID",             # Replit
+        "STACKBLITZ",          # StackBlitz
+    ):
+        if os.getenv(var):
+            return True
+    return False
+
+
+def _parse_pasted_callback(raw: str) -> dict:
+    """Parse a pasted callback URL / query string into the loopback shape.
+
+    Accepts any of:
+
+    * full URL:  ``http://127.0.0.1:56121/callback?code=abc&state=xyz``
+    * bare query string:  ``?code=abc&state=xyz``  or  ``code=abc&state=xyz``
+    * bare code (no state, only used when the upstream omits state):
+      ``abc-the-code-value``
+
+    Returns ``{"code", "state", "error", "error_description"}`` with
+    missing keys set to ``None`` so the loopback callsites can keep
+    using the same validation path (state check, error check, etc.)
+    they already use for the HTTP server output.  Regression for
+    #26923 — formalises the curl-the-callback-URL workaround the
+    reporter used while waiting for upstream support.
+    """
+    stripped = raw.strip()
+    result: dict = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+    if not stripped:
+        return result
+    query = ""
+    if stripped.startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(stripped)
+        except Exception:
+            return result
+        query = parsed.query or ""
+    elif stripped.startswith("?"):
+        query = stripped[1:]
+    elif "=" in stripped:
+        # Looks like a bare query fragment (``code=...&state=...``).
+        query = stripped
+    else:
+        # Treat as a bare opaque code value with no state.
+        result["code"] = stripped
+        return result
+    params = parse_qs(query, keep_blank_values=False)
+    for key in ("code", "state", "error", "error_description"):
+        values = params.get(key)
+        if values:
+            result[key] = values[0]
+    return result
+
+
+def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
+    """Read a callback URL from stdin as a fallback for browser-only remotes.
+
+    Used when ``--manual-paste`` is set or when the loopback listener
+    cannot bind.  Returns the parsed callback dict (same shape as the
+    HTTP handler output) so the existing state / error validation in
+    the caller works unchanged.  See #26923.
+    """
+    print()
+    print("─── Manual callback paste ─────────────────────────────────────")
+    print("After approving in your browser, your browser will try to load")
+    print(f"  {redirect_uri}")
+    print("which fails (the loopback listener is on this remote machine,")
+    print("not on your laptop) — that is expected.  Copy the FULL URL")
+    print("from your browser's address bar of that failed page and paste")
+    print("it below.  A bare '?code=...&state=...' fragment also works.")
+    print("───────────────────────────────────────────────────────────────")
+    try:
+        raw = input("Callback URL: ")
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    return _parse_pasted_callback(raw)
 
 
 def _ssh_user_at_host() -> str:
@@ -2945,6 +3044,10 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
     print(f"  ssh -N -L {port}:127.0.0.1:{port} {_ssh_user_at_host()}")
     print()
     print("Then open the authorize URL above in your local browser.")
+    print()
+    print("No SSH client (Cloud Shell / Codespaces / web IDE)?  Re-run with")
+    print("`--manual-paste` to skip the loopback listener and paste the failed")
+    print("callback URL directly.")
     if docs_url:
         print(f"Provider docs:      {docs_url}")
     print(f"SSH/jump-box guide: {OAUTH_OVER_SSH_DOCS_URL}")
@@ -6125,8 +6228,13 @@ def _login_xai_oauth(
     open_browser = not getattr(args, "no_browser", False)
     if _is_remote_session():
         open_browser = False
+    manual_paste = bool(getattr(args, "manual_paste", False))
 
-    creds = _xai_oauth_loopback_login(timeout_seconds=timeout_seconds, open_browser=open_browser)
+    creds = _xai_oauth_loopback_login(
+        timeout_seconds=timeout_seconds,
+        open_browser=open_browser,
+        manual_paste=manual_paste,
+    )
     _save_xai_oauth_tokens(
         creds["tokens"],
         discovery=creds.get("discovery"),
@@ -6294,13 +6402,32 @@ def _xai_oauth_loopback_login(
     *,
     timeout_seconds: float = 20.0,
     open_browser: bool = True,
+    manual_paste: bool = False,
 ) -> Dict[str, Any]:
+    """Run the xAI OAuth PKCE flow.
+
+    When ``manual_paste=True`` the loopback HTTP listener is skipped
+    entirely and the user is prompted to paste the failed callback
+    URL into stdin (regression fix for #26923 — browser-only remote
+    consoles like GCP Cloud Shell / GitHub Codespaces / EC2 Instance
+    Connect, where the laptop's browser can't reach 127.0.0.1 on the
+    remote VM).  The same PKCE verifier, ``state``, and ``nonce`` are
+    used for both paths so the upstream-side OAuth flow is identical.
+    """
     discovery = _xai_oauth_discovery(timeout_seconds)
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
 
-    server, thread, callback_result, redirect_uri = _xai_start_callback_server()
-    try:
+    if manual_paste:
+        # No HTTP listener — synthesize a redirect_uri matching what
+        # the server would have bound to so the authorize URL the user
+        # opens (and the redirect_uri sent in the token exchange) stay
+        # byte-identical to the loopback path.  xAI's token endpoint
+        # cross-checks redirect_uri against the authorize request.
+        redirect_uri = (
+            f"http://{XAI_OAUTH_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}"
+            f"{XAI_OAUTH_REDIRECT_PATH}"
+        )
         _xai_validate_loopback_redirect_uri(redirect_uri)
         code_verifier = _oauth_pkce_code_verifier()
         code_challenge = _oauth_pkce_code_challenge(code_verifier)
@@ -6316,38 +6443,57 @@ def _xai_oauth_loopback_login(
 
         print("Open this URL to authorize Hermes with xAI:")
         print(authorize_url)
-        print()
-        print(f"Waiting for callback on {redirect_uri}")
+        callback = _prompt_manual_callback_paste(redirect_uri)
+    else:
+        server, thread, callback_result, redirect_uri = _xai_start_callback_server()
+        try:
+            _xai_validate_loopback_redirect_uri(redirect_uri)
+            code_verifier = _oauth_pkce_code_verifier()
+            code_challenge = _oauth_pkce_code_challenge(code_verifier)
+            state = uuid.uuid4().hex
+            nonce = uuid.uuid4().hex
+            authorize_url = _xai_oauth_build_authorize_url(
+                authorization_endpoint=authorization_endpoint,
+                redirect_uri=redirect_uri,
+                code_challenge=code_challenge,
+                state=state,
+                nonce=nonce,
+            )
 
-        _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
+            print("Open this URL to authorize Hermes with xAI:")
+            print(authorize_url)
+            print()
+            print(f"Waiting for callback on {redirect_uri}")
 
-        if open_browser and not _is_remote_session():
+            _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
+
+            if open_browser and not _is_remote_session():
+                try:
+                    opened = webbrowser.open(authorize_url)
+                except Exception:
+                    opened = False
+                if opened:
+                    print("Browser opened for xAI authorization.")
+                else:
+                    print("Could not open the browser automatically; use the URL above.")
+
+            callback = _xai_wait_for_callback(
+                server,
+                thread,
+                callback_result,
+                timeout_seconds=max(30.0, timeout_seconds * 9),
+            )
+        except Exception:
             try:
-                opened = webbrowser.open(authorize_url)
+                server.shutdown()
+                server.server_close()
             except Exception:
-                opened = False
-            if opened:
-                print("Browser opened for xAI authorization.")
-            else:
-                print("Could not open the browser automatically; use the URL above.")
-
-        callback = _xai_wait_for_callback(
-            server,
-            thread,
-            callback_result,
-            timeout_seconds=max(30.0, timeout_seconds * 9),
-        )
-    except Exception:
-        try:
-            server.shutdown()
-            server.server_close()
-        except Exception:
-            pass
-        try:
-            thread.join(timeout=1.0)
-        except Exception:
-            pass
-        raise
+                pass
+            try:
+                thread.join(timeout=1.0)
+            except Exception:
+                pass
+            raise
 
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]

@@ -351,17 +351,11 @@ class DeliveryRouter:
                     raise RuntimeError(
                         "Telegram adapter cannot refresh named private DM topics"
                     )
-                try:
-                    refreshed_thread_id = await ensure_dm_topic(
-                        target.chat_id,
-                        named_telegram_private_topic_name,
-                        force_create=True,
-                    )
-                except TypeError:
-                    refreshed_thread_id = await ensure_dm_topic(
-                        target.chat_id,
-                        named_telegram_private_topic_name,
-                    )
+                refreshed_thread_id = await ensure_dm_topic(
+                    target.chat_id,
+                    named_telegram_private_topic_name,
+                    force_create=True,
+                )
                 if not refreshed_thread_id:
                     raise RuntimeError(
                         f"Failed to refresh Telegram private DM topic '{named_telegram_private_topic_name}'"

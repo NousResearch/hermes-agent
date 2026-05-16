@@ -353,7 +353,6 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
     monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
     monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
 

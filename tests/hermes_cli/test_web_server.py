@@ -683,6 +683,7 @@ class TestNewEndpoints:
         wrapper_dir = tmp_path / "bin"
         wrapper_dir.mkdir()
         monkeypatch.setattr(profiles_mod, "_get_wrapper_dir", lambda: wrapper_dir)
+        monkeypatch.setattr(profiles_mod, "check_alias_collision", lambda name: None)
 
         resp = self.client.post(
             "/api/profiles",

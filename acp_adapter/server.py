@@ -18,6 +18,7 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
+    AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommand,
     AvailableCommandsUpdate,
@@ -788,14 +789,20 @@ class HermesACPAgent(acp.Agent):
     # ---- Session management -------------------------------------------------
 
     @staticmethod
-    def _history_message_text(message: dict[str, Any]) -> str:
-        """Extract displayable text from a persisted OpenAI-style message."""
-        content = message.get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
+    def _flatten_history_text(value: Any) -> str:
+        """Normalize a persisted text-or-text-parts value into a single string.
+
+        OpenAI-style assistant content (and provider reasoning fields) can arrive
+        as either a scalar string or a list of ``{"text": ...}`` /
+        ``{"type": "text", "content": ...}`` parts. Whitespace-only inputs
+        collapse to an empty string so callers can treat ``""`` as "nothing to
+        emit".
+        """
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
             parts: list[str] = []
-            for item in content:
+            for item in value:
                 if isinstance(item, dict):
                     text = item.get("text")
                     if isinstance(text, str):
@@ -805,6 +812,29 @@ class HermesACPAgent(acp.Agent):
                 elif isinstance(item, str):
                     parts.append(item)
             return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+        return ""
+
+    @classmethod
+    def _history_message_text(cls, message: dict[str, Any]) -> str:
+        """Extract displayable text from a persisted OpenAI-style message."""
+        return cls._flatten_history_text(message.get("content"))
+
+    @classmethod
+    def _history_reasoning_text(cls, message: dict[str, Any]) -> str:
+        """Extract displayable reasoning/thought text from a persisted assistant message.
+
+        Returns the first non-empty value among ``reasoning_content`` (the
+        canonical field used by DeepSeek / Moonshot and the post-#16892
+        chat-completions normalizer) and ``reasoning`` (used by the codex
+        event projector and several other transports). Both keys are
+        actively written by live code paths, so neither branch is
+        deprecated — they cover different transports rather than old vs.
+        new sessions.
+        """
+        for key in ("reasoning_content", "reasoning"):
+            text = cls._flatten_history_text(message.get(key))
+            if text:
+                return text
         return ""
 
     @staticmethod
@@ -826,6 +856,11 @@ class HermesACPAgent(acp.Agent):
                 content=block,
             )
         return None
+
+    @staticmethod
+    def _history_thought_update(text: str) -> AgentThoughtChunk:
+        """Build an ACP history replay update for an assistant thought."""
+        return acp.update_agent_thought_text(text)
 
     @staticmethod
     def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -858,9 +893,10 @@ class HermesACPAgent(acp.Agent):
 
         Zed's ACP history UI calls ``session/load`` after the user picks an item
         from the Agents sidebar. The agent must then replay the full conversation
-        as user/assistant chunks plus reconstructed tool-call start/completion
-        notifications; merely restoring server-side state makes Hermes remember
-        context, but leaves the editor looking like a clean thread.
+        as user/assistant chunks, thinking-mode thought chunks, plus reconstructed
+        tool-call start/completion notifications; merely restoring server-side
+        state makes Hermes remember context, but leaves the editor looking like a
+        clean thread.
         """
         if not self._conn or not state.history:
             return
@@ -882,24 +918,37 @@ class HermesACPAgent(acp.Agent):
         for message in state.history:
             role = str(message.get("role") or "")
 
-            if role in {"user", "assistant"}:
+            if role == "user":
+                text = self._history_message_text(message)
+                if text:
+                    update = self._history_message_update(role=role, text=text)
+                    if update is not None and not await _send(update):
+                        return
+                continue
+
+            if role == "assistant":
+                thought = self._history_reasoning_text(message)
+                if thought and not await _send(self._history_thought_update(thought)):
+                    return
+
                 text = self._history_message_text(message)
                 if text:
                     update = self._history_message_update(role=role, text=text)
                     if update is not None and not await _send(update):
                         return
 
-            if role == "assistant" and isinstance(message.get("tool_calls"), list):
-                for tool_call in message["tool_calls"]:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    tool_call_id = self._history_tool_call_id(tool_call)
-                    if not tool_call_id:
-                        continue
-                    tool_name, args = self._history_tool_call_name_args(tool_call)
-                    active_tool_calls[tool_call_id] = (tool_name, args)
-                    if not await _send(build_tool_start(tool_call_id, tool_name, args)):
-                        return
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        tool_call_id = self._history_tool_call_id(tool_call)
+                        if not tool_call_id:
+                            continue
+                        tool_name, args = self._history_tool_call_name_args(tool_call)
+                        active_tool_calls[tool_call_id] = (tool_name, args)
+                        if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                            return
                 continue
 
             if role == "tool":

@@ -467,6 +467,53 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
+_XIAOMI_MIMO_MODEL_PREFIXES = (
+    "mimo-",
+    "mimo_",
+    "xiaomi-mimo-",
+    "xiaomi_mimo_",
+)
+
+
+def _model_name_is_xiaomi_mimo(model: str | None) -> bool:
+    """Return True when *model* belongs to the Xiaomi MiMo family."""
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Check bare prefixes after stripping the deepest namespace component.
+    if "/" in m:
+        leaf = m.rsplit("/", 1)[-1]
+    else:
+        leaf = m
+    if leaf.startswith(_XIAOMI_MIMO_MODEL_PREFIXES):
+        return True
+    # Defence-in-depth: catch deeper-namespaced forms like
+    # ``vendor/sub/mimo-v3`` that a single rsplit may not cover when
+    # the provider layer inserts its own prefix.
+    return "/mimo-" in m or "/xiaomi-mimo-" in m
+
+
+def _is_xiaomi_mimo_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:
+    """Return True for Xiaomi MiMo Anthropic-compatible endpoints.
+
+    MiMo thinking mode follows the same replay contract as Kimi/DeepSeek: when
+    conversation history contains an assistant tool call, the full
+    reasoning_content from that assistant message must be passed back on
+    subsequent turns. In the Anthropic Messages protocol this is represented
+    as an unsigned ``thinking`` block before the ``tool_use`` block.
+
+    See hermes-agent#24465, #24726.
+    """
+    if _model_name_is_xiaomi_mimo(model):
+        return True
+    for _domain in ("xiaomimimo.com", "mimo.com"):
+        if base_url_host_matches(base_url or "", _domain):
+            return True
+    return False
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1479,11 +1526,12 @@ def convert_messages_to_anthropic(
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
 
-    When *model* is provided and matches the Kimi / Moonshot family (or
-    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
-    synthesised from ``reasoning_content`` are preserved on replayed
-    assistant tool-call messages — Kimi requires the field to exist, even
-    if empty.
+    When *model* / *base_url* identifies a provider with strict thinking
+    replay validation (Kimi / Moonshot, DeepSeek /anthropic, Xiaomi MiMo),
+    unsigned thinking blocks synthesised from ``reasoning_content`` are
+    preserved on replayed assistant tool-call messages.  These providers
+    require the prior reasoning payload to round-trip when thinking mode is
+    enabled.
     """
     system = None
     result = []
@@ -1532,15 +1580,17 @@ def convert_messages_to_anthropic(
                     "name": fn.get("name", ""),
                     "input": parsed_args,
                 })
-            # Kimi's /coding endpoint (Anthropic protocol) requires assistant
-            # tool-call messages to carry reasoning_content when thinking is
-            # enabled server-side.  Preserve it as a thinking block so Kimi
-            # can validate the message history.  See hermes-agent#13848.
+            # Strict thinking-replay providers (Kimi / Moonshot, DeepSeek
+            # /anthropic, Xiaomi MiMo) require assistant tool-call messages to
+            # carry the prior reasoning payload when thinking mode is enabled.
+            # Preserve Hermes's provider-facing reasoning_content as an
+            # unsigned Anthropic ``thinking`` block so the upstream can
+            # validate the message history on the next request.  See
+            # hermes-agent#13848, #16748, #24465.
             #
-            # Accept empty string "" — _copy_reasoning_content_for_api()
-            # injects "" as a tier-3 fallback for Kimi tool-call messages
-            # that had no reasoning.  Kimi requires the field to exist, even
-            # if empty.
+            # Accept empty/blank strings — _copy_reasoning_content_for_api()
+            # injects a single-space fallback for strict thinking providers
+            # when stale or cross-provider history lacks real reasoning.
             #
             # Prepend (not append): Anthropic protocol requires thinking
             # blocks before text and tool_use blocks.
@@ -1557,6 +1607,25 @@ def convert_messages_to_anthropic(
             )
             if isinstance(reasoning_content, str) and not _already_has_thinking:
                 blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
+            elif (
+                (
+                    _is_kimi_family_endpoint(base_url, model)
+                    or _is_deepseek_anthropic_endpoint(base_url)
+                    or _is_xiaomi_mimo_anthropic_endpoint(base_url, model)
+                )
+                and not _already_has_thinking
+                and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in blocks)
+            ):
+                # Strict thinking-replay providers (MiMo, Kimi, DeepSeek)
+                # require every assistant tool-use turn to carry a thinking
+                # block — even when the persisted history has no
+                # reasoning_content at all (e.g. sessions migrated from
+                # another provider or replayed from Anthropic-format dumps
+                # that predate the thinking-replay fix).  Inject a
+                # single-space placeholder so the upstream API does not
+                # reject the replay with HTTP 400.  See hermes-agent#24465
+                # and #24726 (akaDRJ live repro).
+                blocks.insert(0, {"type": "thinking", "thinking": " "})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
@@ -1750,10 +1819,12 @@ def convert_messages_to_anthropic(
     # synthesised from reasoning_content round-trip on subsequent turns when
     # thinking is enabled.  Signed Anthropic blocks still have to be stripped
     # (neither endpoint can validate Anthropic's signatures); unsigned blocks
-    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    # are preserved.  See hermes-agent#13848 (Kimi), #16748 (DeepSeek),
+    # #24465 (Xiaomi MiMo).
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
+        or _is_xiaomi_mimo_anthropic_endpoint(base_url, model)
     )
 
     last_assistant_idx = None

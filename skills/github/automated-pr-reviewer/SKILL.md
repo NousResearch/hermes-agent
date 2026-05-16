@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [GitHub, Code-Review, Automation, Pull-Requests, Cron]
+    tags: [GitHub, Code-Review, Automation, Pull-Requests, Cron, review]
     related_skills: [github-code-review, cronjob]
 ---
 
@@ -28,11 +28,14 @@ This skill sets up a scheduled workflow that monitors GitHub repository Pull Req
 Use the built-in `cronjob` tool to schedule this workflow. For example, to run it every hour:
 
 ```python
-cronjob("create", {
-    "name": "jules-github-pr-reviewer",
-    "schedule": "0 * * * *",
-    "command": "hermes run automated-pr-reviewer"
-})
+cronjob(
+    "create",
+    {
+        "name": "jules-github-pr-reviewer",
+        "schedule": "0 * * * *",
+        "command": "hermes run automated-pr-reviewer",
+    },
+)
 ```
 
 ## The Workflow Script

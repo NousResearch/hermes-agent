@@ -68,7 +68,7 @@
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
-    ready: "Assigned and waiting for a dispatcher tick",
+    ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
     done: "Completed",
@@ -2048,6 +2048,7 @@
     };
 
     const progress = t.progress;
+    const needsAssignee = t.status === "ready" && !t.assignee;
 
     return h("div", {
       ref: cardRef,
@@ -2118,6 +2119,13 @@
                   title: `${progress.done} of ${progress.total} child tasks done`,
                 }, `${progress.done}/${progress.total}`)
               : null,
+            needsAssignee
+              ? h(Badge, {
+                  variant: "outline",
+                  className: "hermes-kanban-needs-assignee",
+                  title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
+                }, tx(i18n, "needsAssignee", "Needs assignee"))
+              : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
@@ -2126,7 +2134,9 @@
               ? h("span", { className: "hermes-kanban-assignee",
                             title: `Assigned to Hermes profile @${t.assignee}` }, "@", t.assignee)
               : h("span", { className: "hermes-kanban-unassigned",
-                            title: "No profile assigned. The dispatcher will pick one from available profiles when the task is Ready." },
+                            title: needsAssignee
+                              ? tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.")
+                              : "No profile assigned." },
                   tx(i18n, "unassigned", "unassigned")),
             t.comment_count > 0
               ? h("span", { className: "hermes-kanban-count",

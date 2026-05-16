@@ -226,6 +226,37 @@ class TestGetModelContextLengthHonorsOverride:
         assert ctx == DEFAULT_FALLBACK_CONTEXT
 
 
+class TestContextCompressorCustomProviderContextLength:
+    def test_forwards_custom_provider_overrides_to_context_resolver(self):
+        """Built-in compression should honor custom_providers per-model context_length.
+
+        This covers auxiliary.compression using a named custom provider: the
+        resolver already understands custom provider overrides, but the
+        compressor must forward the custom_providers list for that override to
+        be visible during startup.
+        """
+        from agent.context_compressor import ContextCompressor
+
+        custom = [
+            {
+                "name": "aiclient2api-gemini-cli",
+                "base_url": "http://aiclient2api:3000/gemini/v1",
+                "models": {"gemini-3-pro": {"context_length": 1_000_000}},
+            }
+        ]
+
+        compressor = ContextCompressor(
+            model="gemini-3-pro",
+            base_url="http://aiclient2api:3000/gemini/v1",
+            provider="custom:aiclient2api-gemini-cli",
+            custom_providers=custom,
+            quiet_mode=True,
+        )
+
+        assert compressor.context_length == 1_000_000
+        assert compressor.threshold_tokens == 500_000
+
+
 class TestContextProbeTiers:
     def test_256k_is_top_tier_and_default(self):
         """The stepdown probe starts at 256K and 256K is the new default."""

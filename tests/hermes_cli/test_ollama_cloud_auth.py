@@ -26,6 +26,8 @@ class TestOllamaCloudCredentials:
         monkeypatch.setenv("OLLAMA_API_KEY", "test-ollama-key-12345")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
 
         # Mock config to return custom provider with ollama base_url
         mock_config = {

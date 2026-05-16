@@ -353,6 +353,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

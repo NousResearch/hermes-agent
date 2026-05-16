@@ -1421,6 +1421,7 @@ def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
     monkeypatch.setattr(
         rp,
         "load_config",

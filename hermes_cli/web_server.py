@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -52,7 +53,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -79,12 +80,60 @@ _log = logging.getLogger(__name__)
 app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
-# Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+# Session token for protecting sensitive dashboard endpoints.
+#
+# The token is injected into the SPA HTML so only the legitimate web UI can use
+# it.  Keep it stable across dashboard process restarts: the Chat tab's Retry
+# path reconnects with the already-injected token, and a process-local token
+# would force a manual page refresh after every restart.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+_DASHBOARD_SESSION_TOKEN_FILE = "dashboard_session_token"
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+
+
+def _dashboard_session_token_path() -> Path:
+    return get_hermes_home() / _DASHBOARD_SESSION_TOKEN_FILE
+
+
+def _load_or_create_dashboard_session_token() -> str:
+    """Return a local dashboard session token that survives process restarts."""
+    path = _dashboard_session_token_path()
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if len(existing) >= 32:
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                # Best-effort on platforms/filesystems that do not support POSIX modes.
+                pass
+            return existing
+    except FileNotFoundError:
+        pass
+    except OSError:
+        _log.warning("Could not read dashboard session token file", exc_info=True)
+
+    token = secrets.token_urlsafe(32)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(token + "\n")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            # Best-effort on platforms/filesystems that do not support POSIX modes.
+            pass
+    except OSError:
+        # Keep the dashboard usable even if HERMES_HOME is temporarily not
+        # writable; restart recovery degrades to process-local in that case.
+        _log.warning("Could not persist dashboard session token; using process-local token", exc_info=True)
+    return token
+
+
+_SESSION_TOKEN = _load_or_create_dashboard_session_token()
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -159,6 +208,39 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _host_without_port(host_value: str) -> str:
+    """Return a lower-case host value with any port suffix removed.
+
+    Fully-qualified DNS names may arrive with a trailing dot (for example
+    ``biff.tail460c2.ts.net.``). Treat that as the same exact hostname for the
+    operator allowlist without widening to subdomains or wildcards.
+    """
+    h = host_value.strip()
+    if h.startswith("["):
+        # IPv6 bracketed — port (if any) follows "]:"
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()  # strip brackets
+        return h.strip("[]").lower()
+    host = h.rsplit(":", 1)[0] if ":" in h else h
+    return host.rstrip(".").lower()
+
+
+def _dashboard_allowed_hosts_from_env() -> frozenset[str]:
+    """Exact hostnames explicitly allowed by the dashboard operator.
+
+    HERMES_DASHBOARD_ALLOWED_HOSTS is comma-separated. Entries are normalised
+    to lower-case and may include a port suffix, which is stripped so the
+    comparison remains exact on hostname only.
+    """
+    allowed_hosts = set()
+    for entry in os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "").split(","):
+        host = _host_without_port(entry)
+        if host:
+            allowed_hosts.add(host)
+    return frozenset(allowed_hosts)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -176,17 +258,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Plain hosts/v4:
     #   localhost:9119
     #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _host_without_port(host_header)
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -194,10 +266,15 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names plus operator-provided exact
+    # allowlist entries for deployments intentionally exposed through a trusted
+    # reverse proxy hostname (for example Tailscale/Caddy).
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return (
+            host_only in _LOOPBACK_HOST_VALUES
+            or host_only in _dashboard_allowed_hosts_from_env()
+        )
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -637,6 +714,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "session_quota_recommendation": _cockpit_session_quota_recommendation(),
+        "biff_operating_mode": _cockpit_biff_operating_mode(),
     }
 
 
@@ -791,6 +870,804 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             db.close()
     except Exception:
         _log.exception("GET /api/sessions failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _cockpit_biff_operating_mode() -> Dict[str, Any]:
+    """Read-only active Biff quota/economy mode for Cockpit badges."""
+
+    try:
+        from gateway.session_hygiene import resolve_biff_operating_mode
+
+        path = get_config_path()
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+        mode = resolve_biff_operating_mode(cfg or {}, "cockpit")
+        return mode.to_dict()
+    except Exception:
+        try:
+            from gateway.session_hygiene import resolve_biff_operating_mode
+
+            return resolve_biff_operating_mode({}, "cockpit").to_dict()
+        except Exception:
+            return {"name": "normal", "label": "Normal", "description": "Full Biff behavior with default context/tool-output hygiene only."}
+
+
+_COCKPIT_SIGNALS_SCAN_PAGE_SIZE = 200
+_COCKPIT_SIGNALS_MAX_SCAN_SESSIONS = 1000
+_COCKPIT_SIGNALS_MAX_MESSAGE_SESSIONS_PER_LANE = 25
+_COCKPIT_TRANSCRIPT_WINDOW_LIMIT = 200
+_COCKPIT_TRANSCRIPT_WINDOW_KIND = "recent"
+_COCKPIT_TRANSCRIPT_TOTAL_SCOPE = "bounded_recent_window"
+
+
+def _cockpit_transcript_window_metadata() -> Dict[str, Any]:
+    return {
+        "kind": _COCKPIT_TRANSCRIPT_WINDOW_KIND,
+        "bounded": True,
+        "window_limit": _COCKPIT_TRANSCRIPT_WINDOW_LIMIT,
+        "total_scope": _COCKPIT_TRANSCRIPT_TOTAL_SCOPE,
+    }
+
+
+def _cockpit_session_quota_recommendation_from_entries(entries: List[Any]) -> Optional[Dict[str, Any]]:
+    """Return the highest current session-size recommendation for Cockpit.
+
+    Read-only projection over gateway session metadata.  This never mutates
+    sessions or performs reset/model/provider actions.
+    """
+
+    try:
+        from gateway.session_hygiene import build_session_quota_recommendation
+    except Exception:
+        return None
+
+    best = None
+    best_updated_at = None
+    for entry in entries:
+        prompt_tokens = int(getattr(entry, "last_prompt_tokens", 0) or 0)
+        rec = build_session_quota_recommendation(
+            session_id=str(getattr(entry, "session_id", "") or ""),
+            prompt_tokens=prompt_tokens,
+            warned_thresholds=None,
+        )
+        if rec is None:
+            continue
+        updated_at = getattr(entry, "updated_at", None)
+        if best is None or rec.threshold > best.threshold or (
+            rec.threshold == best.threshold and updated_at and (best_updated_at is None or updated_at > best_updated_at)
+        ):
+            best = rec
+            best_updated_at = updated_at
+
+    if best is None:
+        return None
+    payload = best.to_dict()
+    raw_dedupe = str(payload.get("dedupe_key") or "")
+    digest = hashlib.sha256(raw_dedupe.encode("utf-8")).hexdigest()[:16]
+    payload["dedupe_key"] = f"session-quota-public:{best.threshold}:{digest}"
+    return payload
+
+
+def _cockpit_session_quota_recommendation() -> Optional[Dict[str, Any]]:
+    try:
+        from gateway.config import load_gateway_config
+        from gateway.session import SessionStore
+
+        cfg = load_gateway_config()
+        store = SessionStore(cfg.sessions_dir, cfg)
+        store._ensure_loaded()
+        return _cockpit_session_quota_recommendation_from_entries(list(store._entries.values()))
+    except Exception:
+        _log.debug("cockpit session quota recommendation unavailable", exc_info=True)
+        return None
+
+
+def _cockpit_raw_session_id(session: Dict[str, Any]) -> Optional[str]:
+    session_id = session.get("session_id") or session.get("id")
+    return str(session_id) if session_id else None
+
+
+def _cockpit_safe_dashboard_session_id(session: Dict[str, Any]) -> Optional[str]:
+    """Return a dashboard-safe SessionDB id for non-platform sessions only.
+
+    Gateway/platform sessions often encode chat/user/thread identifiers in the
+    SessionDB id or related canonical key. BIF-494 lane snapshots are display
+    lanes, not routing handles, so platform ids stay omitted. CLI/local
+    dashboard session ids are already exposed by existing dashboard session APIs
+    and may be included when they do not look like compound platform keys.
+    """
+    session_id = session.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+
+    source = str(session.get("source") or "").strip().lower()
+    platform = str(session.get("platform") or "").strip().lower()
+    non_platform_sources = {"", "cli", "local", "web", "dashboard"}
+    if (source or platform) and (source not in non_platform_sources or platform not in non_platform_sources):
+        return None
+    if any(separator in session_id for separator in (":", "|", "\0")):
+        return None
+    return session_id
+
+
+def _cockpit_get_recent_messages(db: Any, session_id: str, limit: int) -> list[Dict[str, Any]]:
+    """Read a bounded recent transcript slice without requiring full replay."""
+    safe_limit = max(0, int(limit or 0))
+    if safe_limit <= 0:
+        return []
+    get_recent = getattr(db, "get_recent_messages", None)
+    if callable(get_recent):
+        return list(get_recent(session_id, limit=safe_limit))
+    return list(db.get_messages(session_id)[-safe_limit:])
+
+
+_COCKPIT_NAMED_AGENT_ROLES = {"biff", "forge", "vex", "quill", "ranger"}
+
+
+def _session_agent_role(session: Dict[str, Any]) -> Optional[str]:
+    for key in ("agent_role", "role", "subagent_role"):
+        value = str(session.get(key) or "").strip().lower()
+        if value in _COCKPIT_NAMED_AGENT_ROLES:
+            return value
+    title = str(session.get("title") or session.get("name") or "").strip().lower()
+    for role in _COCKPIT_NAMED_AGENT_ROLES:
+        if title == role or title.startswith(f"{role} ") or title.startswith(f"[{role}]"):
+            return role
+    return None
+
+
+def _is_named_role_session(session: Dict[str, Any]) -> bool:
+    return _session_agent_role(session) in _COCKPIT_NAMED_AGENT_ROLES
+
+
+def _is_continuation_child(parent: Dict[str, Any], child: Dict[str, Any]) -> bool:
+    if not parent or not child:
+        return False
+    if str(child.get("delegate_kind") or "").strip().lower() == "delegate":
+        return False
+    if _is_named_role_session(child):
+        return False
+    parent_reason = str(parent.get("end_reason") or "").strip().lower()
+    child_kind = str(child.get("delegate_kind") or "").strip().lower()
+    if child_kind == "continuation":
+        return True
+    if parent_reason not in {"compression", "model", "model_switch", "model-reset", "model_reset"}:
+        return False
+    try:
+        parent_end = float(parent.get("ended_at") or 0)
+        child_start = float(child.get("started_at") or 0)
+    except Exception:
+        return False
+    return parent_end > 0 and child_start >= parent_end
+
+
+def _list_cockpit_sessions_for_lanes(db: Any, *, limit: int, offset: int) -> list[Dict[str, Any]]:
+    sessions = list(db.list_sessions_rich(limit=limit, offset=offset))
+    seen = {_cockpit_raw_session_id(session) for session in sessions}
+    remaining = max(0, limit - len(sessions))
+    if remaining <= 0:
+        return sessions
+    try:
+        total_count = int(db.session_count() or 0)
+        if total_count <= offset + len(sessions):
+            return sessions
+        total_sessions = min(total_count, _COCKPIT_SIGNALS_MAX_SCAN_SESSIONS)
+    except Exception:
+        total_sessions = _COCKPIT_SIGNALS_MAX_SCAN_SESSIONS
+    page_size = _COCKPIT_SIGNALS_SCAN_PAGE_SIZE
+    for scan_offset in range(0, total_sessions, page_size):
+        try:
+            page = list(db.list_sessions_rich(limit=page_size, offset=scan_offset, include_children=True))
+        except TypeError:
+            break
+        if not page:
+            break
+        for session in page:
+            session_id = _cockpit_raw_session_id(session)
+            if not session_id or session_id in seen:
+                continue
+            if not _is_named_role_session(session):
+                continue
+            seen.add(session_id)
+            sessions.append(session)
+            remaining -= 1
+            if remaining <= 0:
+                return sessions
+    return sessions
+
+
+class CockpitSendIntentRequest(BaseModel):
+    lane_alias: str
+    idempotency_key: str
+    message_text: str
+
+
+_COCKPIT_SEND_SERVICE = None
+_COCKPIT_LANE_RESOLVER = None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cockpit_channel_directory_loader() -> Dict[str, Any]:
+    from gateway.channel_directory import load_directory
+
+    return load_directory()
+
+
+def _build_cockpit_gateway_adapter():
+    from hermes_cli.cockpit_send import CockpitGatewayDeliveryAdapter
+
+    return CockpitGatewayDeliveryAdapter()
+
+
+def _cockpit_send_config():
+    from hermes_cli.cockpit_send import CockpitSendConfig
+
+    return CockpitSendConfig(
+        send_enabled=_env_bool("HERMES_COCKPIT_SEND_ENABLED", False),
+        fake_gateway_enabled=_env_bool("HERMES_COCKPIT_SEND_FAKE_GATEWAY_ENABLED", False),
+        real_gateway_enabled=_env_bool("HERMES_COCKPIT_SEND_REAL_GATEWAY_ENABLED", False),
+        kill_switch=_env_bool("HERMES_COCKPIT_SEND_KILL_SWITCH", True),
+        attachments_enabled=False,
+        voice_enabled=False,
+    )
+
+
+def _get_cockpit_lane_resolver():
+    global _COCKPIT_LANE_RESOLVER
+    if _COCKPIT_LANE_RESOLVER is None:
+        from hermes_cli.cockpit_send import CockpitLaneResolver
+
+        _COCKPIT_LANE_RESOLVER = CockpitLaneResolver(directory_loader=_cockpit_channel_directory_loader)
+    return _COCKPIT_LANE_RESOLVER
+
+
+def _get_cockpit_send_service():
+    global _COCKPIT_SEND_SERVICE
+    if _COCKPIT_SEND_SERVICE is None:
+        from hermes_cli.cockpit_send import CockpitSendService
+
+        _COCKPIT_SEND_SERVICE = CockpitSendService(config=_cockpit_send_config(), gateway_adapter=_build_cockpit_gateway_adapter())
+    return _COCKPIT_SEND_SERVICE
+
+
+@app.get("/api/cockpit/capabilities")
+async def get_cockpit_capabilities():
+    """Read-only capability metadata for protected cockpit dashboard APIs."""
+    from hermes_cli.cockpit import COCKPIT_SCHEMA_VERSION
+
+    config = _cockpit_send_config()
+    risky_send_enabled = bool(config.send_enabled and config.real_gateway_enabled and not config.kill_switch)
+    resolver = _get_cockpit_lane_resolver()
+    allowed_lanes = resolver.list_allowed_lanes() if risky_send_enabled else []
+
+    return {
+        "schema_version": COCKPIT_SCHEMA_VERSION,
+        "read_only": not risky_send_enabled,
+        "input_enabled": True,
+        "control_enabled": False,
+        "external_send_enabled": risky_send_enabled,
+        "routing_enabled": risky_send_enabled,
+        "voice_enabled": False,
+        "attachments_enabled": False,
+        "local_chat": {
+            "enabled": True,
+            "transport": "dashboard_pty",
+            "endpoint": "/api/pty",
+            "scope": "local_dashboard_only",
+        },
+        "endpoints": {
+            "/api/cockpit/capabilities": {
+                "methods": ["GET"],
+                "description": "Read cockpit capability metadata.",
+            },
+            "/api/cockpit/lanes": {
+                "methods": ["GET"],
+                "description": "List read-only display-safe lane snapshots.",
+                "query": {"limit": 50, "offset": 0},
+            },
+            "/api/cockpit/signals": {
+                "methods": ["GET"],
+                "description": "Project real lane snapshots/messages/events into read-only cockpit signals.",
+                "query": {"limit": 50, "message_limit": 20},
+            },
+            "/api/cockpit/agent-activity": {
+                "methods": ["GET"],
+                "description": "Read Biff/Forge/Vex/Quill/Ranger activity from role-tagged sessions; no transcripts or controls.",
+                "query": {"limit": 50, "message_limit": 8},
+                "actions_enabled": False,
+                "mutation_enabled": False,
+                "external_delivery_enabled": False,
+            },
+            "/api/cockpit/events": {
+                "methods": ["GET"],
+                "description": "Stream read-only display-safe cockpit lane events as SSE.",
+                "content_type": "text/event-stream",
+            },
+            "/api/cockpit/n8n-checks": {
+                "methods": ["GET"],
+                "description": "Read fixture-backed, display-safe daily n8n check outputs.",
+                "actions_enabled": False,
+                "external_delivery_enabled": False,
+            },
+            "/api/cockpit/automation-health": {
+                "methods": ["GET"],
+                "description": "Read simplified automation health from safe local sources only.",
+                "actions_enabled": False,
+                "external_delivery_enabled": False,
+                "mutation_enabled": False,
+            },
+            "/api/cockpit/daily-ops-radar": {
+                "methods": ["GET"],
+                "description": "Read latest Hermes Daily Ops Radar cron output and safe upgrade-review gate metadata.",
+                "actions_enabled": False,
+                "external_delivery_enabled": False,
+                "upgrade_mutation_enabled": False,
+            },
+            "/api/cockpit/quota": {
+                "methods": ["GET"],
+                "description": "Read quota/session-reset recommendation from local session metadata.",
+                "actions_enabled": False,
+                "auto_reset_enabled": False,
+            },
+            "/api/cockpit/self-work-handoff": {
+                "methods": ["GET"],
+                "description": "Read latest restart-safe self-work handoff/resume brief.",
+                "actions_enabled": False,
+                "mutation_enabled": False,
+            },
+            "/api/cockpit/lanes/{lane_id}/messages": {
+                "methods": ["GET"],
+                "description": "Read a display-safe recent-window transcript projection for one cockpit lane.",
+                "query": {"limit": 100, "offset": 0},
+                "window": _cockpit_transcript_window_metadata(),
+            },
+            "/api/cockpit/send-intents": {
+                "methods": ["POST"],
+                "description": "Risky external send intent for explicitly resolved Cockpit lanes.",
+                "enabled": risky_send_enabled,
+            },
+        },
+        "risky_send": {
+            "enabled": risky_send_enabled,
+            "kill_switch_active": config.kill_switch,
+            "delivery_mode": "gateway_direct" if config.real_gateway_enabled else "disabled",
+            "allowed_lanes": allowed_lanes,
+            "requires_idempotency": True,
+            "audit_enabled": True,
+        },
+        "transcript_window": _cockpit_transcript_window_metadata(),
+        "observer": {
+            "enabled": True,
+            "read_only": True,
+            "status": "process_local_best_effort",
+        },
+    }
+
+
+@app.get("/api/cockpit/n8n-checks")
+async def get_cockpit_n8n_checks():
+    """Return fixture-backed, read-only daily n8n check outputs for Cockpit Ops."""
+    from hermes_cli.cockpit_n8n import get_n8n_daily_checks_payload
+
+    return get_n8n_daily_checks_payload()
+
+
+@app.get("/api/cockpit/automation-health")
+async def get_cockpit_automation_health():
+    """Return simplified read-only automation health from safe local sources."""
+    try:
+        from hermes_cli.cockpit_automation_health import get_automation_health_payload
+
+        return get_automation_health_payload()
+    except Exception:
+        _log.exception("GET /api/cockpit/automation-health failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/daily-ops-radar")
+async def get_cockpit_daily_ops_radar():
+    """Return latest Daily Ops Radar cron output; read-only and display-safe."""
+    try:
+        from hermes_cli.cockpit_daily_ops import get_daily_ops_radar_payload
+
+        return get_daily_ops_radar_payload()
+    except Exception:
+        _log.exception("GET /api/cockpit/daily-ops-radar failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/quota")
+async def get_cockpit_quota():
+    """Return read-only quota/session-reset recommendation metadata."""
+    try:
+        from hermes_cli.cockpit_quota import get_quota_recommendation_payload
+
+        return get_quota_recommendation_payload()
+    except Exception:
+        _log.exception("GET /api/cockpit/quota failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/self-work-handoff")
+async def get_cockpit_self_work_handoff():
+    """Return the latest restart-safe self-work handoff resume brief."""
+    try:
+        from hermes_cli.self_work_handoff import cockpit_self_work_handoff_payload
+
+        return cockpit_self_work_handoff_payload()
+    except Exception:
+        _log.exception("GET /api/cockpit/self-work-handoff failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/cockpit/send-intents")
+async def submit_cockpit_send_intent(payload: CockpitSendIntentRequest):
+    """Submit a risky external send intent after explicit lane resolution."""
+    from hermes_cli.cockpit import COCKPIT_SCHEMA_VERSION
+
+    resolver = _get_cockpit_lane_resolver()
+    resolved = resolver.resolve(payload.lane_alias)
+    if not resolved.ok or resolved.lane is None:
+        status_code = 409 if resolved.status == "ambiguous_lane" else 404
+        return JSONResponse(status_code=status_code, content=resolved.to_display_dict())
+
+    service = _get_cockpit_send_service()
+    result = service.submit_send_intent(
+        actor_user_id="dashboard_session",
+        lane=resolved.lane,
+        idempotency_key=payload.idempotency_key,
+        message_text=payload.message_text,
+    )
+    body = {
+        "schema_version": COCKPIT_SCHEMA_VERSION,
+        **result,
+        "lane": resolved.lane.display(),
+        "audit": [
+            {("idempotency_hash" if key == "idempotency_key_hash" else key): value for key, value in event.to_display_dict().items()}
+            for event in service.store.audit_events[-10:]
+        ],
+    }
+    status_code = 200 if result.get("ok") else (409 if result.get("status") == "idempotency_conflict" else 400)
+    return JSONResponse(status_code=status_code, content=body)
+
+
+@app.get("/api/cockpit/events")
+async def stream_cockpit_events(request: Request, limit: int = 0):
+    """Stream protected, read-only, display-safe cockpit events as SSE."""
+    from hermes_cli.cockpit import (
+        COCKPIT_SCHEMA_VERSION,
+        normalize_gateway_observer_event,
+        subscribe_cockpit_events,
+        unsubscribe_cockpit_events,
+    )
+    import queue as _queue
+
+    safe_limit = max(0, min(limit, 1000))
+    subscriber = subscribe_cockpit_events(replay_recent=True)
+    initial_event = normalize_gateway_observer_event(
+        {
+            "type": "status",
+            "source": "cockpit",
+            "canonical_id": "events",
+            "status": "connected",
+            "updated_at": time.time(),
+        }
+    )
+
+    def _sse(payload: Dict[str, Any], event_name: str = "message") -> str:
+        return f"event: {event_name}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+    async def _event_stream():
+        emitted = 0
+        try:
+            yield _sse(initial_event)
+            emitted += 1
+            while safe_limit <= 0 or emitted < safe_limit:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.to_thread(subscriber.get, True, 15.0)
+                except _queue.Empty:
+                    heartbeat = {
+                        "type": "lane.status",
+                        "schema_version": COCKPIT_SCHEMA_VERSION,
+                        "payload": {
+                            "lane_id": "lane_cockpit_events",
+                            "status": "heartbeat",
+                            "updated_at": time.time(),
+                        },
+                    }
+                    yield _sse(heartbeat, event_name="heartbeat")
+                    emitted += 1
+                    continue
+                yield _sse(event)
+                emitted += 1
+        finally:
+            unsubscribe_cockpit_events(subscriber)
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/cockpit/signals")
+async def get_cockpit_signals(limit: int = 50, message_limit: int = 20):
+    """Return protected, read-only cockpit signal projection over real observations."""
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.cockpit import (
+            build_lane_snapshot_from_session,
+            coalesce_logical_lane_snapshots,
+            default_logical_lane_ids,
+            mark_ambiguous_aliases,
+            project_cockpit_signals,
+            recent_cockpit_events,
+        )
+
+        safe_limit = max(0, min(limit, 200))
+        safe_message_limit = max(0, min(message_limit, 100))
+        db = SessionDB()
+        try:
+            sessions = _list_cockpit_sessions_for_lanes(db, limit=safe_limit, offset=0)
+            raw_lanes = [build_lane_snapshot_from_session(session) for session in sessions]
+            sessions_by_lane: Dict[str, list[Dict[str, Any]]] = {}
+            seen_session_ids_by_lane: Dict[str, set[str]] = {}
+            for session, raw_lane in zip(sessions, raw_lanes):
+                lane_id = str(raw_lane.get("lane_id") or "")
+                session_id = _cockpit_raw_session_id(session)
+                if not lane_id or not session_id:
+                    continue
+                sessions_by_lane.setdefault(lane_id, []).append(session)
+                seen_session_ids_by_lane.setdefault(lane_id, set()).add(session_id)
+
+            logical_lane_ids = set(default_logical_lane_ids())
+            logical_lane_ids.update(
+                str(raw_lane.get("lane_id") or "")
+                for raw_lane in raw_lanes
+                if raw_lane.get("logical") is True and raw_lane.get("lane_id")
+            )
+            if logical_lane_ids:
+                total_sessions = min(int(db.session_count() or 0), _COCKPIT_SIGNALS_MAX_SCAN_SESSIONS)
+                page_size = _COCKPIT_SIGNALS_SCAN_PAGE_SIZE
+                for scan_offset in range(0, total_sessions, page_size):
+                    scan_limit = min(page_size, total_sessions - scan_offset)
+                    try:
+                        page_sessions = db.list_sessions_rich(limit=scan_limit, offset=scan_offset, include_children=True)
+                    except TypeError:
+                        page_sessions = db.list_sessions_rich(limit=scan_limit, offset=scan_offset)
+                    if not page_sessions:
+                        break
+                    page_raw_lanes = [build_lane_snapshot_from_session(session) for session in page_sessions]
+                    for session, raw_lane in zip(page_sessions, page_raw_lanes):
+                        lane_id = str(raw_lane.get("lane_id") or "")
+                        if lane_id not in logical_lane_ids:
+                            continue
+                        session_id = _cockpit_raw_session_id(session)
+                        if not session_id:
+                            continue
+                        seen_session_ids = seen_session_ids_by_lane.setdefault(lane_id, set())
+                        if session_id in seen_session_ids:
+                            continue
+                        seen_session_ids.add(session_id)
+                        sessions_by_lane.setdefault(lane_id, []).append(session)
+                        raw_lanes.append(raw_lane)
+
+            lanes = mark_ambiguous_aliases(coalesce_logical_lane_snapshots(raw_lanes))
+            messages_by_lane: Dict[str, list] = {}
+            for lane in lanes:
+                lane_id = str(lane.get("lane_id") or "")
+                if not lane_id or safe_message_limit <= 0:
+                    continue
+                lane_messages = []
+                lane_sessions = sorted(
+                    sessions_by_lane.get(lane_id, []),
+                    key=lambda session: str(session.get("updated_at") or ""),
+                    reverse=True,
+                )[:_COCKPIT_SIGNALS_MAX_MESSAGE_SESSIONS_PER_LANE]
+                for session in lane_sessions:
+                    session_id = _cockpit_raw_session_id(session)
+                    if not session_id:
+                        continue
+                    lane_messages.extend(_cockpit_get_recent_messages(db, session_id, safe_message_limit))
+                lane_messages.sort(key=lambda message: str(message.get("timestamp") or message.get("created_at") or ""))
+                messages_by_lane[lane_id] = lane_messages[-safe_message_limit:]
+            return project_cockpit_signals(
+                lanes,
+                messages_by_lane=messages_by_lane,
+                events=recent_cockpit_events(),
+                now=time.time(),
+            )
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/cockpit/signals failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/agent-activity")
+async def get_cockpit_agent_activity(limit: int = 50, message_limit: int = 8):
+    """Return protected, read-only named-agent activity visibility projection."""
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.cockpit import (
+            build_lane_snapshot_from_session,
+            coalesce_logical_lane_snapshots,
+            mark_ambiguous_aliases,
+            project_agent_activity,
+        )
+
+        safe_limit = max(0, min(limit, 200))
+        safe_message_limit = max(0, min(message_limit, 20))
+        db = SessionDB()
+        try:
+            sessions = _list_cockpit_sessions_for_lanes(db, limit=safe_limit, offset=0)
+            raw_lanes = [build_lane_snapshot_from_session(session) for session in sessions]
+            sessions_by_lane: Dict[str, list[Dict[str, Any]]] = {}
+            for session, raw_lane in zip(sessions, raw_lanes):
+                lane_id = str(raw_lane.get("lane_id") or "")
+                session_id = _cockpit_raw_session_id(session)
+                if not lane_id or not session_id:
+                    continue
+                sessions_by_lane.setdefault(lane_id, []).append(session)
+            lanes = mark_ambiguous_aliases(coalesce_logical_lane_snapshots(raw_lanes))
+            messages_by_lane: Dict[str, list] = {}
+            for lane in lanes:
+                lane_id = str(lane.get("lane_id") or "")
+                if not lane_id or safe_message_limit <= 0:
+                    continue
+                lane_messages = []
+                lane_sessions = sorted(
+                    sessions_by_lane.get(lane_id, []),
+                    key=lambda session: str(session.get("updated_at") or ""),
+                    reverse=True,
+                )[:_COCKPIT_SIGNALS_MAX_MESSAGE_SESSIONS_PER_LANE]
+                for session in lane_sessions:
+                    session_id = _cockpit_raw_session_id(session)
+                    if session_id:
+                        lane_messages.extend(_cockpit_get_recent_messages(db, session_id, safe_message_limit))
+                lane_messages.sort(key=lambda message: str(message.get("timestamp") or message.get("created_at") or ""))
+                messages_by_lane[lane_id] = lane_messages[-safe_message_limit:]
+            return project_agent_activity(lanes, messages_by_lane=messages_by_lane, now=time.time())
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/cockpit/agent-activity failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/lanes")
+async def get_cockpit_lanes(limit: int = 50, offset: int = 0):
+    """List protected, read-only, display-safe cockpit lane snapshots."""
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.cockpit import (
+            COCKPIT_SCHEMA_VERSION,
+            build_lane_snapshot_from_session,
+            coalesce_logical_lane_snapshots,
+            mark_ambiguous_aliases,
+        )
+
+        safe_limit = max(0, min(limit, 200))
+        safe_offset = max(0, offset)
+        db = SessionDB()
+        try:
+            sessions = _list_cockpit_sessions_for_lanes(db, limit=safe_limit, offset=safe_offset)
+            total = db.session_count()
+            lanes = []
+            for session in sessions:
+                lane = build_lane_snapshot_from_session(session)
+                safe_session_id = _cockpit_safe_dashboard_session_id(session)
+                if safe_session_id and lane.get("logical") is not True:
+                    lane["session_id"] = safe_session_id
+                lanes.append(lane)
+            lanes = mark_ambiguous_aliases(coalesce_logical_lane_snapshots(lanes))
+            return {
+                "schema_version": COCKPIT_SCHEMA_VERSION,
+                "lanes": lanes,
+                "total": total,
+                "limit": safe_limit,
+                "offset": safe_offset,
+            }
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/cockpit/lanes failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/cockpit/lanes/{lane_id}/messages")
+async def get_cockpit_lane_messages(lane_id: str, limit: int = 100, offset: int = 0):
+    """Return a display-safe, read-only transcript projection for one cockpit lane."""
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.cockpit import (
+            COCKPIT_SCHEMA_VERSION,
+            build_lane_snapshot_from_session,
+            coalesce_logical_lane_snapshots,
+            mark_ambiguous_aliases,
+            project_message_for_cockpit,
+        )
+
+        safe_limit = max(0, min(limit, 200))
+        safe_offset = max(0, offset)
+        page_size = _COCKPIT_SIGNALS_SCAN_PAGE_SIZE
+        max_scan_sessions = _COCKPIT_SIGNALS_MAX_SCAN_SESSIONS
+        max_message_sessions = _COCKPIT_SIGNALS_MAX_MESSAGE_SESSIONS_PER_LANE
+        db = SessionDB()
+        try:
+            total_sessions = min(int(db.session_count() or 0), max_scan_sessions)
+            matched_sessions: list[Dict[str, Any]] = []
+            matched_raw_lanes: list[Dict[str, Any]] = []
+            seen_session_ids: set[str] = set()
+            for scan_offset in range(0, total_sessions, page_size):
+                scan_limit = min(page_size, total_sessions - scan_offset)
+                try:
+                    sessions = db.list_sessions_rich(limit=scan_limit, offset=scan_offset, include_children=True)
+                except TypeError:
+                    sessions = db.list_sessions_rich(limit=scan_limit, offset=scan_offset)
+                if not sessions:
+                    break
+                raw_lanes = [build_lane_snapshot_from_session(session) for session in sessions]
+                for session, raw_lane in zip(sessions, raw_lanes):
+                    if raw_lane.get("lane_id") != lane_id:
+                        continue
+                    session_id = _cockpit_raw_session_id(session)
+                    if not session_id or session_id in seen_session_ids:
+                        continue
+                    seen_session_ids.add(session_id)
+                    matched_sessions.append(session)
+                    matched_raw_lanes.append(raw_lane)
+                    if len(matched_sessions) >= max_message_sessions:
+                        break
+                if len(matched_sessions) >= max_message_sessions:
+                    break
+
+            matched_lanes = mark_ambiguous_aliases(coalesce_logical_lane_snapshots(matched_raw_lanes))
+            matched_lane = next((lane for lane in matched_lanes if lane.get("lane_id") == lane_id), None)
+            if matched_lane is None or not matched_sessions:
+                raise HTTPException(status_code=404, detail="Cockpit lane not found")
+
+            raw_messages = []
+            per_session_read_limit = _COCKPIT_TRANSCRIPT_WINDOW_LIMIT
+            for matched_session in matched_sessions[:max_message_sessions]:
+                session_id = _cockpit_raw_session_id(matched_session)
+                if session_id:
+                    raw_messages.extend(_cockpit_get_recent_messages(db, session_id, per_session_read_limit))
+            raw_messages.sort(key=lambda message: str(message.get("timestamp") or message.get("created_at") or ""))
+            raw_messages = raw_messages[-_COCKPIT_TRANSCRIPT_WINDOW_LIMIT:]
+            total = len(raw_messages)
+            page = raw_messages[safe_offset : safe_offset + safe_limit]
+            messages = [project_message_for_cockpit(message) for message in page]
+            window = _cockpit_transcript_window_metadata()
+            return {
+                "schema_version": COCKPIT_SCHEMA_VERSION,
+                "lane_id": lane_id,
+                "messages": messages,
+                "total": total,
+                "limit": safe_limit,
+                "offset": safe_offset,
+                "window": window,
+                "bounded": window["bounded"],
+                "window_limit": window["window_limit"],
+                "total_scope": window["total_scope"],
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/cockpit/lanes/%s/messages failed", lane_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -2362,13 +3239,17 @@ def _session_latest_descendant(session_id: str):
         rows = []
         if conn is not None:
             raw_rows = conn.execute(
-                "SELECT id, parent_session_id, started_at FROM sessions"
+                "SELECT id, parent_session_id, started_at, ended_at, end_reason, agent_role, delegate_kind FROM sessions"
             ).fetchall()
             for row in raw_rows:
                 rows.append({
                     "id": row_get(row, "id", 0),
                     "parent_session_id": row_get(row, "parent_session_id", 1),
                     "started_at": row_get(row, "started_at", 2),
+                    "ended_at": row_get(row, "ended_at", 3),
+                    "end_reason": row_get(row, "end_reason", 4),
+                    "agent_role": row_get(row, "agent_role", 5),
+                    "delegate_kind": row_get(row, "delegate_kind", 6),
                 })
         else:
             rows = db.list_sessions_rich(limit=10000, offset=0)
@@ -2390,8 +3271,14 @@ def _session_latest_descendant(session_id: str):
         path = [sid]
         seen = {sid}
 
+        rows_by_id = {row.get("id"): row for row in rows if row.get("id")}
         while children.get(current):
-            candidates = [r for r in children[current] if r.get("id") not in seen]
+            parent_row = rows_by_id.get(current) or db.get_session(current) or {}
+            candidates = [
+                r
+                for r in children[current]
+                if r.get("id") not in seen and _is_continuation_child(parent_row, r)
+            ]
             if not candidates:
                 break
             candidates.sort(key=started, reverse=True)
@@ -3124,8 +4011,10 @@ async def get_models_analytics(days: int = 30):
 # web/src/pages/ChatPage.tsx).
 #
 # Auth: ``?token=<session_token>`` query param (browsers can't set
-# Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
-# REST.  Localhost-only — we defensively reject non-loopback clients even
+# Authorization on the WS upgrade).  Same local dashboard ``_SESSION_TOKEN`` as
+# REST.  The token is persisted under Hermes home so browser Retry can recover
+# after dashboard process restarts without requiring a manual page refresh.
+# Localhost-only — we defensively reject non-loopback clients even
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
 
@@ -3161,17 +4050,25 @@ def _is_public_bind() -> bool:
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
-    """Check if the WebSocket client IP is acceptable.
+    """Check if the WebSocket peer is acceptable for dashboard chat.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Allows loopback always and allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth). For trusted reverse-proxy
+    deployments that keep the dashboard bound to loopback, also allow exact
+    operator-configured dashboard hostnames from HERMES_DASHBOARD_ALLOWED_HOSTS.
+    This preserves the existing token gate and avoids widening to arbitrary
+    non-loopback origins.
     """
     if _is_public_bind():
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+    host_header = ws.headers.get("host", "") if ws.headers else ""
+    host_only = _host_without_port(host_header)
+    return bool(host_only and host_only in _dashboard_allowed_hosts_from_env())
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3204,6 +4101,11 @@ def _resolve_chat_argv(
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
+    # Clean-chat is a dashboard/Cockpit PTY affordance only when the Tools
+    # sidecar rail is present. Strip inherited parent values so native CLI or
+    # dashboard PTY sessions without a sidecar cannot accidentally hide inline
+    # tool details.
+    env.pop("HERMES_TUI_COCKPIT_CLEAN_CHAT", None)
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
@@ -3221,6 +4123,11 @@ def _resolve_chat_argv(
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+        # The dashboard's right Tools rail is now the primary tool-activity
+        # surface. Mark only PTY sessions that have that sidecar rail so the
+        # TUI can hide duplicate inline tool detail without changing native
+        # CLI semantics or transport behavior.
+        env["HERMES_TUI_COCKPIT_CLEAN_CHAT"] = "1"
 
     return list(argv), str(cwd) if cwd else None, env
 
@@ -3553,6 +4460,9 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/assets/', f'href="{prefix}/assets/')
             html = html.replace('src="/assets/', f'src="{prefix}/assets/')
             html = html.replace('href="/favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="/cockpit.webmanifest"', f'href="{prefix}/cockpit.webmanifest"')
+            html = html.replace('href="/cockpit-icon.svg"', f'href="{prefix}/cockpit-icon.svg"')
+            html = html.replace('href="/cockpit-apple-touch-icon.png"', f'href="{prefix}/cockpit-apple-touch-icon.png"')
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
@@ -3589,6 +4499,9 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
+        if full_path == "api" or full_path.startswith("api/"):
+            return JSONResponse({"error": "not found"}, status_code=404)
+
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)

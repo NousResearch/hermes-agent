@@ -5,6 +5,68 @@ import path from "path";
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
+const VENDOR_CHUNKS: { name: string; packages: string[] }[] = [
+  {
+    name: "vendor-react-runtime",
+    packages: ["react", "react-dom", "react-router-dom", "scheduler"],
+  },
+  {
+    name: "vendor-noui",
+    packages: [
+      "@nous-research/ui",
+      "class-variance-authority",
+      "clsx",
+      "tailwind-merge",
+      "unicode-animations",
+    ],
+  },
+  {
+    name: "vendor-icons",
+    packages: ["lucide-react"],
+  },
+  {
+    name: "vendor-terminal",
+    packages: ["@xterm"],
+  },
+  {
+    name: "vendor-visualization",
+    packages: [
+      "@observablehq/plot",
+      "@react-three/fiber",
+      "d3-*",
+      "gsap",
+      "its-fine",
+      "leva",
+      "maath",
+      "react-reconciler",
+      "three",
+      "use-sync-external-store",
+      "zustand",
+    ],
+  },
+];
+
+function matchesPackage(id: string, packageName: string): boolean {
+  if (packageName.endsWith("*")) {
+    return id.includes(`/node_modules/${packageName.slice(0, -1)}`);
+  }
+
+  const marker = `/node_modules/${packageName}/`;
+  return id.includes(marker) || id.endsWith(`/node_modules/${packageName}`);
+}
+
+function manualChunks(id: string): string | undefined {
+  if (!id.includes("/node_modules/")) return undefined;
+
+  for (const chunk of VENDOR_CHUNKS) {
+    if (chunk.packages.some((pkg) => matchesPackage(id, pkg))) {
+      return chunk.name;
+    }
+  }
+
+  return "vendor-misc";
+}
+
 /**
  * In production the Python `hermes dashboard` server injects a one-shot
  * session token into `index.html` (see `hermes_cli/web_server.py`). The
@@ -92,6 +154,13 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Keep app routes as Vite/Rollup route chunks while moving large,
+        // shared node_modules dependencies out of the main index chunk.
+        manualChunks,
+      },
+    },
   },
   server: {
     proxy: {

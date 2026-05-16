@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Biff Cockpit">
+  <defs>
+    <radialGradient id="g" cx="30%" cy="12%" r="85%">
+      <stop offset="0" stop-color="#79d8c4" stop-opacity="0.88"/>
+      <stop offset="0.42" stop-color="#17130f"/>
+      <stop offset="1" stop-color="#050403"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="92" x2="420" y1="92" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f2ece2"/>
+      <stop offset="0.52" stop-color="#79d8c4"/>
+      <stop offset="1" stop-color="#8d86c9"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#g)"/>
+  <circle cx="256" cy="256" r="154" fill="none" stroke="url(#ring)" stroke-width="24" opacity="0.92"/>
+  <path d="M164 266c35-73 65-109 93-109 29 0 60 36 91 109-34 73-64 109-91 109-29 0-60-36-93-109Z" fill="#050403" fill-opacity="0.62" stroke="#f2ece2" stroke-opacity="0.7" stroke-width="12"/>
+  <circle cx="256" cy="266" r="38" fill="#79d8c4"/>
+  <circle cx="256" cy="266" r="14" fill="#f2ece2"/>
+</svg>

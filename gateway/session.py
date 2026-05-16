@@ -54,6 +54,19 @@ def _hash_chat_id(value: str) -> str:
     return _hash_id(value)
 
 
+def _truncate_prompt_field(value: str, *, max_chars: int = 320) -> str:
+    """Keep dynamic gateway prompt fields bounded while preserving the lead.
+
+    Discord channel topics can be long and are injected on every turn for that
+    channel. The leading text normally carries the purpose/rules; a marker makes
+    the cap explicit instead of silently dropping context.
+    """
+    if len(value) <= max_chars:
+        return value
+    omitted = len(value) - max_chars
+    return f"{value[:max_chars].rstrip()} … [truncated {omitted} chars]"
+
+
 from .config import (
     Platform,
     GatewayConfig,
@@ -291,7 +304,10 @@ def build_session_context_prompt(
 
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
-        lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+        channel_topic = context.source.chat_topic
+        if context.source.platform == Platform.DISCORD:
+            channel_topic = _truncate_prompt_field(channel_topic)
+        lines.append(f"**Channel Topic:** {channel_topic}")
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
@@ -452,6 +468,7 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+    quota_warning_thresholds: List[int] = None
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -506,6 +523,7 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "quota_warning_thresholds": sorted(set(self.quota_warning_thresholds or [])),
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -562,6 +580,7 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            quota_warning_thresholds=list(data.get("quota_warning_thresholds") or []),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
@@ -958,6 +977,7 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        quota_warning_threshold: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -968,6 +988,10 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if quota_warning_threshold is not None:
+                    thresholds = set(entry.quota_warning_thresholds or [])
+                    thresholds.add(int(quota_warning_threshold))
+                    entry.quota_warning_thresholds = sorted(thresholds)
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:

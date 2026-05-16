@@ -71,6 +71,40 @@
   --theme-line-height: 1.55;
   --theme-letter-spacing: 0;
 
+  /* Cockpit executive dark system (BIF-528): warm near-black shell,
+     charcoal cards, muted off-white text, restrained semantic accents. */
+  --cockpit-shell: #050403;
+  --cockpit-shell-raised: #0c0907;
+  --cockpit-card: #17130f;
+  --cockpit-card-raised: #1d1813;
+  --cockpit-panel: #120f0c;
+  --cockpit-text: #f2ece2;
+  --cockpit-muted: #9a9187;
+  --cockpit-muted-soft: #6f675f;
+  --cockpit-border: rgba(242, 236, 226, 0.12);
+  --cockpit-border-strong: rgba(242, 236, 226, 0.2);
+  --cockpit-active: #79d8c4;
+  --cockpit-active-soft: rgba(121, 216, 196, 0.14);
+  --cockpit-healthy: #78c7ac;
+  --cockpit-warning: #d6a451;
+  --cockpit-warning-soft: rgba(214, 164, 81, 0.14);
+  --cockpit-risk: #d87474;
+  --cockpit-risk-soft: rgba(216, 116, 116, 0.13);
+  --cockpit-secondary: #8d86c9;
+  --cockpit-secondary-soft: rgba(141, 134, 201, 0.12);
+  --cockpit-shadow: rgba(0, 0, 0, 0.42);
+
+  /* Cockpit Conflux typography: compact, crisp, mono-forward command-center
+     stack using only bundled/local/system-safe fonts; no remote imports. */
+  --cockpit-font-command: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", "Cascadia Code", Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --cockpit-font-body: var(--cockpit-font-command);
+  --cockpit-font-display: var(--cockpit-font-command);
+  --cockpit-type-size: clamp(12.5px, 0.76rem + 0.12vw, 14px);
+  --cockpit-line-height-compact: 1.42;
+  --cockpit-line-height-dense: 1.32;
+  --cockpit-micro-label-tracking: 0.2em;
+  --cockpit-title-tracking: -0.035em;
+
   /* Layout tokens. */
   --radius: 0.5rem;
   --theme-radius: 0.5rem;
@@ -142,10 +176,10 @@ code { font-size: 0.875rem; }
   --color-muted-foreground: color-mix(in srgb, var(--midground-base) 55%, transparent);
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-accent-foreground: var(--midground);
-  --color-destructive: #fb2c36;
-  --color-destructive-foreground: #ffffff;
-  --color-success: #4ade80;
-  --color-warning: #ffbd38;
+  --color-destructive: var(--cockpit-risk);
+  --color-destructive-foreground: var(--cockpit-text);
+  --color-success: var(--cockpit-healthy);
+  --color-warning: var(--cockpit-warning);
   --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
   --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
   --color-ring: var(--midground);
@@ -227,3 +261,75 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Cockpit Conflux typography — visual-only mono-forward treatment for the
+   command surface. It intentionally uses only system/bundled-safe font names. */
+.cockpit-typography {
+  font-family: var(--cockpit-font-body);
+  font-size: var(--cockpit-type-size);
+  line-height: var(--cockpit-line-height-compact);
+  letter-spacing: -0.012em;
+  font-variant-numeric: tabular-nums slashed-zero;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.cockpit-typography :where(input, textarea, select, button) {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.cockpit-typography :where(p, li, td, th) {
+  line-height: var(--cockpit-line-height-compact);
+}
+
+.cockpit-title {
+  font-family: var(--cockpit-font-display);
+  letter-spacing: var(--cockpit-title-tracking);
+  line-height: var(--cockpit-line-height-dense);
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.cockpit-micro-label {
+  font-family: var(--cockpit-font-command);
+  font-size: 0.64rem;
+  line-height: var(--cockpit-line-height-dense);
+  letter-spacing: var(--cockpit-micro-label-tracking);
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.cockpit-meta {
+  font-family: var(--cockpit-font-command);
+  line-height: var(--cockpit-line-height-dense);
+  letter-spacing: 0.015em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.cockpit-mono-copy {
+  font-family: var(--cockpit-font-command);
+  line-height: var(--cockpit-line-height-compact);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* Cockpit iPhone hardening: xterm should fit its container instead of forcing
+   the whole dashboard wider than the visual viewport. */
+.hermes-chat-xterm-host,
+.hermes-chat-xterm-host .xterm,
+.hermes-chat-xterm-host .xterm-screen,
+.hermes-chat-xterm-host .xterm-viewport {
+  max-width: 100%;
+}
+
+.hermes-chat-xterm-host .xterm {
+  min-width: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 520px) {
+  .hermes-chat-xterm-host .xterm-helpers,
+  .hermes-chat-xterm-host .xterm textarea {
+    max-width: 100vw;
+  }
+}

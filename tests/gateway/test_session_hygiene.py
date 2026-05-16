@@ -21,6 +21,14 @@ from agent.model_metadata import estimate_messages_tokens_rough
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
+from gateway.session_hygiene import (
+    biff_operating_mode_prompt,
+    cap_hygiene_history,
+    cap_model_facing_tool_outputs,
+    collect_token_source_metrics,
+    filter_biff_mode_enabled_toolsets,
+    resolve_biff_operating_mode,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +88,227 @@ class HygieneCaptureAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 # Detection threshold tests (model-aware, unified with compression config)
 # ---------------------------------------------------------------------------
+
+
+class TestSessionHygieneCaps:
+    def test_caps_history_to_recent_messages(self):
+        history = _make_history(10, content_size=10)
+        capped, stats = cap_hygiene_history(history, max_messages=4)
+
+        assert len(capped) == 4
+        assert stats.original_messages == 10
+        assert stats.capped_messages == 4
+        assert stats.capped is True
+        assert capped[0]["timestamp"] == "t6"
+
+    def test_caps_large_tool_outputs_more_aggressively(self):
+        history = [
+            {"role": "user", "content": "short"},
+            {"role": "tool", "content": "x" * 100},
+            {"role": "assistant", "content": "y" * 100},
+            {"role": "user", "content": "done"},
+        ]
+
+        capped, stats = cap_hygiene_history(
+            history,
+            max_content_chars=80,
+            max_tool_output_chars=30,
+        )
+
+        assert len(capped[1]["content"]) <= 80  # suffix can consume full small caps
+        assert "truncated by gateway session hygiene" in capped[1]["content"]
+        assert "truncated by gateway session hygiene" in capped[2]["content"]
+        assert stats.tool_outputs_truncated == 1
+        assert stats.content_truncated == 1
+
+    def test_model_facing_tool_cap_preserves_pairing_and_references(self):
+        raw_tool_output = "HEAD evidence\n" + ("x" * 120) + "\nTAIL evidence"
+        history = [
+            {"role": "user", "content": "please inspect"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": raw_tool_output},
+            {"role": "assistant", "content": "I saw it"},
+        ]
+
+        capped, stats = cap_model_facing_tool_outputs(
+            history,
+            session_id="sess-abc",
+            transcript_ref="/tmp/hermes/sess-abc.jsonl",
+            max_tool_output_chars=80,
+            preview_chars=24,
+        )
+
+        assert [m["role"] for m in capped] == ["user", "assistant", "tool", "assistant"]
+        assert capped[1]["tool_calls"] == history[1]["tool_calls"]
+        assert capped[2]["tool_call_id"] == "call_123"
+        assert capped[2]["content"] != raw_tool_output
+        assert "session_id=sess-abc" in capped[2]["content"]
+        assert "message_index=2" in capped[2]["content"]
+        assert "transcript_ref=/tmp/hermes/sess-abc.jsonl" in capped[2]["content"]
+        assert "sha256=" in capped[2]["content"]
+        assert "HEAD evidence" in capped[2]["content"]
+        assert "TAIL evidence" in capped[2]["content"]
+        assert "retrieve the exact raw tool output" in capped[2]["content"]
+        assert stats.tool_outputs_capped_count == 1
+        assert stats.tool_output_chars_before == len(raw_tool_output)
+        assert stats.tool_output_chars_after == len(capped[2]["content"])
+        assert stats.tool_output_chars_omitted == len(raw_tool_output) - 48
+
+    def test_model_facing_tool_cap_does_not_mutate_full_history(self):
+        history = [
+            {"role": "assistant", "tool_calls": [{"id": "call_a"}], "content": ""},
+            {"role": "tool", "tool_call_id": "call_a", "content": "raw" * 80},
+        ]
+        original = [dict(m) for m in history]
+
+        capped, _stats = cap_model_facing_tool_outputs(
+            history,
+            session_id="sess-1",
+            transcript_ref="sqlite:sess-1",
+            max_tool_output_chars=40,
+        )
+
+        assert history == original
+        assert capped is not history
+        assert capped[1] is not history[1]
+        assert history[1]["content"] == "raw" * 80
+
+    def test_capped_marker_redacts_secret_like_values_from_preview(self):
+        raw_tool_output = (
+            "OPENAI_API_KEY=sk-" + "a" * 48 + "\n"
+            + "middle" * 40
+            + "\nGITHUB_TOKEN=ghp_" + "b" * 36
+        )
+
+        capped, _stats = cap_model_facing_tool_outputs(
+            [{"role": "tool", "tool_call_id": "call_secret", "content": raw_tool_output}],
+            session_id="sess-secret",
+            transcript_ref="sqlite:sess-secret",
+            max_tool_output_chars=60,
+            preview_chars=80,
+        )
+
+        marker = capped[0]["content"]
+        assert "sk-" not in marker
+        assert "ghp_" not in marker
+        assert "[REDACTED_SECRET_LIKE_VALUE]" in marker
+        assert "sha256=" in marker
+
+    def test_model_facing_tool_cap_uses_raw_transcript_index_when_provided(self):
+        history = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": "", "_transcript_message_index": 7},
+            {"role": "tool", "tool_call_id": "call_1", "content": "z" * 100, "_transcript_message_index": 8},
+        ]
+
+        capped, _stats = cap_model_facing_tool_outputs(
+            history,
+            session_id="sess-raw-index",
+            transcript_ref="/tmp/session_sess-raw-index.jsonl",
+            max_tool_output_chars=40,
+            preview_chars=10,
+        )
+
+        assert "message_index=8" in capped[1]["content"]
+        assert "message_index=1" not in capped[1]["content"]
+        assert "_transcript_message_index" not in capped[0]
+        assert "_transcript_message_index" not in capped[1]
+        assert history[1]["_transcript_message_index"] == 8
+
+    def test_token_source_metrics_include_tool_output_before_after_and_omitted(self):
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "calling", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "z" * 100},
+        ]
+        capped, cap_stats = cap_model_facing_tool_outputs(
+            history,
+            session_id="sess-metrics",
+            transcript_ref="sqlite:sess-metrics",
+            max_tool_output_chars=40,
+            preview_chars=10,
+        )
+
+        metrics = collect_token_source_metrics(
+            history,
+            capped,
+            cap_stats,
+            system_context_prompt="system prompt",
+            channel_prompt="channel",
+            tool_schema_chars=123,
+        )
+
+        assert metrics["history_user_chars"] == 5
+        assert metrics["history_assistant_chars"] == 7
+        assert metrics["history_tool_output_chars_before_cap"] == 100
+        assert metrics["history_tool_output_chars_after_cap"] == len(capped[2]["content"])
+        assert metrics["tool_outputs_capped_count"] == 1
+        assert metrics["tool_output_chars_omitted"] == 80
+        assert metrics["tool_schema_chars"] == 123
+        assert metrics["system_context_prompt_chars"] == len("system prompt")
+        assert metrics["channel_prompt_chars"] == len("channel")
+
+    def test_biff_operating_mode_resolution_and_prompt_preserve_core_contract(self, monkeypatch):
+        monkeypatch.delenv("HERMES_BIFF_MODE", raising=False)
+        cfg = {"biff": {"operating_mode": "economy", "platforms": {"discord": {"operating_mode": "evidence"}}}}
+
+        discord_mode = resolve_biff_operating_mode(cfg, "discord")
+        default_mode = resolve_biff_operating_mode(cfg, "slack")
+
+        assert discord_mode.name == "evidence-only"
+        assert default_mode.name == "economy"
+        prompt = biff_operating_mode_prompt(discord_mode)
+        assert "Do not change provider, model, account" in prompt
+        assert "persona, memory behavior, safety gates, or source-of-truth policy" in prompt
+        assert "Evidence-only" in prompt
+        assert "Tool access is restricted" in prompt
+
+    def test_evidence_only_filters_to_read_only_evidence_toolsets(self, monkeypatch):
+        monkeypatch.delenv("HERMES_BIFF_MODE", raising=False)
+        evidence_mode = resolve_biff_operating_mode({"biff": {"operating_mode": "evidence-only"}}, "discord")
+        economy_mode = resolve_biff_operating_mode({"biff": {"operating_mode": "economy"}}, "discord")
+        configured = ["terminal", "file", "search", "web", "homeassistant", "session_search", "vision", "browser"]
+
+        assert filter_biff_mode_enabled_toolsets(evidence_mode, configured) == [
+            "search",
+            "session_search",
+            "vision",
+            "web",
+        ]
+        assert filter_biff_mode_enabled_toolsets(economy_mode, configured) == sorted(configured)
+
+    def test_biff_mode_caps_model_facing_text_without_mutating_transcript(self):
+        mode = resolve_biff_operating_mode({"quota_economy": {"mode": "emergency"}}, "discord")
+        history = [
+            {"role": "user", "content": "u" * 9000},
+            {"role": "assistant", "content": "ok"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "z" * 5000},
+        ]
+
+        capped, stats = cap_model_facing_tool_outputs(
+            history,
+            session_id="sess-mode",
+            transcript_ref="sqlite:sess-mode",
+            max_tool_output_chars=mode.max_tool_output_chars,
+            preview_chars=mode.preview_chars,
+            max_message_content_chars=mode.max_message_content_chars,
+        )
+
+        assert history[0]["content"] == "u" * 9000
+        assert history[2]["content"] == "z" * 5000
+        assert "content capped by Biff operating mode" in capped[0]["content"]
+        assert "Gateway model-facing tool output capped" in capped[2]["content"]
+        assert stats.message_contents_capped_count == 1
+        assert stats.tool_outputs_capped_count == 1
 
 class TestSessionHygieneThresholds:
     """Test that the threshold logic correctly identifies large sessions.

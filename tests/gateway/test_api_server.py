@@ -305,6 +305,74 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_applies_biff_evidence_only_mode(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.delenv("HERMES_BIFF_MODE", raising=False)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {"provider": "test"})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "test-model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"biff": {"operating_mode": "normal"}})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_: {"terminal", "file", "browser", "search", "web", "session_search", "vision"},
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            ephemeral_system_prompt="caller system",
+            biff_operating_mode_override="evidence-only",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["max_iterations"] == 8
+        assert captured["enabled_toolsets"] == ["search", "session_search", "vision", "web"]
+        assert "caller system" in captured["ephemeral_system_prompt"]
+        assert "Active Biff operating mode is Evidence-only" in captured["ephemeral_system_prompt"]
+        assert "terminal" not in captured["enabled_toolsets"]
+
+    def test_create_agent_biff_mode_override_cannot_relax_config(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.delenv("HERMES_BIFF_MODE", raising=False)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {"provider": "test"})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "test-model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"biff": {"operating_mode": "evidence-only"}})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_: {"terminal", "file", "search", "web"},
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(
+            session_id="api-session",
+            biff_operating_mode_override="normal",
+        )
+
+        assert captured["max_iterations"] == 8
+        assert captured["enabled_toolsets"] == ["search", "web"]
+        assert "Active Biff operating mode is Evidence-only" in captured["ephemeral_system_prompt"]
+        assert "terminal" not in captured["enabled_toolsets"]
+        assert "file" not in captured["enabled_toolsets"]
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

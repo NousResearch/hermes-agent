@@ -275,6 +275,53 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Cockpit observer (read-only)
+  getCockpitCapabilities: () =>
+    fetchJSON<CockpitCapabilitiesResponse>("/api/cockpit/capabilities"),
+  getCockpitLanes: (params: { limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    qs.set("offset", String(params.offset ?? 0));
+    return fetchJSON<CockpitLanesResponse>(`/api/cockpit/lanes?${qs.toString()}`);
+  },
+  getCockpitSignals: (params: { limit?: number; message_limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    qs.set("message_limit", String(params.message_limit ?? 20));
+    return fetchJSON<CockpitSignalsResponse>(`/api/cockpit/signals?${qs.toString()}`);
+  },
+  getCockpitAgentActivity: (params: { limit?: number; message_limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    qs.set("message_limit", String(params.message_limit ?? 8));
+    return fetchJSON<CockpitAgentActivityResponse>(`/api/cockpit/agent-activity?${qs.toString()}`);
+  },
+  getCockpitLaneMessages: (
+    laneId: string,
+    params: { limit?: number; offset?: number } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 100));
+    qs.set("offset", String(params.offset ?? 0));
+    return fetchJSON<CockpitLaneMessagesResponse>(
+      `/api/cockpit/lanes/${encodeURIComponent(laneId)}/messages?${qs.toString()}`,
+    );
+  },
+  getCockpitN8nChecks: () =>
+    fetchJSON<CockpitN8nChecksResponse>("/api/cockpit/n8n-checks"),
+  getCockpitAutomationHealth: () =>
+    fetchJSON<CockpitAutomationHealthResponse>("/api/cockpit/automation-health"),
+  getCockpitDailyOpsRadar: () =>
+    fetchJSON<CockpitDailyOpsRadarResponse>("/api/cockpit/daily-ops-radar"),
+  getCockpitSelfWorkHandoff: () =>
+    fetchJSON<CockpitSelfWorkHandoffResponse>("/api/cockpit/self-work-handoff"),
+  sendCockpitIntent: (body: CockpitSendIntentRequest) =>
+    fetchJSON<CockpitSendIntentResponse>("/api/cockpit/send-intents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -356,6 +403,442 @@ export interface ActionStatusResponse {
   running: boolean;
 }
 
+export interface CockpitCapabilitiesResponse {
+  schema_version: number;
+  read_only: boolean;
+  input_enabled: boolean;
+  control_enabled: boolean;
+  external_send_enabled?: boolean;
+  routing_enabled?: boolean;
+  voice_enabled?: boolean;
+  attachments_enabled?: boolean;
+  local_chat?: {
+    enabled: boolean;
+    transport?: string;
+    endpoint?: string;
+    scope?: string;
+  };
+  risky_send?: {
+    enabled: boolean;
+    kill_switch_active: boolean;
+    delivery_mode?: string;
+    allowed_lanes?: CockpitResolvedLane[];
+    requires_idempotency?: boolean;
+    audit_enabled?: boolean;
+  };
+  endpoints: Record<string, unknown>;
+  transcript_window?: CockpitTranscriptWindow;
+  observer: {
+    enabled: boolean;
+    read_only: boolean;
+    status?: string;
+  };
+}
+
+export interface CockpitTranscriptWindow {
+  kind: "recent" | string;
+  bounded: boolean;
+  window_limit: number;
+  total_scope: "bounded_recent_window" | string;
+}
+
+export interface CockpitResolvedLane {
+  lane_alias: string;
+  lane_label: string;
+  platform: string;
+}
+
+export interface CockpitDispatchResult {
+  ok: boolean;
+  message_ref_hash?: string;
+  error_code?: string;
+  warnings?: string[];
+}
+
+export interface CockpitSendRecord {
+  schema_version: number;
+  send_record_id: string;
+  lane_alias: string;
+  lane_label: string;
+  platform: string;
+  status: string;
+  approval_policy: string;
+  dispatch_count: number;
+  gateway_request_id?: string | null;
+  dispatch_result?: CockpitDispatchResult | null;
+  error_code?: string | null;
+  content_preview_redacted: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CockpitSendAuditEvent {
+  event_type: string;
+  send_record_id: string;
+  idempotency_key_hash?: string;
+  actor_user_id_hash?: string | null;
+  approver_user_id_hash?: string | null;
+  lane_alias: string;
+  platform: string;
+  message_digest?: string;
+  content_preview_redacted: string;
+  approval_policy: string;
+  status: string;
+  gateway_request_id?: string | null;
+  dispatch_result?: CockpitDispatchResult | null;
+  error_code?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CockpitSendIntentRequest {
+  lane_alias: string;
+  idempotency_key: string;
+  message_text: string;
+}
+
+export interface CockpitSendIntentResponse {
+  schema_version?: number;
+  ok: boolean;
+  status: string;
+  lane?: CockpitResolvedLane | null;
+  record?: CockpitSendRecord | null;
+  audit?: CockpitSendAuditEvent[];
+  error_code?: string | null;
+  idempotent_replay?: boolean;
+}
+
+export interface CockpitLaneAlias {
+  alias: string;
+  display_only: boolean;
+  ambiguous?: boolean;
+  canonical_ref?: null;
+}
+
+export interface CockpitLane {
+  schema_version: number;
+  lane_id: string;
+  alias?: CockpitLaneAlias;
+  platform?: string | null;
+  chat_type?: string | null;
+  title?: string | null;
+  status?: string | null;
+  updated_at?: string | number | null;
+  completed_at?: string | number | null;
+  agent_role?: "biff" | "forge" | "vex" | "quill" | "ranger" | string | null;
+  role_label?: string | null;
+  delegate_kind?: "delegate" | "continuation" | string | null;
+  issue_identifier?: string | null;
+  goal?: string | null;
+  subagent_ref?: string | null;
+  session_id?: string;
+}
+
+export interface CockpitLanesResponse {
+  schema_version: number;
+  lanes: CockpitLane[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CockpitMessage {
+  role?: "user" | "assistant" | "system" | "tool" | string;
+  content?: string | null;
+  timestamp?: number;
+  created_at?: string;
+  status?: string;
+  source?: string;
+}
+
+export interface CockpitLaneMessagesResponse {
+  schema_version: number;
+  lane_id: string;
+  messages: CockpitMessage[];
+  total: number;
+  limit: number;
+  offset: number;
+  window?: CockpitTranscriptWindow;
+  bounded?: boolean;
+  window_limit?: number;
+  total_scope?: "bounded_recent_window" | string;
+}
+
+export interface CockpitSelfWorkChecklistStep {
+  label: string;
+  status: "done" | "current" | "pending" | "blocked" | "skipped" | string;
+}
+
+export interface CockpitSelfWorkHandoffRecord {
+  schema_version: number;
+  handoff_id: string;
+  created_at: string;
+  updated_at: string;
+  issue_identifier?: string | null;
+  linear_url?: string | null;
+  session_id?: string | null;
+  parent_session_id?: string | null;
+  goal?: string | null;
+  current_phase?: string | null;
+  last_action?: string | null;
+  next_safe_step?: string | null;
+  touched_files?: string[];
+  touched_routes?: string[];
+  completed_verification?: string[];
+  pending_verification?: string[];
+  known_failures?: string[];
+  running_processes?: string[];
+  operator_checklist?: {
+    title?: string;
+    current_index?: number | null;
+    max_steps?: number;
+    steps: CockpitSelfWorkChecklistStep[];
+  };
+  rendered_checklist?: string;
+}
+
+export interface CockpitSelfWorkHandoffResponse {
+  schema_version: number;
+  read_only: boolean;
+  actions_enabled: boolean;
+  mutation_enabled: boolean;
+  source: string;
+  has_handoff: boolean;
+  handoff?: CockpitSelfWorkHandoffRecord | null;
+}
+
+export interface CockpitN8nCheck {
+  id: string;
+  name: string;
+  status: string;
+  last_run: string;
+  next_schedule: string;
+  delivery: string;
+  auth: "configured" | "not_required" | "unknown" | string;
+  action_needed: string;
+  summary: string;
+  live_source?: "live" | "live_missing_workflow" | "live_no_execution" | "fixture_fallback" | string;
+  execution_status?: string;
+  last_started?: string;
+  last_completed?: string;
+  output_summary?: string;
+}
+
+export interface CockpitN8nChecksResponse {
+  schema_version: number;
+  read_only: boolean;
+  source: "n8n_live_latest_execution" | "fixture_bif_525_inventory" | string;
+  generated_at: number;
+  actions_enabled: boolean;
+  external_delivery_enabled: boolean;
+  live?: boolean;
+  fallback?: boolean;
+  stale?: boolean;
+  live_error?: string;
+  checks: CockpitN8nCheck[];
+}
+
+export interface CockpitAutomationHealthCard {
+  title: string;
+  bucket: "attention" | "healthy" | "stale_or_failing" | string;
+  summary: string;
+  last_checked: string;
+  source: string;
+  details?: string[];
+}
+
+export interface CockpitAutomationHealthResponse {
+  schema_version: number;
+  read_only: boolean;
+  actions_enabled: boolean;
+  mutation_enabled: boolean;
+  external_delivery_enabled: boolean;
+  generated_at: number;
+  reading_model: {
+    attention: string;
+    healthy: string;
+    stale_or_failing: string;
+    last_checked_source: string;
+  };
+  summary: {
+    attention: number;
+    healthy: number;
+    stale_or_failing: number;
+    headline: string;
+    last_checked: string;
+    source: string;
+  };
+  cards: CockpitAutomationHealthCard[];
+}
+
+export interface CockpitDailyOpsRadarCommit {
+  sha: string;
+  title: string;
+  files?: string;
+  text: string;
+}
+
+export interface CockpitDailyOpsRadarCategory {
+  label: string;
+  summary: string;
+  more_count?: number | null;
+  items: CockpitDailyOpsRadarCommit[];
+}
+
+export interface CockpitDailyOpsRadarUpgradeBrief {
+  question: string;
+  headline: string;
+  groups: Array<{
+    label: string;
+    summary: string;
+    examples: string[];
+  }>;
+  why_this_matters: string;
+}
+
+export interface CockpitDailyOpsRadarResponse {
+  schema_version: number;
+  read_only: boolean;
+  actions_enabled: boolean;
+  external_delivery_enabled: boolean;
+  generated_at: number;
+  source: string;
+  job: {
+    id: string;
+    name: string;
+    script: string;
+    enabled?: boolean | null;
+    state?: string | null;
+    status?: string | null;
+    schedule?: string | null;
+    last_run_at?: string | null;
+    next_run_at?: string | null;
+  };
+  summary: {
+    last_run?: string | null;
+    behind_count?: number | null;
+    relevant_change_count?: number | null;
+    behind_ref?: string | null;
+    repo?: string | null;
+    categories: CockpitDailyOpsRadarCategory[];
+    top_commits: CockpitDailyOpsRadarCommit[];
+    compare_command?: string | null;
+    source_file?: string;
+    source_mtime?: number | null;
+    upgrade_brief?: CockpitDailyOpsRadarUpgradeBrief | null;
+  };
+  raw_excerpt: string;
+  upgrade: {
+    brief?: CockpitDailyOpsRadarUpgradeBrief | null;
+    recommendation: {
+      question: "Should we upgrade?" | string;
+      label: "Upgrade now" | "Prepare review first" | "Wait" | "Do not upgrade" | string;
+      risk_level: "low" | "medium" | "high" | "unknown" | string;
+      rationale: string;
+      basis: string;
+      freshness: "fresh" | "stale" | "unknown" | string;
+      freshness_age_seconds?: number | null;
+      freshness_detail: string;
+      signals: string[];
+      behind_count?: number | null;
+      relevant_change_count?: number | null;
+    };
+    prepare_review: {
+      label: string;
+      enabled: boolean;
+      mutates: boolean;
+      method: string;
+      endpoint?: string | null;
+      status: string;
+      description: string;
+    };
+  };
+}
+
+export interface CockpitSignalSource {
+  lane_id?: string | null;
+  lane_title?: string | null;
+  platform?: string | null;
+  status?: string | null;
+  message_role?: string | null;
+  agent_role?: string | null;
+  role_label?: string | null;
+  delegate_kind?: string | null;
+  issue_identifier?: string | null;
+  goal?: string | null;
+  class?: "operational" | "sessiondb" | "event" | string;
+  freshness?: "operational" | "recent_context" | "archive" | string;
+}
+
+export interface CockpitSignalFreshness {
+  bucket: "operational" | "recent_context" | "archive" | string;
+  age_seconds?: number | null;
+  threshold_seconds?: number;
+  archive_threshold_seconds?: number;
+}
+
+export interface CockpitSignal {
+  schema_version: number;
+  id: string;
+  category: "now" | "needs_marco" | "stuck_failed" | "waiting" | "recently_completed" | "active_role_work" | string;
+  lane_id: string;
+  title: string;
+  source: CockpitSignalSource;
+  provenance: "lane_snapshot" | "lane_message" | "lane_event" | string;
+  timestamp?: string | number | null;
+  recency_label: string;
+  freshness?: CockpitSignalFreshness;
+  confidence: number;
+  reason: string;
+}
+
+export interface CockpitSignalCategory {
+  label: string;
+  empty_state: string;
+  signals: CockpitSignal[];
+}
+
+export interface CockpitSignalsResponse {
+  schema_version: number;
+  read_only: boolean;
+  generated_at: number;
+  categories: Record<string, CockpitSignalCategory>;
+  total: number;
+}
+
+export interface CockpitAgentActivityItem {
+  schema_version: number;
+  id: string;
+  lane_id: string;
+  agent_role: "biff" | "forge" | "vex" | "quill" | "ranger" | string;
+  role_label: string;
+  status: "running" | "completed" | "failed" | "blocked" | "waiting" | "stale" | string;
+  issue_identifier?: string | null;
+  goal?: string | null;
+  title?: string | null;
+  updated_at?: string | number | null;
+  completed_at?: string | number | null;
+  latest_evidence: string;
+  latest_evidence_role?: string | null;
+  recency_label: string;
+  freshness?: CockpitSignalFreshness;
+  delegate_kind?: "delegate" | "continuation" | string | null;
+  source?: { class?: string; freshness?: string };
+}
+
+export interface CockpitAgentActivityResponse {
+  schema_version: number;
+  read_only: boolean;
+  actions_enabled: boolean;
+  mutation_enabled: boolean;
+  external_delivery_enabled: boolean;
+  generated_at: number;
+  items: CockpitAgentActivityItem[];
+  total: number;
+  counts: Record<string, number>;
+  empty_state: string;
+}
+
 export interface PlatformStatus {
   error_code?: string;
   error_message?: string;
@@ -363,8 +846,28 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface SessionQuotaRecommendation {
+  threshold: number;
+  level: string;
+  prompt_tokens: number;
+  text: string;
+  dedupe_key: string;
+  context_length?: number;
+}
+
+export interface BiffOperatingMode {
+  name: string;
+  label: string;
+  description: string;
+  max_iterations?: number | null;
+  max_tool_output_chars?: number;
+  max_message_content_chars?: number | null;
+  preview_chars?: number;
+}
+
 export interface StatusResponse {
   active_sessions: number;
+  biff_operating_mode?: BiffOperatingMode;
   config_path: string;
   config_version: number;
   env_path: string;
@@ -378,6 +881,7 @@ export interface StatusResponse {
   hermes_home: string;
   latest_config_version: number;
   release_date: string;
+  session_quota_recommendation?: SessionQuotaRecommendation | null;
   version: string;
 }
 

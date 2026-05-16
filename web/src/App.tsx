@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -55,17 +57,6 @@ import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
-import ConfigPage from "@/pages/ConfigPage";
-import DocsPage from "@/pages/DocsPage";
-import EnvPage from "@/pages/EnvPage";
-import SessionsPage from "@/pages/SessionsPage";
-import LogsPage from "@/pages/LogsPage";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import ModelsPage from "@/pages/ModelsPage";
-import CronPage from "@/pages/CronPage";
-import ProfilesPage from "@/pages/ProfilesPage";
-import SkillsPage from "@/pages/SkillsPage";
-import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -89,6 +80,49 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   return <Navigate to="/sessions" replace />;
 }
 
+function RouteLoadingFallback() {
+  return (
+    <div
+      className="flex min-h-[12rem] min-w-0 items-center justify-center"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner />
+        <span>Loading page…</span>
+      </div>
+    </div>
+  );
+}
+
+function CockpitRouteLoadingFallback() {
+  return (
+    <div
+      className="flex min-h-dvh items-center justify-center bg-[var(--cockpit-shell)] text-[color-mix(in_srgb,var(--cockpit-text)_76%,transparent)]"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-sm">
+        <Spinner />
+        <span>Loading cockpit…</span>
+      </div>
+    </div>
+  );
+}
+
+const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
+const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
+const LogsPage = lazy(() => import("@/pages/LogsPage"));
+const CockpitPage = lazy(() => import("@/pages/CockpitPage"));
+const CronPage = lazy(() => import("@/pages/CronPage"));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
+const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
+const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
+const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
+const EnvPage = lazy(() => import("@/pages/EnvPage"));
+const DocsPage = lazy(() => import("@/pages/DocsPage"));
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
@@ -105,19 +139,20 @@ const CHAT_NAV_ITEM: NavItem = {
  * Routing still owns the URL so /chat deep-links, browser back/forward,
  * and nav highlight keep working.
  */
-const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
-  "/sessions": SessionsPage,
-  "/analytics": AnalyticsPage,
-  "/models": ModelsPage,
-  "/logs": LogsPage,
-  "/cron": CronPage,
-  "/skills": SkillsPage,
-  "/plugins": PluginsPage,
-  "/profiles": ProfilesPage,
-  "/config": ConfigPage,
-  "/env": EnvPage,
-  "/docs": DocsPage,
+const BUILTIN_ROUTES_CORE: Record<string, () => ReactNode> = {
+  "/": () => <RootRedirect />,
+  "/sessions": () => <SessionsPage />,
+  "/analytics": () => <AnalyticsPage />,
+  "/models": () => <ModelsPage />,
+  "/logs": () => <LogsPage />,
+  "/cockpit": () => <CockpitPage />,
+  "/cron": () => <CronPage />,
+  "/skills": () => <SkillsPage />,
+  "/plugins": () => <PluginsPage />,
+  "/profiles": () => <ProfilesPage />,
+  "/config": () => <ConfigPage />,
+  "/env": () => <EnvPage />,
+  "/docs": () => <DocsPage />,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -148,6 +183,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: Cpu,
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
+  { path: "/cockpit", label: "Cockpit", icon: Activity },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
@@ -243,7 +279,7 @@ function partitionSidebarNav(
 }
 
 function buildRoutes(
-  builtinRoutes: Record<string, ComponentType>,
+  builtinRoutes: Record<string, () => ReactNode>,
   manifests: PluginManifest[],
 ): Array<{
   key: string;
@@ -267,7 +303,7 @@ function buildRoutes(
     element: ReactNode;
   }> = [];
 
-  for (const [path, Component] of Object.entries(builtinRoutes)) {
+  for (const [path, renderBuiltin] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
     if (om) {
       routes.push({
@@ -276,7 +312,7 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({ key: `builtin:${path}`, path, element: renderBuiltin() });
     }
   }
 
@@ -314,6 +350,7 @@ export default function App() {
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isCockpitRoute = normalizedPath === "/cockpit" || normalizedPath === "/biff/cockpit";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
@@ -353,11 +390,15 @@ export default function App() {
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
   );
+  const cockpitOverriddenByPlugin = useMemo(
+    () => manifests.some((m) => m.tab.override === "/cockpit"),
+    [manifests],
+  );
 
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
+      ...(embeddedChat ? { "/chat": () => <ChatRouteSink /> } : {}),
     }),
     [embeddedChat],
   );
@@ -391,6 +432,62 @@ export default function App() {
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
+    if (!isCockpitRoute) return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const root = document.getElementById("root");
+    const previous = {
+      htmlOverflow: html.style.overflow,
+      htmlOverflowY: html.style.overflowY,
+      htmlHeight: html.style.height,
+      htmlMaxHeight: html.style.maxHeight,
+      bodyOverflow: body.style.overflow,
+      bodyOverflowY: body.style.overflowY,
+      bodyHeight: body.style.height,
+      bodyMinHeight: body.style.minHeight,
+      rootOverflow: root?.style.overflow ?? "",
+      rootHeight: root?.style.height ?? "",
+      rootMaxHeight: root?.style.maxHeight ?? "",
+      rootMinHeight: root?.style.minHeight ?? "",
+    };
+
+    html.dataset.cockpitScrollable = "true";
+    html.style.height = "auto";
+    html.style.maxHeight = "none";
+    html.style.overflow = "visible";
+    html.style.overflowY = "auto";
+    body.style.height = "auto";
+    body.style.minHeight = "100dvh";
+    body.style.overflow = "visible";
+    body.style.overflowY = "auto";
+    if (root) {
+      root.style.height = "auto";
+      root.style.minHeight = "100dvh";
+      root.style.maxHeight = "none";
+      root.style.overflow = "visible";
+    }
+
+    return () => {
+      delete html.dataset.cockpitScrollable;
+      html.style.overflow = previous.htmlOverflow;
+      html.style.overflowY = previous.htmlOverflowY;
+      html.style.height = previous.htmlHeight;
+      html.style.maxHeight = previous.htmlMaxHeight;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.overflowY = previous.bodyOverflowY;
+      body.style.height = previous.bodyHeight;
+      body.style.minHeight = previous.bodyMinHeight;
+      if (root) {
+        root.style.overflow = previous.rootOverflow;
+        root.style.height = previous.rootHeight;
+        root.style.maxHeight = previous.rootMaxHeight;
+        root.style.minHeight = previous.rootMinHeight;
+      }
+    };
+  }, [isCockpitRoute]);
+
+  useEffect(() => {
     if (!mobileOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMobileOpen(false);
@@ -412,6 +509,26 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  if (isCockpitRoute && pluginsLoading) {
+    return (
+      <div data-cockpit-shell className="min-h-dvh bg-[var(--cockpit-shell)] text-[var(--cockpit-text)] antialiased">
+        <CockpitRouteLoadingFallback />
+      </div>
+    );
+  }
+
+  if (isCockpitRoute && !cockpitOverriddenByPlugin) {
+    return (
+      <div data-cockpit-shell className="min-h-dvh bg-[var(--cockpit-shell)] text-[var(--cockpit-text)] antialiased">
+        <PageHeaderProvider pluginTabs={pluginTabMeta}>
+          <Suspense fallback={<CockpitRouteLoadingFallback />}>
+            <CockpitPage standalone />
+          </Suspense>
+        </PageHeaderProvider>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -601,17 +718,19 @@ export default function App() {
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
-                <Routes>
-                  {routes.map(({ key, path, element }) => (
-                    <Route key={key} path={path} element={element} />
-                  ))}
-                  <Route
-                    path="*"
-                    element={
-                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                    }
-                  />
-                </Routes>
+                <Suspense fallback={<RouteLoadingFallback />}>
+                  <Routes>
+                    {routes.map(({ key, path, element }) => (
+                      <Route key={key} path={path} element={element} />
+                    ))}
+                    <Route
+                      path="*"
+                      element={
+                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                      }
+                    />
+                  </Routes>
+                </Suspense>
 
                 {embeddedChat &&
                   !chatOverriddenByPlugin &&

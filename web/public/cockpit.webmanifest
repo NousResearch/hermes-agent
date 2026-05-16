@@ -1,0 +1,31 @@
+{
+  "name": "Biff Cockpit",
+  "short_name": "Cockpit",
+  "description": "Read-only Biff Cockpit shell for Now, Attention, Activity, and inert command preview.",
+  "start_url": "/cockpit",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#050403",
+  "theme_color": "#050403",
+  "icons": [
+    {
+      "src": "/cockpit-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/cockpit-apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/cockpit-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

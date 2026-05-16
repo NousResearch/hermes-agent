@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { CheckCircle2, Copy, Loader2, PanelRight, RotateCw, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -33,7 +33,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { api } from "@/lib/api";
+import { api, type SessionQuotaRecommendation } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -70,6 +70,45 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+const PTY_RECONNECT_BASE_MS = 350;
+const PTY_RECONNECT_MAX_MS = 3000;
+const PTY_RECONNECT_MAX_ATTEMPTS = 5;
+
+type PtyRecoveryState = "connecting" | "connected" | "restored" | "reconnecting" | "expired" | "failed" | "unavailable";
+
+function ptyRecoveryLabel(state: PtyRecoveryState): string {
+  switch (state) {
+    case "connecting":
+      return "Connecting local PTY chat…";
+    case "connected":
+      return "Local PTY chat connected";
+    case "restored":
+      return "Local PTY chat restored";
+    case "reconnecting":
+      return "Reconnecting local PTY chat…";
+    case "expired":
+      return "Dashboard session expired. Reopen hermes dashboard to mint a new local token.";
+    case "failed":
+      return "Local PTY chat recovery failed. Use Retry; no new session is normally required.";
+    case "unavailable":
+      return "Local PTY chat unavailable on this host.";
+  }
+}
+
+function ptyRecoveryTone(state: PtyRecoveryState): "ok" | "work" | "bad" {
+  if (state === "connected" || state === "restored") return "ok";
+  if (state === "expired" || state === "failed" || state === "unavailable") return "bad";
+  return "work";
+}
+
+function wsIsOpenOrConnecting(ws: WebSocket | null): boolean {
+  return Boolean(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING));
+}
+
+function quotaDismissStorageKey(dedupeKey: string): string {
+  return `hermes:cockpit:session-quota-dismissed:${dedupeKey}`;
+}
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -103,7 +142,7 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
+export default function ChatPage({ isActive = true, sessionQuotaRecommendation = null }: { isActive?: boolean; sessionQuotaRecommendation?: SessionQuotaRecommendation | null }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -120,7 +159,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
+  const [ptyRecoveryState, setPtyRecoveryState] = useState<PtyRecoveryState>(() =>
+    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
+      ? "expired"
+      : "connecting",
+  );
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const everOpenedRef = useRef(false);
+  const pageHiddenRef = useRef(false);
+  const forceReconnect = useCallback(() => {
+    reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setBanner(null);
+    setPtyRecoveryState("reconnecting");
+    setReconnectKey((key) => key + 1);
+  }, []);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [quotaDismissedKey, setQuotaDismissedKey] = useState<string | null>(null);
+  const [quotaCommandError, setQuotaCommandError] = useState<string | null>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
@@ -263,6 +324,83 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const quotaDedupeKey = sessionQuotaRecommendation?.dedupe_key ?? null;
+  const quotaCardVisible = Boolean(sessionQuotaRecommendation && quotaDedupeKey && quotaDismissedKey !== quotaDedupeKey);
+
+  useEffect(() => {
+    if (!quotaDedupeKey || typeof window === "undefined") {
+      setQuotaDismissedKey(null);
+      setQuotaCommandError(null);
+      return;
+    }
+    setQuotaCommandError(null);
+    try {
+      setQuotaDismissedKey(window.localStorage.getItem(quotaDismissStorageKey(quotaDedupeKey)) === "1" ? quotaDedupeKey : null);
+    } catch {
+      setQuotaDismissedKey(null);
+    }
+  }, [quotaDedupeKey]);
+
+  const sendSlashCommand = useCallback((command: string): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setQuotaCommandError("Local Chat is not connected yet. Wait for the PTY status to show connected, or tap Retry if it is unavailable, then choose Yes again.");
+      return false;
+    }
+    ws.send(command);
+    setTimeout(() => {
+      const current = wsRef.current;
+      if (current && current.readyState === WebSocket.OPEN) current.send("\r");
+    }, 100);
+    setQuotaCommandError(null);
+    termRef.current?.focus();
+    return true;
+  }, []);
+
+  const dismissQuotaWarning = useCallback(() => {
+    if (!quotaDedupeKey || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(quotaDismissStorageKey(quotaDedupeKey), "1");
+    } catch {
+      // Local-only dedupe is best-effort; still hide for this mounted page.
+    }
+    setQuotaDismissedKey(quotaDedupeKey);
+    setQuotaCommandError(null);
+  }, [quotaDedupeKey]);
+
+  const startFreshFromQuotaWarning = useCallback(() => {
+    if (sendSlashCommand("/new")) {
+      dismissQuotaWarning();
+    }
+  }, [dismissQuotaWarning, sendSlashCommand]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      pageHiddenRef.current = true;
+      if (!wsIsOpenOrConnecting(wsRef.current)) {
+        setPtyRecoveryState((state) => (state === "expired" || state === "unavailable" ? state : "reconnecting"));
+      }
+    };
+    const restoreIfNeeded = () => {
+      pageHiddenRef.current = false;
+      syncMetricsRef.current?.();
+      if (!wsIsOpenOrConnecting(wsRef.current) && window.__HERMES_SESSION_TOKEN__) {
+        forceReconnect();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") restoreIfNeeded();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", restoreIfNeeded);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", restoreIfNeeded);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [forceReconnect]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -553,6 +691,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // WebSocket
     const url = buildWsUrl(token, resumeParam, channel);
+    setPtyRecoveryState(everOpenedRef.current ? "reconnecting" : "connecting");
+    const scheduleReconnect = () => {
+      if (unmounting || reconnectTimerRef.current) return;
+      const attempt = reconnectAttemptsRef.current + 1;
+      reconnectAttemptsRef.current = attempt;
+      if (attempt > PTY_RECONNECT_MAX_ATTEMPTS) {
+        setPtyRecoveryState("failed");
+        setBanner("Local chat could not reconnect automatically. Retry uses the same dashboard session token; manual page refresh should not be normal recovery.");
+        return;
+      }
+      const delay = Math.min(PTY_RECONNECT_MAX_MS, PTY_RECONNECT_BASE_MS * 2 ** (attempt - 1));
+      setPtyRecoveryState("reconnecting");
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectKey((key) => key + 1);
+      }, delay);
+    };
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -562,7 +717,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
 
     ws.onopen = () => {
+      const restored = everOpenedRef.current || reconnectAttemptsRef.current > 0 || pageHiddenRef.current;
+      everOpenedRef.current = true;
+      reconnectAttemptsRef.current = 0;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       setBanner(null);
+      setPtyRecoveryState(restored ? "restored" : "connected");
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -584,18 +747,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setPtyRecoveryState("expired");
+        setBanner("Dashboard session expired. Reopen hermes dashboard to mint a new local token.");
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        setPtyRecoveryState("unavailable");
+        setBanner("Local PTY chat is unavailable from this host or dashboard mode.");
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
+        setPtyRecoveryState("failed");
+        setBanner("Local PTY chat failed to start. Retry will attempt recovery with the same dashboard session.");
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      scheduleReconnect();
     };
 
     // Keystrokes → PTY.
@@ -638,6 +805,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
@@ -657,7 +828,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, reconnectKey, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -796,9 +967,74 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+    <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col gap-2 overflow-hidden normal-case" data-testid="chat-iphone-width-safe">
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
+
+      <div
+        data-testid="local-pty-recovery-state"
+        data-state={ptyRecoveryState}
+        className={cn(
+          "flex min-w-0 items-center justify-between gap-2 border px-2 py-2 text-[11px] tracking-wide sm:px-3 sm:text-xs",
+          ptyRecoveryTone(ptyRecoveryState) === "ok" && "border-emerald-400/40 bg-emerald-400/10 text-emerald-100",
+          ptyRecoveryTone(ptyRecoveryState) === "work" && "border-sky-400/40 bg-sky-400/10 text-sky-100",
+          ptyRecoveryTone(ptyRecoveryState) === "bad" && "border-warning/50 bg-warning/10 text-warning",
+        )}
+      >
+        <span className="inline-flex min-w-0 items-center gap-2 break-words">
+          {ptyRecoveryTone(ptyRecoveryState) === "ok" ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+          {ptyRecoveryTone(ptyRecoveryState) === "work" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          {ptyRecoveryTone(ptyRecoveryState) === "bad" ? <WifiOff className="h-3.5 w-3.5" /> : null}
+          {ptyRecoveryLabel(ptyRecoveryState)}
+        </span>
+        {(ptyRecoveryState === "failed" || ptyRecoveryState === "unavailable") && (
+          <button
+            type="button"
+            onClick={forceReconnect}
+            className="inline-flex items-center gap-1 rounded border border-current/30 px-2 py-1 text-[0.65rem] uppercase tracking-[0.16em]"
+          >
+            <RotateCw className="h-3 w-3" /> Retry
+          </button>
+        )}
+      </div>
+
+      {quotaCardVisible && sessionQuotaRecommendation && (
+        <div
+          data-testid="chat-session-quota-warning-card"
+          data-dedupe-key={sessionQuotaRecommendation.dedupe_key}
+          className="grid gap-2 rounded-lg border border-warning/50 bg-warning/10 px-3 py-3 text-xs leading-5 text-warning sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+        >
+          <div className="min-w-0">
+            <p className="font-semibold text-midground">Session is getting full</p>
+            <p className="mt-1 break-words">{sessionQuotaRecommendation.text || "Starting fresh keeps the next turn faster and safer while preserving the normal Hermes reset flow."}</p>
+            {quotaCommandError && (
+              <p className="mt-2 rounded border border-warning/40 bg-warning/10 px-2 py-1 font-semibold text-warning" data-testid="chat-session-quota-command-error">
+                {quotaCommandError}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 sm:justify-end">
+            <button
+              type="button"
+              aria-label="Dismiss session quota recommendation for this threshold"
+              data-testid="chat-session-quota-not-now"
+              onClick={dismissQuotaWarning}
+              className="rounded border border-current/30 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-midground/80"
+            >
+              Not now
+            </button>
+            <button
+              type="button"
+              aria-label="Start a fresh local Hermes session through Local Chat"
+              data-testid="chat-session-quota-start-fresh"
+              onClick={startFreshFromQuotaWarning}
+              className="rounded border border-warning/60 bg-warning/20 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-warning"
+            >
+              Yes — start fresh
+            </button>
+          </div>
+        </div>
+      )}
 
       {banner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
@@ -808,6 +1044,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
+          data-testid="chat-local-pty-terminal-pane"
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
             "p-2 sm:p-3",
@@ -819,7 +1056,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            data-testid="chat-local-pty-host"
+            className="hermes-chat-xterm-host min-h-0 min-w-0 max-w-full flex-1 overflow-hidden"
           />
 
           <Button

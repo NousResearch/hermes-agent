@@ -664,6 +664,15 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _publish_gateway_cockpit_observer_event(event: Dict[str, Any]) -> None:
+    """Best-effort cockpit observer hook; never affects gateway routing."""
+    try:
+        from hermes_cli.cockpit import publish_cockpit_event
+        publish_cockpit_event(event)
+    except Exception:
+        logger.debug("cockpit observer publish failed", exc_info=True)
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -1118,6 +1127,35 @@ def _normalize_empty_agent_response(
         )
 
     return response
+
+
+def _apply_final_turn_trailing_lines(
+    response: str,
+    *,
+    quota_line: str = "",
+    footer_line: str = "",
+    already_sent: bool = False,
+) -> tuple[str, list[str], bool]:
+    """Apply final-turn quota/footer lines without double-sending quota notes.
+
+    Quota warnings are only user-visible when appended to the normal final
+    response. For streaming turns (``already_sent=True``), the body has already
+    been delivered and a quota-only trailing platform message is too noisy; do
+    not return the quota line for a separate send, and do not report it as
+    delivered for persistence/dedupe.
+    """
+
+    quota = quota_line or ""
+    footer = footer_line or ""
+    if not already_sent:
+        trailing = [line for line in (quota, footer) if line]
+        if trailing and response:
+            return f"{response}\n\n" + "\n".join(trailing), [], bool(quota)
+        return response, [], False
+
+    # Streaming already delivered body text. Runtime footer remains eligible
+    # for the existing separate metadata send; quota warnings do not.
+    return response, [footer] if footer else [], False
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
@@ -3301,6 +3339,15 @@ class GatewayRunner:
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        _publish_gateway_cockpit_observer_event(
+            {
+                "type": "status",
+                "source": "gateway",
+                "canonical_id": "gateway",
+                "status": "starting",
+                "updated_at": time.time(),
+            }
+        )
         try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -3598,6 +3645,15 @@ class GatewayRunner:
                         error_message=None,
                     )
                     logger.info("✓ %s connected", platform.value)
+                    _publish_gateway_cockpit_observer_event(
+                        {
+                            "type": "status",
+                            "source": platform.value,
+                            "canonical_id": platform.value,
+                            "status": "connected",
+                            "updated_at": time.time(),
+                        }
+                    )
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
                     # Defensive cleanup: a failed connect() may have
@@ -7326,6 +7382,18 @@ class GatewayRunner:
                 estimate_messages_tokens_rough,
                 get_model_context_length,
             )
+            from gateway.session_hygiene import cap_hygiene_history
+
+            _hygiene_started_at = time.monotonic()
+            _hygiene_history, _hygiene_cap_stats = cap_hygiene_history(history)
+            if _hygiene_cap_stats.capped:
+                logger.info(
+                    "Session hygiene: capped precheck history messages=%s→%s content_truncated=%s tool_outputs_truncated=%s",
+                    _hygiene_cap_stats.original_messages,
+                    _hygiene_cap_stats.capped_messages,
+                    _hygiene_cap_stats.content_truncated,
+                    _hygiene_cap_stats.tool_outputs_truncated,
+                )
 
             # Read model + compression config from config.yaml.
             # NOTE: hygiene threshold is intentionally HIGHER than the agent's
@@ -7492,11 +7560,19 @@ class GatewayRunner:
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
                         )
                         if _hyg_runtime.get("api_key"):
+                            # Compress from the full transcript, not a
+                            # user/assistant-only projection: tool results and
+                            # assistant tool_calls often contain the concrete
+                            # evidence that the summary must preserve.  The
+                            # ContextCompressor already prunes/truncates old
+                            # tool payloads before summarising, so this keeps
+                            # memory intact without reintroducing runaway token
+                            # bloat.
                             _hyg_msgs = [
-                                {"role": m.get("role"), "content": m.get("content")}
+                                {k: v for k, v in m.items() if k != "timestamp"}
                                 for m in history
-                                if m.get("role") in {"user", "assistant"}
-                                and m.get("content")
+                                if m.get("role")
+                                and (m.get("content") or m.get("tool_calls"))
                             ]
 
                             if len(_hyg_msgs) >= 4:
@@ -7506,6 +7582,8 @@ class GatewayRunner:
                                     max_iterations=4,
                                     quiet_mode=True,
                                     skip_memory=True,
+                                    skip_context_files=True,
+                                    load_soul_identity=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                 )
@@ -7513,12 +7591,17 @@ class GatewayRunner:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
+                                    _compress_start = time.monotonic()
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                         ),
+                                    )
+                                    logger.info(
+                                        "Session hygiene: compression call completed in %.3fs",
+                                        time.monotonic() - _compress_start,
                                     )
 
                                     # _compress_context ends the old session and creates
@@ -7617,6 +7700,11 @@ class GatewayRunner:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
+
+                logger.info(
+                    "Session hygiene: pre-agent check completed in %.3fs",
+                    time.monotonic() - _hygiene_started_at,
+                )
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
@@ -7761,6 +7849,29 @@ class GatewayRunner:
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            logger.info(
+                "turn_metrics: platform=%s chat=%s session=%s model=%s time=%.3fs api_calls=%d input_tokens=%d output_tokens=%d last_prompt_tokens=%d context_length=%d response_chars=%d history_user_chars=%d history_assistant_chars=%d history_tool_output_chars_before_cap=%d history_tool_output_chars_after_cap=%d tool_output_chars_omitted=%d tool_outputs_capped_count=%d tool_schema_chars=%d system_context_prompt_chars=%d channel_prompt_chars=%d",
+                _platform_name,
+                source.chat_id or "unknown",
+                session_entry.session_id,
+                agent_result.get("model") or "",
+                _response_time,
+                _api_calls,
+                int(agent_result.get("input_tokens") or 0),
+                int(agent_result.get("output_tokens") or 0),
+                int(agent_result.get("last_prompt_tokens") or 0),
+                int(agent_result.get("context_length") or 0),
+                _resp_len,
+                int(agent_result.get("history_user_chars") or 0),
+                int(agent_result.get("history_assistant_chars") or 0),
+                int(agent_result.get("history_tool_output_chars_before_cap") or 0),
+                int(agent_result.get("history_tool_output_chars_after_cap") or 0),
+                int(agent_result.get("tool_output_chars_omitted") or 0),
+                int(agent_result.get("tool_outputs_capped_count") or 0),
+                int(agent_result.get("tool_schema_chars") or 0),
+                int(agent_result.get("system_context_prompt_chars") or 0),
+                int(agent_result.get("channel_prompt_chars") or 0),
+            )
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -7819,6 +7930,24 @@ class GatewayRunner:
             # streaming already delivered the body, we can't mutate the sent
             # text, so we fire a separate trailing send below.
             _footer_line = ""
+            _quota_line = ""
+            _mode_line = ""
+            _quota_threshold_to_persist = None
+            try:
+                from gateway.session_hygiene import build_session_quota_recommendation as _bsqr
+                _quota_rec = _bsqr(
+                    session_id=session_entry.session_id,
+                    prompt_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                    context_length=agent_result.get("context_length") or None,
+                    warned_thresholds=getattr(session_entry, "quota_warning_thresholds", None),
+                )
+                if _quota_rec:
+                    _quota_line = f"⚠️ {_quota_rec.text}"
+                    _quota_threshold_to_persist = _quota_rec.threshold
+            except Exception as _quota_err:
+                logger.debug("session quota recommendation build failed: %s", _quota_err)
+                _quota_line = ""
+                _quota_threshold_to_persist = None
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
                 _footer_line = _bfl(
@@ -7832,8 +7961,20 @@ class GatewayRunner:
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent"):
-                response = f"{response}\n\n{_footer_line}"
+            try:
+                _mode = agent_result.get("biff_operating_mode") or {}
+                if isinstance(_mode, dict) and _mode.get("name") and _mode.get("name") != "normal":
+                    _mode_line = f"⚙️ Biff mode: {_mode.get('label') or _mode.get('name')} — {_mode.get('description') or 'quota/economy safeguards active.'}"
+            except Exception:
+                _mode_line = ""
+            response, _trailing_lines, _quota_warning_delivered = _apply_final_turn_trailing_lines(
+                response,
+                quota_line="\n".join([line for line in (_quota_line, _mode_line) if line]),
+                footer_line=_footer_line,
+                already_sent=bool(agent_result.get("already_sent")),
+            )
+            if not _quota_warning_delivered:
+                _quota_threshold_to_persist = None
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -8019,6 +8160,7 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                quota_warning_threshold=_quota_threshold_to_persist,
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -8044,21 +8186,21 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
-                # Streaming already delivered the body text, but the footer was
-                # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Telegram/Discord/etc.
-                # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                # Streaming already delivered the body text, but trailing low-noise
+                # recommendations/footers were intentionally held back (see the
+                # `not already_sent` gate above). Send them now as a small trailing
+                # message so Telegram/Discord/etc. still surface final-turn metadata.
+                if _trailing_lines:
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
                             await _foot_adapter.send(
                                 source.chat_id,
-                                _footer_line,
+                                "\n".join(_trailing_lines),
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
                     except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
+                        logger.debug("trailing recommendation/footer send failed: %s", _e)
                 return None
 
             return response
@@ -10678,6 +10820,8 @@ class GatewayRunner:
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
                     session_id=task_id,
+                    skip_context_files=True,
+                    load_soul_identity=True,
                     platform=platform_key,
                     user_id=source.user_id,
                     user_name=source.user_name,
@@ -11138,6 +11282,8 @@ class GatewayRunner:
                 max_iterations=4,
                 quiet_mode=True,
                 skip_memory=True,
+                skip_context_files=True,
+                load_soul_identity=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
@@ -14308,10 +14454,19 @@ class GatewayRunner:
         # We always include the current message.  For history, send a
         # compact version (text-only user/assistant turns) — the remote
         # handles tool replay and system prompts.
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from gateway.session_hygiene import biff_operating_mode_prompt, resolve_biff_operating_mode
+        _biff_mode = resolve_biff_operating_mode(user_config, platform_key)
+        _proxy_context_prompt = context_prompt or ""
+        _mode_prompt = biff_operating_mode_prompt(_biff_mode)
+        if _mode_prompt:
+            _proxy_context_prompt = (_proxy_context_prompt + "\n\n" + _mode_prompt).strip()
+
         api_messages: List[Dict[str, str]] = []
 
-        if context_prompt:
-            api_messages.append({"role": "system", "content": context_prompt})
+        if _proxy_context_prompt:
+            api_messages.append({"role": "system", "content": _proxy_context_prompt})
 
         for msg in history:
             role = msg.get("role")
@@ -14332,6 +14487,7 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
+            "hermes_biff_operating_mode": _biff_mode.name,
         }
 
         # Set up platform streaming if available -------------------------
@@ -14341,8 +14497,6 @@ class GatewayRunner:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
 
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"
@@ -14582,9 +14736,18 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        from gateway.session_hygiene import (
+            biff_operating_mode_prompt,
+            filter_biff_mode_enabled_toolsets,
+            resolve_biff_operating_mode,
+        )
+        _biff_mode = resolve_biff_operating_mode(user_config, platform_key)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = filter_biff_mode_enabled_toolsets(
+            _biff_mode,
+            sorted(_get_platform_tools(user_config, platform_key)),
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -15101,6 +15264,8 @@ class GatewayRunner:
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            if _biff_mode.max_iterations is not None:
+                max_iterations = min(max_iterations, int(_biff_mode.max_iterations))
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -15114,6 +15279,9 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            _mode_prompt = biff_operating_mode_prompt(_biff_mode)
+            if _mode_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + _mode_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
@@ -15301,6 +15469,8 @@ class GatewayRunner:
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
+                    skip_context_files=True,
+                    load_soul_identity=True,
                     platform=platform_key,
                     user_id=source.user_id,
                     user_name=source.user_name,
@@ -15327,6 +15497,7 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
+            agent.max_iterations = max_iterations
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()
@@ -15460,6 +15631,12 @@ class GatewayRunner:
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
+            try:
+                _tool_schema_chars = len(
+                    json.dumps(tools_holder[0] or [], ensure_ascii=False, default=str)
+                )
+            except Exception:
+                _tool_schema_chars = 0
             
             # Convert history to agent format.
             # Two cases:
@@ -15470,7 +15647,7 @@ class GatewayRunner:
             #      - These must be passed through intact so the API sees valid
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             agent_history = []
-            for msg in history:
+            for _transcript_message_index, msg in enumerate(history):
                 role = msg.get("role")
                 if not role:
                     continue
@@ -15492,6 +15669,7 @@ class GatewayRunner:
                 
                 if has_tool_calls or has_tool_call_id or is_tool_message:
                     clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
+                    clean_msg["_transcript_message_index"] = _transcript_message_index
                     agent_history.append(clean_msg)
                 else:
                     # Simple text message - just need role and content
@@ -15507,7 +15685,43 @@ class GatewayRunner:
                         # reload.  See ``_ASSISTANT_REPLAY_FIELDS`` for the full
                         # whitelist and rationale.
                         entry = _build_replay_entry(role, content, msg)
+                        entry["_transcript_message_index"] = _transcript_message_index
                         agent_history.append(entry)
+
+            from gateway.session_hygiene import (
+                cap_model_facing_tool_outputs,
+                collect_token_source_metrics,
+            )
+            _transcript_ref = f"session:{session_id}"
+            try:
+                if getattr(self, "session_store", None) is not None:
+                    _transcript_ref = str(self.session_store.get_transcript_path(session_id))
+            except Exception:
+                pass
+            _agent_history_uncapped = agent_history
+            agent_history, _tool_output_cap_stats = cap_model_facing_tool_outputs(
+                _agent_history_uncapped,
+                session_id=session_id,
+                transcript_ref=_transcript_ref,
+                max_tool_output_chars=_biff_mode.max_tool_output_chars,
+                preview_chars=_biff_mode.preview_chars,
+                max_message_content_chars=_biff_mode.max_message_content_chars,
+            )
+            _token_source_metrics = collect_token_source_metrics(
+                _agent_history_uncapped,
+                agent_history,
+                _tool_output_cap_stats,
+                system_context_prompt=context_prompt,
+                channel_prompt=channel_prompt or "",
+                tool_schema_chars=_tool_schema_chars,
+            )
+            if _tool_output_cap_stats.capped:
+                logger.info(
+                    "Gateway model-facing tool output cap: session=%s capped_count=%d omitted_chars=%d",
+                    session_id,
+                    _tool_output_cap_stats.tool_outputs_capped_count,
+                    _tool_output_cap_stats.tool_output_chars_omitted,
+                )
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
@@ -15787,6 +16001,8 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "biff_operating_mode": _biff_mode.to_dict(),
+                    **_token_source_metrics,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -15907,7 +16123,9 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "biff_operating_mode": _biff_mode.to_dict(),
                 "response_previewed": result.get("response_previewed", False),
+                **_token_source_metrics,
             }
         
         # Start progress message sender if enabled

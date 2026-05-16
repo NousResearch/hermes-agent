@@ -823,6 +823,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        biff_operating_mode_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -841,6 +842,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
+        from gateway.session_hygiene import (
+            biff_operating_mode_prompt,
+            filter_biff_mode_enabled_toolsets,
+            resolve_biff_operating_mode,
+        )
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -848,9 +854,35 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        biff_mode = resolve_biff_operating_mode(user_config, "api_server")
+        if biff_operating_mode_override:
+            # Request/proxy-provided mode may only tighten the configured
+            # posture, never relax it. A direct API caller must not be able to
+            # downgrade configured evidence-only into normal and regain
+            # mutating toolsets.
+            _biff_cfg = user_config.get("biff") if isinstance(user_config.get("biff"), dict) else {}
+            requested_mode = resolve_biff_operating_mode(
+                {**user_config, "biff": {**_biff_cfg, "operating_mode": biff_operating_mode_override}},
+                "api_server",
+            )
+            _mode_rank = {"normal": 0, "economy": 1, "emergency": 2, "evidence-only": 3}
+            if _mode_rank.get(requested_mode.name, 0) > _mode_rank.get(biff_mode.name, 0):
+                biff_mode = requested_mode
+        enabled_toolsets = filter_biff_mode_enabled_toolsets(
+            biff_mode,
+            sorted(_get_platform_tools(user_config, "api_server")),
+        )
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        if biff_mode.max_iterations is not None:
+            max_iterations = min(max_iterations, int(biff_mode.max_iterations))
+        mode_prompt = biff_operating_mode_prompt(biff_mode)
+        if mode_prompt:
+            ephemeral_system_prompt = (
+                ((ephemeral_system_prompt or "") + "\n\n" + mode_prompt).strip()
+                if ephemeral_system_prompt
+                else mode_prompt
+            )
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
@@ -1006,6 +1038,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+        biff_operating_mode_override = body.get("hermes_biff_operating_mode")
+        if biff_operating_mode_override is not None:
+            biff_operating_mode_override = str(biff_operating_mode_override)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1186,6 +1221,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                biff_operating_mode_override=biff_operating_mode_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1205,6 +1241,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                biff_operating_mode_override=biff_operating_mode_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2709,6 +2746,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        biff_operating_mode_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2732,6 +2770,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                biff_operating_mode_override=biff_operating_mode_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

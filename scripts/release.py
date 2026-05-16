@@ -1081,6 +1081,11 @@ AUTHOR_MAP = {
     "nidhi2894@gmail.com": "nidhi-singh02",  # PR #2752 salvage (slack whitespace-only IndexError guard)
     "38173192+nidhi-singh02@users.noreply.github.com": "nidhi-singh02",
     "Jaaneek@users.noreply.github.com": "Jaaneek",  # PR #26457 (xAI Grok OAuth provider)
+    # v0.14.0 additions
+    "chuang.guo@hopechart.com": "wuwuzhijing",  # PR #21063 salvage (gateway docs mention Weixin)
+    "nightcityblade@gmail.com": "nightcityblade",  # PR #24138 (docs voice/tts table)
+    "pol.kuijken@gmail.com": "polkn",  # PR #6136 salvage (skill_view collision refusal)
+    "robin@soal.org": "rewbs",
 }
 
 

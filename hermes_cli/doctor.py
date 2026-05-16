@@ -656,15 +656,17 @@ def run_doctor(args):
         if fallback_config.exists():
             check_ok("cli-config.yaml exists (in project directory)")
         else:
-            example_config = PROJECT_ROOT / 'cli-config.yaml.example'
-            if should_fix and example_config.exists():
+            if should_fix:
                 config_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(example_config), str(config_path))
-                check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                example_config = PROJECT_ROOT / 'cli-config.yaml.example'
+                if example_config.exists():
+                    shutil.copy2(str(example_config), str(config_path))
+                    check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
+                else:
+                    from hermes_cli.config import DEFAULT_CONFIG, save_config
+                    save_config(DEFAULT_CONFIG)
+                    check_ok(f"Created {_DHH}/config.yaml from defaults")
                 fixed_count += 1
-            elif should_fix:
-                check_warn("config.yaml not found and no example to copy from")
-                manual_issues.append(f"Create {_DHH}/config.yaml manually")
             else:
                 check_warn("config.yaml not found", "(using defaults)")
 
@@ -1595,28 +1597,6 @@ def run_doctor(args):
         for _issue in _r.issues:
             issues.append(_issue)
 
-    # =========================================================================
-    # Check: Submodules
-    # =========================================================================
-    print()
-    print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
-    
-    # tinker-atropos (RL training backend)
-    tinker_dir = PROJECT_ROOT / "tinker-atropos"
-    if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
-        if py_version >= (3, 11):
-            try:
-                __import__("tinker_atropos")
-                check_ok("tinker-atropos", "(RL training backend)")
-            except ImportError:
-                install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
-                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
-                issues.append(f"Install tinker-atropos: {install_cmd}")
-        else:
-            check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
-    else:
-        check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
-    
     # =========================================================================
     # Check: Tool Availability
     # =========================================================================

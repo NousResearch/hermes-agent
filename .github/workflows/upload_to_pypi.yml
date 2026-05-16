@@ -1,0 +1,163 @@
+name: Publish to PyPI
+
+# Triggered by CalVer tag pushes from scripts/release.py (e.g. v2026.5.15)
+# Can also be triggered manually from the Actions tab as an escape hatch.
+on:
+  push:
+    tags:
+      - 'v20*'  # CalVer tags: v2026.5.15, v2026.5.15.2, etc.
+  workflow_dispatch:
+    inputs:
+      confirm_tag:
+        description: 'Tag to publish (e.g. v2026.5.15). Must already exist.'
+        required: true
+        type: string
+
+# Restrict default token to read-only; each job escalates as needed.
+permissions:
+  contents: read
+
+# Prevent overlapping publishes (e.g. two same-day tags pushed quickly).
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build distribution 📦
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+          # On workflow_dispatch, check out the confirmed tag.
+          ref: ${{ inputs.confirm_tag || github.ref }}
+          fetch-tags: true
+
+      - name: Validate tag exists
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if ! git tag -l "${{ inputs.confirm_tag }}" | grep -q .; then
+            echo "::error::Tag '${{ inputs.confirm_tag }}' does not exist in the repo"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+
+      - name: Build web dashboard
+        run: cd web && npm ci && npm run build
+
+      - name: Build TUI bundle
+        run: cd ui-tui && npm ci && npm run build
+
+      - name: Bundle TUI into hermes_cli
+        run: |
+          mkdir -p hermes_cli/tui_dist
+          cp ui-tui/dist/entry.js hermes_cli/tui_dist/entry.js
+
+      - name: Verify frontend assets exist
+        run: |
+          test -f hermes_cli/web_dist/index.html || { echo "ERROR: web_dist not built"; exit 1; }
+          test -f hermes_cli/tui_dist/entry.js || { echo "ERROR: tui_dist not built"; exit 1; }
+
+      - name: Bundle install.sh into wheel
+        run: |
+          mkdir -p hermes_cli/scripts
+          cp scripts/install.sh hermes_cli/scripts/install.sh
+
+      - name: Build wheel and sdist
+        run: uv build --sdist --wheel
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/hermes-agent
+    permissions:
+      id-token: write  # OIDC trusted publishing
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          skip-existing: true
+
+  sign:
+    name: Sign and attach to GitHub Release
+    # Only runs on tag pushes — release.py creates the GitHub Release,
+    # and workflow_dispatch won't have a matching release to attach to.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # attach assets to the existing release
+      id-token: write   # sigstore signing
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Wait for GitHub Release to exist
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        # release.py creates the GitHub Release after pushing the tag,
+        # but this workflow starts from the tag push — wait for it.
+        run: |
+          for i in $(seq 1 30); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $GITHUB_REF_NAME found"
+              exit 0
+            fi
+            echo "Waiting for release... ($i/30)"
+            sleep 10
+          done
+          echo "::warning::Release $GITHUB_REF_NAME not found after 5 minutes — skipping signature upload"
+          echo "skip_sign=true" >> "$GITHUB_ENV"
+
+      - name: Sign with Sigstore
+        if: env.skip_sign != 'true'
+        uses: sigstore/gh-action-sigstore-python@f514d46b907ebcd5bedc05145c03b69c1edd8b46  # v3.0.0
+        with:
+          inputs: >-
+            ./dist/*.tar.gz
+            ./dist/*.whl
+
+      - name: Attach signed artifacts to GitHub Release
+        if: env.skip_sign != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        # release.py already created the GitHub Release — just upload
+        # the Sigstore signatures alongside the existing assets.
+        run: >-
+          gh release upload
+          "$GITHUB_REF_NAME" dist/*.sigstore.json
+          --repo "$GITHUB_REPOSITORY"
+          --clobber

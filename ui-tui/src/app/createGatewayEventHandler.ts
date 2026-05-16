@@ -13,7 +13,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -53,6 +53,26 @@ const pushUnique =
 const pushThinking = pushUnique(6)
 const pushNote = pushUnique(6)
 const pushTool = pushUnique(8)
+
+const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
+  'completed',
+  'error',
+  'failed',
+  'interrupted',
+  'queued',
+  'running',
+  'timeout'
+])
+
+const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): SubagentStatus => {
+  if (typeof status !== 'string') {
+    return fallback
+  }
+
+  const normalized = status.toLowerCase() as SubagentStatus
+
+  return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
@@ -180,8 +200,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   // Terminal statuses are never overwritten by late-arriving live events —
   // otherwise a stale `subagent.start` / `spawn_requested` can clobber a
-  // `failed` or `interrupted` terminal state (Copilot review #14045).
-  const isTerminalStatus = (s: SubagentProgress['status']) => s === 'completed' || s === 'failed' || s === 'interrupted'
+  // terminal state from complete (failed/interrupted/timeout/error).
+  const isTerminalStatus = (s: SubagentProgress['status']) =>
+    s === 'completed' || s === 'error' || s === 'failed' || s === 'interrupted' || s === 'timeout'
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
@@ -648,7 +669,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload,
           c => ({
             durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
-            status: ev.payload.status ?? 'completed',
+            status: normalizeSubagentStatus(ev.payload.status, 'completed'),
             summary: ev.payload.summary || ev.payload.text || c.summary
           }),
           { createIfMissing: false }

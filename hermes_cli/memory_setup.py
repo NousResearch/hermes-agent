@@ -10,6 +10,7 @@ from __future__ import annotations
 import getpass
 import os
 import sys
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -134,7 +135,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
+                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
@@ -378,6 +379,12 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
             new_lines.append(f"{key}={val}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------

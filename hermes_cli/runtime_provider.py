@@ -15,12 +15,14 @@ from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
+    DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
+    resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
     resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
@@ -102,8 +104,10 @@ def _auto_detect_local_model(base_url: str) -> str:
                 model_id = models[0].get("id", "")
                 if model_id:
                     return model_id
-    except Exception:
-        pass
+    except Exception as exc:
+        # Log instead of silently swallowing — aids debugging when
+        # local model auto-detection fails unexpectedly.
+        logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
     return ""
 
 
@@ -164,7 +168,18 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}
+_VALID_API_MODES = {
+    "chat_completions",
+    "codex_responses",
+    "anthropic_messages",
+    "bedrock_converse",
+    # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
+    # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
+    # instead of Hermes' tool dispatch. Gated behind config key
+    # `model.openai_runtime == "codex_app_server"` AND provider in
+    # {"openai", "openai-codex"}. Default is unchanged.
+    "codex_app_server",
+}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -174,6 +189,32 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
         if normalized in _VALID_API_MODES:
             return normalized
     return None
+
+
+def _maybe_apply_codex_app_server_runtime(
+    *,
+    provider: str,
+    api_mode: str,
+    model_cfg: Optional[Dict[str, Any]],
+) -> str:
+    """Optional opt-in: rewrite api_mode → "codex_app_server" for OpenAI/Codex
+    providers when the user has explicitly enabled that runtime via
+    `model.openai_runtime: codex_app_server` in config.yaml.
+
+    Default behavior is preserved: when the key is unset, "auto", or empty,
+    this function is a no-op. Only providers in {"openai", "openai-codex"}
+    are eligible — other providers (anthropic, openrouter, etc.) cannot be
+    rerouted through codex.
+
+    Returns the (possibly-rewritten) api_mode."""
+    if not model_cfg:
+        return api_mode
+    if provider not in ("openai", "openai-codex"):
+        return api_mode
+    runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
+    if runtime == "codex_app_server":
+        return "codex_app_server"
+    return api_mode
 
 
 def _resolve_runtime_from_pool_entry(
@@ -199,6 +240,9 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
+    elif provider == "xai-oauth":
+        api_mode = "codex_responses"
+        base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
@@ -292,6 +336,12 @@ def _resolve_runtime_from_pool_entry(
     # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
     if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
         base_url = re.sub(r"/v1/?$", "", base_url)
+
+    # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
+    # Inert when `model.openai_runtime` is unset or "auto".
+    api_mode = _maybe_apply_codex_app_server_runtime(
+        provider=provider, api_mode=api_mode, model_cfg=model_cfg
+    )
 
     return {
         "provider": provider,
@@ -1085,6 +1135,24 @@ def resolve_runtime_provider(
             # Auto-detected Codex but credentials are stale/revoked —
             # fall through to env-var providers (e.g. OpenRouter).
             logger.info("Auto-detected Codex provider but credentials failed; "
+                        "falling through to next provider.")
+
+    if provider == "xai-oauth":
+        try:
+            creds = resolve_xai_oauth_runtime_credentials()
+            return {
+                "provider": "xai-oauth",
+                "api_mode": "codex_responses",
+                "base_url": (creds.get("base_url") or "").rstrip("/") or DEFAULT_XAI_OAUTH_BASE_URL,
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "hermes-auth-store"),
+                "last_refresh": creds.get("last_refresh"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Auto-detected xAI OAuth provider but credentials failed; "
                         "falling through to next provider.")
 
     if provider == "qwen-oauth":

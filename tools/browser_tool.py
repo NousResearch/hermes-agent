@@ -144,7 +144,8 @@ def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
-    return [hermes_node_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
+    return [hermes_node_bin, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -1702,7 +1703,23 @@ def _find_agent_browser() -> str:
         _agent_browser_resolved = True
         return _cached_agent_browser
 
-    # Nothing found — cache the failure so subsequent calls don't re-scan.
+    # Nothing found — try lazy installation before giving up.
+    try:
+        from hermes_cli.dep_ensure import ensure_dependency
+        if ensure_dependency("browser"):
+            recheck = shutil.which("agent-browser")
+            if not recheck and extended_path:
+                recheck = shutil.which("agent-browser", path=extended_path)
+            if not recheck:
+                hermes_nm = str(get_hermes_home() / "node_modules" / ".bin")
+                recheck = shutil.which("agent-browser", path=hermes_nm)
+            if recheck:
+                _cached_agent_browser = recheck
+                _agent_browser_resolved = True
+                return recheck
+    except Exception:
+        pass
+
     _agent_browser_resolved = True
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
@@ -1873,7 +1890,13 @@ def _run_browser_command(
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
+        # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
+        # agent-browser itself, but documented in older notes) or the real
+        # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
+        if (
+            "AGENT_BROWSER_ARGS" not in browser_env
+            and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+        ):
             _needs_sandbox_bypass = False
             if hasattr(os, "geteuid") and os.geteuid() == 0:
                 _needs_sandbox_bypass = True
@@ -1892,8 +1915,8 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
+                browser_env["AGENT_BROWSER_ARGS"] = (
+                    "--no-sandbox,--disable-dev-shm-usage"
                 )
 
         # Use temp files for stdout/stderr instead of pipes.
@@ -3381,8 +3404,8 @@ def _chromium_installed() -> bool:
 
     1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
        agent-browser at a pre-installed Chrome/Chromium.
-    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium-browser``,
-       ``chrome``).
+    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
+       ``chromium-browser``, ``chrome``).
     3. Playwright's browser cache (current logic) — directories containing
        ``chromium-*`` or ``chromium_headless_shell-*``.
 
@@ -3405,7 +3428,12 @@ def _chromium_installed() -> bool:
             return True
 
     # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chrome")
+    system_chrome = (
+        shutil.which("google-chrome")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("chrome")
+    )
     if system_chrome:
         _cached_chromium_installed = True
         return True

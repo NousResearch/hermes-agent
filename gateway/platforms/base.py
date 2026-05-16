@@ -955,6 +955,12 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Channel context recovered by history backfill (e.g. messages between
+    # bot turns that were missed due to require_mention).  Kept separate
+    # from ``text`` so the sender-prefix logic in run.py can operate on the
+    # trigger message alone, then prepend this context afterward.
+    channel_context: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -1774,8 +1780,12 @@ class BasePlatformAdapter(ABC):
         The default implementation falls back to a numbered text list,
         which works on every platform — the user replies with a number
         ("2") or with the literal choice text, and the gateway intercepts
-        and resolves.  Adapters with native button UIs (Telegram, Discord)
-        SHOULD override this for a richer UX.
+        and resolves.  For the text fallback path, the default calls
+        ``mark_awaiting_text()`` so that the gateway text-intercept
+        (:meth:`GatewayRunner._maybe_intercept_clarify_text`) catches the
+        user's reply instead of timing out.
+        Adapters with native button UIs (Telegram, Discord) SHOULD
+        override this for a richer UX.
         """
         if choices:
             lines = [f"❓ {question}", ""]
@@ -1784,6 +1794,10 @@ class BasePlatformAdapter(ABC):
             lines.append("")
             lines.append("Reply with the number, the option text, or your own answer.")
             text = "\n".join(lines)
+            # Text fallback: enable text-capture so the gateway intercept
+            # picks up the user's typed reply (e.g. "2" or choice text).
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
         else:
             text = f"❓ {question}"
         return await self.send(

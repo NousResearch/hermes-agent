@@ -179,6 +179,84 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
 
 export { offsetFromPosition }
 
+const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
+
+/**
+ * Pure shape-only precondition for the fast-echo append path.
+ *
+ * The fast-echo path bypasses Ink's renderer and writes text directly to
+ * stdout, so the stored value, the rendered terminal cells, and the cursor
+ * column must all stay in sync without any layout work. We only allow it
+ * when the inserted text is pure printable ASCII so that:
+ *
+ *   - `text.length` matches the number of grapheme clusters (no combining
+ *     marks, no surrogate pairs, no precomposed CJK / Latin-Extended
+ *     letters that an IME might still be holding open as a composition),
+ *   - terminal width is exactly 1 cell per character (no East-Asian wide,
+ *     no zero-width, no ambiguous-width fonts),
+ *   - input methods (Vietnamese Telex, IME, dead-keys) cannot leak
+ *     intermediate composition bytes through the bypass before the final
+ *     commit arrives — those always go through the normal Ink render path
+ *     and stay layout-accurate (closes #5221, #7443, #17602/#17603).
+ *
+ * We deliberately do NOT just check `stringWidth(text) === text.length`:
+ * Vietnamese precomposed letters like "ề" (U+1EC1) report width 1 and
+ * length 1 but are still produced by IME compositions and must not be
+ * fast-echoed.
+ */
+export function canFastAppendShape(
+  current: string,
+  cursor: number,
+  text: string,
+  columns: number,
+  currentLineWidth: number
+): boolean {
+  if (cursor !== current.length) {
+    return false
+  }
+
+  if (current.length === 0) {
+    return false
+  }
+
+  if (current.includes('\n')) {
+    return false
+  }
+
+  if (!ASCII_PRINTABLE_RE.test(text)) {
+    return false
+  }
+
+  return currentLineWidth + text.length < Math.max(1, columns)
+}
+
+/**
+ * Pure shape-only precondition for the fast-echo backspace path.
+ *
+ * Same reasoning as canFastAppendShape — only allow the direct
+ * "\b \b" stdout shortcut when the deleted grapheme is pure printable
+ * ASCII. Anything else (combining marks, IME compositions, wide chars,
+ * tabs, ANSI fragments) goes through the normal render path so Ink can
+ * recompute cell widths.
+ */
+export function canFastBackspaceShape(current: string, cursor: number): boolean {
+  if (cursor !== current.length) {
+    return false
+  }
+
+  if (cursor <= 0) {
+    return false
+  }
+
+  if (current.includes('\n')) {
+    return false
+  }
+
+  const removed = current.slice(prevPos(current, cursor), cursor)
+
+  return ASCII_PRINTABLE_RE.test(removed)
+}
+
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
@@ -444,26 +522,11 @@ export function TextInput({
 
   const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
-  const canFastAppend = (current: string, cursor: number, text: string) => {
-    const sw = stringWidth(text)
+  const canFastAppend = (current: string, cursor: number, text: string) =>
+    canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
-    return (
-      canFastEchoBase() &&
-      cursor === current.length &&
-      current.length > 0 &&
-      !current.includes('\n') &&
-      sw === text.length &&
-      lineWidthRef.current + sw < Math.max(1, columns)
-    )
-  }
-
-  const canFastBackspace = (current: string, cursor: number) => {
-    if (!canFastEchoBase() || cursor !== current.length || cursor <= 0 || current.includes('\n')) {
-      return false
-    }
-
-    return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
-  }
+  const canFastBackspace = (current: string, cursor: number) =>
+    canFastEchoBase() && canFastBackspaceShape(current, cursor)
 
   const commit = (
     next: string,

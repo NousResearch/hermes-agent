@@ -622,38 +622,70 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
     }
 
 
-def write_sidebar(entries):
-    # The per-skill pages (`build_sidebar_items(entries)`) are still generated
-    # as standalone docs under `website/docs/user-guide/skills/{bundled,optional}/`
-    # and reachable via the catalog pages in Reference — but we intentionally
-    # do NOT explode them into the left sidebar. Two hundred-plus skill entries
-    # drown the actual product docs and make the site feel overwhelming to
-    # first-time visitors.
-    #
-    # Sidebar now shows:
-    #   Skills
-    #   ├── Bundled catalog →    (link to reference/skills-catalog)
-    #   └── Optional catalog →   (link to reference/optional-skills-catalog)
-    #
-    # The catalog pages are auto-regenerated tables with a link to every skill.
-    # Individual skill pages (including the two formerly hand-written guides,
-    # godmode and google-workspace) are still reachable at their URLs and are
-    # linked from the catalog tables and from the Skills overview page — they
-    # just aren't promoted in the left sidebar, because there's no principled
-    # rule for which skills would get promoted and which wouldn't.
-    _ = build_sidebar_items(entries)  # still called for any side effects / validation
+def _render_sidebar_item(item: Any, indent: int) -> list[str]:
+    """Render one sidebar item (string doc id, or category dict) as ts lines."""
+    pad = " " * indent
+    lines: list[str] = []
+    if isinstance(item, str):
+        lines.append(f"{pad}'{item}',")
+        return lines
+    # category dict
+    lines.append(f"{pad}{{")
+    lines.append(f"{pad}  type: 'category',")
+    lines.append(f"{pad}  label: '{item['label']}',")
+    if item.get("collapsed", True):
+        lines.append(f"{pad}  collapsed: true,")
+    lines.append(f"{pad}  items: [")
+    for child in item.get("items", []):
+        lines.extend(_render_sidebar_item(child, indent + 4))
+    lines.append(f"{pad}  ],")
+    lines.append(f"{pad}}},")
+    return lines
 
-    skills_subtree = (
-        "        {\n"
-        "          type: 'category',\n"
-        "          label: 'Skills',\n"
-        "          collapsed: true,\n"
-        "          items: [\n"
-        "            'reference/skills-catalog',\n"
-        "            'reference/optional-skills-catalog',\n"
-        "          ],\n"
-        "        },\n"
-    )
+
+def write_sidebar(entries):
+    # Sidebar layout:
+    #   Skills
+    #   ├── reference/skills-catalog
+    #   ├── reference/optional-skills-catalog
+    #   ├── Bundled
+    #   │   ├── apple/
+    #   │   │   ├── apple-apple-notes
+    #   │   │   └── ...
+    #   │   └── ...
+    #   └── Optional
+    #       └── ...
+    #
+    # The two catalog index pages stay at the top of the Skills section so
+    # the at-a-glance table view is one click away, and the per-category
+    # subtrees give individual skill pages real sidebar navigation when
+    # users land on them directly.
+    tree = build_sidebar_items(entries)
+
+    skills_block: list[dict[str, Any]] = [
+        {
+            "label": "Bundled",
+            "collapsed": True,
+            "items": tree["bundled_categories"],
+        },
+        {
+            "label": "Optional",
+            "collapsed": True,
+            "items": tree["optional_categories"],
+        },
+    ]
+    skills_items: list[Any] = [
+        "reference/skills-catalog",
+        "reference/optional-skills-catalog",
+        *skills_block,
+    ]
+
+    skills_top = {
+        "label": "Skills",
+        "collapsed": True,
+        "items": skills_items,
+    }
+    skills_subtree = "\n".join(_render_sidebar_item(skills_top, 8)) + "\n"
 
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")

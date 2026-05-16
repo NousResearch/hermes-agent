@@ -10,7 +10,34 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### Linux / macOS / WSL2
+### pip (recommended for most users)
+
+```bash
+pip install hermes-agent
+```
+
+This gives you the full Hermes Agent — CLI, web dashboard, and TUI — with zero external dependencies for core usage. Node.js, browser engines, and other optional tools are bootstrapped lazily on first use (e.g. when you run `hermes --tui` or use browser tools).
+
+PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. If you want bleeding-edge changes as they land, use the git install below.
+
+After installing, run:
+
+```bash
+hermes setup   # interactive wizard — configures your LLM provider and API key
+hermes         # start chatting
+```
+
+:::tip Optional: install everything upfront
+`hermes postinstall` installs Node.js, browser engines, ripgrep, and ffmpeg in one shot — then runs the setup wizard. Use this if you want the full experience (TUI, browser tools, voice) without waiting for lazy installs on first use.
+:::
+
+:::tip
+If you have [uv](https://docs.astral.sh/uv/) installed, `uv pip install hermes-agent` is faster.
+:::
+
+### One-Line Installer (Linux / macOS / WSL2)
+
+For a git-based install that tracks `main` and gives you the latest changes immediately:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -80,7 +107,8 @@ Where the installer puts things depends on whether you're installing as a normal
 
 | Installer | Code lives at | `hermes` binary | Data directory |
 |---|---|---|---|
-| Per-user (normal) | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` (symlink) | `~/.hermes/` |
+| pip install | Python site-packages | `~/.local/bin/hermes` (console_scripts) | `~/.hermes/` |
+| Per-user (git installer) | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` (symlink) | `~/.hermes/` |
 | Root-mode (`sudo curl … \| sudo bash`) | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes` | `/root/.hermes/` (or `$HERMES_HOME`) |
 
 The root-mode **FHS layout** (`/usr/local/lib/…`, `/usr/local/bin/hermes`) matches where other system-wide developer tools land on Linux. It's useful for shared-machine deployments where one system install should serve every user. Per-user config (auth, skills, sessions) still lives under each user's `~/.hermes/` or explicit `HERMES_HOME`.
@@ -108,7 +136,9 @@ hermes setup          # Or run the full setup wizard to configure everything at 
 
 ## Prerequisites
 
-The only prerequisite is **Git**. The installer automatically handles everything else:
+**pip install:** No prerequisites beyond Python 3.11+. Everything else is handled automatically.
+
+**Git installer:** The only prerequisite is **Git**. The installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
@@ -129,6 +159,43 @@ If you use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with 
 ## Manual / Developer Installation
 
 If you want to clone the repo and install from source — for contributing, running from a specific branch, or having full control over the virtual environment — see the [Development Setup](../developer-guide/contributing.md#development-setup) section in the Contributing guide.
+
+---
+
+## Non-Sudo / System Service User Installs
+
+Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service account, or any user without `sudo` access) is supported. The only thing on the install path that genuinely needs root is Playwright's `--with-deps` step, which `apt`-installs shared libraries (`libnss3`, `libxkbcommon`, etc.) used by Chromium. The installer detects whether sudo is available and gracefully degrades when it isn't — it will install the Chromium binary into the service user's own Playwright cache and print the exact command an administrator needs to run separately.
+
+**Recommended split (Debian/Ubuntu):**
+
+1. **One time, as an admin user with sudo**, install the system libraries Chromium needs:
+   ```bash
+   sudo npx playwright install-deps chromium
+   ```
+   (You can run this from anywhere — `npx` will fetch Playwright on the fly.)
+
+2. **As the unprivileged service user**, run the regular installer. It will detect the missing sudo, skip `--with-deps`, and install Chromium into the user's local Playwright cache:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   ```
+
+   If you want to skip the Playwright step entirely — for example because you're running headless and don't need browser automation — pass `--skip-browser`:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-browser
+   ```
+
+3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
+   ```bash
+   # Option A — add to the service user's profile
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+   # Option B — symlink system-wide (run as an admin)
+   sudo ln -s /home/hermes/.hermes/hermes-agent/venv/bin/hermes /usr/local/bin/hermes
+   ```
+
+4. **Verify:** `hermes doctor` should now run cleanly. If you get `ModuleNotFoundError: No module named 'dotenv'`, you're invoking the repo source `hermes` file (`~/.hermes/hermes-agent/hermes`) with system Python instead of the venv launcher (`~/.hermes/hermes-agent/venv/bin/hermes`) — fix step 3.
+
+The same pattern works on Arch (the installer uses pacman with the same sudo-detection logic), Fedora/RHEL, and openSUSE — those distros don't support `--with-deps` at all, so an administrator always installs the system libraries separately. The relevant `dnf`/`zypper` commands are printed by the installer.
 
 ---
 

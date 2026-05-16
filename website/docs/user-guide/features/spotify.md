@@ -68,7 +68,13 @@ Agree to the terms and click **Save**. On the next page click **Settings** → c
 
 ### Running over SSH / in a headless environment
 
-If `SSH_CLIENT` or `SSH_TTY` is set, Hermes skips the automatic browser open during both the wizard and the OAuth step. Copy the dashboard URL and the authorization URL Hermes prints, open them in a browser on your local machine, and proceed normally — the local HTTP listener still runs on the remote host on port 43827. If you need to reach it through an SSH tunnel, forward that port: `ssh -L 43827:127.0.0.1:43827 remote`.
+If `SSH_CLIENT` or `SSH_TTY` is set, Hermes skips the automatic browser open during both the wizard and the OAuth step. Copy the dashboard URL and the authorization URL Hermes prints, open them in a browser on your local machine, and proceed normally — the local HTTP listener still runs on the remote host on port `43827`. Your laptop's browser can't reach the remote loopback without an SSH local-forward:
+
+```bash
+ssh -N -L 43827:127.0.0.1:43827 user@remote-host
+```
+
+For jump-box / bastion setups and other gotchas (mosh, tmux, port conflicts), see [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md).
 
 ## Verify
 

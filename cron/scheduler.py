@@ -129,6 +129,16 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+# Inactivity-timeout tunables. Module-level so tests (and emergency
+# operator overrides) can monkeypatch them without re-entering ``run_job``
+# every iteration. ``_POLL_INTERVAL`` is how often the scheduler wakes to
+# check the worker's activity tracker while waiting on a long agent run.
+# ``_GRACE_SECONDS`` is how long we give the worker thread to honor an
+# interrupt before we hand SessionDB / agent teardown to a deferred
+# done-callback. See ``run_job`` for the lifecycle these gate.
+_POLL_INTERVAL = 5.0
+_GRACE_SECONDS = 5.0
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -1496,7 +1506,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
+        # ``_POLL_INTERVAL`` is a module-level constant (see top of file) so
+        # tests can override it via monkeypatch.
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -1568,7 +1579,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # SQLite use-after-close (segfault) or a noisy traceback.
             # In that case we defer cleanup to a future done-callback
             # that fires once the worker actually exits.
-            _GRACE_SECONDS = 5.0
+            # ``_GRACE_SECONDS`` is a module-level constant (see top of file)
+            # so tests can override it via monkeypatch.
             try:
                 concurrent.futures.wait({_cron_future}, timeout=_GRACE_SECONDS)
             except Exception:

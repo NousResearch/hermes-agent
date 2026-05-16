@@ -445,3 +445,194 @@ class TestSysPathOrdering:
         """hermes_constants should be importable from cron context."""
         from hermes_constants import get_hermes_home
         assert callable(get_hermes_home)
+
+
+class TestRunJobDeferredCleanupIntegration:
+    """End-to-end regression test that drives ``run_job()`` itself.
+
+    The unit tests above exercise the grace-window / done-callback mechanics
+    in isolation. This class wires a stuck fake agent into the real
+    ``scheduler.run_job()`` path and asserts that the inactivity timeout +
+    deferred cleanup contract holds when the whole function is executed:
+
+    1. ``run_job`` raises ``TimeoutError`` and returns a failure tuple as
+       soon as the inactivity limit trips, **without waiting** for the
+       stuck worker to finish.
+    2. At the moment ``run_job`` returns, neither ``SessionDB.close`` /
+       ``SessionDB.end_session`` nor ``AIAgent.close`` has run yet — the
+       worker is still alive and using both resources.
+    3. Once the worker eventually exits, the deferred done-callback fires
+       and closes SessionDB (with reason ``cron_timeout``) before
+       ``agent.close()``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_runtime_provider(self):
+        """Stub provider resolution so the test runs in a hermetic CI env
+        without API keys. ``run_job`` resolves the runtime provider before
+        building ``AIAgent`` — without this stub the resolver raises.
+        """
+        fake_runtime = {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "stub",
+            "requested_provider": None,
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _short_grace_and_poll(self, monkeypatch):
+        """Crunch the inactivity-poll and interrupt-grace windows down so the
+        test runs in well under a second. These are now module-level
+        constants on ``cron.scheduler`` precisely so tests can override
+        them without re-entering ``run_job`` every iteration.
+        """
+        import cron.scheduler as scheduler
+        monkeypatch.setattr(scheduler, "_POLL_INTERVAL", 0.05)
+        monkeypatch.setattr(scheduler, "_GRACE_SECONDS", 0.1)
+
+    @pytest.fixture(autouse=True)
+    def _short_inactivity_timeout(self, monkeypatch):
+        """Trip the inactivity timeout almost immediately."""
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.1")
+
+    def _make_job(self):
+        return {
+            "id": "job_deferred_cleanup_integration",
+            "name": "deferred-cleanup-integration",
+            "prompt": "stall forever please",
+            "schedule": "*/5 * * * *",
+        }
+
+    def test_run_job_defers_cleanup_when_worker_ignores_interrupt(self):
+        """Real ``run_job()`` path with a stuck fake agent: the function
+        must return a timeout failure while the worker is still mid-task,
+        and the deferred done-callback must close SessionDB + agent only
+        after the worker eventually exits.
+        """
+        import cron.scheduler as scheduler
+
+        # ----- observability counters -----
+        close_order: list[str] = []
+        worker_exit_time: list[float] = []
+        # When did run_job return relative to worker exit?
+        run_job_returned_at: list[float] = []
+
+        # ----- fake AIAgent that ignores interrupts -----
+        worker_done = threading.Event()
+        worker_release = threading.Event()  # set after run_job returns
+
+        class StuckFakeAgent:
+            def __init__(self, *args, **kwargs):
+                self._idle_since = time.time()
+                self._closed = False
+
+            def interrupt(self, message: str = None) -> None:
+                # Deliberately ignore — simulate a tool that doesn't honor
+                # the cooperative interrupt flag.
+                pass
+
+            def get_activity_summary(self) -> dict:
+                return {
+                    "seconds_since_activity": time.time() - self._idle_since,
+                    "last_activity_desc": "stuck_tool_call",
+                    "current_tool": "fake_tool",
+                    "api_call_count": 1,
+                    "max_iterations": 90,
+                }
+
+            def run_conversation(self, *args, **kwargs):
+                # Block until the outer test releases us — i.e. until AFTER
+                # run_job has already returned its TimeoutError tuple. This
+                # is what makes the deferred-cleanup path the only viable
+                # one.
+                worker_release.wait(timeout=5.0)
+                worker_exit_time.append(time.time())
+                worker_done.set()
+                return {"final_response": "late", "messages": [], "completed": True}
+
+            def close(self) -> None:
+                self._closed = True
+                close_order.append("agent_close")
+
+        # ----- fake SessionDB -----
+        class FakeSessionDB:
+            def __init__(self):
+                self._closed = False
+
+            def end_session(self, sid, reason):
+                close_order.append(f"end_session:{reason}")
+
+            def close(self):
+                self._closed = True
+                close_order.append("session_close")
+
+            # SessionDB is used as a kwarg passed into AIAgent; the real
+            # class supports a few methods that run_job may touch. We only
+            # need end_session/close for the deferred path. Provide a
+            # permissive __getattr__ so any incidental method call is a
+            # no-op rather than an AttributeError.
+            def __getattr__(self, name):
+                return lambda *a, **kw: None
+
+        fake_sdb_instance = FakeSessionDB()
+
+        with patch("run_agent.AIAgent", StuckFakeAgent), \
+             patch("hermes_state.SessionDB", return_value=fake_sdb_instance):
+            t0 = time.time()
+            success, doc, final_response, error = scheduler.run_job(self._make_job())
+            run_job_returned_at.append(time.time())
+
+        # --- Assertion 1: run_job returns a timeout failure tuple. ---
+        assert success is False
+        assert error is not None
+        assert "idle" in error.lower() or "timeout" in error.lower(), (
+            f"expected an inactivity-timeout error, got: {error!r}"
+        )
+
+        # --- Assertion 2: run_job returned BEFORE the worker exited. ---
+        # Worker hasn't been released yet, so it must still be alive.
+        assert not worker_done.is_set(), (
+            "worker exited before run_job returned — deferred path was "
+            "not exercised (this regression would re-introduce the "
+            "SessionDB use-after-close window)"
+        )
+        # And cleanup must not have run synchronously inside the finally.
+        assert close_order == [], (
+            f"sync cleanup ran while worker still in-flight: {close_order}"
+        )
+
+        # --- Now release the worker and let the done-callback fire. ---
+        worker_release.set()
+        # Wait for worker exit + callback. The callback runs synchronously
+        # on the worker thread after the future is resolved, so a small
+        # buffer is enough.
+        assert worker_done.wait(timeout=3.0), "fake worker never exited"
+        # Poll until the callback ran (or timeout).
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not close_order:
+            time.sleep(0.02)
+
+        # --- Assertion 3: deferred callback ran AFTER worker exit, with
+        #     the correct ordering: end_session(cron_timeout) -> session
+        #     close -> agent close. ---
+        assert close_order, "deferred cleanup callback never fired"
+        assert close_order[0] == "end_session:cron_timeout", (
+            f"first cleanup step should be end_session with cron_timeout "
+            f"reason; got {close_order!r}"
+        )
+        assert close_order.index("session_close") < close_order.index("agent_close"), (
+            f"SessionDB must close before agent; got {close_order!r}"
+        )
+
+        # --- Assertion 4: timing — run_job returned strictly before the
+        #     worker's recorded exit timestamp. ---
+        assert run_job_returned_at[0] < worker_exit_time[0], (
+            "run_job did not return before the stuck worker exited"
+        )

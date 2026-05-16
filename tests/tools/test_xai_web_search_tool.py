@@ -87,6 +87,65 @@ def test_xai_web_search_rejects_conflicting_domain_filters(monkeypatch):
     assert result["error"] == "allowed_domains and excluded_domains cannot be used together"
 
 
+def test_xai_web_search_empty_query_returns_tool_error(monkeypatch):
+    from tools.xai_web_search_tool import xai_web_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    result = json.loads(xai_web_search_tool(query="  "))
+
+    assert result["error"] == "query is required for xai_web_search"
+
+
+def test_xai_web_search_rejects_too_many_domains(monkeypatch):
+    from tools.xai_web_search_tool import xai_web_search_tool
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+    result = json.loads(
+        xai_web_search_tool(
+            query="latest docs",
+            allowed_domains=[
+                "a.example",
+                "b.example",
+                "c.example",
+                "d.example",
+                "e.example",
+                "f.example",
+            ],
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "allowed_domains supports at most 5 domains"
+    assert result["error_type"] == "ValueError"
+
+
+def test_xai_web_search_excluded_domains_payload_and_default_image_flag(monkeypatch):
+    from tools.xai_web_search_tool import xai_web_search_tool
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "Excluded domain search OK."})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(
+        xai_web_search_tool(
+            query="latest xAI docs",
+            excluded_domains=["https://docs.x.ai:443/path", ".example.com"],
+        )
+    )
+
+    tool_def = captured["json"]["tools"][0]
+    assert result["success"] is True
+    assert tool_def["filters"]["excluded_domains"] == ["docs.x.ai", "example.com"]
+    assert "enable_image_understanding" not in tool_def
+
+
 def test_xai_web_search_extracts_inline_url_citations(monkeypatch):
     from tools.xai_web_search_tool import xai_web_search_tool
 

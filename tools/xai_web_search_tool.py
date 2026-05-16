@@ -106,7 +106,7 @@ def _normalize_domains(domains: Optional[List[str]], field_name: str) -> List[st
         if not raw:
             continue
         parsed = urlparse(raw if "://" in raw else f"//{raw}")
-        host = (parsed.netloc or parsed.path).split("/")[0].strip().lower()
+        host = (parsed.hostname or parsed.netloc or parsed.path).split("/")[0].strip().lower()
         host = host.lstrip(".")
         if host:
             cleaned.append(host)

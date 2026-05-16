@@ -876,6 +876,59 @@ class TestSendTelegramThreadIdMapping:
         kwargs = bot.send_message.await_args.kwargs
         assert "message_thread_id" not in kwargs
 
+    def test_thread_not_found_retries_without_message_thread_id(self, monkeypatch):
+        """When send_message raises "thread not found", retry without thread_id (#27012)."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        # First call raises thread-not-found, second succeeds
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Bad Request: message thread not found"),
+            SimpleNamespace(message_id=2),
+        ])
+
+        asyncio.run(
+            _send_telegram("tok", "-1001234567890", "hello", thread_id="17585")
+        )
+
+        assert bot.send_message.await_count == 2
+        # First call: should include message_thread_id=17585
+        call1_kwargs = bot.send_message.await_args_list[0].kwargs
+        assert call1_kwargs["message_thread_id"] == 17585
+        # Second call (retry): should NOT include message_thread_id
+        call2_kwargs = bot.send_message.await_args_list[1].kwargs
+        assert "message_thread_id" not in call2_kwargs
+
+    def test_thread_not_found_for_media_retries_without_message_thread_id(self, monkeypatch, tmp_path):
+        """Media send with stale thread_id retries without it (#27012)."""
+        bot = self._make_bot()
+        # Mock send_document to fail with thread-not-found, then succeed
+        bot.send_document = AsyncMock(side_effect=[
+            Exception("Bad Request: message thread not found"),
+            SimpleNamespace(message_id=3),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        # Create a test file
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("test content")
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "-1001234567890", "",
+                media_files=[(str(test_file), False)],
+                thread_id="17585",
+            )
+        )
+
+        assert bot.send_document.await_count == 2
+        # First call: should include message_thread_id=17585
+        call1_kwargs = bot.send_document.await_args_list[0].kwargs
+        assert call1_kwargs["message_thread_id"] == 17585
+        # Second call (retry): should NOT include message_thread_id
+        call2_kwargs = bot.send_document.await_args_list[1].kwargs
+        assert "message_thread_id" not in call2_kwargs
+
 
 # ---------------------------------------------------------------------------
 # Tests for Discord thread_id support

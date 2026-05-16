@@ -40,6 +40,40 @@ class TestHandleFunctionCall:
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_dispatch_refuses_tools_outside_enabled_list(self):
+        """Regression for #26568: even after disabling the ``web`` toolset
+        via ``hermes tools``, the agent kept calling ``web_extract`` because
+        ``handle_function_call`` only filtered tool *schemas* — the
+        dispatcher itself never checked the active session's allowlist."""
+        with patch("model_tools.registry.dispatch") as mock_dispatch:
+            result = json.loads(handle_function_call(
+                "web_extract",
+                {"urls": ["https://example.com"]},
+                enabled_tools=["browser_navigate", "read_file"],
+            ))
+
+        assert "error" in result
+        assert "web_extract" in result["error"]
+        assert "not enabled" in result["error"]
+        mock_dispatch.assert_not_called()
+
+    def test_dispatch_allows_tools_in_enabled_list(self):
+        """When the tool is in the active toolset, dispatch proceeds."""
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}'):
+            result = handle_function_call(
+                "web_search",
+                {"query": "hello"},
+                enabled_tools=["web_search", "web_extract"],
+            )
+        assert result == '{"ok":true}'
+
+    def test_dispatch_skips_gate_when_enabled_tools_is_none(self):
+        """Non-agent callers (RL environments, MCP server, scripts) pass
+        ``enabled_tools=None`` and must keep working without an allowlist."""
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}'):
+            result = handle_function_call("web_search", {"query": "hi"})
+        assert result == '{"ok":true}'
+
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),

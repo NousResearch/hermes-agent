@@ -1243,7 +1243,19 @@ def list_authenticated_providers(
         # For preferred providers, merge models.dev entries into the curated
         # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
         # show up in the picker without requiring a Hermes release.
-        model_ids = curated.get(hermes_id, [])
+        if hermes_id == "copilot":
+            # Use live OAuth-backed discovery so the picker matches what the
+            # user's authenticated Copilot backend actually serves (mirrors
+            # the section-2 branch at ~line 1349). Without this, Section 1
+            # emits Copilot first with the stale ``_PROVIDER_MODELS["copilot"]``
+            # snapshot, adds the slug to ``seen_slugs``, and Section 2's
+            # live-discovery branch is skipped — so new GitHub-Copilot models
+            # never appear in /model. ``provider_model_ids()`` falls back to
+            # the curated list when the live endpoint is unreachable, so this
+            # is safe for offline and unauthenticated callers too.
+            model_ids = provider_model_ids(hermes_id)
+        else:
+            model_ids = curated.get(hermes_id, [])
         if hermes_id in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)

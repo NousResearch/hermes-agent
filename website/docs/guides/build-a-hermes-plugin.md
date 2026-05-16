@@ -514,8 +514,9 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`pre_goal_continuation`](/docs/user-guide/features/hooks#pre_goal_continuation) | After judge votes `continue` but before the next `/goal` tick fires | `session_id: str, goal_manager: GoalManager, decision: dict, last_response: str` | [veto](#pre_goal_continuation-veto) |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call` (context injection) and `pre_goal_continuation` (pause veto).
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
@@ -615,6 +616,35 @@ def register(ctx):
 #### Multiple plugins returning context
 
 When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name).
+
+### `pre_goal_continuation` veto
+
+`pre_goal_continuation` fires once per `/goal` continuation tick — after `GoalManager.evaluate_after_turn` has decided to continue but **before** the continuation prompt is enqueued back into the agent. Plugins can use it to pause the goal in response to external conditions (rate-limit windows, cost budgets, paged operator, …).
+
+#### Return format
+
+```python
+# Pause the goal — skip the upcoming tick.
+return {"action": "pause", "reason": "cc-rate-limit; resumes ~20:05"}
+
+# Proceed normally (either return is fine).
+return {"action": "allow"}
+return None
+```
+
+When any plugin returns `{"action": "pause"}`, Hermes calls `goal_manager.pause(reason=...)` for you and skips enqueueing the continuation prompt. The first paused vote wins; remaining plugins still run for side-effects but their action verbs are ignored. The goal can be resumed with `/goal resume` or by an external cron firing `/goal resume` back into the same session.
+
+#### Example: pause when an external budget is exhausted
+
+```python
+def gate(session_id, goal_manager, decision, last_response, **_):
+    if budget_exhausted():
+        return {"action": "pause", "reason": "budget exhausted; will retry tomorrow"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_goal_continuation", gate)
+```
 
 ### Register CLI commands
 

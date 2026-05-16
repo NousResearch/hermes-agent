@@ -287,6 +287,31 @@ def _count_tool(tool_names: List[str], *needles: str) -> int:
     return sum(1 for name in lowered if any(needle in name for needle in needles))
 
 
+_MEMORY_WRITE_ACTIONS = frozenset({"add", "replace"})
+
+
+def _is_memory_write_call(call: Dict[str, Any]) -> bool:
+    """Return True if *call* is a memory/mnemosyne tool invocation whose action
+    is a write (add or replace) rather than a read (list, search, remove)."""
+    name = (_tool_name_from_call(call) or "").lower()
+    if not ("memory" in name or "mnemosyne" in name):
+        return False
+    # mnemosyne_remember is always a write
+    if "mnemosyne_remember" in name:
+        return True
+    # For the generic "memory" tool, inspect the action argument
+    fn = call.get("function") or {}
+    args_raw = fn.get("arguments", "")
+    if isinstance(args_raw, str):
+        try:
+            args = json.loads(args_raw)
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+    else:
+        args = args_raw if isinstance(args_raw, dict) else {}
+    return str(args.get("action", "")).lower() in _MEMORY_WRITE_ACTIONS
+
+
 def model_provider(model_name: str) -> Optional[str]:
     name = (model_name or "").strip().lower()
     if not name or name == "none":
@@ -310,6 +335,7 @@ def is_local_model_name(model_name: str) -> bool:
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_names: Set[str] = set()
     tool_sequence: List[str] = []
+    memory_write_count = 0
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
@@ -329,6 +355,8 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+            if _is_memory_write_call(call):
+                memory_write_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -354,7 +382,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
     skill_manage_events = _count_tool(tool_sequence, "skill_manage")
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
+    memory_write_events = memory_write_count
 
     return {
         "session_id": session_id,

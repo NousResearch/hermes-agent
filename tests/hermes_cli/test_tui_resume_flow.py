@@ -148,6 +148,25 @@ def _stub_plugin_discovery(monkeypatch):
 
 
 
+def test_run_oneshot_passes_ignore_rules_env(monkeypatch, capsys):
+    import hermes_cli.oneshot as oneshot_mod
+
+    captured = {}
+    monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
+    monkeypatch.setattr(
+        oneshot_mod,
+        "_run_agent",
+        lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs})
+        or ("ok", {"final_response": "ok"}),
+    )
+
+    assert oneshot_mod.run_oneshot("hello") == 0
+
+    assert captured["prompt"] == "hello"
+    assert captured["ignore_rules"] is True
+    assert capsys.readouterr().out == "ok\n"
+
+
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
     """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
     from hermes_cli.oneshot import _run_agent
@@ -208,11 +227,13 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    text, result = _run_agent("recall this")
+    text, result = _run_agent("recall this", ignore_rules=True)
     assert text == "ok"
     assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
+    assert captured["skip_context_files"] is True
+    assert captured["skip_memory"] is True
     assert captured["prompt"] == "recall this"
 
 
@@ -282,7 +303,6 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert argv == [str(tsx), "src/entry.tsx"]
     assert cwd == tui_dir
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
-
 
 
 

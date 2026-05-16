@@ -1,0 +1,5 @@
+PASS kanban-video-orchestrator fixture validation
+plan=/Users/anton/.hermes/kanban/workspaces/t_6811f217/hermes-agent/optional-skills/creative/kanban-video-orchestrator/fixtures/sample-plan.json
+setup_sha256=1be7ba3a7d18ba3040035ec4ef67c5633b89aedf914c598f711505091894cef9
+brief_sha256=f31cb736b139220e5dd350431728d973c5a5721a1c2b767141603904d464a40b
+team_sha256=349dfe20e884717b7595b76e8533431f26620e62162477608a9193cff0f1e42e

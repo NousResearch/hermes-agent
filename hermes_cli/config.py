@@ -592,9 +592,9 @@ DEFAULT_CONFIG = {
         "docker_run_as_host_user": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
-        "persistent_shell": True,
+        # Disabled by default because approval checks are per command and cannot
+        # model shell state staged in earlier calls. Opt in explicitly when needed.
+        "persistent_shell": False,
     },
 
     "web": {

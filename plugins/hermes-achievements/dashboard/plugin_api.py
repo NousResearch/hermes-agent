@@ -310,6 +310,7 @@ def is_local_model_name(model_name: str) -> bool:
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_names: Set[str] = set()
     tool_sequence: List[str] = []
+    memory_write_count: int = 0
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
@@ -329,6 +330,27 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+                # Count memory write operations: mnemosyne_remember always counts,
+                # and memory tool with action 'add' or 'replace' counts as write.
+                if name == "mnemosyne_remember":
+                    memory_write_count += 1
+                elif name == "memory":
+                    # Extract arguments from the tool call
+                    args = None
+                    if "arguments" in call:
+                        args = call["arguments"]
+                    elif "function" in call and "arguments" in call["function"]:
+                        args = call["function"]["arguments"]
+                    # Parse JSON string if needed
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = None
+                    if isinstance(args, dict):
+                        action = args.get("action", "").lower()
+                        if action in ("add", "replace"):
+                            memory_write_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -354,7 +376,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
     skill_manage_events = _count_tool(tool_sequence, "skill_manage")
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
-    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
+    memory_write_events = memory_write_count
 
     return {
         "session_id": session_id,

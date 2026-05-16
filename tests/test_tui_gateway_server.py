@@ -3153,6 +3153,27 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert ("session.info", "sid", {"model": "x"}) in emitted
 
 
+def test_slash_worker_waiter_reaps_exited_process():
+    queue_mod = __import__("queue")
+
+    class _Proc:
+        def __init__(self):
+            self.wait_called = False
+
+        def wait(self):
+            self.wait_called = True
+            return 0
+
+    worker = server._SlashWorker.__new__(server._SlashWorker)
+    worker.proc = _Proc()
+    worker.stdout_queue = queue_mod.Queue()
+
+    server._SlashWorker._wait_for_exit(worker)
+
+    assert worker.proc.wait_called is True
+    assert worker.stdout_queue.get_nowait() is None
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.

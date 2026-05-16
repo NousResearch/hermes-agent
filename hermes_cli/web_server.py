@@ -661,10 +661,44 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+_ACTION_PROC_STATUS: Dict[str, Dict[str, Any]] = {}
+_ACTION_PROC_LOCK = threading.Lock()
+
+
+def _watch_hermes_action(name: str, proc: subprocess.Popen, log_file) -> None:
+    """Wait for a dashboard-spawned action so exited children are reaped.
+
+    ``Popen.poll()`` only reaps when the status endpoint is called.  Dashboard
+    actions such as gateway restart/update can finish while nobody polls them,
+    leaving ``[python] <defunct>`` children under ``hermes dashboard``.  A tiny
+    waiter thread keeps the public "latest action" status while guaranteeing
+    the kernel child is collected and the inherited log fd is closed.
+    """
+    try:
+        exit_code = proc.wait()
+    except Exception:
+        _log.debug("dashboard action waiter failed for %s", name, exc_info=True)
+        exit_code = None
+    finally:
+        try:
+            log_file.close()
+        except Exception:
+            pass
+
+    with _ACTION_PROC_LOCK:
+        status = _ACTION_PROC_STATUS.setdefault(name, {})
+        if status.get("pid") == proc.pid:
+            status.update({
+                "running": False,
+                "exit_code": exit_code,
+                "completed_at": time.time(),
+            })
+        if _ACTION_PROCS.get(name) is proc:
+            _ACTION_PROCS.pop(name, None)
 
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
-    """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
+    """Spawn ``hermes <subcommand>`` detached, record it, and reap on exit.
 
     Uses the running interpreter's ``hermes_cli.main`` module so the action
     inherits the same venv/PYTHONPATH the web server is using.
@@ -695,7 +729,21 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
-    _ACTION_PROCS[name] = proc
+    with _ACTION_PROC_LOCK:
+        _ACTION_PROCS[name] = proc
+        _ACTION_PROC_STATUS[name] = {
+            "pid": proc.pid,
+            "running": True,
+            "exit_code": None,
+            "started_at": time.time(),
+            "completed_at": None,
+        }
+    threading.Thread(
+        target=_watch_hermes_action,
+        args=(name, proc, log_file),
+        daemon=True,
+        name=f"hermes-dashboard-action-{name}-{proc.pid}",
+    ).start()
     return proc
 
 
@@ -753,15 +801,28 @@ async def get_action_status(name: str, lines: int = 200):
     log_path = _ACTION_LOG_DIR / log_file_name
     tail = _tail_lines(log_path, min(max(lines, 1), 2000))
 
-    proc = _ACTION_PROCS.get(name)
+    with _ACTION_PROC_LOCK:
+        proc = _ACTION_PROCS.get(name)
+        cached_status = dict(_ACTION_PROC_STATUS.get(name) or {})
     if proc is None:
-        running = False
-        exit_code: Optional[int] = None
-        pid: Optional[int] = None
+        running = bool(cached_status.get("running", False))
+        exit_code = cached_status.get("exit_code")
+        pid = cached_status.get("pid")
     else:
         exit_code = proc.poll()
         running = exit_code is None
         pid = proc.pid
+        if not running:
+            with _ACTION_PROC_LOCK:
+                status = _ACTION_PROC_STATUS.setdefault(name, {})
+                if status.get("pid") == pid:
+                    status.update({
+                        "running": False,
+                        "exit_code": exit_code,
+                        "completed_at": status.get("completed_at") or time.time(),
+                    })
+                if _ACTION_PROCS.get(name) is proc:
+                    _ACTION_PROCS.pop(name, None)
 
     return {
         "name": name,

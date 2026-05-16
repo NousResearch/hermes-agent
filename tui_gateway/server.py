@@ -217,6 +217,7 @@ class _SlashWorker:
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
+        threading.Thread(target=self._wait_for_exit, daemon=True).start()
 
     def _drain_stdout(self):
         for line in self.proc.stdout or []:
@@ -230,6 +231,15 @@ class _SlashWorker:
         for line in self.proc.stderr or []:
             if text := line.rstrip("\n"):
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
+
+    def _wait_for_exit(self):
+        """Reap a slash-worker that exits without an explicit close()."""
+        try:
+            self.proc.wait()
+        except Exception:
+            logger.debug("slash worker waiter failed", exc_info=True)
+        finally:
+            self.stdout_queue.put(None)
 
     def run(self, command: str) -> str:
         if self.proc.poll() is not None:

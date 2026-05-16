@@ -1319,6 +1319,44 @@ class TestModelInfoEndpoint:
         assert data["auto_context_length"] == 0
 
 
+def test_dashboard_action_waiter_reaps_completed_child(monkeypatch):
+    import hermes_cli.web_server as ws
+
+    class _Proc:
+        pid = 4242
+
+        def __init__(self):
+            self.wait_called = False
+
+        def wait(self):
+            self.wait_called = True
+            return 7
+
+    class _LogFile:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    proc = _Proc()
+    log_file = _LogFile()
+    monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", proc)
+    monkeypatch.setitem(
+        ws._ACTION_PROC_STATUS,
+        "gateway-restart",
+        {"pid": proc.pid, "running": True, "exit_code": None},
+    )
+
+    ws._watch_hermes_action("gateway-restart", proc, log_file)
+
+    assert proc.wait_called is True
+    assert log_file.closed is True
+    assert "gateway-restart" not in ws._ACTION_PROCS
+    assert ws._ACTION_PROC_STATUS["gateway-restart"]["running"] is False
+    assert ws._ACTION_PROC_STATUS["gateway-restart"]["exit_code"] == 7
+
+
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------

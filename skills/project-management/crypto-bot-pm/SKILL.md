@@ -199,7 +199,7 @@ healthy runner state and continue only with read-only CI evidence checks.
 Execution requires the helper's exact approval phrase and may recreate only the
 `crypto-bot-linux-runner` container with the correct act_runner image contract:
 `GITEA_RUNNER_REGISTRATION_TOKEN`, `/data/.runner`, `crypto-bot-gitea-net`, and
-labels `linux,crypto-bot-python-313`. It must not dispatch workflows, update PR
+labels `linux,crypto-bot-python-313,ubuntu-latest`. It must not dispatch workflows, update PR
 metadata/comments/statuses/checks, merge, edit workflow files, touch product
 files, print secrets, or insert tokens directly into the database.
 

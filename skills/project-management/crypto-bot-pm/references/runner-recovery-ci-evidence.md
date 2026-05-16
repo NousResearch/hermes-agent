@@ -18,6 +18,6 @@ Use this reference for gated local Gitea runner recovery when S006 has an open P
 
 ## CI pending despite healthy runner
 
-If runner recovery is healthy but CI remains pending, check workflow `runs-on` labels against the runner labels. A healthy runner with labels like `linux,crypto-bot-python-313` will not pick jobs requiring `ubuntu-latest`; that is a label-alignment blocker, not a token/registration failure.
+If runner recovery is healthy but CI remains pending, check workflow `runs-on` labels against the runner labels. A healthy runner with labels like `linux,crypto-bot-python-313,ubuntu-latest` is label-compatible with existing `ubuntu-latest` jobs; if jobs still wait, investigate scheduler/run state read-only before mutating workflow, PR, checks, or merge state.
 
 Do not solve label mismatch by editing workflow files, dispatching workflows, mutating PR/check/status state, or merging unless a separate exact approval authorizes that action.

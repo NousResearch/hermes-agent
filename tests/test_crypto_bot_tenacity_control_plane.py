@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import crypto_bot_autonomy_readiness as readiness  # noqa: E402
+import crypto_bot_gitea_runner_recovery as runner_recovery  # noqa: E402
 import crypto_bot_kanban_import_audit as kanban_import_audit  # noqa: E402
 import crypto_bot_pr_ci_audit as pr_ci_audit  # noqa: E402
 
@@ -255,6 +256,14 @@ def test_pr_ci_audit_counts_gitea_status_field_states() -> None:
     assert payload["statuses_count"] == 3
     assert payload["ci_state"] == "pending"
     assert payload["blocker"] == "ci_evidence_pending"
+
+
+def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
+    assert "ubuntu-latest" in runner_recovery.RUNNER_LABELS.split(",")
+    assert "crypto-bot-python-313" in runner_recovery.RUNNER_LABELS.split(",")
+    assert "labels=linux,crypto-bot-python-313,ubuntu-latest" in (
+        runner_recovery.APPROVAL_PHRASE
+    )
 
 
 def test_generated_configs_have_no_secret_like_values_after_tenacity_update() -> None:

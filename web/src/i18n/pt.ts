@@ -663,7 +663,7 @@ export const pt: Translations = {
     columnHelp: {
       triage: "Ideias em bruto — um specifier vai detalhar a especificação",
       todo: "À espera de dependências ou sem atribuição",
-      ready: "Atribuído e à espera de um tick do dispatcher",
+      ready: "Dependências satisfeitas; atribua um perfil para despachar",
       running: "Reivindicado por um worker — em execução",
       blocked: "O worker pediu intervenção humana",
       done: "Concluído",

@@ -26,6 +26,10 @@ def git_repo(tmp_path):
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True,
     )
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=repo, capture_output=True,
+    )
     # Create initial commit (worktrees need at least one commit)
     (repo / "README.md").write_text("# Test Repo\n")
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)

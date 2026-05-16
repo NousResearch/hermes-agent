@@ -170,6 +170,12 @@ def execute_recovery(
             blockers.append("unable_to_remove_existing_runner_container")
             return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
 
+    result = runner(["docker", "volume", "rm", "-f", RUNNER_VOLUME], 30)
+    steps.append({"step": "reset_runner_volume_for_label_alignment", **command_summary(result)})
+    if result["exit_code"] != 0:
+        blockers.append("unable_to_reset_runner_volume")
+        return build_report(mode="execute", blockers=blockers, steps=steps, runner=runner)
+
     result = runner(["docker", "volume", "create", RUNNER_VOLUME], 30)
     steps.append({"step": "ensure_runner_volume", **command_summary(result)})
     if result["exit_code"] != 0:

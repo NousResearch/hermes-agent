@@ -266,6 +266,29 @@ def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
     )
 
 
+def test_runner_recovery_resets_volume_to_reregister_labels() -> None:
+    commands: list[list[str]] = []
+
+    def fake_runner(argv: list[str], timeout: int) -> dict[str, object]:
+        commands.append(argv)
+        if argv[:3] == ["docker", "container", "inspect"]:
+            return {"exit_code": 0, "stdout": "{}", "stderr": ""}
+        if argv[:2] == ["docker", "logs"] or argv[:2] == ["docker", "ps"]:
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+        if "generate-runner-token" in argv:
+            return {"exit_code": 0, "stdout": "redacted-token\n", "stderr": ""}
+        return {"exit_code": 0, "stdout": "ok", "stderr": ""}
+
+    report = runner_recovery.execute_recovery(
+        approval_phrase=runner_recovery.APPROVAL_PHRASE,
+        runner=fake_runner,
+        sleep_fn=lambda _: None,
+    )
+
+    assert report["conclusion"] == "PASS"
+    assert ["docker", "volume", "rm", "-f", runner_recovery.RUNNER_VOLUME] in commands
+
+
 def test_generated_configs_have_no_secret_like_values_after_tenacity_update() -> None:
     assert readiness.has_secret_looking_values(ROOT) == []
 

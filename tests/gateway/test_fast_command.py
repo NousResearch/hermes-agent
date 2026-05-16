@@ -23,12 +23,20 @@ class _CapturingAgent:
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+        **kwargs,
+    ):
         type(self).last_run = {
             "user_message": user_message,
             "conversation_history": conversation_history,
             "task_id": task_id,
             "persist_user_message": persist_user_message,
+            "extra_kwargs": kwargs,
         }
         return {
             "final_response": "ok",
@@ -83,6 +91,13 @@ def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
+def test_openai_priority_processing_models_include_current_gpt5_releases():
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    assert resolve_fast_mode_overrides("gpt-5.5") == {"service_tier": "priority"}
+    assert resolve_fast_mode_overrides("gpt-5.4") == {"service_tier": "priority"}
+
+
 def test_turn_route_injects_priority_processing_without_changing_runtime():
     runner = _make_runner()
     runner._service_tier = "priority"
@@ -96,7 +111,7 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
         "credential_pool": None,
     }
 
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.5", runtime_kwargs)
 
     assert route["runtime"]["provider"] == "openrouter"
     assert route["runtime"]["api_mode"] == "chat_completions"
@@ -127,7 +142,7 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.5")
 
     response = await runner._handle_fast_command(_make_event("/fast fast"))
 
@@ -157,7 +172,7 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
         "_load_gateway_runtime_config",
         lambda: {"agent": {"service_tier": "fast"}},
     )
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.5")
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",

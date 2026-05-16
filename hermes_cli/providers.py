@@ -254,6 +254,13 @@ ALIASES: Dict[str, str] = {
     "xai-oauth": "xai-oauth",
     "x-ai-oauth": "xai-oauth",
     "xai-grok-oauth": "xai-oauth",
+    "xai-coding-plan": "xai-oauth",
+    "xai coding plan": "xai-oauth",
+    "x.ai coding plan": "xai-oauth",
+    "grok-plan": "xai-oauth",
+    "grok-code": "xai-oauth",
+    "xai-grok-build": "xai-oauth",
+    "xai-oauth-plan": "xai-oauth",
 
     # nvidia
     "nim": "nvidia",

@@ -243,6 +243,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5-flash",
     ],
     "xai": _xai_curated_models(),
+    "xai-oauth": [
+        "grok-build",
+        "grok-4-1-fast",
+        "grok-code-fast-1",
+        "grok-4.3",
+        "grok-4.3-latest",
+    ],
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-super-120b-a12b",

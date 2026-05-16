@@ -29,7 +29,6 @@ If you do not have the Grok CLI installed, you can authenticate directly via bro
 
 | Variable                        | Description                          | Priority |
 |--------------------------------|--------------------------------------|----------|
-| `GITHUB_PERSONAL_ACCESS_TOKEN` | (Not used)                           | -        |
 | `XAI_API_KEY`                  | Fallback API key (if using `xai` provider) | Low     |
 
 ## Aliases

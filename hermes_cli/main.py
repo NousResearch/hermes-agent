@@ -1994,8 +1994,6 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
-    elif selected_provider == "xai-oauth":
-        _model_flow_xai_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -2871,87 +2869,6 @@ def _model_flow_openai_codex(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_xai_oauth(_config, current_model=""):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
-        get_xai_oauth_auth_status,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-        resolve_xai_oauth_runtime_credentials,
-        _login_xai_oauth,
-        DEFAULT_XAI_OAUTH_BASE_URL,
-        PROVIDER_REGISTRY,
-    )
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    status = get_xai_oauth_auth_status()
-    if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
-        print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
-
-        if choice == "2":
-            print("Starting a fresh xAI OAuth login...")
-            print()
-            try:
-                mock_args = argparse.Namespace()
-                _login_xai_oauth(
-                    mock_args,
-                    PROVIDER_REGISTRY["xai-oauth"],
-                    force_new_login=True,
-                )
-            except SystemExit:
-                print("Login cancelled or failed.")
-                return
-            except Exception as exc:
-                print(f"Login failed: {exc}")
-                return
-        elif choice == "3":
-            return
-    else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
-        print()
-        try:
-            mock_args = argparse.Namespace()
-            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
-        except SystemExit:
-            print("Login cancelled or failed.")
-            return
-        except Exception as exc:
-            print(f"Login failed: {exc}")
-            return
-
-    # Resolve a usable base URL.  ``resolve_xai_oauth_runtime_credentials``
-    # only reads from the auth.json singleton — but credentials may legitimately
-    # live only in the pool (e.g. after ``hermes auth add xai-oauth``).  Fall
-    # back to the default base URL in that case so the model picker still
-    # completes successfully instead of bailing out with
-    # ``Could not resolve xAI OAuth credentials``.
-    base_url = DEFAULT_XAI_OAUTH_BASE_URL
-    try:
-        creds = resolve_xai_oauth_runtime_credentials()
-        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
-    except Exception:
-        pass
-
-    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
-    if selected:
-        _save_model_choice(selected)
-        _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
-    else:
-        print("No change.")
-
-
 _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
@@ -3134,7 +3051,6 @@ def _model_flow_xai_oauth(config, current_model=""):
     credentials (no browser login needed).
     """
     from hermes_cli.auth import (
-        get_provider_auth_state,
         get_xai_oauth_auth_status,
         _login_xai_oauth,
         resolve_xai_oauth_runtime_credentials,
@@ -3142,10 +3058,9 @@ def _model_flow_xai_oauth(config, current_model=""):
         _save_model_choice,
         _update_config_for_provider,
         _import_grok_cli_into_hermes,
-        read_credential_pool,
         PROVIDER_REGISTRY,
     )
-    from hermes_cli.models import _xai_curated_models, fetch_api_models
+    from hermes_cli.models import _xai_curated_models, fetch_api_models, _PROVIDER_MODELS
 
     print("Checking for existing Grok CLI login...")
 
@@ -3175,7 +3090,7 @@ def _model_flow_xai_oauth(config, current_model=""):
         if choice == "y":
             try:
                 import argparse
-                pconfig = PROVIDER_REGISTRY.get("xai-oauth")
+                pconfig = PROVIDER_REGISTRY.get(selected_provider) or PROVIDER_REGISTRY.get("xai-oauth")
                 mock_args = argparse.Namespace(force=True)
                 _login_xai_oauth(mock_args, pconfig, force_new_login=True)
             except Exception as e:
@@ -3197,7 +3112,7 @@ def _model_flow_xai_oauth(config, current_model=""):
         pass
 
     if not models:
-        models = list(_xai_curated_models() or ["grok-4", "grok-3", "grok-3-mini"])
+        models = list(_PROVIDER_MODELS.get("xai-oauth", _xai_curated_models() or ["grok-build", "grok-4.3"]))
 
     default = current_model or (models[0] if models else "grok-4")
     selected = _prompt_model_selection(models, current_model=default)

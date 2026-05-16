@@ -1,0 +1,39 @@
+{
+  "project": "Hermes Agent / Undersea Friends",
+  "phase": "undersea-friends-harness-structure",
+  "objective": "Shift Undersea Friends operations from ad-hoc profile requests to a harness-driven phase/step operating structure with explicit status, role boundaries, and verification gates.",
+  "status_snapshot": "phases/0-undersea-friends-harness-structure/status.json",
+  "allowed_paths": [
+    "docs/HARNESS.md",
+    "scripts/harness_execute.py",
+    "tests/scripts/test_harness_execute.py",
+    "phases/0-undersea-friends-harness-structure/"
+  ],
+  "steps": [
+    {
+      "step": 1,
+      "name": "codify-undersea-harness-operating-model",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "implement-one-minute-status-snapshot",
+      "status": "pending"
+    },
+    {
+      "step": 3,
+      "name": "standardize-handoff-packets",
+      "status": "pending"
+    },
+    {
+      "step": 4,
+      "name": "add-undersea-profile-health-inventory",
+      "status": "pending"
+    },
+    {
+      "step": 5,
+      "name": "document-and-verify-harness-workflow",
+      "status": "pending"
+    }
+  ]
+}

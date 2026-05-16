@@ -1,0 +1,9 @@
+{
+  "phases": [
+    {
+      "dir": "0-undersea-friends-harness-structure",
+      "status": "pending",
+      "summary": "Move Undersea Friends operations to a harness-driven phase/step structure with status visibility and role-safe handoffs."
+    }
+  ]
+}

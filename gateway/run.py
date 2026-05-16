@@ -4667,6 +4667,10 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        # Read NATS JetStream server URL for publishing dispatch events.
+        # Empty string means NATS publishing is disabled.
+        nats_server_url = kanban_cfg.get("nats_server_url", "") or ""
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4702,6 +4706,7 @@ class GatewayRunner:
                     board=slug,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    nats_server_url=nats_server_url,
                 )
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)

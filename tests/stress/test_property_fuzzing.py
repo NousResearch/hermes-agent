@@ -213,7 +213,7 @@ def random_op(rng, conn, kb, task_pool):
         crashed = kb.detect_crashed_workers(conn)
         return {"op": "detect_crashed", "n": len(crashed)}
     if op == "recompute_ready":
-        n = kb.recompute_ready(conn)
+        n, _ = kb.recompute_ready(conn)
         return {"op": "recompute_ready", "promoted": n}
     if op == "reassign":
         # Reassignment isn't a direct API; simulate via assign_task

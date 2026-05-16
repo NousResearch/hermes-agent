@@ -324,7 +324,7 @@ def _handle_list(args: dict, **kw) -> str:
         try:
             # Match CLI list: dependencies that cleared since the last
             # dispatcher tick should be visible to orchestrators immediately.
-            promoted = kb.recompute_ready(conn)
+            promoted, _ = kb.recompute_ready(conn)
             # Fetch one extra row so model-facing output can report that
             # a bounded listing was truncated without dumping the board.
             rows = kb.list_tasks(

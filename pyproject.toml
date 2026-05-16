@@ -200,6 +200,9 @@ all = [
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
+# NATS client for kanban dispatch events (optional — only needed when
+# kanban.nats_server_url is configured in config.yaml).
+nats = ["nats-py==2.14.0"]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"

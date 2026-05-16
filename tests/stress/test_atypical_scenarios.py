@@ -277,7 +277,7 @@ def _(home, kb):
             result = []
             def run():
                 try:
-                    result.append(kb.recompute_ready(conn))
+                    result.append(kb.recompute_ready(conn)[0])
                 except Exception as e:
                     result.append(e)
                 done.set()

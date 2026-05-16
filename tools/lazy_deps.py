@@ -165,6 +165,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
     ),
+
+    # ─── Kanban dispatch (NATS) ─────────────────────────────────────────────
+    # NATS client for publishing kanban dispatch events. Used by the gateway
+    # dispatcher when ``kanban.nats_server_url`` is configured.
+    "kanban.nats": ("nats-py==2.14.0",),
 }
 
 

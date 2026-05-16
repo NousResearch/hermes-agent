@@ -1451,6 +1451,12 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # NATS JetStream server URL for publishing kanban dispatch events.
+        # When set, the gateway dispatcher publishes a JetStream message for
+        # every task promoted to ``ready`` status.  Subject:
+        # ``kanban.dispatch.<assignee>``.  Optional — when empty or absent,
+        # no NATS publish occurs.  E.g. ``nats://localhost:4222``.
+        "nats_server_url": "",
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

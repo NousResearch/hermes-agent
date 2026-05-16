@@ -447,7 +447,7 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         assert kb.get_task(conn, child).status == "todo"
         # Dispatcher tick between create and some later event must NOT
         # produce a winner for this child.
-        promoted = kb.recompute_ready(conn)
+        promoted, _ = kb.recompute_ready(conn)
         assert promoted == 0
         assert kb.get_task(conn, child).status == "todo"
         # Complete parent; complete_task internally runs recompute_ready,

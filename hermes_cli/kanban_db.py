@@ -1825,19 +1825,26 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
-def recompute_ready(conn: sqlite3.Connection) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection,
+) -> tuple[int, list[tuple[str, str]]]:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
-    Returns the number of tasks promoted.  Safe to call inside or outside
-    an existing transaction; it opens its own IMMEDIATE txn.
+    Returns ``(count, [(task_id, assignee), ...])`` — the number of tasks
+    promoted and a list of promoted task ids with their assignees.  The
+    detail list is used by :func:`dispatch_once` to fire NATS dispatch
+    events.  Safe to call inside or outside an existing transaction; it
+    opens its own IMMEDIATE txn.
     """
     promoted = 0
+    promoted_tasks: list[tuple[str, str]] = []
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id FROM tasks WHERE status = 'todo'"
+            "SELECT id, assignee FROM tasks WHERE status = 'todo'"
         ).fetchall()
         for row in todo_rows:
-            task_id = row["id"]
+            task_id: str = row["id"]
+            assignee: str = row["assignee"] or ""
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -1851,7 +1858,8 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 )
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
-    return promoted
+                promoted_tasks.append((task_id, assignee))
+    return promoted, promoted_tasks
 
 
 # ---------------------------------------------------------------------------
@@ -2899,6 +2907,8 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    promoted_tasks: list[tuple[str, str]] = field(default_factory=list)
+    """List of ``(task_id, assignee)`` tuples promoted during this tick."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -3672,6 +3682,7 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
+    nats_server_url: str = "",
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -3745,7 +3756,9 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn)
+    promoted_count, promoted_tasks = recompute_ready(conn)
+    result.promoted = promoted_count
+    result.promoted_tasks = promoted_tasks
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -3847,6 +3860,26 @@ def dispatch_once(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+
+    # ── NATS JetStream publish for promoted tasks ──────────────────────
+    # Best-effort: a missing nats-py, a bad server URL, or a transient
+    # connection error is logged and swallowed.  NEVER blocks the gateway.
+    if promoted_tasks and nats_server_url:
+        try:
+            from plugins.kanban.nats_publisher import publish_batch
+            publish_batch(promoted_tasks, nats_server_url)
+        except ImportError:
+            # nats_publisher module not available (not running from the
+            # hermes-agent repo checkout) — silent skip.
+            pass
+        except Exception:
+            # Logged inside publish_batch per task; catch anything
+            # that escaped as a blanket safety net.
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "NATS publish batch failed", exc_info=True
+            )
+
     return result
 
 

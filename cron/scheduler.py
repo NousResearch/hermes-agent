@@ -1354,8 +1354,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Persisted cron records may contain legacy base_url values created
+            # from model-callable tool args. Never pass them as explicit URLs,
+            # because the resolver would pair arbitrary endpoints with the
+            # operator's ambient API keys. Custom endpoints must come from the
+            # operator-controlled provider configuration instead.
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

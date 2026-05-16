@@ -78,7 +78,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.86.0",),
+    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
 
@@ -125,7 +125,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.3",
+        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",

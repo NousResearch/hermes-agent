@@ -14,26 +14,35 @@ metadata:
 # OSINT Investigation — Public Records Cross-Reference
 
 Investigative framework for public-records OSINT: campaign finance, government
-contracts, corporate filings, lobbying, sanctions, offshore leaks. Resolve entities
-across heterogeneous sources, build cross-links with explicit confidence, run
-statistical timing tests, and produce structured evidence chains.
+contracts, corporate filings, lobbying, sanctions, offshore leaks, property
+records, court records, web archives, knowledge bases, and global news.
+Resolve entities across heterogeneous sources, build cross-links with explicit
+confidence, run statistical timing tests, and produce structured evidence chains.
 
-**Python stdlib only.** Zero install. Works on Linux, macOS, Windows. No API keys
-needed for any Phase-1 source.
+**Python stdlib only.** Zero install. Works on Linux, macOS, Windows. Most
+sources work with no API key (FEC and OpenCorporates have optional free keys
+that raise rate limits).
 
-Adapted from the MIT-licensed ShinMegamiBoson/OpenPlanter project. Boston/Massachusetts
-specifics from the original have been generalized.
+Adapted from the MIT-licensed ShinMegamiBoson/OpenPlanter project; expanded
+to cover identity / property / litigation / archives / news sources that the
+original didn't address.
 
 ## When to use this skill
 
 Use when the user asks for:
 
 - "follow the money" — campaign donations → contract awards, lobbying → legislation
-- corporate due diligence — who controls company X, who do they donate to
+- corporate due diligence — who controls company X, who do they donate to,
+  where are they incorporated, who serves on their boards
 - sanctions screening — is entity X on OFAC SDN, ICIJ offshore leaks
 - pay-to-play investigation — donors who became vendors
+- property ownership — find recorded deeds/mortgages by name or address
+  (NYC; for other counties point users at the relevant recorder)
+- litigation history — find federal + state court opinions and PACER dockets
 - multi-source entity resolution where naming varies (LLC suffixes, abbreviations)
 - evidence-chain construction with explicit confidence levels
+- "what's been said about X" — international news (GDELT) + Wikipedia
+  narrative + Wayback Machine to recover dead URLs
 
 Do NOT use this skill for:
 
@@ -53,12 +62,22 @@ Read the data-source wiki entries to plan the investigation:
 
 ```
 ls SKILL_DIR/references/sources/
-cat SKILL_DIR/references/sources/fec.md
-cat SKILL_DIR/references/sources/sec-edgar.md
-cat SKILL_DIR/references/sources/usaspending.md
-cat SKILL_DIR/references/sources/senate-ld.md
-cat SKILL_DIR/references/sources/ofac-sdn.md
-cat SKILL_DIR/references/sources/icij-offshore.md
+
+# Federal financial / regulatory
+cat SKILL_DIR/references/sources/fec.md             # campaign finance
+cat SKILL_DIR/references/sources/sec-edgar.md       # corporate filings
+cat SKILL_DIR/references/sources/usaspending.md     # federal contracts
+cat SKILL_DIR/references/sources/senate-ld.md       # lobbying
+cat SKILL_DIR/references/sources/ofac-sdn.md        # sanctions
+cat SKILL_DIR/references/sources/icij-offshore.md   # offshore leaks
+
+# Identity / property / litigation / archives / news
+cat SKILL_DIR/references/sources/nyc-acris.md       # NYC property records
+cat SKILL_DIR/references/sources/opencorporates.md  # global corporate registry
+cat SKILL_DIR/references/sources/courtlistener.md   # court records (federal + state)
+cat SKILL_DIR/references/sources/wayback.md         # Wayback Machine archives
+cat SKILL_DIR/references/sources/wikipedia.md       # Wikipedia + Wikidata
+cat SKILL_DIR/references/sources/gdelt.md           # global news monitoring
 ```
 
 Each entry follows a 9-section template: summary, access, schema, coverage,
@@ -70,6 +89,8 @@ those first to pick the right pair.
 ### 2. Acquire data
 
 Each source has a stdlib-only fetch script in `SKILL_DIR/scripts/`:
+
+**Federal financial / regulatory**
 
 ```bash
 # FEC individual contributions (federal campaign finance).
@@ -97,6 +118,38 @@ python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 # $HERMES_OSINT_CACHE/icij/ (default: ~/.cache/hermes-osint/icij/).
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
+```
+
+**Identity / property / litigation / archives / news**
+
+```bash
+# NYC property records (deeds, mortgages, liens) — ACRIS via Socrata
+python3 SKILL_DIR/scripts/fetch_nyc_acris.py --name "SMITH, JOHN" \
+    --out data/acris.csv
+python3 SKILL_DIR/scripts/fetch_nyc_acris.py --address "571 HUDSON" \
+    --out data/acris_addr.csv
+
+# OpenCorporates — 130+ jurisdiction corporate registry
+# (free token required; set OPENCORPORATES_API_TOKEN or pass --token)
+python3 SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
+    --jurisdiction us_ny --out data/opencorporates.csv
+
+# CourtListener — federal + state court opinions, PACER dockets
+python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Smith v. Example Corp" \
+    --type opinions --out data/courts.csv
+
+# Wayback Machine — historical web captures
+python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
+    --match host --collapse digest --out data/wayback.csv
+
+# Wikipedia + Wikidata — narrative bio + structured facts
+# Set HERMES_OSINT_UA=your-app/1.0 (your@email) to identify yourself
+python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" \
+    --out data/wp.csv
+
+# GDELT — global news in 100+ languages, ~2015→present
+python3 SKILL_DIR/scripts/fetch_gdelt.py --query '"Example Corp"' \
+    --timespan 1y --out data/gdelt.csv
 ```
 
 All outputs are normalized CSV with a header row. Re-run scripts idempotently.

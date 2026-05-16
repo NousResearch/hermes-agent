@@ -73,7 +73,16 @@ def fetch(
 ) -> int:
     resolved_name = ""
     if not cik and company:
-        cik, resolved_name = _resolve_cik(company)  # type: ignore[assignment]
+        try:
+            cik, resolved_name = _resolve_cik(company)  # type: ignore[assignment]
+        except SystemExit as e:
+            # Write empty CSV with header so downstream tools still work,
+            # and tell the user clearly.
+            print(f"SEC EDGAR: {e}", file=sys.stderr)
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", newline="", encoding="utf-8") as fh:
+                csv.DictWriter(fh, fieldnames=COLUMNS).writeheader()
+            return 0
         if resolved_name:
             print(
                 f"Resolved company={company!r} → CIK {cik} ({resolved_name})",

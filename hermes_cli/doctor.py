@@ -1674,6 +1674,102 @@ def run_doctor(args):
             issues.append(_issue)
 
     # =========================================================================
+    # Check: Auxiliary Task Providers
+    # =========================================================================
+    print()
+    print(color("◆ Auxiliary Task Providers", Colors.CYAN, Colors.BOLD))
+
+    # Probe configured auxiliary providers (vision, compression, tts, embedding)
+    # to catch silent misconfiguration before runtime failures.
+    try:
+        import yaml as _aux_yaml
+        _aux_cfg_path = HERMES_HOME / 'config.yaml'
+        _aux_cfg = {}
+        if _aux_cfg_path.exists():
+            _aux_cfg = _aux_yaml.safe_load(_aux_cfg_path.read_text(encoding="utf-8")) or {}
+        _aux_section = _aux_cfg.get("auxiliary", {})
+
+        # Define auxiliary task slots and their human-readable labels
+        _AUX_TASK_SLOTS = [
+            ("vision", "Vision"),
+            ("compression", "Context Compression"),
+            ("tts", "Text-to-Speech"),
+            ("embedding", "Embeddings"),
+            ("web_extract", "Web Extraction"),
+        ]
+
+        _aux_has_any = False
+        for _task_key, _task_label in _AUX_TASK_SLOTS:
+            _task_cfg = _aux_section.get(_task_key, {})
+            if not isinstance(_task_cfg, dict):
+                _task_cfg = {}
+            _provider = _task_cfg.get("provider", "")
+            _model = _task_cfg.get("model", "")
+            _base_url = _task_cfg.get("base_url", "")
+            if not _provider and not _base_url:
+                # No config for this task — skip silently
+                continue
+            _aux_has_any = True
+            _label = f"{_task_label}"
+            _detail_parts = []
+            if _model:
+                _detail_parts.append(_model)
+            if _base_url:
+                _detail_parts.append(_base_url)
+            elif _provider:
+                _detail_parts.append(f"via {_provider}")
+            _detail = " ".join(_detail_parts) if _detail_parts else ""
+
+            # Lightweight probe: try to create a client and do a minimal request
+            try:
+                from agent.auxiliary_client import resolve_provider_client
+                _client, _resolved_model = resolve_provider_client(
+                    provider=_provider or "custom",
+                    model=_model or None,
+                    explicit_base_url=_base_url or None,
+                )
+                if _client is None:
+                    check_fail(_label, f"({(_detail + ' — ') if _detail else ''}no credentials)")
+                    issues.append(f"Auxiliary {_task_label}: no valid credentials for {_provider}")
+                else:
+                    # Try a minimal models list or tiny completion to verify connectivity
+                    import time as _time
+                    _t0 = _time.monotonic()
+                    try:
+                        if hasattr(_client, 'models') and hasattr(_client.models, 'list'):
+                            _client.models.list(timeout=5)
+                        elif hasattr(_client, 'chat') and hasattr(_client.chat.completions, 'create'):
+                            # Tiny probe: 1 token max, single word prompt
+                            _client.chat.completions.create(
+                                model=_resolved_model or _model or "",
+                                messages=[{"role": "user", "content": "hi"}],
+                                max_tokens=1,
+                                timeout=5,
+                            )
+                        _elapsed = int((_time.monotonic() - _t0) * 1000)
+                        _extra = f"({_resolved_model or _model})" if (_resolved_model or _model) else ""
+                        if _extra and _detail:
+                            check_ok(f"{_label} {_extra}", f"({_elapsed}ms)")
+                        elif _detail:
+                            check_ok(f"{_label} {_detail}", f"({_elapsed}ms)")
+                        else:
+                            check_ok(_label, f"({_elapsed}ms)")
+                    except Exception as _probe_err:
+                        _err_str = str(_probe_err)[:80]
+                        check_fail(_label, f"({_detail}) — {_err_str}")
+                        issues.append(f"Auxiliary {_task_label}: connectivity failed — {_err_str}")
+            except Exception as _resolve_err:
+                _err_str = str(_resolve_err)[:80]
+                check_fail(_label, f"({_detail}) — {_err_str}")
+                issues.append(f"Auxiliary {_task_label}: resolve failed — {_err_str}")
+
+        if not _aux_has_any:
+            check_info("No auxiliary task providers configured")
+            check_info("(optional: set auxiliary.<task>.provider in config.yaml)")
+    except Exception as _aux_err:
+        check_warn(f"Auxiliary health check failed: {_aux_err}")
+
+    # =========================================================================
     # Check: Tool Availability
     # =========================================================================
     print()

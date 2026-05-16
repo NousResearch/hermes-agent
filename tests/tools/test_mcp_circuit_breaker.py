@@ -31,14 +31,37 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
     ``call_tool_impl`` is an async function stored at ``session.call_tool``
     (it's what the tool handler invokes).
     """
+    import threading
+
     server = MagicMock()
     server.name = name
     session = MagicMock()
     session.call_tool = call_tool_impl
     server.session = session
-    server._reconnect_event = MagicMock()
-    server._ready = MagicMock()
-    server._ready.is_set.return_value = True
+
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    class _ReconnectAdapter:
+        def set(self):
+            old_session = server.session
+            new_session = MagicMock()
+            new_session.call_tool = old_session.call_tool
+            server.session = new_session
+            ready_flag.set()
+
+    server._reconnect_event = _ReconnectAdapter()
+    server._ready = _ReadyAdapter()
 
     mcp_tool_module._servers[name] = server
     mcp_tool_module._server_error_counts.pop(name, None)

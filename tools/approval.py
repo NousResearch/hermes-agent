@@ -449,12 +449,31 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+_BACKSLASH_ESCAPE_RE = re.compile(r'\\([a-zA-Z0-9])')
+
+
+def _strip_backslash_escapes(command: str) -> str:
+    """Remove backslash-escaping of alphanumeric characters.
+
+    In bash, ``r\\m`` is equivalent to ``rm`` because the backslash
+    quotes the following character.  A multi-pass loop handles stacked
+    escapes like ``r\\m`` (two backslashes before ``m``) where the first
+    pass reveals a new escape.
+    """
+    prev = None
+    while prev != command:
+        prev = command
+        command = _BACKSLASH_ESCAPE_RE.sub(r'\1', command)
+    return command
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
     Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
-    obfuscation techniques cannot bypass the pattern-based detection.
+    null bytes, backslash escapes, empty quote pairs, and normalizes
+    Unicode fullwidth characters so that obfuscation techniques cannot
+    bypass the pattern-based detection.
     """
     from tools.ansi_strip import strip_ansi
 
@@ -464,6 +483,11 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip empty quote pairs first (r''m -> rm, r""m -> rm) so that
+    # backslash escapes revealed by quote removal are also caught.
+    command = command.replace("''", "").replace('""', '')
+    # Strip backslash escapes (r\m -> rm)
+    command = _strip_backslash_escapes(command)
     return command
 
 

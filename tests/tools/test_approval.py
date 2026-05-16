@@ -738,6 +738,54 @@ class TestNormalizationBypass:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_backslash_obfuscated_rm(self):
+        """r\\m -rf / (backslash-escaped rm) must be caught."""
+        cmd = "r\\m -rf /"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "backslash-obfuscated rm not detected"
+
+    def test_backslash_obfuscated_rm_leading(self):
+        """\\rm -rf / (leading backslash) must be caught."""
+        cmd = "\\rm -rf /"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "leading-backslash rm not detected"
+
+    def test_backslash_obfuscated_chmod(self):
+        """c\\h\\m\\o\\d 777 (fully backslash-escaped chmod) must be caught."""
+        cmd = "c\\h\\m\\o\\d 777 /tmp/test"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "backslash-obfuscated chmod not detected"
+
+    def test_empty_single_quote_obfuscated_rm(self):
+        """r''m -rf / (empty single quotes) must be caught."""
+        cmd = "r''m -rf /"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "empty-single-quote rm not detected"
+
+    def test_empty_double_quote_obfuscated_rm(self):
+        """r\"\"m -rf / (empty double quotes) must be caught."""
+        cmd = 'r""m -rf /'
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "empty-double-quote rm not detected"
+
+    def test_mixed_backslash_and_quotes_rm(self):
+        """r\\''m -rf / (backslash + empty quotes) must be caught."""
+        cmd = "r\\''m -rf /"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "mixed backslash+quote rm not detected"
+
+    def test_stacked_backslash_obfuscated_rm(self):
+        """r\\\\m -rf / (stacked backslashes) must be caught."""
+        cmd = "r\\\\m -rf /"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True, "stacked-backslash rm not detected"
+
+    def test_backslash_safe_command_not_flagged(self):
+        """echo C:\\path\\to\\file (Windows-style path) must NOT be flagged."""
+        cmd = "echo C:\\path\\to\\file"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False, "safe Windows path was falsely flagged"
+
 
 class TestHeredocScriptExecution:
     """Script execution via heredoc bypasses the -e/-c flag patterns.

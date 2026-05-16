@@ -403,6 +403,85 @@ class TestPluginMemoryDiscovery:
         assert load_memory_provider("nonexistent_provider") is None
 
 
+class TestHolographicEntityGraphRetrieval:
+    """Holographic probe/related/reason prefer explicit entity links."""
+
+    def _store_and_retriever(self, tmp_path):
+        from plugins.memory.holographic.store import MemoryStore
+        from plugins.memory.holographic.retrieval import FactRetriever
+
+        store = MemoryStore(db_path=tmp_path / "memory_store.db", default_trust=0.8, hrr_dim=64)
+        retriever = FactRetriever(store, hrr_dim=64)
+        return store, retriever
+
+    def _entity(self, store, name, aliases=""):
+        entity_id = store._resolve_entity(name)
+        if aliases:
+            store._conn.execute(
+                "UPDATE entities SET aliases = ? WHERE entity_id = ?",
+                (aliases, entity_id),
+            )
+            store._conn.commit()
+        return entity_id
+
+    def test_probe_uses_exact_entity_graph_before_hrr(self, tmp_path):
+        store, retriever = self._store_and_retriever(tmp_path)
+        try:
+            target = store.add_fact("Dashboard binds to the private service address.", category="project")
+            distractor = store.add_fact("Unrelated holographic memory implementation note.", category="tool")
+            mac_mini = self._entity(store, "Mac Mini", aliases="Mini Tailscale")
+            store._link_fact_entity(target, mac_mini)
+            store.rebuild_all_vectors(dim=64)
+
+            results = retriever.probe("Mini Tailscale", limit=3)
+
+            assert results
+            assert results[0]["fact_id"] == target
+            assert results[0]["matched_entities"] == ["Mac Mini"]
+            assert all(r["fact_id"] != distractor for r in results[:1])
+            assert "hrr_vector" not in results[0]
+        finally:
+            store.close()
+
+    def test_related_includes_direct_and_adjacent_graph_facts(self, tmp_path):
+        store, retriever = self._store_and_retriever(tmp_path)
+        try:
+            direct = store.add_fact("OpenClaw uses the local Google workflow.", category="project")
+            adjacent = store.add_fact("Google Workspace automation uses gog-inhouse.", category="project")
+            openclaw = self._entity(store, "OpenClaw")
+            google = self._entity(store, "Google Workspace")
+            store._link_fact_entity(direct, openclaw)
+            store._link_fact_entity(direct, google)
+            store._link_fact_entity(adjacent, google)
+            store.rebuild_all_vectors(dim=64)
+
+            ids = [r["fact_id"] for r in retriever.related("OpenClaw", limit=5)]
+
+            assert ids[0] == direct
+            assert adjacent in ids
+        finally:
+            store.close()
+
+    def test_reason_uses_entity_graph_and_semantics(self, tmp_path):
+        store, retriever = self._store_and_retriever(tmp_path)
+        try:
+            both = store.add_fact("Mac Mini dashboard is reachable through Tailscale.", category="project")
+            one = store.add_fact("Mac Mini also runs local services.", category="project")
+            mac_mini = self._entity(store, "Mac Mini")
+            tailscale = self._entity(store, "Tailscale")
+            store._link_fact_entity(both, mac_mini)
+            store._link_fact_entity(both, tailscale)
+            store._link_fact_entity(one, mac_mini)
+            store.rebuild_all_vectors(dim=64)
+
+            results = retriever.reason(["Tailscale", "Mac Mini"], limit=5)
+
+            assert [r["fact_id"] for r in results] == [both]
+            assert results[0]["matched_entities"] == ["Mac Mini", "Tailscale"]
+        finally:
+            store.close()
+
+
 class TestUserInstalledProviderDiscovery:
     """Memory providers installed to $HERMES_HOME/plugins/ should be found.
 

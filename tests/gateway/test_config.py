@@ -4,6 +4,8 @@ import os
 from unittest.mock import patch
 
 from gateway.config import (
+    DEFAULT_STREAMING_BUFFER_THRESHOLD,
+    DEFAULT_STREAMING_EDIT_INTERVAL,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -176,8 +178,8 @@ class TestStreamingConfig:
                 "fresh_final_after_seconds": "oops",
             }
         )
-        assert restored.edit_interval == 1.0
-        assert restored.buffer_threshold == 40
+        assert restored.edit_interval == DEFAULT_STREAMING_EDIT_INTERVAL
+        assert restored.buffer_threshold == DEFAULT_STREAMING_BUFFER_THRESHOLD
         assert restored.fresh_final_after_seconds == 60.0
 
 

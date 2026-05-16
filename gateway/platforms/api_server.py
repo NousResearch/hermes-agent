@@ -804,14 +804,17 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        origin_platform: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
 
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
+        from config.yaml platform_toolsets.api_server by default. Gateway
+        proxy calls may pass the originating platform's resolved toolsets so
+        a proxied chat keeps the same capability scope as the native gateway.
 
         ``gateway_session_key`` is a stable per-channel identifier supplied
         by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
@@ -829,13 +832,22 @@ class APIServerAdapter(BasePlatformAdapter):
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is None:
+            platform_key = origin_platform or "api_server"
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        else:
+            enabled_toolsets = sorted(str(ts) for ts in enabled_toolsets_override)
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
+
+        # API clients may omit X-Hermes-Session-Key.  In that case, use the
+        # request/transcript session_id as the internal long-term-memory scope so
+        # cwd-based Honcho defaults cannot merge unrelated API conversations.
+        effective_gateway_session_key = gateway_session_key or session_id
 
         agent = AIAgent(
             model=model,
@@ -846,7 +858,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=origin_platform or "api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -854,7 +866,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
-            gateway_session_key=gateway_session_key,
+            gateway_session_key=effective_gateway_session_key,
         )
         return agent
 
@@ -987,6 +999,23 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        proxy_scope = body.get("hermes_proxy_scope")
+        origin_platform = None
+        enabled_toolsets_override = None
+        if proxy_scope is not None:
+            if not isinstance(proxy_scope, dict):
+                return web.json_response(_openai_error("Invalid hermes_proxy_scope"), status=400)
+            raw_platform = proxy_scope.get("origin_platform")
+            if raw_platform is not None:
+                origin_platform = str(raw_platform).strip()
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", origin_platform):
+                    return web.json_response(_openai_error("Invalid hermes_proxy_scope.origin_platform"), status=400)
+            raw_toolsets = proxy_scope.get("enabled_toolsets")
+            if raw_toolsets is not None:
+                if not isinstance(raw_toolsets, list) or not all(isinstance(ts, str) for ts in raw_toolsets):
+                    return web.json_response(_openai_error("Invalid hermes_proxy_scope.enabled_toolsets"), status=400)
+                enabled_toolsets_override = [ts for ts in raw_toolsets if ts]
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1167,6 +1196,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                origin_platform=origin_platform,
+                enabled_toolsets_override=enabled_toolsets_override,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1183,6 +1214,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                origin_platform=origin_platform,
+                enabled_toolsets_override=enabled_toolsets_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2684,6 +2717,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        origin_platform: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2707,6 +2742,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                origin_platform=origin_platform,
+                enabled_toolsets_override=enabled_toolsets_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

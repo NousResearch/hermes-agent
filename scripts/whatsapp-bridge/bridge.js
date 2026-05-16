@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -45,6 +45,9 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const STATE_DIR = path.dirname(SESSION_DIR);
+const DIAGNOSTIC_LOG = path.join(STATE_DIR, 'bridge-diagnostics.jsonl');
+const STATUS_FILE = path.join(STATE_DIR, 'bridge-status.json');
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -196,10 +199,100 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let connectedAt = null;
+let lastDisconnectInfo = null;
+let lastConnectionUpdate = null;
+let lastQrAt = null;
+let qrPending = false;
+let reconnectCount = 0;
+let socketStartCount = 0;
+
+function disconnectReasonName(reason) {
+  for (const [name, value] of Object.entries(DisconnectReason || {})) {
+    if (value === reason) return name;
+  }
+  if (reason === 515) return 'restartRequired';
+  return reason === undefined || reason === null ? 'unknown' : `code_${reason}`;
+}
+
+function sanitizeForJson(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (depth > 4) return '[max-depth]';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+      output: sanitizeForJson(value.output, depth + 1),
+      data: sanitizeForJson(value.data, depth + 1),
+    };
+  }
+  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitizeForJson(item, depth + 1));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 50)) {
+      if (/secret|token|key|password|credential|auth|noise|identity/i.test(key)) {
+        out[key] = '[redacted]';
+      } else {
+        out[key] = sanitizeForJson(item, depth + 1);
+      }
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function writeStatus(extra = {}) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(STATUS_FILE, `${JSON.stringify({
+      ts: new Date().toISOString(),
+      status: connectionState,
+      connectedAt,
+      lastDisconnect: lastDisconnectInfo,
+      lastConnectionUpdate,
+      lastQrAt,
+      qrPending,
+      needsPairing: qrPending || lastDisconnectInfo?.reason === DisconnectReason.loggedOut,
+      reconnectCount,
+      socketStartCount,
+      sessionDir: SESSION_DIR,
+      mode: WHATSAPP_MODE,
+      ...extra,
+    }, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    console.error(`⚠️ Failed to write WhatsApp bridge status: ${err.message}`);
+  }
+}
+
+function recordDiagnostic(event, details = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    event,
+    status: connectionState,
+    qrPending,
+    reconnectCount,
+    socketStartCount,
+    ...sanitizeForJson(details),
+  };
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    appendFileSync(DIAGNOSTIC_LOG, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (err) {
+    console.error(`⚠️ Failed to write WhatsApp bridge diagnostics: ${err.message}`);
+  }
+  writeStatus({ lastEvent: entry });
+}
 
 async function startSocket() {
+  socketStartCount += 1;
+  recordDiagnostic('socket_start', {
+    hasCreds: existsSync(path.join(SESSION_DIR, 'creds.json')),
+  });
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version } = await fetchLatestBaileysVersion();
+  recordDiagnostic('baileys_version', { version });
 
   sock = makeWASocket({
     version,
@@ -218,36 +311,63 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  sock.ev.on('creds.update', () => {
+    saveCreds();
+    lidToPhone = buildLidMap();
+    recordDiagnostic('creds_update', { lidMapSize: lidToPhone.size });
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
+    lastConnectionUpdate = sanitizeForJson({ connection, receivedQr: Boolean(qr) });
+    recordDiagnostic('connection_update', {
+      connection,
+      receivedQr: Boolean(qr),
+      lastDisconnect: lastDisconnect ? sanitizeForJson(lastDisconnect) : null,
+    });
 
     if (qr) {
+      qrPending = true;
+      lastQrAt = new Date().toISOString();
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
+      recordDiagnostic('qr_generated', { lastQrAt });
     }
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const reasonName = disconnectReasonName(reason);
       connectionState = 'disconnected';
+      connectedAt = null;
+      lastDisconnectInfo = {
+        ts: new Date().toISOString(),
+        reason,
+        reasonName,
+        error: sanitizeForJson(lastDisconnect?.error),
+      };
+      recordDiagnostic('connection_closed', lastDisconnectInfo);
 
       if (reason === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+        console.log(`❌ Logged out (${reasonName}). Delete session and restart to re-authenticate.`);
+        recordDiagnostic('needs_pairing', { reason, reasonName });
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
         if (reason === 515) {
           console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
         } else {
-          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+          console.log(`⚠️  Connection closed (reason: ${reason} ${reasonName}). Reconnecting in 3s...`);
         }
+        reconnectCount += 1;
         setTimeout(startSocket, reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      connectedAt = new Date().toISOString();
+      qrPending = false;
       console.log('✅ WhatsApp connected!');
+      recordDiagnostic('connected', { connectedAt });
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
         // Give Baileys a moment to flush creds, then exit cleanly
@@ -723,8 +843,33 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    connectedAt,
+    lastDisconnect: lastDisconnectInfo,
+    lastConnectionUpdate,
+    lastQrAt,
+    qrPending,
+    needsPairing: qrPending || lastDisconnectInfo?.reason === DisconnectReason.loggedOut,
+    reconnectCount,
+    socketStartCount,
+    diagnosticLog: DIAGNOSTIC_LOG,
+    statusFile: STATUS_FILE,
   });
 });
+
+function startSocketLogged() {
+  startSocket().catch(err => {
+    connectionState = 'disconnected';
+    lastDisconnectInfo = {
+      ts: new Date().toISOString(),
+      reason: 'startSocketError',
+      reasonName: 'startSocketError',
+      error: sanitizeForJson(err),
+    };
+    recordDiagnostic('socket_start_error', lastDisconnectInfo);
+    console.error('❌ WhatsApp bridge failed to start socket:', err);
+    process.exit(1);
+  });
+}
 
 // Start
 if (PAIR_ONLY) {
@@ -732,7 +877,7 @@ if (PAIR_ONLY) {
   console.log('📱 WhatsApp pairing mode');
   console.log(`📁 Session: ${SESSION_DIR}`);
   console.log();
-  startSocket();
+  startSocketLogged();
 } else {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
@@ -747,6 +892,6 @@ if (PAIR_ONLY) {
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
-    startSocket();
+    startSocketLogged();
   });
 }

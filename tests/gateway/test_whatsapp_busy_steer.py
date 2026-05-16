@@ -201,7 +201,7 @@ async def test_gateway_runner_upsert_steer_updates_running_agent_without_message
 
 
 @pytest.mark.asyncio
-async def test_gateway_runner_upsert_steer_unknown_slash_message_updates_running_agent():
+async def test_gateway_runner_upsert_steer_unknown_slash_message_returns_command_guidance():
     from gateway.config import Platform
     from gateway.platforms.whatsapp import WhatsAppAdapter
     from gateway.run import GatewayRunner
@@ -224,13 +224,16 @@ async def test_gateway_runner_upsert_steer_unknown_slash_message_updates_running
     runner._running_agents = {session_key: agent}
     runner._draining = False
 
-    evt = MessageEvent(text="/sessions", message_type=MessageType.COMMAND, source=src, message_id="m-sessions")
+    evt = MessageEvent(text="/steeer keep going", message_type=MessageType.COMMAND, source=src, message_id="m-typo")
 
     handled = await runner._handle_active_session_upsert_steer(evt, session_key)
 
     assert handled is True
-    assert agent.seen == ["/sessions"]
+    assert agent.seen == []
     adapter.send.assert_awaited_once()
+    assert "Unknown command" in adapter.send.await_args.args[1]
+    assert "/steeer" in adapter.send.await_args.args[1]
+    assert "/commands" in adapter.send.await_args.args[1]
 
 
 @pytest.mark.asyncio

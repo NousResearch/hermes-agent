@@ -3364,6 +3364,29 @@ class GatewayRunner:
         if cmd == "steer":
             should_steer = True
             payload = event.get_command_args().strip()
+        elif cmd:
+            # A leading slash means the user was trying to invoke a command.
+            # Do not feed mistyped/unknown slash commands into the running
+            # agent as a /steer payload; that turns UI mistakes into hidden
+            # steering instructions. Recognized gateway commands already
+            # bypass this handler in BasePlatformAdapter.handle_message(), and
+            # WhatsApp's adapter-level /sessions command is handled before the
+            # base active-session path reaches us.
+            logger.warning(
+                "Unrecognized WhatsApp slash command /%s during active session %s — "
+                "replying with command guidance instead of steering",
+                cmd,
+                session_key,
+            )
+            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            await adapter.send(
+                event.source.chat_id,
+                f"Unknown command `/{cmd}`. Type /commands to see what's available, "
+                f"or resend without the leading slash to send as a regular message.",
+                reply_to=event.message_id,
+                metadata=thread_meta,
+            )
+            return True
         else:
             payload = (event.text or "").strip()
             if event.media_urls or not payload:

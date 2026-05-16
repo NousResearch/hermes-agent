@@ -1069,6 +1069,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 if self._bridge_process.poll() is not None:
                     print(f"[{self.name}] Bridge process died (exit code {self._bridge_process.returncode})")
                     print(f"[{self.name}] Check log: {self._bridge_log}")
+                    self._log_bridge_diagnostics("bridge process died before HTTP ready")
                     self._close_bridge_log()
                     return False
                 try:
@@ -1089,6 +1090,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not http_ready:
                 print(f"[{self.name}] Bridge HTTP server did not start in 15s")
                 print(f"[{self.name}] Check log: {self._bridge_log}")
+                self._log_bridge_diagnostics("HTTP server did not start")
                 self._close_bridge_log()
                 return False
             
@@ -1101,6 +1103,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if self._bridge_process.poll() is not None:
                         print(f"[{self.name}] Bridge process died during connection")
                         print(f"[{self.name}] Check log: {self._bridge_log}")
+                        self._log_bridge_diagnostics("bridge process died during WhatsApp connection")
                         self._close_bridge_log()
                         return False
                     try:
@@ -1122,6 +1125,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
+                    self._log_bridge_diagnostics("WhatsApp not connected after startup wait")
             
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
@@ -1151,6 +1155,63 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
             self._bridge_log_fh = None
 
+    def _bridge_status_path(self) -> Path:
+        return self._session_path.parent / "bridge-status.json"
+
+    def _bridge_diagnostic_log_path(self) -> Path:
+        return self._session_path.parent / "bridge-diagnostics.jsonl"
+
+    def _read_bridge_status(self) -> Optional[dict]:
+        status_path = self._bridge_status_path()
+        try:
+            if status_path.exists():
+                return json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("[%s] Failed to read WhatsApp bridge status %s: %s", self.name, status_path, exc)
+        return None
+
+    def _log_bridge_diagnostics(self, context: str) -> None:
+        """Emit persisted bridge diagnostics when startup/reconnect fails."""
+        status = self._read_bridge_status()
+        diag_log = self._bridge_diagnostic_log_path()
+        if status:
+            last_disconnect = status.get("lastDisconnect") or {}
+            last_event = status.get("lastEvent") or {}
+            logger.warning(
+                "[%s] WhatsApp bridge diagnostics after %s: status=%s needsPairing=%s "
+                "qrPending=%s reconnectCount=%s socketStartCount=%s lastDisconnect=%s lastEvent=%s "
+                "statusFile=%s diagnosticLog=%s",
+                self.name,
+                context,
+                status.get("status"),
+                status.get("needsPairing"),
+                status.get("qrPending"),
+                status.get("reconnectCount"),
+                status.get("socketStartCount"),
+                last_disconnect,
+                last_event,
+                self._bridge_status_path(),
+                diag_log,
+            )
+            print(f"[{self.name}] Bridge diagnostics: status={status.get('status')} qrPending={status.get('qrPending')} reconnects={status.get('reconnectCount')}")
+            if last_disconnect:
+                print(f"[{self.name}] Last disconnect: {last_disconnect}")
+        else:
+            logger.warning(
+                "[%s] No WhatsApp bridge status available after %s (expected %s)",
+                self.name,
+                context,
+                self._bridge_status_path(),
+            )
+
+        try:
+            if diag_log.exists():
+                lines = diag_log.read_text(encoding="utf-8", errors="replace").splitlines()[-8:]
+                if lines:
+                    logger.warning("[%s] Recent WhatsApp bridge diagnostic events after %s:\n%s", self.name, context, "\n".join(lines))
+        except Exception as exc:
+            logger.warning("[%s] Failed to read WhatsApp bridge diagnostics %s: %s", self.name, diag_log, exc)
+
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""
         if self._bridge_process is None:
@@ -1178,6 +1239,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)
+            self._log_bridge_diagnostics("managed bridge exited unexpectedly")
             self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
             self._close_bridge_log()
             await self._notify_fatal_error()

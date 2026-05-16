@@ -3109,12 +3109,42 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
+    def _build_opener_for(target_url: str):
+        # urllib's default proxy handler matches NO_PROXY by exact host or
+        # suffix only, so glob-style entries ("192.168.*") and private-IP
+        # literals are not bypassed. Without this, LAN endpoints under env
+        # HTTPS_PROXY get routed through the proxy and fail with 502.
+        import ipaddress as _ip
+        from urllib.parse import urlparse as _urlparse
+        host = (_urlparse(target_url).hostname or "").lower()
+        skip = False
+        if host:
+            try:
+                ip_obj = _ip.ip_address(host)
+                if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                    skip = True
+            except ValueError:
+                if host == "localhost" or host.endswith(".local"):
+                    skip = True
+            if not skip:
+                np = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "")
+                for pat in [p.strip().lower() for p in np.split(",") if p.strip()]:
+                    if pat.endswith("*"):
+                        prefix = pat[:-1].rstrip(".")
+                        if prefix and (host == prefix or host.startswith(prefix + ".") or host.startswith(prefix)):
+                            skip = True
+                            break
+        if skip:
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return urllib.request.build_opener()
+
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            opener = _build_opener_for(url)
+            with opener.open(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],

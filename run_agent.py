@@ -258,7 +258,17 @@ def _get_proxy_from_env() -> Optional[str]:
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Return an env-configured proxy unless NO_PROXY excludes this base URL.
+
+    Bypass is granted in any of these cases:
+      1. Stdlib urllib.request.proxy_bypass_environment says so (handles
+         exact host matches and suffix matches like .example.com).
+      2. The host is a private/loopback/link-local IP literal — proxies almost
+         never relay LAN traffic correctly, and users behind global TUN proxies
+         (clash, v2ray, etc.) hit this constantly.
+      3. NO_PROXY contains a glob entry that matches the host (192.168.*,
+         127.*). Stdlib ignores trailing wildcards, so we add it here.
+    """
     proxy = _get_proxy_from_env()
     if not proxy or not base_url:
         return proxy
@@ -272,6 +282,28 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
             return None
     except Exception:
         pass
+
+    # 2. Private / loopback / link-local IP literals — always bypass.
+    try:
+        import ipaddress as _ip
+        ip_obj = _ip.ip_address(host)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return None
+    except ValueError:
+        if host.lower() in ("localhost",) or host.lower().endswith(".local"):
+            return None
+
+    # 3. Glob-style NO_PROXY entries (e.g. 192.168.*) that stdlib misses.
+    no_proxy = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "").strip()
+    if no_proxy:
+        host_lower = host.lower()
+        for entry in no_proxy.split(","):
+            pat = entry.strip().lower()
+            if not pat or not pat.endswith("*"):
+                continue
+            prefix = pat[:-1].rstrip(".")
+            if prefix and (host_lower == prefix or host_lower.startswith(prefix + ".") or host_lower.startswith(prefix)):
+                return None
 
     return proxy
 

@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+CODEX_BIN="/opt/homebrew/bin/codex"
+ALLOWED_REPO_ROOT="/Users/preston/robinhood/crypto_bot"
+
+die() {
+  printf 'hermes-codex-audit: %s\n' "$*" >&2
+  exit 2
+}
+
+real_dir() {
+  local dir="$1"
+  cd "$dir" >/dev/null 2>&1 || return 1
+  pwd -P
+}
+
+canonical_existing_file() {
+  local path="$1"
+  local dir
+  local base
+  local resolved_dir
+
+  dir="$(dirname -- "$path")"
+  base="$(basename -- "$path")"
+  resolved_dir="$(real_dir "$dir")" || return 1
+  printf '%s/%s\n' "$resolved_dir" "$base"
+}
+
+is_under_repo() {
+  local target="$1"
+  local repo="$2"
+
+  case "$target" in
+    "$repo"|"$repo"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+refuse_sensitive_path() {
+  local label="$1"
+  local path="$2"
+  local lowered
+
+  lowered="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+  case "$lowered" in
+    *".env"*|*"secret"*|*"token"*|*"keychain"*|*"private"*|*"credential"*|*"cookie"*|*"password"*|*"passwd"*|*"api-key"*|*"apikey"*)
+      die "$label path appears to reference sensitive material: $path"
+      ;;
+  esac
+}
+
+MODE=""
+REPO_ROOT=""
+PROMPT_FILE=""
+RESULT_FILE=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --full-auto|--dangerously-bypass-approvals-and-sandbox|danger-full-access|workspace-write)
+      die "refusing banned Codex option or sandbox mode: $arg"
+      ;;
+  esac
+done
+
+while (($#)); do
+  case "$1" in
+    --mode)
+      (($# >= 2)) || die "--mode requires a value"
+      MODE="$2"
+      shift 2
+      ;;
+    --repo-root)
+      (($# >= 2)) || die "--repo-root requires a value"
+      REPO_ROOT="$2"
+      shift 2
+      ;;
+    --prompt-file)
+      (($# >= 2)) || die "--prompt-file requires a value"
+      PROMPT_FILE="$2"
+      shift 2
+      ;;
+    --result-file)
+      (($# >= 2)) || die "--result-file requires a value"
+      RESULT_FILE="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+(($# == 0)) || die "unexpected positional arguments are not allowed"
+
+[[ "$MODE" == "audit-readonly" ]] || die "only --mode audit-readonly is allowed"
+[[ -x "$CODEX_BIN" ]] || die "Codex binary is not executable: $CODEX_BIN"
+[[ -n "$REPO_ROOT" ]] || die "--repo-root is required"
+[[ -n "$PROMPT_FILE" ]] || die "--prompt-file is required"
+[[ -n "$RESULT_FILE" ]] || die "--result-file is required"
+[[ "$REPO_ROOT" == /* ]] || die "--repo-root must be an absolute path"
+[[ "$PROMPT_FILE" == /* ]] || die "--prompt-file must be an absolute path"
+[[ "$RESULT_FILE" == /* ]] || die "--result-file must be an absolute path"
+[[ -d "$REPO_ROOT" ]] || die "repo root does not exist: $REPO_ROOT"
+[[ -f "$PROMPT_FILE" ]] || die "prompt file does not exist: $PROMPT_FILE"
+[[ ! -L "$PROMPT_FILE" ]] || die "prompt file must not be a symlink"
+[[ ! -L "$RESULT_FILE" ]] || die "result file must not be a symlink"
+
+refuse_sensitive_path "prompt" "$PROMPT_FILE"
+refuse_sensitive_path "result" "$RESULT_FILE"
+
+RESULT_DIR="$(dirname -- "$RESULT_FILE")"
+[[ -d "$RESULT_DIR" ]] || die "result-file parent directory must exist: $RESULT_DIR"
+
+REPO_REAL="$(real_dir "$REPO_ROOT")" || die "failed to resolve repo root"
+ALLOWED_REPO_REAL="$(real_dir "$ALLOWED_REPO_ROOT")" || die "failed to resolve allowed repo root"
+PROMPT_REAL="$(canonical_existing_file "$PROMPT_FILE")" || die "failed to resolve prompt file"
+RESULT_PARENT_REAL="$(real_dir "$RESULT_DIR")" || die "failed to resolve result-file parent"
+RESULT_REAL="$RESULT_PARENT_REAL/$(basename -- "$RESULT_FILE")"
+
+refuse_sensitive_path "prompt" "$PROMPT_REAL"
+refuse_sensitive_path "result" "$RESULT_REAL"
+
+[[ "$REPO_REAL" == "$ALLOWED_REPO_REAL" ]] || die "repo root is not approved for Codex sidecar use: $REPO_REAL"
+
+GIT_TOP="$(git -C "$REPO_REAL" rev-parse --show-toplevel 2>/dev/null)" || die "repo-root must be inside a Git repository"
+[[ "$GIT_TOP" == "$REPO_REAL" ]] || die "repo-root must be the Git repository top-level"
+
+if is_under_repo "$PROMPT_REAL" "$REPO_REAL"; then
+  die "prompt file must be outside the product repo"
+fi
+
+if is_under_repo "$RESULT_PARENT_REAL" "$REPO_REAL" || is_under_repo "$RESULT_REAL" "$REPO_REAL"; then
+  die "result file must be outside the product repo"
+fi
+
+SAFETY_PREAMBLE='You are Codex running as a bounded audit-only sidecar for Hermes.
+Hermes remains the PM, architect, and development supervisor.
+This session is audit-readonly: do not modify files, do not create commits, do not push, do not deploy, and do not start services.
+Do not place trades or call broker, exchange, live-market, account, order, position, wallet, trading, runtime, deployment, workflow, runner, CI, Gitea write, branch-writer, issue-executor, research, provider, training, Docker, Kubernetes, Flux, Harbor, or scheduler actions.
+Do not inspect secrets, token files, .env files, private keys, cookies, credential stores, runtime databases, generated OTA artifacts, or logs that may contain credentials.
+Use only read-only local inspection needed to answer the prompt, and report uncertainty clearly.'
+
+set +e
+{
+  printf '%s\n\n' "$SAFETY_PREAMBLE"
+  printf '%s\n' '--- Operator prompt ---'
+  cat "$PROMPT_REAL"
+} | env -i \
+  HOME="${HOME:-/Users/preston}" \
+  USER="${USER:-preston}" \
+  LOGNAME="${LOGNAME:-${USER:-preston}}" \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  NO_COLOR=1 \
+  "$CODEX_BIN" \
+    --disable plugins \
+    --disable apps \
+    --disable remote_plugin \
+    --disable browser_use \
+    --disable browser_use_external \
+    --disable computer_use \
+    --disable image_generation \
+    --disable multi_agent \
+    --disable tool_search \
+    --disable skill_mcp_dependency_install \
+    --disable builtin_mcp \
+    --disable enable_mcp_apps \
+    --sandbox read-only \
+    --cd "$REPO_REAL" \
+    --ask-for-approval never \
+    exec \
+    --ephemeral \
+    --ignore-user-config \
+    --ignore-rules \
+    --color never \
+    --output-last-message "$RESULT_REAL" \
+    - >/dev/null 2>&1
+status=$?
+set -e
+
+if [[ $status -ne 0 ]]; then
+  die "codex exec failed with exit status $status; no permissions were escalated"
+fi
+
+[[ -f "$RESULT_REAL" ]] || die "codex exec completed but did not write result file"

@@ -1,0 +1,9 @@
+name: crypto-bot-policy-guard
+version: 0.1.0
+description: "Observe-first crypto_bot policy guard for Hermes pre_tool_call and output redaction hooks."
+author: Hermes PM
+kind: standalone
+provides_hooks:
+  - pre_tool_call
+  - transform_terminal_output
+  - transform_tool_result

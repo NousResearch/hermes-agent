@@ -1079,6 +1079,24 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         # Empty provider → early return with None (child inherits parent)
         self.assertIsNone(creds["provider"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_runtime_missing_provider_key_returns_none(self, mock_resolve):
+        """When resolve_runtime_provider returns a dict without 'provider' key,
+        the result must be None regardless of configured_provider.
+        This protects against malformed runtime responses.
+        """
+        mock_resolve.return_value = {
+            # deliberately missing "provider"
+            "model": "some-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key-123",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-model", "provider": "crof.ai"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["provider"])
+
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""

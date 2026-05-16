@@ -102,10 +102,16 @@ type Props = {
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
   // Receives notifications that the physical cursor was advanced out-of-band
-  // (e.g. TextInput's fast-echo bypass writing directly to stdout) so ink.tsx
-  // can keep `displayCursor` in sync. Without this, the next frame's relative
-  // cursor moves compute from a stale parked position. Optional so testing.tsx
-  // doesn't need to stub it.
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout). The
+  // handler in ink.tsx updates two pieces of state from a single call:
+  //   - `displayCursor` (the relative-move basis log-update uses on the
+  //     next frame; skipped on alt-screen where CSI H resets it every
+  //     frame anyway), and
+  //   - the active `cursorDeclaration.relativeX/Y` (the target the cursor
+  //     parks at after every frame; bumped on BOTH screens because
+  //     onRender's alt-screen branch emits an absolute CUP from it and
+  //     a stale declaration there is still visibly wrong).
+  // Optional so testing.tsx doesn't need to stub it.
   readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.

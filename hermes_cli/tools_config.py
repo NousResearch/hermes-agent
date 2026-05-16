@@ -61,6 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -86,7 +87,12 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
+#
+# X search is off by default — gated on xAI credentials (SuperGrok OAuth
+# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
+# which walks them through credential setup. The tool's check_fn means
+# the schema won't appear to the model even if enabled without credentials.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -307,6 +313,39 @@ TOOL_CATEGORIES = {
         # injected by ``_visible_providers``. Mirrors the design we'll
         # converge image_gen toward.
         "providers": [],
+    },
+    "x_search": {
+        "name": "X (Twitter) Search",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Hermes routes X searches through xAI's built-in x_search "
+            "Responses tool. Both credential sources hit the same "
+            "https://api.x.ai/v1/responses endpoint — pick whichever you "
+            "already have. SuperGrok OAuth is preferred when both are set "
+            "(uses your subscription quota instead of API spend)."
+        ),
+        "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
     },
     "browser": {
         "name": "Browser Automation",

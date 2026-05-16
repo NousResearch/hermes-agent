@@ -989,3 +989,188 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
     provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
     _reconfigure_provider(provider, config)
     assert config["browser"]["use_gateway"] is False
+
+
+# ---------------------------------------------------------------------------
+# Per-channel toolset overrides (channel_toolsets)
+# ---------------------------------------------------------------------------
+
+
+def test_channel_toolsets_overrides_platform_when_chat_id_matches():
+    """When chat_id matches a channel_toolsets entry, the entry's toolsets
+    list overrides the platform-wide platform_toolsets list.
+    """
+    config = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {
+            "channel_toolsets": [
+                {"id": "100", "toolsets": ["terminal"]},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord", chat_id="100")
+
+    assert "terminal" in enabled
+    # platform_toolsets is shadowed when channel matches
+    assert "memory" not in enabled
+
+
+def test_channel_toolsets_falls_through_when_chat_id_unmapped():
+    """An unmapped chat_id leaves the platform_toolsets path intact."""
+    config = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {
+            "channel_toolsets": [
+                {"id": "100", "toolsets": ["terminal"]},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord", chat_id="999")
+
+    assert "memory" in enabled
+    assert "terminal" not in enabled
+
+
+def test_channel_toolsets_matches_by_parent_id_for_forum_threads():
+    """Forum threads pass their parent channel ID; that match should win
+    when the thread's own chat_id is unmapped.
+    """
+    config = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {
+            "channel_toolsets": [
+                {"id": "200", "toolsets": ["terminal"]},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(
+        config, "discord", chat_id="999", parent_id="200"
+    )
+
+    assert "terminal" in enabled
+    assert "memory" not in enabled
+
+
+def test_channel_toolsets_chat_id_match_wins_over_parent_id():
+    """When both chat_id and parent_id resolve to entries, exact chat_id
+    match takes precedence over the parent fallback.
+    """
+    config = {
+        "discord": {
+            "channel_toolsets": [
+                {"id": "100", "toolsets": ["terminal"]},
+                {"id": "200", "toolsets": ["memory"]},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(
+        config, "discord", chat_id="100", parent_id="200"
+    )
+
+    assert "terminal" in enabled
+    assert "memory" not in enabled
+
+
+def test_channel_toolsets_no_chat_id_preserves_pre_feature_behavior():
+    """Calls without chat_id (the pre-feature signature) must yield the
+    same result whether channel_toolsets is configured or not.
+    """
+    config_with = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {
+            "channel_toolsets": [
+                {"id": "100", "toolsets": ["terminal"]},
+            ],
+        },
+    }
+    config_without = {
+        "platform_toolsets": {"discord": ["memory"]},
+    }
+
+    assert _get_platform_tools(config_with, "discord") == _get_platform_tools(
+        config_without, "discord"
+    )
+
+
+def test_channel_toolsets_empty_list_falls_through():
+    """The DEFAULT_CONFIG initial value is an empty list; that must not
+    short-circuit the platform_toolsets path.
+    """
+    config = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {"channel_toolsets": []},
+    }
+
+    enabled = _get_platform_tools(config, "discord", chat_id="100")
+
+    assert "memory" in enabled
+
+
+def test_channel_toolsets_entry_with_empty_toolsets_falls_through():
+    """An entry whose ``toolsets`` is empty/missing should not match —
+    fall back to platform_toolsets instead of producing an empty override.
+    """
+    config = {
+        "platform_toolsets": {"discord": ["memory"]},
+        "discord": {
+            "channel_toolsets": [
+                {"id": "100", "toolsets": []},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord", chat_id="100")
+
+    assert "memory" in enabled
+
+
+def test_channel_toolsets_yaml_int_id_normalized_to_string():
+    """If YAML parses a numeric channel ID as int, lookup must still match
+    a chat_id passed as string from the gateway.
+    """
+    config = {
+        "discord": {
+            "channel_toolsets": [
+                {"id": 100, "toolsets": ["terminal"]},
+            ],
+        },
+    }
+
+    enabled = _get_platform_tools(config, "discord", chat_id="100")
+
+    assert "terminal" in enabled
+
+
+def test_resolve_channel_toolsets_no_chat_id_returns_none():
+    from hermes_cli.tools_config import _resolve_channel_toolsets
+
+    block = {"channel_toolsets": [{"id": "100", "toolsets": ["x"]}]}
+    assert _resolve_channel_toolsets(block, None) is None
+
+
+def test_resolve_channel_toolsets_no_bindings_returns_none():
+    from hermes_cli.tools_config import _resolve_channel_toolsets
+
+    assert _resolve_channel_toolsets({}, "100") is None
+    assert _resolve_channel_toolsets({"channel_toolsets": None}, "100") is None
+    assert _resolve_channel_toolsets({"channel_toolsets": []}, "100") is None
+
+
+def test_resolve_channel_toolsets_skips_malformed_entries():
+    """Non-dict entries (e.g. legacy string entries) are silently skipped;
+    a valid entry later in the list still matches.
+    """
+    from hermes_cli.tools_config import _resolve_channel_toolsets
+
+    block = {
+        "channel_toolsets": [
+            "garbage-string",
+            None,
+            {"id": "100", "toolsets": ["x"]},
+        ],
+    }
+    assert _resolve_channel_toolsets(block, "100") == ["x"]

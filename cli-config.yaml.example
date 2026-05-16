@@ -666,6 +666,35 @@ platform_toolsets:
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-channel toolset overrides
+# ─────────────────────────────────────────────────────────────────────────────
+# Override `platform_toolsets` for specific channels. Useful when one Discord
+# or Slack channel needs a different scope (e.g. a per-channel MCP token, a
+# scoped skill set) than the platform default. Mirrors the existing
+# `channel_skill_bindings` / `channel_prompts` pattern: exact match on
+# chat_id wins, with parent_id fallback so forum threads inherit their
+# parent channel's scope.
+#
+# Unmapped channels (or platforms without `channel_toolsets`) fall through
+# to `platform_toolsets` above — the feature is opt-in and additive.
+#
+# Example (Discord):
+#
+#   discord:
+#     channel_toolsets:
+#       - id: "1502967669224243365"   # #ops channel
+#         toolsets: [hermes-discord, terminal, my-scoped-mcp]
+#       - id: "1502987414816423986"   # #research channel — read-only scope
+#         toolsets: [web, vision, skills]
+#
+# Example (Telegram — same shape):
+#
+#   telegram:
+#     channel_toolsets:
+#       - id: "-1001234567890"
+#         toolsets: [web, file]
+
 # =============================================================================
 # Gateway Platform Settings
 # =============================================================================

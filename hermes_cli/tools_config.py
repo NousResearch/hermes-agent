@@ -1096,17 +1096,82 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+def _resolve_channel_toolsets(
+    platform_block: dict,
+    chat_id: str | None,
+    parent_id: str | None = None,
+) -> List[str] | None:
+    """Resolve a per-channel toolset list from a platform's config block.
+
+    Looks up ``channel_toolsets`` under the platform's config block (e.g.
+    ``discord.channel_toolsets``).  Mirrors the resolve_channel_skills
+    pattern in ``gateway/platforms/base.py`` — exact match on chat_id wins,
+    fall back to parent_id (forum threads inherit parent channel scope).
+
+    Config format::
+
+        discord:
+          channel_toolsets:
+            - id: "1502967669224243365"  # Discord channel ID
+              toolsets: [hermes-discord, hestia-discord-gino, codex]
+            - id: "1502987414816423986"
+              toolsets: [hermes-discord, hestia-discord-svl]
+
+    Returns the matched ``toolsets`` list, or None if no match — caller
+    falls through to the platform-wide ``platform_toolsets`` lookup.
+    """
+    if not chat_id and not parent_id:
+        return None
+    bindings = platform_block.get("channel_toolsets") or []
+    if not isinstance(bindings, list) or not bindings:
+        return None
+    ids_to_check: Set[str] = set()
+    if chat_id:
+        ids_to_check.add(str(chat_id))
+    if parent_id:
+        ids_to_check.add(str(parent_id))
+    for entry in bindings:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("id", "")) not in ids_to_check:
+            continue
+        toolsets = entry.get("toolsets")
+        if isinstance(toolsets, list) and toolsets:
+            return [str(ts) for ts in toolsets]
+    return None
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
+    chat_id: str | None = None,
+    parent_id: str | None = None,
     *,
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
-    """Resolve which individual toolset names are enabled for a platform."""
+    """Resolve which individual toolset names are enabled for a platform.
+
+    If ``chat_id`` is provided, a matching ``channel_toolsets`` entry under
+    ``config[platform]`` overrides the platform-wide ``platform_toolsets``
+    list.  Useful when one Discord/Slack channel needs a different scope
+    (e.g. a per-channel MCP token) than the platform default.
+    """
     from toolsets import resolve_toolset, TOOLSETS
 
-    platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    # Channel-level override takes precedence over platform-level.
+    channel_override = None
+    if chat_id or parent_id:
+        platform_block = config.get(platform) or {}
+        if isinstance(platform_block, dict):
+            channel_override = _resolve_channel_toolsets(
+                platform_block, chat_id, parent_id,
+            )
+
+    if channel_override is not None:
+        toolset_names = channel_override
+    else:
+        platform_toolsets = config.get("platform_toolsets") or {}
+        toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)

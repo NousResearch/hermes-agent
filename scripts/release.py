@@ -42,7 +42,6 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "0x.badfriend@gmail.com": "discodirector",
-    "geoffplymale@gmail.com": "badMade",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",

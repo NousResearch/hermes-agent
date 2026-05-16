@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import sys
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -113,9 +114,147 @@ from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway  # noqa: F401
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
-import sys
+from tools.chunked_content import (
+    build_chunked_result,
+    compile_chunk_find_query,
+    legacy_offset_to_chunk_index,
+    search_source_chunks,
+    split_source_chunks,
+)
 
 logger = logging.getLogger(__name__)
+
+_WEB_EXTRACT_CACHE: Dict[tuple, Dict[str, Any]] = {}
+
+
+def _web_extract_cache_key(
+    url: str,
+    format: Optional[str],
+    use_llm_processing: bool,
+    model: Optional[str],
+    min_length: int,
+) -> tuple:
+    return (url, format or "markdown", bool(use_llm_processing), model or "", int(min_length))
+
+
+def _ensure_web_extract_cache() -> Dict[tuple, Dict[str, Any]]:
+    return _WEB_EXTRACT_CACHE
+
+
+def _latest_web_extract_cache_entries() -> Dict[str, Dict[str, Any]]:
+    latest_by_url: Dict[str, Dict[str, Any]] = {}
+    for cache_key, result in reversed(list(_ensure_web_extract_cache().items())):
+        if not isinstance(cache_key, tuple) or not cache_key:
+            continue
+        url = str(cache_key[0] or "")
+        if url and url not in latest_by_url:
+            latest_by_url[url] = result
+    return latest_by_url
+
+
+def _build_chunked_web_extract_response(
+    results: List[Dict[str, Any]],
+    *,
+    chunk_index: int = 0,
+    cache_hit: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "results": [
+            build_chunked_result(
+                {
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "content": result.get("raw_content", "") or result.get("content", "") or "",
+                    "error": result.get("error"),
+                    **({"blocked_by_policy": result["blocked_by_policy"]} if "blocked_by_policy" in result else {}),
+                },
+                chunk_index=chunk_index,
+                cache_hit=cache_hit,
+                chunks=result.get("input_chunks") if isinstance(result.get("input_chunks"), list) else None,
+            )
+            for result in results
+        ]
+    }
+
+
+def web_extract_find(
+    query: str,
+    urls: Optional[List[str]] = None,
+    max_results: int = 10,
+    case_sensitive: bool = False,
+    regex: bool = False,
+    include_context: bool = True,
+) -> str:
+    """Search cached source chunks from previous web_extract calls."""
+    if not isinstance(query, str) or not query:
+        return json.dumps({"success": False, "error": "query must be a non-empty string"}, ensure_ascii=False)
+    try:
+        matcher = compile_chunk_find_query(query, regex=bool(regex), case_sensitive=bool(case_sensitive))
+    except re.error as exc:
+        return json.dumps({"success": False, "error": f"Invalid regex: {exc}"}, ensure_ascii=False)
+
+    latest_by_url = _latest_web_extract_cache_entries()
+    requested_urls = [str(url) for url in urls] if isinstance(urls, list) and urls else list(latest_by_url.keys())
+    searchable_urls = [url for url in requested_urls if url in latest_by_url]
+    missing_cache_urls = [url for url in requested_urls if url not in latest_by_url]
+
+    if not searchable_urls:
+        response: Dict[str, Any] = {
+            "success": False,
+            "error": "No cached web_extract source chunks. Call web_extract first.",
+            "query": query,
+            "searched_urls": [],
+            "missing_cache_urls": missing_cache_urls,
+            "next_actions": [
+                {"tool": "web_extract", "args": {"urls": [url], "chunk_index": 0}}
+                for url in missing_cache_urls
+            ] or None,
+        }
+        return json.dumps(response, ensure_ascii=False)
+
+    limit = max(1, int(max_results or 10))
+    results: List[Dict[str, Any]] = []
+    searched_chunks: Dict[str, List[int]] = {}
+    for url in searchable_urls:
+        cache_entry = latest_by_url[url]
+        chunks = cache_entry.get("input_chunks") if isinstance(cache_entry.get("input_chunks"), list) else split_source_chunks(cache_entry.get("raw_content", "") or cache_entry.get("content", "") or "")
+        normalized_chunks = [str(chunk) for chunk in chunks]
+        searched_chunks[url] = list(range(len(normalized_chunks)))
+        for result in search_source_chunks(
+            normalized_chunks,
+            matcher=matcher,
+            include_context=bool(include_context),
+            max_results=limit - len(results),
+            collapse_accessibility_duplicates=True,
+        ):
+            result["url"] = url
+            results.append(result)
+        if len(results) >= limit:
+            break
+
+    next_actions = []
+    seen_actions = set()
+    for result in results:
+        action_key = (result["url"], result["chunk_index"])
+        if action_key in seen_actions:
+            continue
+        seen_actions.add(action_key)
+        next_actions.append({"tool": "web_extract", "args": {"urls": [result["url"]], "chunk_index": result["chunk_index"]}})
+    for url in missing_cache_urls:
+        next_actions.append({"tool": "web_extract", "args": {"urls": [url], "chunk_index": 0}})
+
+    return json.dumps({
+        "success": True,
+        "query": query,
+        "regex": bool(regex),
+        "case_sensitive": bool(case_sensitive),
+        "searched_urls": searchable_urls,
+        "searched_chunks": searched_chunks,
+        "missing_cache_urls": missing_cache_urls,
+        "match_count": len(results),
+        "results": results,
+        "next_actions": next_actions or None,
+    }, ensure_ascii=False)
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
@@ -844,7 +983,11 @@ async def web_extract_tool(
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    chunk_index: int = 0,
+    # Private compatibility for older direct callers; not exposed in the schema.
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -886,7 +1029,9 @@ async def web_extract_tool(
             "format": format,
             "use_llm_processing": use_llm_processing,
             "model": model,
-            "min_length": min_length
+            "min_length": min_length,
+            "chunk_index": chunk_index,
+            "legacy_offset": offset,
         },
         "error": None,
         "pages_extracted": 0,
@@ -896,9 +1041,25 @@ async def web_extract_tool(
         "compression_metrics": [],
         "processing_applied": []
     }
-    
+    if offset is not None and chunk_index == 0:
+        chunk_index = legacy_offset_to_chunk_index(offset)
+
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
+
+        cache_keys = [_web_extract_cache_key(url, format, use_llm_processing, model, min_length) for url in urls]
+        cache_lookup_allowed = all(is_safe_url(url) and not check_website_access(url) for url in urls)
+        if cache_lookup_allowed:
+            cached_results = [_ensure_web_extract_cache().get(key) for key in cache_keys]
+            if cached_results and all(result is not None for result in cached_results):
+                trimmed_response = _build_chunked_web_extract_response(cached_results, chunk_index=chunk_index, cache_hit=True)
+                cleaned_result = clean_base64_images(json.dumps(trimmed_response, indent=2, ensure_ascii=False))
+                debug_call_data["pages_extracted"] = len(cached_results)
+                debug_call_data["final_response_size"] = len(cleaned_result)
+                debug_call_data["processing_applied"].append("input_cache_hit")
+                _debug.log_call("web_extract_tool", debug_call_data)
+                _debug.save()
+                return cleaned_result
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
@@ -1077,18 +1238,40 @@ async def web_extract_tool(
                 content_length = len(result.get('raw_content', ''))
                 logger.info("%s (%d characters)", url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
-        trimmed_results = [
-            {
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "content": r.get("content", ""),
-                "error": r.get("error"),
-                **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
-            }
-            for r in response.get("results", [])
-        ]
-        trimmed_response = {"results": trimmed_results}
+        # Public web_extract calls use source chunks rather than automatic LLM
+        # summarization. Direct callers that explicitly keep use_llm_processing=True
+        # retain the legacy processed-content response path.
+        if not use_llm_processing:
+            raw_public_results = []
+            for r in response.get("results", []):
+                raw_content = r.get("raw_content", "") or r.get("content", "") or ""
+                raw_result = {
+                    "url": r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "content": raw_content,
+                    "raw_content": raw_content,
+                    "input_chunks": split_source_chunks(raw_content),
+                    "error": r.get("error"),
+                    **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+                }
+                raw_public_results.append(raw_result)
+                _ensure_web_extract_cache()[
+                    _web_extract_cache_key(raw_result["url"], format, use_llm_processing, model, min_length)
+                ] = raw_result
+            trimmed_response = _build_chunked_web_extract_response(raw_public_results, chunk_index=chunk_index, cache_hit=False)
+        else:
+            # Trim output to minimal fields per entry: title, content, error
+            trimmed_results = [
+                {
+                    "url": r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "content": r.get("content", ""),
+                    "error": r.get("error"),
+                    **({  "blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+                }
+                for r in response.get("results", [])
+            ]
+            trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:
             result_json = tool_error("Content was inaccessible or not found")
@@ -1512,7 +1695,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Extract content from web page URLs. Returns one deterministic markdown source chunk at a time. Use chunk_index to navigate large pages and inspect chunk_count/next_chunk. This avoids hidden model summarization when extracted content is larger than a single tool result.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1521,9 +1704,37 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "chunk_index": {
+                "type": "integer",
+                "description": "Zero-based source chunk to return. Responses include chunk_count and next_chunk.",
+                "minimum": 0,
+                "default": 0
             }
         },
         "required": ["urls"]
+    }
+}
+
+WEB_EXTRACT_FIND_SCHEMA = {
+    "name": "web_extract_find",
+    "description": "Search cached web_extract source chunks for text or regex. Searches all cached chunks for selected URLs and suggests follow-up web_extract calls. Requires web_extract first.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Text or regex pattern to search for"},
+            "urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional cached URLs to limit the search to. Omit to search all cached web_extract URLs.",
+                "maxItems": 50,
+            },
+            "max_results": {"type": "integer", "description": "Maximum number of matches to return", "minimum": 1, "default": 10},
+            "case_sensitive": {"type": "boolean", "description": "Whether literal or regex matching should be case-sensitive", "default": False},
+            "regex": {"type": "boolean", "description": "Treat query as a Python regular expression instead of literal text", "default": False},
+            "include_context": {"type": "boolean", "description": "Include a compact snippet around each match", "default": True},
+        },
+        "required": ["query"]
     }
 }
 
@@ -1542,10 +1753,31 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        use_llm_processing=False,
+        chunk_index=args.get("chunk_index", 0),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
+    max_result_size_chars=100_000,
+)
+registry.register(
+    name="web_extract_find",
+    toolset="web",
+    schema=WEB_EXTRACT_FIND_SCHEMA,
+    handler=lambda args, **kw: web_extract_find(
+        query=args.get("query", ""),
+        urls=args.get("urls"),
+        max_results=args.get("max_results", 10),
+        case_sensitive=args.get("case_sensitive", False),
+        regex=args.get("regex", False),
+        include_context=args.get("include_context", True),
+    ),
+    check_fn=check_web_api_key,
+    requires_env=_web_requires_env(),
+    emoji="🔎",
     max_result_size_chars=100_000,
 )

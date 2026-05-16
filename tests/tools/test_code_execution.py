@@ -612,8 +612,8 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
             sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
             dynamic_schema = build_execute_code_schema(sandbox_enabled)
 
-        SANDBOX_ALLOWED_TOOLS = {web_search, web_extract, read_file, write_file,
-                                  search_files, patch, terminal}
+        # SANDBOX_ALLOWED_TOOLS contains web/search/browser/file/terminal helpers,
+        # but tools_to_include intentionally has none of those names.
         tools_to_include  = {"execute_code"}
         intersection      = empty set
         """
@@ -831,7 +831,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
-                enabled_tools=["vision_analyze", "browser_snapshot"],
+                enabled_tools=["vision_analyze"],
             ))
         self.assertEqual(result["status"], "success")
         self.assertIn("fallback ok", result["output"])

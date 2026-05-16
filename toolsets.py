@@ -30,7 +30,7 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "web_extract_find",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -40,7 +40,7 @@ _HERMES_CORE_TOOLS = [
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
-    "browser_navigate", "browser_snapshot", "browser_click",
+    "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
@@ -79,7 +79,7 @@ TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
+        "tools": ["web_search", "web_extract", "web_extract_find"],
         "includes": []  # No other toolsets included
     },
     
@@ -160,7 +160,7 @@ TOOLSETS = {
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [
-            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
@@ -331,12 +331,12 @@ TOOLSETS = {
     "hermes-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
-            "web_search", "web_extract",
+            "web_search", "web_extract", "web_extract_find",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
@@ -351,7 +351,7 @@ TOOLSETS = {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
             # Web
-            "web_search", "web_extract",
+            "web_search", "web_extract", "web_extract_find",
             # Terminal + process management
             "terminal", "process",
             # File manipulation
@@ -361,7 +361,7 @@ TOOLSETS = {
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
-            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_navigate", "browser_snapshot", "browser_find", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",

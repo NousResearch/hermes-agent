@@ -7,12 +7,13 @@ sidebar_position: 6
 
 # Web Search & Extract
 
-Hermes Agent includes two model-callable web tools backed by multiple providers:
+Hermes Agent includes three model-callable web tools backed by multiple providers:
 
 - **`web_search`** — search the web and return ranked results
 - **`web_extract`** — fetch and extract readable content from one or more URLs (with built-in deep-crawl support when the backend provides it)
+- **`web_extract_find`** — search source chunks cached by prior `web_extract` calls and suggest exact chunk follow-ups
 
-Both are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`. Recursive crawling capabilities (Firecrawl/Tavily) are exposed through `web_extract` rather than as a separate `web_crawl` tool.
+They are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`. Recursive crawling capabilities (Firecrawl/Tavily) are exposed through `web_extract` rather than as a separate `web_crawl` tool.
 
 ## Backends
 
@@ -34,39 +35,48 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## How `web_extract` handles long pages
 
-Backends return raw page markdown, which can be huge (forum threads, docs sites, news articles with embedded comments). To keep your context window usable and your costs down, `web_extract` runs returned content through the **`web_extract` auxiliary model** before handing it to the agent. Behavior is purely size-driven:
+Backends can return very large markdown documents (forum threads, docs sites, news articles with comments). The public `web_extract` tool now returns deterministic source chunks instead of silently compressing large pages through an auxiliary model.
 
-| Page size (characters) | What happens |
-|------------------------|--------------|
-| Under 5 000 | Returned as-is — no LLM call, full markdown reaches the agent |
-| 5 000 – 500 000 | Single-pass summary via the `web_extract` auxiliary model, capped at ~5 000 chars of output |
-| 500 000 – 2 000 000 | Chunked: split into 100 k-char chunks, summarize each in parallel, then synthesize a final summary (~5 000 chars) |
-| Over 2 000 000 | Refused with a hint to use `web_crawl` with focused extraction instructions or a more specific source |
+Each result includes:
 
-The summary keeps quotes, code blocks, and key facts in their original formatting — it's a content compressor, not a paraphraser. If summarization fails or times out, Hermes falls back to the first ~5 000 chars of raw content rather than a useless error.
+- `content`: the selected chunk
+- `chunk_index`: the zero-based chunk returned
+- `chunk_count`: total chunks cached for that URL
+- `next_chunk`: the next chunk index, or `null`
+- `has_more`: whether more chunks are available
 
-### Which model does the summarizing?
+Example:
 
-The `web_extract` auxiliary task. By default (`auxiliary.web_extract.provider: "auto"`), this is your **main chat model** — same provider, same model as `hermes model`. That's fine for most setups, but on expensive reasoning models (Opus, MiniMax M2.7, etc.) every long-page extract adds meaningful cost.
-
-To route extraction summaries to a cheap, fast model regardless of your main:
-
-```yaml
-# ~/.hermes/config.yaml
-auxiliary:
-  web_extract:
-    provider: openrouter
-    model: google/gemini-3-flash-preview
-    timeout: 360       # seconds; raise if you hit summarization timeouts
+```json
+{"urls": ["https://example.com/long-page"], "chunk_index": 0}
 ```
 
-Or pick interactively: `hermes model` → **Configure auxiliary models** → `web_extract`.
+Then request the next chunk explicitly:
 
-See [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
+```json
+{"urls": ["https://example.com/long-page"], "chunk_index": 1}
+```
 
-### When summarization gets in the way
+### Finding text inside cached extracts
 
-If you specifically need raw, unsummarized page content — for example, you're scraping a structured page where the LLM summary would drop important fields — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree without auxiliary-model rewriting (subject to its own 8 000-char snapshot cap on huge pages).
+Use `web_extract_find` after `web_extract` to search cached source chunks without refetching the page. It supports literal text or regex matching and returns suggested follow-up calls with the matching `chunk_index`.
+
+```json
+{"query": "installation", "urls": ["https://example.com/long-page"]}
+```
+
+### Python helper support
+
+The Python sandbox helpers exposed through `execute_code` mirror the public tools:
+
+```python
+from hermes_tools import web_extract, web_extract_find
+
+first = web_extract(["https://example.com/long-page"], chunk_index=0)
+matches = web_extract_find("installation", urls=["https://example.com/long-page"])
+```
+
+Use browser tools when you need a live current tab, refs, clicks, forms, or JavaScript state. Use `web_extract` when you need URL-based content extraction.
 
 ---
 

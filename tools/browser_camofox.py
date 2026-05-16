@@ -394,7 +394,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
-                     user_task: Optional[str] = None) -> str:
+                     user_task: Optional[str] = None, chunk_index: int = 0) -> str:
     """Get accessibility tree snapshot from Camofox."""
     try:
         session = _get_session(task_id)
@@ -409,24 +409,20 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         snapshot = data.get("snapshot", "")
         refs_count = data.get("refsCount", 0)
 
-        # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
-            SNAPSHOT_SUMMARIZE_THRESHOLD,
-            _extract_relevant_content,
-            _truncate_snapshot,
+            _build_browser_snapshot_chunk_response,
+            _store_browser_snapshot_source_cache,
         )
 
-        if len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            if user_task:
-                snapshot = _extract_relevant_content(snapshot, user_task)
-            else:
-                snapshot = _truncate_snapshot(snapshot)
-
-        return json.dumps({
-            "success": True,
-            "snapshot": snapshot,
-            "element_count": refs_count,
-        })
+        cache_entry = _store_browser_snapshot_source_cache(
+            task_id or "default",
+            snapshot,
+            full=full,
+            url=data.get("url", ""),
+            title=data.get("title", ""),
+            element_count=refs_count,
+        )
+        return json.dumps(_build_browser_snapshot_chunk_response(cache_entry, chunk_index=chunk_index, cache_hit=False))
     except Exception as e:
         return tool_error(str(e), success=False)
 

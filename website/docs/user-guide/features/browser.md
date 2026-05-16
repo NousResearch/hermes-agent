@@ -405,12 +405,27 @@ For simple information retrieval, prefer `web_search` or `web_extract` — they 
 
 ### `browser_snapshot`
 
-Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs like `@e1`, `@e2` for use with `browser_click` and `browser_type`.
+Get a text-based snapshot of the current page's accessibility tree. Returns one source chunk at a time with `chunk_index`, `chunk_count`, `next_chunk`, and `has_more` metadata.
 
-- **`full=false`** (default): Compact view showing only interactive elements
-- **`full=true`**: Complete page content
+- **`full=false`** (default): compact snapshot chunks focused on interactive elements
+- **`full=true`**: complete page source chunks
+- **`chunk_index=0`** (default): zero-based chunk selector for large snapshots
 
-Snapshots over 8000 characters are automatically summarized by an LLM.
+Large snapshots are no longer silently LLM-summarized in the public tool path. Request later chunks explicitly:
+
+```json
+{"full": true, "chunk_index": 1}
+```
+
+### `browser_find`
+
+Search cached full-page browser snapshot source chunks for text or a regex. Run `browser_snapshot(full=true)` first if the cache is empty. Results include matching `chunk_index` values and suggested `browser_snapshot` follow-up calls.
+
+```json
+{"query": "pricing", "max_results": 5}
+```
+
+The Python sandbox helpers exposed through `execute_code` mirror this API as `browser_snapshot(full=False, chunk_index=0)` and `browser_find(query, ...)`.
 
 ### `browser_click`
 

@@ -88,6 +88,13 @@ from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from tools.chunked_content import (
+    build_chunked_result,
+    compile_chunk_find_query,
+    legacy_offset_to_chunk_index,
+    search_source_chunks,
+    split_source_chunks,
+)
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
@@ -1054,6 +1061,42 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
 _LOCAL_SUFFIX = "::local"
+_BROWSER_SNAPSHOT_SOURCE_CACHE: Dict[Tuple[str, bool], Dict[str, Any]] = {}
+
+
+def _browser_snapshot_source_cache_key(task_id: str, full: bool = True) -> Tuple[str, bool]:
+    return (task_id or "default", bool(full))
+
+
+def _get_browser_snapshot_source_cache(task_id: str, full: bool = True) -> Optional[Dict[str, Any]]:
+    return _BROWSER_SNAPSHOT_SOURCE_CACHE.get(_browser_snapshot_source_cache_key(task_id, full=full))
+
+
+def _store_browser_snapshot_source_cache(
+    task_id: str,
+    text: str,
+    *,
+    full: bool = True,
+    url: str = "",
+    title: str = "",
+    element_count: int = 0,
+) -> Dict[str, Any]:
+    entry = {
+        "chunks": split_source_chunks(text or ""),
+        "url": url or "",
+        "title": title or "",
+        "element_count": int(element_count or 0),
+    }
+    _BROWSER_SNAPSHOT_SOURCE_CACHE[_browser_snapshot_source_cache_key(task_id, full=full)] = entry
+    return entry
+
+
+def _invalidate_browser_snapshot_source_cache(task_id: Optional[str]) -> None:
+    if not task_id:
+        return
+    _BROWSER_SNAPSHOT_SOURCE_CACHE.pop(_browser_snapshot_source_cache_key(task_id, full=True), None)
+    _BROWSER_SNAPSHOT_SOURCE_CACHE.pop(_browser_snapshot_source_cache_key(task_id, full=False), None)
+
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -1368,17 +1411,38 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns one source chunk at a time with chunk_count/next_chunk metadata; use chunk_index to page through large snapshots instead of receiving hidden summarization. Requires browser_navigate first. full=false (default): compact view with interactive elements. full=true: complete page source chunks.",
         "parameters": {
             "type": "object",
             "properties": {
                 "full": {
                     "type": "boolean",
-                    "description": "If true, returns complete page content. If false (default), returns compact view with interactive elements only.",
+                    "description": "If true, returns complete page source chunks. If false (default), returns compact view chunks with interactive elements only.",
                     "default": False
+                },
+                "chunk_index": {
+                    "type": "integer",
+                    "description": "Zero-based source chunk to return. Responses include chunk_count and next_chunk.",
+                    "minimum": 0,
+                    "default": 0
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "browser_find",
+        "description": "Search cached browser snapshot source chunks for text or regex. Returns matching chunk indexes, snippets, and suggested browser_snapshot follow-up calls. Requires browser_navigate or browser_snapshot first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text or regex pattern to search for"},
+                "max_results": {"type": "integer", "description": "Maximum number of matches to return", "minimum": 1, "default": 10},
+                "case_sensitive": {"type": "boolean", "description": "Whether literal or regex matching should be case-sensitive", "default": False},
+                "regex": {"type": "boolean", "description": "Treat query as a Python regular expression instead of literal text", "default": False},
+                "include_context": {"type": "boolean", "description": "Include a compact snippet around each match", "default": True},
+            },
+            "required": ["query"]
         }
     },
     {
@@ -2235,6 +2299,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
 
@@ -2258,6 +2323,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         _maybe_start_recording(nav_session_key)
 
     result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+    _invalidate_browser_snapshot_source_cache(nav_session_key)
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a
@@ -2364,27 +2430,60 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
+def _build_browser_snapshot_chunk_response(
+    cache_entry: Dict[str, Any],
+    *,
+    chunk_index: int = 0,
+    cache_hit: bool = False,
+) -> Dict[str, Any]:
+    response = build_chunked_result(
+        {
+            "url": cache_entry.get("url", ""),
+            "title": cache_entry.get("title", ""),
+            "content": "".join(cache_entry.get("chunks", [])),
+        },
+        chunk_index=chunk_index,
+        cache_hit=cache_hit,
+        output_key="snapshot",
+        chunks=cache_entry.get("chunks") if isinstance(cache_entry.get("chunks"), list) else None,
+    )
+    response["success"] = True
+    response["element_count"] = int(cache_entry.get("element_count", 0) or 0)
+    return response
+
+
 def browser_snapshot(
     full: bool = False,
     task_id: Optional[str] = None,
-    user_task: Optional[str] = None
+    user_task: Optional[str] = None,
+    chunk_index: int = 0,
+    # Private compatibility for older direct callers; not exposed in the schema.
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> str:
     """
     Get a text-based snapshot of the current page's accessibility tree.
 
     Args:
-        full: If True, return complete snapshot. If False, return compact view.
+        full: If True, return complete source chunks. If False, return compact chunks.
         task_id: Task identifier for session isolation
-        user_task: The user's current task (for task-aware extraction)
+        user_task: The user's current task (kept for compatibility)
+        chunk_index: Zero-based source chunk index to return
 
     Returns:
         JSON string with page snapshot
     """
+    if offset is not None and chunk_index == 0:
+        chunk_index = legacy_offset_to_chunk_index(offset)
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
-        return camofox_snapshot(full, task_id, user_task)
+        return camofox_snapshot(full=full, task_id=task_id, user_task=user_task, chunk_index=chunk_index)
 
     effective_task_id = _last_session_key(task_id or "default")
+    cached = _get_browser_snapshot_source_cache(effective_task_id, full=full)
+    if cached is not None:
+        return json.dumps(_build_browser_snapshot_chunk_response(cached, chunk_index=chunk_index, cache_hit=True), ensure_ascii=False)
 
     # Build command args based on full flag
     args = []
@@ -2397,18 +2496,16 @@ def browser_snapshot(
         data = result.get("data", {})
         snapshot_text = data.get("snapshot", "")
         refs = data.get("refs", {})
-
-        # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
-            snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            snapshot_text = _truncate_snapshot(snapshot_text)
-
-        response = {
-            "success": True,
-            "snapshot": snapshot_text,
-            "element_count": len(refs) if refs else 0
-        }
+        element_count = len(refs) if refs else int(data.get("refsCount", 0) or 0)
+        cache_entry = _store_browser_snapshot_source_cache(
+            effective_task_id,
+            snapshot_text,
+            full=full,
+            url=data.get("url", ""),
+            title=data.get("title", ""),
+            element_count=element_count,
+        )
+        response = _build_browser_snapshot_chunk_response(cache_entry, chunk_index=chunk_index, cache_hit=False)
         _copy_fallback_warning(response, result)
 
         # Merge supervisor state (pending dialogs + frame tree) when a CDP
@@ -2433,6 +2530,72 @@ def browser_snapshot(
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def browser_find(
+    query: str,
+    max_results: int = 10,
+    case_sensitive: bool = False,
+    regex: bool = False,
+    include_context: bool = True,
+    task_id: Optional[str] = None,
+) -> str:
+    """Search cached full browser snapshot source chunks."""
+    if not isinstance(query, str) or not query:
+        return json.dumps({"success": False, "error": "query must be a non-empty string"}, ensure_ascii=False)
+    try:
+        matcher = compile_chunk_find_query(query, regex=bool(regex), case_sensitive=bool(case_sensitive))
+    except re.error as exc:
+        return json.dumps({"success": False, "error": f"Invalid regex: {exc}"}, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    cache_entry = _get_browser_snapshot_source_cache(effective_task_id, full=True)
+    if cache_entry is None:
+        # Try to acquire the full source once without making the caller know about
+        # the cache implementation. If there is no browser session, return a clean
+        # cache-miss error with a browser_navigate hint.
+        try:
+            snapshot_result = json.loads(browser_snapshot(full=True, task_id=task_id, chunk_index=0))
+        except Exception:
+            snapshot_result = {"success": False}
+        if snapshot_result.get("success"):
+            cache_entry = _get_browser_snapshot_source_cache(effective_task_id, full=True)
+
+    if cache_entry is None:
+        return json.dumps({
+            "success": False,
+            "error": "No cached browser snapshot source chunks. Call browser_snapshot(full=true) or browser_navigate first.",
+            "query": query,
+            "next_actions": {
+                "navigate": {"tool": "browser_navigate", "args": {"url": "<url>"}},
+                "full_snapshot": {"tool": "browser_snapshot", "args": {"full": True, "chunk_index": 0}},
+            },
+        }, ensure_ascii=False)
+
+    chunks = [str(chunk) for chunk in cache_entry.get("chunks", [])]
+    results = search_source_chunks(
+        chunks,
+        matcher=matcher,
+        include_context=bool(include_context),
+        max_results=max_results,
+        collapse_accessibility_duplicates=True,
+    )
+    first_chunk = results[0]["chunk_index"] if results else 0
+    return json.dumps({
+        "success": True,
+        "query": query,
+        "regex": bool(regex),
+        "case_sensitive": bool(case_sensitive),
+        "url": cache_entry.get("url", ""),
+        "title": cache_entry.get("title", ""),
+        "chunk_count": len(chunks),
+        "searched_chunks": list(range(len(chunks))),
+        "match_count": len(results),
+        "results": results,
+        "next_actions": {
+            "full_snapshot": {"tool": "browser_snapshot", "args": {"full": True, "chunk_index": first_chunk}},
+        },
+    }, ensure_ascii=False)
+
+
 def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     """
     Click on an element.
@@ -2445,6 +2608,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         JSON string with click result
     """
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
 
@@ -2457,6 +2621,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
+        _invalidate_browser_snapshot_source_cache(effective_task_id)
         response = {
             "success": True,
             "clicked": ref
@@ -2483,6 +2648,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         JSON string with type result
     """
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
 
@@ -2496,6 +2662,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     if result.get("success"):
+        _invalidate_browser_snapshot_source_cache(effective_task_id)
         response = {
             "success": True,
             "typed": text,
@@ -2534,6 +2701,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     _SCROLL_PIXELS = 500
 
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_scroll
         # Camofox REST API doesn't support pixel args; use repeated calls
         _SCROLL_REPEATS = 5
@@ -2556,6 +2724,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         "success": True,
         "scrolled": direction
     }
+    _invalidate_browser_snapshot_source_cache(effective_task_id)
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
@@ -2570,6 +2739,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
         JSON string with navigation result
     """
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_back
         return camofox_back(task_id)
 
@@ -2577,6 +2747,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "back", [])
 
     if result.get("success"):
+        _invalidate_browser_snapshot_source_cache(effective_task_id)
         data = result.get("data", {})
         response = {
             "success": True,
@@ -2603,6 +2774,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         JSON string with key press result
     """
     if _is_camofox_mode():
+        _invalidate_browser_snapshot_source_cache(task_id or "default")
         from tools.browser_camofox import camofox_press
         return camofox_press(key, task_id)
 
@@ -2610,6 +2782,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
+        _invalidate_browser_snapshot_source_cache(effective_task_id)
         response = {
             "success": True,
             "pressed": key
@@ -2690,10 +2863,12 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
+    _invalidate_browser_snapshot_source_cache(task_id or "default")
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    _invalidate_browser_snapshot_source_cache(effective_task_id)
 
     # --- Fast path: route through the supervisor's persistent CDP WS ---------
     # When a CDPSupervisor is alive for this task_id, ``Runtime.evaluate`` runs
@@ -3245,11 +3420,13 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+        _invalidate_browser_snapshot_source_cache(session_key)
 
     # Drop the last-active pointer only when the bare task is being cleaned
     # (i.e. not when we're only reaping a sidecar mid-task).
     if not _is_local_sidecar_key(task_id):
         _last_active_session_key.pop(bare_task_id, None)
+        _invalidate_browser_snapshot_source_cache(bare_task_id)
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:
@@ -3359,6 +3536,7 @@ def cleanup_all_browsers() -> None:
     _cached_chromium_installed = None
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _BROWSER_SNAPSHOT_SOURCE_CACHE.clear()
 
 # ============================================================================
 # Requirements Check
@@ -3604,9 +3782,28 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
     handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        full=args.get("full", False),
+        task_id=kw.get("task_id"),
+        user_task=kw.get("user_task"),
+        chunk_index=args.get("chunk_index", 0),
+    ),
     check_fn=check_browser_requirements,
     emoji="📸",
+)
+registry.register(
+    name="browser_find",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_find"],
+    handler=lambda args, **kw: browser_find(
+        query=args.get("query", ""),
+        max_results=args.get("max_results", 10),
+        case_sensitive=args.get("case_sensitive", False),
+        regex=args.get("regex", False),
+        include_context=args.get("include_context", True),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🔎",
 )
 registry.register(
     name="browser_click",

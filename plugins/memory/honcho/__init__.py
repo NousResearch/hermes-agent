@@ -988,12 +988,14 @@ class HonchoMemoryProvider(MemoryProvider):
                 return r
         return ""
 
-    # Prompts that carry no semantic signal — trivial acknowledgements, slash
-    # commands, empty input. Skipping injection here saves tokens and prevents
+    # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
+    # slash commands, empty input. Skipping injection here saves tokens and prevents
     # stale user-model context from derailing one-word replies.
     _TRIVIAL_PROMPT_RE = re.compile(
         r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
-        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
+        r'hi|hey|hello|yo|sup|'
+        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
+        r'[\s!?.:;,~]*$',
         re.IGNORECASE,
     )
 

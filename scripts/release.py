@@ -127,6 +127,7 @@ AUTHOR_MAP = {
     "mike@grossmann.at": "ReqX",
     "axmaiqiu@gmail.com": "qWaitCrypto",
     "44045911+kidonng@users.noreply.github.com": "kidonng",
+    "ayushere@users.noreply.github.com": "ayushere",
     "daniellsmarta@gmail.com": "DanielLSM",
     "264291321+v1b3coder@users.noreply.github.com": "v1b3coder",
     "silverchris@foxmail.com": "ming1523",

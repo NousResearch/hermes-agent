@@ -755,6 +755,64 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_ws_transport_disconnect_closes_idle_session_resources(monkeypatch):
+    transport = object()
+    calls = {"ended": [], "worker_closed": 0, "agent_closed": 0}
+
+    class _DB:
+        def end_session(self, session_id, end_reason):
+            calls["ended"].append((session_id, end_reason))
+
+    class _Worker:
+        def close(self):
+            calls["worker_closed"] += 1
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.close = lambda: calls.__setitem__("agent_closed", calls["agent_closed"] + 1)
+    agent.commit_memory_session = lambda _history: None
+
+    server._sessions["sid"] = _session(
+        agent=agent,
+        transport=transport,
+        slash_worker=_Worker(),
+        history=[{"role": "assistant", "content": "done", "finish_reason": "stop"}],
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *args: None)
+
+    try:
+        closed = server._close_sessions_for_transport(transport, "tui_disconnect")
+
+        assert closed == 1
+        assert "sid" not in server._sessions
+        assert calls["ended"] == [("session-key", "tui_disconnect")]
+        assert calls["worker_closed"] == 1
+        assert calls["agent_closed"] == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_ws_transport_disconnect_detaches_running_session(monkeypatch):
+    transport = object()
+    worker = types.SimpleNamespace(
+        close=lambda: (_ for _ in ()).throw(AssertionError("closed running worker"))
+    )
+    server._sessions["sid"] = _session(
+        transport=transport,
+        slash_worker=worker,
+        running=True,
+    )
+
+    try:
+        closed = server._close_sessions_for_transport(transport, "tui_disconnect")
+
+        assert closed == 0
+        assert "sid" in server._sessions
+        assert server._sessions["sid"]["transport"] is server._stdio_transport
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

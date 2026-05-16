@@ -253,6 +253,13 @@ class _SlashWorker:
             )
 
     def close(self):
+        for pipe_name in ("stdin",):
+            pipe = getattr(self.proc, pipe_name, None)
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass
         try:
             if self.proc.poll() is None:
                 self.proc.terminate()
@@ -260,6 +267,14 @@ class _SlashWorker:
         except Exception:
             try:
                 self.proc.kill()
+                self.proc.wait(timeout=1)
+            except Exception:
+                pass
+        for pipe_name in ("stdout", "stderr"):
+            pipe = getattr(self.proc, pipe_name, None)
+            try:
+                if pipe:
+                    pipe.close()
             except Exception:
                 pass
 
@@ -321,15 +336,59 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
 
+def _close_session_resources(session: dict | None, end_reason: str) -> None:
+    """Best-effort closeout for one in-memory TUI session."""
+    if not session:
+        return
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session.get("session_key"))
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+
+
+def _close_sessions_for_transport(transport: object, end_reason: str = "tui_disconnect") -> int:
+    """Close idle sessions owned by a disconnected transport.
+
+    Dashboard/WebSocket TUI clients can disappear without issuing
+    ``session.close``.  Leaving their sessions attached to a dead transport
+    keeps slash workers alive and leaves state.db rows open.  Close idle
+    sessions on disconnect; keep actively-running sessions alive and detach
+    them to stdio so in-flight turns can finish without writing to a dead WS.
+    """
+    closed = 0
+    for sid, session in list(_sessions.items()):
+        if session.get("transport") is not transport:
+            continue
+        if session.get("running"):
+            session["transport"] = _stdio_transport
+            continue
+        popped = _sessions.pop(sid, None)
+        if popped is None:
+            continue
+        _close_session_resources(popped, end_reason=end_reason)
+        closed += 1
+    return closed
+
+
 def _shutdown_sessions() -> None:
-    for session in list(_sessions.values()):
-        _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+    for sid, session in list(_sessions.items()):
+        popped = _sessions.pop(sid, None)
+        _close_session_resources(popped or session, end_reason="tui_shutdown")
 
 
 atexit.register(_shutdown_sessions)
@@ -2640,25 +2699,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+    _close_session_resources(session, end_reason="tui_close")
     return _ok(rid, {"closed": True})
 
 

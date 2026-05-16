@@ -4514,6 +4514,26 @@ class HermesCLI:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
     
+    def _finalize_session_row(self, end_reason: str = "cli_close") -> None:
+        """Mark the active CLI session ended in state.db, best-effort.
+
+        Single-query mode does not enter ``run()``, so it must call this
+        explicitly before returning/exiting.  Use ``agent.session_id`` rather
+        than ``self.session_id`` so auto-compression continuation sessions are
+        closed instead of the already-ended parent row.
+        """
+        agent = getattr(self, "agent", None)
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(agent, "session_id", None) or getattr(self, "session_id", None)
+        if not db or not session_id:
+            return
+        try:
+            if getattr(agent, "session_id", None) and agent.session_id != self.session_id:
+                self.session_id = agent.session_id
+            db.end_session(session_id, end_reason)
+        except Exception:
+            pass
+
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
 
@@ -14099,10 +14119,13 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                    finally:
+                        cli._finalize_session_row("cli_close")
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
@@ -14128,6 +14151,7 @@ def main(
                         print(response)
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                    cli._finalize_session_row("cli_close")
                     
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
@@ -14154,8 +14178,11 @@ def main(
             # Surface security advisories before the agent runs — short
             # banner, doesn't depend on the welcome banner being shown.
             cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
-            cli._print_exit_summary()
+            try:
+                cli.chat(query, images=single_query_images or None)
+            finally:
+                cli._finalize_session_row("cli_close")
+                cli._print_exit_summary()
         return
     
     # Run interactive mode

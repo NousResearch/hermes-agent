@@ -165,9 +165,13 @@ async def handle_ws(ws: Any) -> None:
                 break
     finally:
         transport.close()
+        server._close_sessions_for_transport(transport, end_reason="tui_disconnect")
 
-        # Detach the transport from any sessions it owned so later emits
-        # fall back to stdio instead of crashing into a closed socket.
+        # Detach the transport from any running sessions it still owns so
+        # later emits fall back to stdio instead of crashing into a closed
+        # socket. Idle sessions were finalized above to avoid leaking slash
+        # workers and open state.db rows when WS clients disconnect without a
+        # session.close RPC.
         for _, sess in list(server._sessions.items()):
             if sess.get("transport") is transport:
                 sess["transport"] = server._stdio_transport

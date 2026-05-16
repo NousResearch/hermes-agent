@@ -673,25 +673,91 @@ class TestSessionOps:
         ]
 
     @pytest.mark.asyncio
-    async def test_load_session_schedules_history_replay_after_response(self, agent):
-        """Zed only attaches replayed updates after session/load has completed."""
+    async def test_load_session_replays_history_before_returning_response(self, agent):
+        """Per ACP spec, replay must complete BEFORE load_session returns.
+
+        Spec-compliant ACP clients (Codex, Claude Code, OpenCode, Pi, Zed)
+        attach their ``session/update`` listeners before awaiting the
+        ``loadSession`` RPC and rely on receiving the full transcript within
+        the request's lifetime. Deferring replay via ``loop.call_soon`` (the
+        prior behavior in May 2026) broke clients that read notification
+        counts synchronously against the load response — see #12285 follow-up.
+        """
         new_resp = await agent.new_session(cwd="/tmp")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.history = [{"role": "user", "content": "hello from history"}]
-        events = []
+        events: list[str] = []
 
-        async def replay_after_response(_state):
+        async def replay_records(_state):
             events.append("replay")
 
-        with patch.object(agent, "_replay_session_history", side_effect=replay_after_response):
+        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
             resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
             events.append("returned")
 
         assert isinstance(resp, LoadSessionResponse)
-        assert events == ["returned"]
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert events == ["returned", "replay"]
+        # Replay must have happened BEFORE the response was constructed —
+        # i.e. before the `events.append("returned")` after the await resolves.
+        assert events == ["replay", "returned"]
+
+    @pytest.mark.asyncio
+    async def test_resume_session_replays_history_before_returning_response(self, agent):
+        """Same spec rationale as ``load_session`` — replay before responding."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hello from history"}]
+        events: list[str] = []
+
+        async def replay_records(_state):
+            events.append("replay")
+
+        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
+            resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+            events.append("returned")
+
+        assert isinstance(resp, ResumeSessionResponse)
+        assert events == ["replay", "returned"]
+
+    @pytest.mark.asyncio
+    async def test_load_session_survives_replay_helper_exception(self, agent, caplog):
+        """A replay helper raising must not turn load_session into an error.
+
+        With awaited replay, an exception in ``_replay_session_history`` now
+        propagates into the ``load_session`` handler. The defensive try/except
+        guard at the call site must catch and log it so the JSON-RPC client
+        still receives a ``LoadSessionResponse`` — partial transcripts are
+        acceptable, total load failure is not.
+        """
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hi"}]
+
+        async def boom(_state):
+            raise RuntimeError("simulated replay helper crash")
+
+        with caplog.at_level("WARNING", logger="acp_adapter.server"):
+            with patch.object(agent, "_replay_session_history", side_effect=boom):
+                resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, LoadSessionResponse)
+        assert "history replay raised during session/load" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_resume_session_survives_replay_helper_exception(self, agent, caplog):
+        """Same guarantee as ``load_session`` for the resume path."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hi"}]
+
+        async def boom(_state):
+            raise RuntimeError("simulated replay helper crash")
+
+        with caplog.at_level("WARNING", logger="acp_adapter.server"):
+            with patch.object(agent, "_replay_session_history", side_effect=boom):
+                resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, ResumeSessionResponse)
+        assert "history replay raised during session/resume" in caplog.text
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):

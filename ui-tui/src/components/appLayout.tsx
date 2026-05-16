@@ -53,7 +53,7 @@ const PromptPrefix = memo(function PromptPrefix({
   )
 })
 
-const chatTurnSeparator = (cols: number) => '─'.repeat(Math.max(12, cols - 2))
+const horizontalRule = (cols: number) => '─'.repeat(Math.max(12, cols - 2))
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -108,7 +108,7 @@ const TranscriptPane = memo(function TranscriptPane({
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>{chatTurnSeparator(composer.cols)}</Text>
+                  <Text color={ui.theme.color.border}>{horizontalRule(composer.cols)}</Text>
                 </Box>
               )}
 
@@ -245,7 +245,13 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag}>
+          {ui.statusBar === 'top' ? (
+            <Text color={ui.theme.color.border} wrap="truncate-end">
+              {horizontalRule(composer.cols)}
+            </Text>
+          ) : null}
+        </Box>
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -351,7 +357,7 @@ const StatusRulePane = memo(function StatusRulePane({
   }
 
   return (
-    <Box marginTop={at === 'top' ? 1 : 0}>
+    <Box marginTop={0}>
       <StatusRule
         bgCount={ui.bgTasks.size}
         busy={ui.busy}

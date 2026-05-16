@@ -1,8 +1,7 @@
 name: memsearch
-version: 1.1.0
-description: "MemSearch semantic memory — Milvus-backed long-term recall with hybrid search and auto-ingest."
+version: 2.0.0
+description: "MemSearch semantic memory — Milvus-backed long-term recall with hybrid search, progressive disclosure, and auto-ingest."
 pip_dependencies:
   - memsearch
-  - "memsearch[google]"
 hooks:
   - on_session_end

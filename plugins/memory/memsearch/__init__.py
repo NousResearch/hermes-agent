@@ -64,7 +64,7 @@ _COLLECTION_PREFIX = "hermes_memory"
 def _retry(fn, max_retries: int = 3, base_delay: float = 1.0):
     """Retry a callable with exponential backoff.
 
-    Only retries on RateLimitError (or generic Exception if provider=google).
+    Only retries on rate-limit errors (429, "rate", "quota").
     """
     for attempt in range(max_retries):
         try:
@@ -296,12 +296,60 @@ class MemSearchMemoryProvider(MemoryProvider):
     # -------------------------------------------------------------------
 
     def _get_ms(self) -> Any | None:
-        """Return the cached MemSearch instance, lazy-initializing on first call."""
+        """Return the cached MemSearch instance, lazy-initializing on first call.
+
+        If the cached instance has a stale/closed gRPC channel, it is discarded
+        and a fresh instance is created.  This handles the case where a daemon
+        thread races with shutdown() or where pymilvus closes the channel after
+        an idle period.
+        """
         if self._ms is not None:
-            return self._ms
+            # Health check: if the underlying gRPC channel is closed, discard
+            # the instance so we reconnect on the next call.
+            if self._is_ms_channel_closed(self._ms):
+                logger.warning("MemSearch: detected closed gRPC channel, reconnecting")
+                self._ms = None
+                self._ms_init_failed = False
+            else:
+                return self._ms
         if self._ms_init_failed:
             return None
         return self._init_ms()
+
+    @staticmethod
+    def _is_ms_channel_closed(ms: Any) -> bool:
+        """Check if the MemSearch instance's gRPC channel is closed/broken."""
+        try:
+            store = getattr(ms, '_store', None)
+            if store is None:
+                return False
+            client = getattr(store, '_client', None)
+            if client is None:
+                return False
+            # pymilvus MilvusClient sets _handler = None after close()
+            handler = getattr(client, '_handler', None)
+            if handler is None:
+                return True  # Client was explicitly closed
+            # GrpcHandler sets _channel = None after close()
+            channel = getattr(handler, '_channel', None)
+            if channel is None:
+                return True  # Channel was explicitly closed
+            # Try a lightweight gRPC connectivity check
+            try:
+                # grpc._cython.cygrpc.ChannelWrapped has check_connectivity_state
+                inner = getattr(channel, '_channel', None)
+                if inner is not None and hasattr(inner, 'check_connectivity_state'):
+                    from grpc import ChannelConnectivity
+                    state = inner.check_connectivity_state(False)
+                    # TRANSIENT_FAILURE or SHUTDOWN means channel is unusable
+                    if state in (ChannelConnectivity.TRANSIENT_FAILURE,
+                                 ChannelConnectivity.SHUTDOWN):
+                        return True
+            except Exception:
+                pass
+            return False
+        except Exception:
+            return False
 
     def _init_ms(self) -> Any | None:
         """Initialize the MemSearch Python API instance. Thread-safe."""
@@ -433,11 +481,22 @@ class MemSearchMemoryProvider(MemoryProvider):
         """Flush pending turns and shut down."""
         if self._pending_turns:
             self._flush_turns()
-        # Close Milvus connection
+        # Close Milvus client connection — but do NOT stop the Milvus Lite
+        # gRPC server. The server is a process-level singleton shared across
+        # sessions; stopping it via release_server() kills it for all clients
+        # and causes "Cannot invoke RPC on closed channel" for any concurrent
+        # or subsequent operations (including the daemon sync thread).
         ms = self._ms
         if ms is not None:
             try:
-                ms.close()
+                # Only close the pymilvus client channel, not the Milvus Lite
+                # server.  MilvusStore.close() calls server_manager_instance.
+                # release_server() which stops the embedded gRPC server entirely
+                # — we must not do that in a long-running process.
+                if hasattr(ms, '_store') and hasattr(ms._store, '_client'):
+                    ms._store._client.close()
+                else:
+                    ms.close()
             except Exception:
                 pass
             self._ms = None
@@ -739,14 +798,15 @@ class MemSearchMemoryProvider(MemoryProvider):
         """Hook called at the start of each agent turn."""
         pass
 
-    def on_session_switch(self, old_session_id: str, new_session_id: str,
-                          old_messages: List[Dict[str, Any]], **kwargs) -> None:
-        """Hook called when a session switches (e.g., context overflow)."""
+    def on_session_switch(self, new_session_id: str, *,
+                          parent_session_id: str = "", reset: bool = False,
+                          **kwargs) -> None:
+        """Called when the agent switches session_id mid-process."""
         pass
 
     def on_delegation(self, task: str, result: str, *,
-                      subagent_session_id: str = "", **kwargs) -> None:
-        """Hook called when a sub-agent delegation completes."""
+                      child_session_id: str = "", **kwargs) -> None:
+        """Called on the parent agent when a subagent completes."""
         pass
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
@@ -826,13 +886,26 @@ class MemSearchMemoryProvider(MemoryProvider):
         ms = self._get_ms()
         if ms is not None:
             try:
-                # The expand operation needs to read the source file, not just query Milvus
-                # So we fall back to subprocess for expand (reads file from disk)
-                pass  # expand requires file I/O, keep using subprocess
-            except Exception:
-                pass
+                result = self._expand_direct(ms, chunk_hash, lines)
+                if result is not None:
+                    return result
+            except ValueError as e:
+                if "Cannot invoke RPC on closed channel" in str(e):
+                    logger.warning("MemSearch: closed channel on expand, resetting and retrying")
+                    self._ms = None
+                    self._ms_init_failed = False
+                    ms = self._get_ms()
+                    if ms is not None:
+                        try:
+                            result = self._expand_direct(ms, chunk_hash, lines)
+                            if result is not None:
+                                return result
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("MemSearch direct expand failed, falling back to subprocess: %s", e)
 
-        # Expand reads from source files on disk — use subprocess
+        # Subprocess fallback
         cmd = ["memsearch", "expand", chunk_hash, "--collection",
                self._config.get("collection", "hermes_memory"), "--json-output"]
         milvus_uri = self._config.get("milvus_uri", "")
@@ -846,9 +919,98 @@ class MemSearchMemoryProvider(MemoryProvider):
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
-            return tool_error(f"Expand failed: {result.stderr.strip()}")
+            return tool_error(f"Expand failed: {result.stderr.strip()[:200]}")
         except Exception as e:
             return tool_error(f"Expand error: {e}")
+
+    def _expand_direct(self, ms: Any, chunk_hash: str, lines: int | None) -> str | None:
+        """Expand a chunk using the direct Python API (no subprocess).
+
+        Queries Milvus for the chunk, then reads the source file from disk
+        to extract the surrounding context (section or lines).
+
+        Returns JSON string on success, None on failure (caller falls back to subprocess).
+        """
+        try:
+            store = ms._store
+            # Query Milvus for the chunk by hash
+            chunks = store.query(filter_expr=f'chunk_hash == "{chunk_hash}"')
+            if not chunks:
+                return json.dumps({"error": f"Chunk not found: {chunk_hash}", "count": 0})
+
+            chunk = chunks[0]
+            source = chunk.get("source", "")
+            heading = chunk.get("heading", "")
+            heading_level = chunk.get("heading_level", 0)
+            start_line = chunk.get("start_line", 0)
+            end_line = chunk.get("end_line", 0)
+
+            if not source:
+                return None  # Can't expand without a source file
+
+            source_path = Path(source)
+            if not source_path.exists():
+                return None  # Source file gone — fall back to subprocess (different error path)
+
+            all_lines = source_path.read_text(encoding="utf-8").splitlines()
+
+            if lines is not None:
+                # Show N lines before/after the chunk
+                ctx_start = max(0, start_line - 1 - lines)
+                ctx_end = min(len(all_lines), end_line + lines)
+                expanded = "\n".join(all_lines[ctx_start:ctx_end])
+                expanded_start = ctx_start + 1
+                expanded_end = ctx_end
+            else:
+                # Show full section under the same heading
+                expanded, expanded_start, expanded_end = self._extract_section(
+                    all_lines, start_line, heading_level
+                )
+
+            result = {
+                "chunk_hash": chunk_hash,
+                "source": source,
+                "heading": heading,
+                "start_line": expanded_start,
+                "end_line": expanded_end,
+                "content": expanded,
+            }
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.debug("MemSearch _expand_direct failed: %s", e)
+            return None
+
+    @staticmethod
+    def _extract_section(
+        all_lines: list[str], start_line: int, heading_level: int,
+    ) -> tuple[str, int, int]:
+        """Extract the full markdown section containing the chunk.
+
+        Walks backward to find the section heading, then forward to the next
+        heading of equal or higher level (or EOF).
+        """
+        section_start = start_line - 1  # 0-indexed
+        if heading_level > 0:
+            for i in range(start_line - 2, -1, -1):
+                line = all_lines[i]
+                if line.startswith("#"):
+                    level = len(line) - len(line.lstrip("#"))
+                    if level <= heading_level:
+                        section_start = i
+                        break
+
+        section_end = len(all_lines)
+        if heading_level > 0:
+            for i in range(start_line, len(all_lines)):
+                line = all_lines[i]
+                if line.startswith("#"):
+                    level = len(line) - len(line.lstrip("#"))
+                    if level <= heading_level:
+                        section_end = i
+                        break
+
+        content = "\n".join(all_lines[section_start:section_end])
+        return content, section_start + 1, section_end
 
     def _handle_ingest(self, args: dict) -> str:
         path = args.get("path", "")
@@ -949,12 +1111,31 @@ class MemSearchMemoryProvider(MemoryProvider):
     # -----------------------------------------------------------------------
 
     def _search(self, query: str, top_k: int = 5) -> list:
-        """Search memory: direct Python API first, subprocess fallback."""
+        """Search memory: direct Python API first, subprocess fallback.
+
+        Automatically reconnects if the gRPC channel was closed (e.g., after
+        an idle period or a session reset that closed the client).
+        """
         ms = self._get_ms()
         if ms is not None:
             try:
                 results = _retry(lambda: self._run_async(ms.search(query, top_k=top_k)))
                 return results
+            except ValueError as e:
+                if "Cannot invoke RPC on closed channel" in str(e):
+                    logger.warning("MemSearch: closed channel on search, resetting and retrying")
+                    # Force re-init — _get_ms will detect the closed channel next time
+                    self._ms = None
+                    self._ms_init_failed = False
+                    ms = self._get_ms()
+                    if ms is not None:
+                        try:
+                            results = _retry(lambda: self._run_async(ms.search(query, top_k=top_k)))
+                            return results
+                        except Exception:
+                            pass
+                logger.debug("MemSearch direct search failed, falling back to subprocess: %s", e)
+                return self._search_subprocess(query, top_k)
             except Exception as e:
                 logger.debug("MemSearch direct search failed, falling back to subprocess: %s", e)
                 return self._search_subprocess(query, top_k)
@@ -1010,8 +1191,27 @@ class MemSearchMemoryProvider(MemoryProvider):
                 # Invalidate stats cache since we added data
                 self._stats_cache = (0, 0.0)
                 return
-            except ValueError:
-                pass  # force reindex, fall through to subprocess
+            except ValueError as e:
+                # Force reindex — fall through to subprocess
+                if "force reindex" in str(e):
+                    pass
+                # Closed gRPC channel — reset and retry once
+                elif "Cannot invoke RPC on closed channel" in str(e):
+                    logger.warning("MemSearch: closed channel on index, resetting and retrying")
+                    self._ms = None
+                    self._ms_init_failed = False
+                    ms = self._get_ms()
+                    if ms is not None:
+                        try:
+                            n = _retry(lambda: self._run_async(ms.index_file(path)))
+                            logger.info("MemSearch indexed %s (retry): %s chunks", path, n)
+                            self._stats_cache = (0, 0.0)
+                            return
+                        except Exception:
+                            pass
+                else:
+                    # Other ValueError — fall through to subprocess
+                    logger.debug("MemSearch direct index ValueError: %s", e)
             except Exception as e:
                 logger.debug("MemSearch direct index failed, falling back: %s", e)
 

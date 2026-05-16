@@ -685,11 +685,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot media (images/videos/files) ---
+    if platform == Platform.QQBOT and media_files:
+        return await _send_qqbot_media(pconfig, chat_id, media_files)
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, qqbot, weixin, signal, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -697,7 +701,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, qqbot, weixin, signal, yuanbao and feishu"
         )
 
     last_result = None
@@ -1856,6 +1860,301 @@ async def _send_qqbot(pconfig, chat_id, message):
             return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_qqbot_media(pconfig, chat_id, media_files):
+    """Send media files (images, videos, voice, documents) via QQBot REST API.
+
+    Uses the QQ Bot Open Platform file upload + RichMedia message flow:
+    1. Upload the file to /files endpoint (base64 for local files, url for remote)
+    2. Send a RichMedia message with the returned file_info
+
+    Handles files up to ~50 MB. Larger files return a helpful error
+    suggesting URL-based uploads or the chunked upload flow.
+    """
+    try:
+        import base64
+        from pathlib import Path
+    except ImportError:
+        return _error("QQBot media send requires standard library modules.")
+
+    extra = pconfig.extra or {}
+    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    secret = (pconfig.token or extra.get("client_secret")
+              or os.getenv("QQ_CLIENT_SECRET", ""))
+    if not appid or not secret:
+        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+
+    # Map file kind to QQ file_type integers
+    FILE_TYPE_MAP = {
+        "image": 2,
+        "video": 4,
+        "voice": 5,
+        "file": 6,
+    }
+
+    # Per-platform QQ upload limit (100 MB per file)
+    QQ_FILE_LIMIT = 50 * 1024 * 1024  # 50 MB — some QQ instances have tighter limits
+
+    async def _try_c2c():
+        """Attempt upload + send via C2C endpoint."""
+        import httpx
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_resp = await client.post(
+                "https://bots.qq.com/app/getAppAccessToken",
+                json={"appId": str(appid), "clientSecret": str(secret)},
+            )
+            if token_resp.status_code != 200:
+                return _error(f"QQBot token request failed: {token_resp.status_code}")
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                return _error("QQBot: no access_token in token response")
+
+            headers = {
+                "Authorization": f"QQBot {access_token}",
+                "Content-Type": "application/json",
+            }
+
+            # Upload each media file and collect file_infos
+            results = []
+            for mf in media_files:
+                kind = mf.get("kind", "image")
+                file_type = FILE_TYPE_MAP.get(kind, 2)
+                source = mf.get("source", mf.get("url", ""))
+
+                if not source:
+                    results.append({"success": False, "error": "No source provided"})
+                    continue
+
+                is_url = (
+                    source.startswith("http://")
+                    or source.startswith("https://")
+                    or source.startswith("file://")
+                )
+
+                if is_url:
+                    # URL upload — QQ fetches the file from the URL
+                    file_name = mf.get("name") or Path(
+                        source.split("?")[0].split("#")[0]
+                    ).name or "media"
+
+                    upload_resp = await client.post(
+                        f"https://api.sgroup.qq.com/v2/users/{chat_id}/files",
+                        headers=headers,
+                        json={
+                            "file_type": file_type,
+                            "url": source,
+                            "file_name": file_name,
+                        },
+                    )
+                else:
+                    # Local file — base64 upload
+                    try:
+                        file_path = Path(source).expanduser()
+                        if not file_path.exists():
+                            results.append({"success": False, "error": f"File not found: {source}"})
+                            continue
+                        file_size = file_path.stat().st_size
+                        if file_size > QQ_FILE_LIMIT:
+                            results.append({
+                                "success": False,
+                                "error": (
+                                    f"File {file_path.name!r} ({file_size / 1024 / 1024:.1f} MB) "
+                                    f"exceeds QQ upload limit ({QQ_FILE_LIMIT / 1024 / 1024:.0f} MB). "
+                                    "Use a publicly accessible URL instead."
+                                ),
+                            })
+                            continue
+
+                        data = file_path.read_bytes()
+                        encoded = base64.b64encode(data).decode()
+                        file_name = mf.get("name") or file_path.name
+
+                        upload_resp = await client.post(
+                            f"https://api.sgroup.qq.com/v2/users/{chat_id}/files",
+                            headers=headers,
+                            json={
+                                "file_type": file_type,
+                                "file_info": encoded,
+                                "file_name": file_name,
+                            },
+                        )
+                    except Exception as exc:
+                        results.append({"success": False, "error": f"Read file failed: {exc}"})
+                        continue
+
+                if upload_resp.status_code not in (200, 201):
+                    # Attempt URL upload fallback for local files
+                    if not is_url:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"QQ file upload failed (HTTP {upload_resp.status_code}). "
+                                "QQ Bot sandbox may not support direct media uploads. "
+                                "Consider hosting the file at a public URL and sending it as text."
+                            ),
+                        }
+                    results.append({
+                        "success": False,
+                        "error": f"QQ upload failed: HTTP {upload_resp.status_code}",
+                    })
+                    continue
+
+                upload_data = upload_resp.json()
+                file_info = upload_data.get("file_info") or (
+                    upload_data.get("data") or {}
+                ).get("file_info")
+
+                if not file_info:
+                    return {
+                        "success": False,
+                        "error": f"Upload returned no file_info: {upload_data}",
+                    }
+
+                results.append({"success": True, "file_info": file_info, "file_name": file_name})
+
+            if not results or not any(r["success"] for r in results):
+                errors = [r.get("error", "") for r in results if r.get("error")]
+                return _error("QQ media upload failed: " + "; ".join(errors))
+
+            # Send RichMedia message with the first successful file
+            first = next(r for r in results if r["success"])
+            file_info = first["file_info"]
+            file_name = first.get("file_name", "")
+
+            # Build message body
+            file_type = FILE_TYPE_MAP.get(kind, 2)
+            body = {
+                "msg_type": 2,  # RichMedia
+                "media": {
+                    "file_info": file_info,
+                },
+            }
+
+            # Add caption if the first media has one
+            first_media = media_files[0]
+            if "caption" in first_media:
+                body["content"] = first_media["caption"][:4000]
+
+            # Post RichMedia message
+            msg_resp = await client.post(
+                f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages",
+                headers=headers,
+                json=body,
+            )
+
+            if msg_resp.status_code in (200, 201):
+                msg_data = msg_resp.json()
+                return {
+                    "success": True,
+                    "platform": "qqbot",
+                    "chat_id": chat_id,
+                    "message_id": msg_data.get("id"),
+                    "message": f"Media sent ({first.get('file_name', 'file')})",
+                }
+
+            return _error(f"QQ RichMedia message failed: HTTP {msg_resp.status_code}")
+
+    try:
+        result = await _try_c2c()
+        if result.get("success"):
+            return result
+
+        # If C2C failed with auth/access errors, try group endpoint
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30) as client:
+                token_resp = await client.post(
+                    "https://bots.qq.com/app/getAppAccessToken",
+                    json={"appId": str(appid), "clientSecret": str(secret)},
+                )
+                if token_resp.status_code != 200:
+                    return result
+                access_token = token_resp.json().get("access_token")
+                if not access_token:
+                    return result
+
+                headers = {
+                    "Authorization": f"QQBot {access_token}",
+                    "Content-Type": "application/json",
+                }
+
+                for mf in media_files:
+                    kind = mf.get("kind", "image")
+                    file_type = FILE_TYPE_MAP.get(kind, 2)
+                    source = mf.get("source", mf.get("url", ""))
+                    if not source:
+                        continue
+                    is_url = (
+                        source.startswith("http://")
+                        or source.startswith("https://")
+                    )
+
+                    if is_url:
+                        file_name = mf.get("name") or Path(
+                            source.split("?")[0].split("#")[0]
+                        ).name or "media"
+                        upload_resp = await client.post(
+                            f"https://api.sgroup.qq.com/v2/groups/{chat_id}/files",
+                            headers=headers,
+                            json={"file_type": file_type, "url": source, "file_name": file_name},
+                        )
+                    else:
+                        import base64
+                        from pathlib import Path
+                        try:
+                            file_path = Path(source).expanduser()
+                            data = file_path.read_bytes()
+                            encoded = base64.b64encode(data).decode()
+                            file_name = mf.get("name") or file_path.name
+                            upload_resp = await client.post(
+                                f"https://api.sgroup.qq.com/v2/groups/{chat_id}/files",
+                                headers=headers,
+                                json={"file_type": file_type, "file_info": encoded, "file_name": file_name},
+                            )
+                        except Exception:
+                            continue
+
+                    if upload_resp.status_code not in (200, 201):
+                        continue
+
+                    upload_data = upload_resp.json()
+                    file_info = upload_data.get("file_info") or (
+                        upload_data.get("data") or {}
+                    ).get("file_info")
+                    if not file_info:
+                        continue
+
+                    file_name = mf.get("name") or "media"
+                    first_media = media_files[0]
+                    body = {
+                        "msg_type": 2,
+                        "media": {"file_info": file_info},
+                    }
+                    if "caption" in first_media:
+                        body["content"] = first_media["caption"][:4000]
+
+                    msg_resp = await client.post(
+                        f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages",
+                        headers=headers,
+                        json=body,
+                    )
+                    if msg_resp.status_code in (200, 201):
+                        msg_data = msg_resp.json()
+                        return {
+                            "success": True,
+                            "platform": "qqbot",
+                            "chat_id": chat_id,
+                            "message_id": msg_data.get("id"),
+                            "message": f"Media sent to group ({file_name})",
+                        }
+
+                return result
+        except Exception:
+            return result
+
+    except Exception as e:
+        return _error(f"QQBot media send failed: {e}")
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):

@@ -16,8 +16,8 @@ Generate images, video, and audio with ComfyUI — install, launch, manage nodes
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/comfyui` |
-| Version | `5.0.0` |
-| Author | ['kshitijk4poor', 'alt-glitch'] |
+| Version | `5.1.0` |
+| Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
 | License | MIT |
 | Platforms | macos, linux, windows |
 | Tags | `comfyui`, `image-generation`, `stable-diffusion`, `flux`, `sd3`, `wan-video`, `hunyuan-video`, `creative`, `generative-ai`, `video-generation` |
@@ -42,6 +42,12 @@ for workflow execution.
 - `official-cli.md` — every `comfy ...` command, with flags
 - `rest-api.md` — REST + WebSocket endpoints (local + cloud), payload schemas
 - `workflow-format.md` — API-format JSON, common node types, param mapping
+- `template-integrity.md` — converting `comfyui-workflow-templates` from
+  editor format to API format: Reroute bypass, dotted dynamic-input keys
+  (`values.a`, `resize_type.width`), Cloud quirks (302 redirect, 1 concurrent
+  free-tier job, 1080p VRAM ceiling), Discord-compatible ffmpeg stitch.
+  Authored by [@purzbeats](https://github.com/purzbeats). Load this whenever
+  you're starting from an official template.
 
 **Scripts (`scripts/`):**
 

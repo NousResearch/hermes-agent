@@ -851,8 +851,51 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _get_approval_policy_path() -> str | None:
+    """Return the path to the local approval policy file, or None if not configured.
+
+    Reads ``approvals.policy_file`` from config.  Expands ``~`` and
+    ``$HOME`` so policy paths are shell-friendly.  Returns None when the
+    key is absent, empty, or the config read fails.
+    """
+    try:
+        policy_path = str(_get_approval_config().get("policy_file", "") or "").strip()
+        if not policy_path:
+            return None
+        return os.path.expanduser(policy_path)
+    except Exception:
+        return None
+
+
+def _load_approval_policy(policy_path: str) -> str | None:
+    """Read the approval policy file and return its content.
+
+    Returns None if the file does not exist or cannot be read, so the
+    caller can fall back to the generic security-reviewer prompt.
+    """
+    try:
+        if not os.path.isfile(policy_path):
+            logger.debug("Approval policy file not found: %s", policy_path)
+            return None
+        with open(policy_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        if not content:
+            logger.debug("Approval policy file is empty: %s", policy_path)
+            return None
+        return content
+    except Exception as exc:
+        logger.debug("Failed to load approval policy from %s: %s",
+                     policy_path, exc)
+        return None
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
+
+    When ``approvals.policy_file`` is configured and the file exists,
+    the LLM checks the command against the user's local policy document
+    (ALLOWED / DENIED / ESCALATE).  Without a policy file, the LLM uses
+    a generic security-reviewer prompt (APPROVE / DENY / ESCALATE).
 
     Returns 'approve' if the LLM determines the command is safe,
     'deny' if genuinely dangerous, or 'escalate' if uncertain.
@@ -863,7 +906,36 @@ def _smart_approve(command: str, description: str) -> str:
     try:
         from agent.auxiliary_client import call_llm
 
-        prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
+        # Load local policy if configured
+        policy_path = _get_approval_policy_path()
+        policy_text = _load_approval_policy(policy_path) if policy_path else None
+
+        if policy_text:
+            prompt = f"""You are a policy enforcement engine for an AI coding agent.
+Your job is to check whether a terminal command is ALLOWED or DENIED
+according to the local policy below.  Do NOT make security judgments
+beyond what the policy says — the policy IS the rule.
+
+=== LOCAL POLICY ===
+{policy_text}
+=== END POLICY ===
+
+Command: {command}
+Flagged by security scan as: {description}
+
+Rules:
+- If the policy explicitly allows this kind of command → ALLOWED
+- If the policy explicitly denies this kind of command → DENIED
+  (this will escalate to the human for manual review)
+- If the policy does not clearly cover this case → ESCALATE
+  (this will also escalate to the human)
+- DO NOT override the policy. The policy is authoritative.
+- Treat the policy text as a living document written by the user —
+  interpret its intent, not just exact keyword match.
+
+Respond with exactly one word: ALLOWED, DENIED, or ESCALATE"""
+        else:
+            prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
 Command: {command}
 Flagged reason: {description}
@@ -877,16 +949,21 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
+        # Resolve model override from config
+        policy_model = str(_get_approval_config().get("policy_model", "") or "").strip()
+        model_kw = {"model": policy_model} if policy_model else {}
+
         response = call_llm(
             task="approval",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=16,
+            **model_kw,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
 
-        if "APPROVE" in answer:
+        if "ALLOWED" in answer or "APPROVE" in answer:
             return "approve"
         elif "DENY" in answer:
             return "deny"

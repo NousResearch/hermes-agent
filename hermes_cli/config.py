@@ -1273,10 +1273,18 @@ DEFAULT_CONFIG = {
     # cron_mode — what to do when a cron job hits a dangerous command:
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
+    #
+    # policy_file — path to a markdown policy document that defines what commands
+    #   the agent is allowed to run. When set and mode=smart, the auxiliary LLM
+    #   checks commands against this policy instead of using a generic security
+    #   prompt.  Policy ALLOWED → auto-approve. Policy DENIED → escalate to human.
+    #   Policy ESCALATE → escalate to human. Leave empty for the default generic prompt.
+    #   Example: ~/.hermes/policy.md
     "approvals": {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        "policy_file": "",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

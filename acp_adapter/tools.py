@@ -202,7 +202,7 @@ def _json_loads_maybe(value: Optional[str]) -> Any:
         return None
 
 
-def _tool_result_failed(result: Optional[str]) -> bool:
+def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> bool:
     """Return True when a structured Hermes tool result clearly failed.
 
     Keep this deliberately conservative. Plain text can contain words like
@@ -219,6 +219,13 @@ def _tool_result_failed(result: Optional[str]) -> bool:
 
     exit_code = data.get("exit_code", data.get("returncode"))
     if isinstance(exit_code, int) and exit_code != 0:
+        return True
+
+    # Hermes core/polished tools commonly report tool-level failures as a
+    # structured {"error": "..."} payload without an explicit success flag.
+    # Keep generic plugin/unknown tool payloads conservative to avoid marking
+    # optional diagnostic messages as failed.
+    if tool_name in _POLISHED_TOOLS and data.get("error") and not data.get("content"):
         return True
 
     return False
@@ -1318,7 +1325,7 @@ def build_tool_complete(
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,
-        status="failed" if _tool_result_failed(result) else "completed",
+        status="failed" if _tool_result_failed(result, tool_name) else "completed",
         content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
     )

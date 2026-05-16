@@ -20,6 +20,7 @@ from agent.context_dag_reconcile import TranscriptReconciliationResult, reconcil
 from agent.context_dag_store import ContextDAGStore
 from agent.context_dag_tools import ContextDAGExpansionError, expand_context
 from agent.context_engine import ContextCompressionResult, ContextEngine
+from agent.context_mutation_queue import ContextMutationQueue
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class DAGContextEngine(ContextEngine):
         max_context_tokens: Optional[int] = None,
         threshold_percent: float = 0.75,
         gateway_enabled: bool = False,
+        mutation_queue_enabled: bool = False,
     ) -> None:
         self.enabled = bool(enabled)
         self.session_db = session_db
@@ -55,6 +57,8 @@ class DAGContextEngine(ContextEngine):
         self.compression_count = 0
         self.gateway_enabled = bool(gateway_enabled)
         self.gateway_compression_enabled = False
+        self.mutation_queue_enabled = bool(mutation_queue_enabled)
+        self.mutation_queue = ContextMutationQueue(self.store) if self.store is not None else None
         self._last_fallback_reason: Optional[str] = None
         self._last_projection_token_estimate: Optional[int] = None
         self._last_fresh_tail_start_message_id: Optional[int] = None
@@ -87,6 +91,27 @@ class DAGContextEngine(ContextEngine):
             if session_db is not None:
                 self.session_db = session_db
                 self.store = ContextDAGStore(session_db)
+                self.mutation_queue = ContextMutationQueue(self.store)
+
+    def enqueue_mutation(
+        self,
+        operation: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+        max_attempts: int = 3,
+    ):
+        """Queue a DAG maintenance mutation when explicitly enabled."""
+
+        if not self.mutation_queue_enabled or self.mutation_queue is None or not self.session_id:
+            return None
+        return self.mutation_queue.enqueue(
+            self.session_id,
+            operation,
+            payload or {},
+            idempotency_key=idempotency_key,
+            max_attempts=max_attempts,
+        )
 
     def _record_reconciliation(self, result: TranscriptReconciliationResult) -> None:
         self._last_reconciliation = {
@@ -255,11 +280,22 @@ class DAGContextEngine(ContextEngine):
                 # can plausibly cover the stored transcript.  Short fallback
                 # snippets passed to compress() must not be mirrored as raw.
                 if not existing_raw or len(messages) >= len(existing_raw):
-                    reconcile_result = self.reconcile_transcript(messages, source="compress")
-                    self._record_compress_reconciled_coverage(messages, reconcile_result)
-                    self._last_compress_reconciled_transcript_covered = bool(
-                        reconcile_result is not None and not reconcile_result.warnings
-                    )
+                    if self.mutation_queue_enabled:
+                        job = self.enqueue_mutation(
+                            "reconcile_transcript",
+                            {"messages": copy.deepcopy(messages), "source": "compress"},
+                        )
+                        self._last_reconciliation = {
+                            "queued": bool(job),
+                            "job_id": job.id if job else None,
+                            "operation": "reconcile_transcript",
+                        }
+                    else:
+                        reconcile_result = self.reconcile_transcript(messages, source="compress")
+                        self._record_compress_reconciled_coverage(messages, reconcile_result)
+                        self._last_compress_reconciled_transcript_covered = bool(
+                            reconcile_result is not None and not reconcile_result.warnings
+                        )
             raw_messages = self._read_raw_messages(messages)
             if not self.store or not self.session_id:
                 assembled = raw_messages
@@ -403,6 +439,7 @@ class DAGContextEngine(ContextEngine):
                 "last_checkpoint": self._last_checkpoint,
                 "gateway_compression_enabled": self.gateway_compression_enabled,
                 "gateway_compression_status": "projection_only_no_transcript_rewrite",
+                "mutation_queue_enabled": self.mutation_queue_enabled,
                 "reconciliation": self._last_reconciliation,
                 "reconciliation_warnings": self._last_reconcile_warnings,
                 "fallback_reason": self._last_fallback_reason,

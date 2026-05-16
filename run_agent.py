@@ -2355,6 +2355,9 @@ class AIAgent:
                 _gateway_enabled = str(
                     _dag_cfg.get("gateway_enabled", os.getenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED", ""))
                 ).strip().lower() in {"1", "true", "yes", "on"}
+                _mutation_queue_enabled = str(
+                    _dag_cfg.get("mutation_queue_enabled", os.getenv("HERMES_DAG_CONTEXT_MUTATION_QUEUE_ENABLED", ""))
+                ).strip().lower() in {"1", "true", "yes", "on"}
                 if _platform_name not in {"", "cli"} and not _gateway_enabled:
                     logger.warning(
                         "DAG context engine requested on gateway platform '%s' but "
@@ -2368,6 +2371,7 @@ class AIAgent:
                         enabled=True,
                         threshold_percent=compression_threshold,
                         gateway_enabled=_gateway_enabled,
+                        mutation_queue_enabled=_mutation_queue_enabled,
                     )
             except Exception as _dag_load_err:
                 logger.warning(

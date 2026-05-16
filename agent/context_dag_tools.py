@@ -12,6 +12,7 @@ import copy
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from agent.context_dag_store import ContextDAGStore
+from agent.context_sidecar import SidecarStore
 
 
 DEFAULT_MAX_MESSAGES = 50
@@ -306,6 +307,26 @@ def _bound_message_non_content_fields(message: Dict[str, Any], *, max_chars: int
     for key in ("tool_call_id", "tool_name", "finish_reason"):
         if out.get(key) is not None:
             out[key] = _sanitize_message_value(out[key], cap=cap, stats=stats)
+    if isinstance(out.get("sidecar_parts"), list):
+        bounded_parts = []
+        for part in out["sidecar_parts"][:HARD_MESSAGE_FIELD_ITEMS]:
+            bounded = copy.deepcopy(part)
+            text = "" if bounded.get("content") is None else str(bounded.get("content"))
+            if len(text) > max_chars:
+                bounded["content"] = text[:max_chars]
+                bounded["truncated"] = True
+                bounded["omitted_chars"] = len(text) - max_chars
+                stats["fields_truncated"] += 1
+                stats["chars_omitted"] += len(text) - max_chars
+            else:
+                bounded["truncated"] = False
+                bounded["omitted_chars"] = 0
+            bounded_parts.append(bounded)
+        omitted_parts = max(0, len(out["sidecar_parts"]) - len(bounded_parts))
+        if omitted_parts:
+            bounded_parts.append({"__truncated__": {"omitted_sidecar_parts": omitted_parts}})
+            stats["fields_truncated"] += omitted_parts
+        out["sidecar_parts"] = bounded_parts
     return out
 
 
@@ -408,11 +429,20 @@ def _read_messages_by_range(
                 )
     # Use SessionDB's public read path for decoding multimodal content and
     # structured tool_calls while preserving the endpoint ownership checks above.
-    return [
-        _sanitize_raw_message(message)
-        for message in store.db.get_messages(session_id)
-        if start_message_id <= int(message.get("id") or 0) <= end_message_id
-    ]
+    sidecar = SidecarStore(store)
+    messages: List[Dict[str, Any]] = []
+    for message in store.db.get_messages(session_id):
+        if not (start_message_id <= int(message.get("id") or 0) <= end_message_id):
+            continue
+        sanitized = _sanitize_raw_message(message)
+        try:
+            parts = sidecar.list_message_parts(session_id, int(message.get("id")))
+        except Exception:
+            parts = []
+        if parts:
+            sanitized["sidecar_parts"] = parts
+        messages.append(sanitized)
+    return messages
 
 
 def _summary_exists_elsewhere(store: ContextDAGStore, summary_id: str) -> bool:

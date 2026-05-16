@@ -96,6 +96,11 @@ class MutationLogEntry:
     idempotency_key: str
     payload: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    attempts: int = 0
+    max_attempts: int = 3
+    claimed_at: Optional[float] = None
+    claimed_by: Optional[str] = None
+    available_at: Optional[float] = None
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)

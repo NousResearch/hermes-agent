@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
+import { api } from "@/lib/api";
 import { en } from "./en";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
@@ -100,15 +101,32 @@ export function normalizeLocale(value: unknown): Locale | null {
   return null;
 }
 
-function getInitialLocale(): Locale {
+function readStoredLocale(): Locale | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    const normalized = stored ? normalizeLocale(stored) : null;
-    if (normalized) return normalized;
+    return stored ? normalizeLocale(stored) : null;
   } catch {
     // SSR or privacy mode
+    return null;
   }
-  return "en";
+}
+
+function getInitialLocale(): Locale {
+  return readStoredLocale() ?? "en";
+}
+
+// Read display.language from config.yaml via /api/config.  Used to seed the
+// initial UI language for users who set the value in config.yaml directly
+// (e.g. CLI setup wizard) without touching the in-browser dropdown.  See
+// issue #26665.
+async function fetchConfigLocale(): Promise<Locale | null> {
+  try {
+    const cfg = await api.getConfig();
+    const display = (cfg as { display?: { language?: unknown } }).display;
+    return normalizeLocale(display?.language);
+  } catch {
+    return null;
+  }
 }
 
 interface I18nContextValue {
@@ -125,6 +143,22 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  // If the user never touched the in-browser dropdown (no localStorage
+  // entry) honour display.language from config.yaml on startup.  An
+  // explicit dropdown choice — saved to localStorage — always wins.
+  useEffect(() => {
+    if (readStoredLocale()) return;
+    let cancelled = false;
+    fetchConfigLocale().then((fromConfig) => {
+      if (!cancelled && fromConfig && !readStoredLocale()) {
+        setLocaleState(fromConfig);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);

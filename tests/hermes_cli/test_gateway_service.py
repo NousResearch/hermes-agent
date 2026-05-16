@@ -179,7 +179,6 @@ class TestSystemdServiceRefresh:
         """
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
-        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
         monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)

@@ -119,6 +119,7 @@ AUTHOR_MAP = {
     "bartokmagic@proton.me": "Bartok9",
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",
+    "geoffplymale@gmail.com": "badMade",
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",

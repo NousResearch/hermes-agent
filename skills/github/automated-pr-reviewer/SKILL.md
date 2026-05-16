@@ -77,7 +77,7 @@ while read PR_NUMBER; do
   gh api -X POST repos/$REPO/labels -f name="jules-reviewed" -f color="0e8a16" --silent || true
 
   # Add label to PR
-  gh pr edit $PR_NUMBER --add-label "reviewed"
+  gh pr edit $PR_NUMBER --add-label "jules-reviewed"
 
   # 3. Reply to the PR acknowledging completion
   # Note for Agent: Make sure the actual code review is also submitted using the github-code-review standard.

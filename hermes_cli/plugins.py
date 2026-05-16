@@ -542,6 +542,61 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- video gen provider registration -------------------------------------
+
+    def register_video_gen_provider(self, provider) -> None:
+        """Register a video generation backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.video_gen_provider.VideoGenProvider`. The
+        ``provider.name`` attribute is what ``video_gen.provider`` in
+        ``config.yaml`` matches against when routing ``video_generate``
+        tool calls.
+        """
+        from agent.video_gen_provider import VideoGenProvider
+        from agent.video_gen_registry import register_provider as _register_video_provider
+
+        if not isinstance(provider, VideoGenProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a video_gen provider that does "
+                "not inherit from VideoGenProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_video_provider(provider)
+        logger.info(
+            "Plugin '%s' registered video_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- web search/extract provider registration ----------------------------
+
+    def register_web_search_provider(self, provider) -> None:
+        """Register a web search/extract backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.web_search_provider.WebSearchProvider`. The
+        ``provider.name`` attribute is what ``web.search_backend`` /
+        ``web.extract_backend`` / ``web.backend`` in ``config.yaml``
+        matches against when routing ``web_search`` / ``web_extract``
+        tool calls.
+        """
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider as _register_web_provider
+
+        if not isinstance(provider, WebSearchProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a web provider that does "
+                "not inherit from WebSearchProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_web_provider(provider)
+        logger.info(
+            "Plugin '%s' registered web provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(
@@ -1312,6 +1367,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 
 
+_thread_tool_whitelist = threading.local()
+
+
+def set_thread_tool_whitelist(
+    allowed: Optional[Set[str]],
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+) -> None:
+    _thread_tool_whitelist.allowed = allowed
+    _thread_tool_whitelist.fmt = deny_msg_fmt
+
+
+def clear_thread_tool_whitelist() -> None:
+    _thread_tool_whitelist.allowed = None
+
+
 def get_pre_tool_call_block_message(
     tool_name: str,
     args: Optional[Dict[str, Any]],
@@ -1330,6 +1400,11 @@ def get_pre_tool_call_block_message(
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
     """
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    if allowed is not None and tool_name not in allowed:
+        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return fmt.format(tool_name=tool_name)
+
     hook_results = invoke_hook(
         "pre_tool_call",
         tool_name=tool_name,

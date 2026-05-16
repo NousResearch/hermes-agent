@@ -12,6 +12,7 @@ from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
+    AgentPlanUpdate,
     AuthenticateResponse,
     AvailableCommandsUpdate,
     Implementation,
@@ -33,6 +34,7 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
+from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
@@ -92,6 +94,41 @@ class TestInitialize:
         assert "list" in session_caps
         assert "resume" in session_caps
 
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: "openrouter")
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: "openrouter")
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads[0]["id"] == "openrouter"
+        assert payloads[0]["name"] == "openrouter runtime credentials"
+        terminal = next(payload for payload in payloads if payload["id"] == TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert terminal["type"] == "terminal"
+        assert terminal["args"] == ["--setup"]
+
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_terminal_setup_auth_when_no_provider(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: None)
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: None)
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads == [
+            {
+                "args": ["--setup"],
+                "description": (
+                    "Open Hermes' interactive model/provider setup in a terminal. "
+                    "Use this when Hermes has not been configured on this machine yet."
+                ),
+                "id": TERMINAL_SETUP_AUTH_METHOD_ID,
+                "name": "Configure Hermes provider",
+                "type": "terminal",
+            }
+        ]
+
 
 # ---------------------------------------------------------------------------
 # authenticate
@@ -133,6 +170,24 @@ class TestAuthenticate:
             lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
+        assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_accepts_terminal_setup_after_provider_configured(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_terminal_setup_without_provider(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: None,
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
         assert resp is None
 
 
@@ -336,6 +391,57 @@ class TestSessionOps:
         assert tool_updates[1].tool_call_id == "call_search_1"
         assert "Search results" in tool_updates[1].content[0].content.text
         assert "cli.py:42" in tool_updates[1].content[0].content.text
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
+        """Persisted todo tool results should rebuild Zed's native plan panel."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_todo_1",
+                        "type": "function",
+                        "function": {
+                            "name": "todo",
+                            "arguments": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_todo_1",
+                "content": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+        relevant_updates = [
+            update for update in (call.kwargs["update"] for call in mock_conn.session_update.await_args_list)
+            if getattr(update, "session_update", None) in {"tool_call", "tool_call_update", "plan"}
+        ]
+        assert [getattr(update, "session_update", None) for update in relevant_updates] == [
+            "tool_call",
+            "tool_call_update",
+            "plan",
+        ]
+        plan = relevant_updates[2]
+        assert isinstance(plan, AgentPlanUpdate)
+        assert [entry.content for entry in plan.entries] == ["Ship it"]
+        assert [entry.status for entry in plan.entries] == ["in_progress"]
 
     @pytest.mark.asyncio
     async def test_resume_session_replays_persisted_history_to_client(self, agent):

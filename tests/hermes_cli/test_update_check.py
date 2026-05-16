@@ -59,7 +59,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
-    """Returns None when .git directory doesn't exist anywhere."""
+    """Falls back to PyPI check when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner
 
     # Create a fake banner.py so the fallback path also has no .git
@@ -70,8 +70,9 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = banner.check_for_updates()
-    assert result is None
+        with patch("hermes_cli.banner.check_via_pypi", return_value=0):
+            result = banner.check_for_updates()
+    assert result == 0
     mock_run.assert_not_called()
 
 

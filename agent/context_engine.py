@@ -55,6 +55,11 @@ class ContextEngine(ABC):
     # These control the preflight compression check.  Subclasses may
     # override via __init__ or property; defaults are sensible for most
     # engines.
+    #
+    # protect_first_n semantics (since PR #13754): count of non-system head
+    # messages always preserved verbatim, IN ADDITION to the system prompt
+    # which is always implicitly protected.  Default 3 keeps the
+    # historical "system + first 3 non-system messages" head shape.
 
     threshold_percent: float = 0.75
     protect_first_n: int = 3

@@ -57,14 +57,9 @@ from acp.schema import (
     UserMessageChunk,
 )
 
-# AuthMethodAgent was renamed from AuthMethod in agent-client-protocol 0.9.0
-try:
-    from acp.schema import AuthMethodAgent
-except ImportError:
-    from acp.schema import AuthMethod as AuthMethodAgent  # type: ignore[attr-defined]
-
-from acp_adapter.auth import detect_provider
+from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
+    _build_plan_update_from_todo_result,
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
@@ -744,16 +739,7 @@ class HermesACPAgent(acp.Agent):
         resolved_protocol_version = (
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
         )
-        provider = detect_provider()
-        auth_methods = None
-        if provider:
-            auth_methods = [
-                AuthMethodAgent(
-                    id=provider,
-                    name=f"{provider} runtime credentials",
-                    description=f"Authenticate Hermes using the currently configured {provider} runtime credentials.",
-                )
-            ]
+        auth_methods = build_auth_methods()
 
         client_name = client_info.name if client_info else "unknown"
         logger.info(
@@ -784,10 +770,18 @@ class HermesACPAgent(acp.Agent):
         # server has provider credentials configured — harmless under
         # Hermes' threat model (ACP is stdio-only, local-trust), but poor
         # API hygiene and confusing if ACP ever grows multi-method auth.
-        provider = detect_provider()
-        if not provider:
+        if not isinstance(method_id, str):
             return None
-        if not isinstance(method_id, str) or method_id.strip().lower() != provider:
+        normalized_method = method_id.strip().lower()
+        provider = detect_provider()
+
+        if normalized_method == TERMINAL_SETUP_AUTH_METHOD_ID:
+            # Terminal auth launches Hermes setup/model selection out-of-band.
+            # Only report success once that flow has produced usable runtime
+            # credentials for the normal ACP session.
+            return AuthenticateResponse() if provider else None
+
+        if not provider or normalized_method != provider:
             return None
         return AuthenticateResponse()
 
@@ -917,15 +911,20 @@ class HermesACPAgent(acp.Agent):
                 if not tool_call_id or not tool_name:
                     continue
                 result = message.get("content")
+                result_text = result if isinstance(result, str) else None
                 if not await _send(
                     build_tool_complete(
                         tool_call_id,
                         tool_name,
-                        result=result if isinstance(result, str) else None,
+                        result=result_text,
                         function_args=function_args,
                     )
                 ):
                     return
+                if tool_name == "todo":
+                    plan_update = _build_plan_update_from_todo_result(result_text)
+                    if plan_update is not None and not await _send(plan_update):
+                        return
 
     async def new_session(
         self,

@@ -139,13 +139,15 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
+      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt)
+
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
-        <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+        <Md cols={bodyWidth} compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
       )
     }
 

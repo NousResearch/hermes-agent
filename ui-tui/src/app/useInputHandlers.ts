@@ -23,6 +23,42 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
+/**
+ * Approval / clarify / confirm overlays mount their own `useInput` handlers
+ * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
+ * input handler used to early-return for any other key while one of those
+ * overlays was up, which silently disabled transcript scrolling — the user
+ * couldn't read context above the prompt that the prompt itself was asking
+ * about.  Returns true when the key is a transcript-scroll input that should
+ * fall through to the global scroll handlers even while a prompt is active.
+ *
+ * Modifier-held wheel (precision mode) is included — a user who wants to
+ * scroll a single line at a time during a prompt expects it to work.
+ */
+export function shouldFallThroughForScroll(key: {
+  downArrow: boolean
+  pageDown: boolean
+  pageUp: boolean
+  shift: boolean
+  upArrow: boolean
+  wheelDown: boolean
+  wheelUp: boolean
+}): boolean {
+  if (key.wheelUp || key.wheelDown) {
+    return true
+  }
+
+  if (key.pageUp || key.pageDown) {
+    return true
+  }
+
+  if (key.shift && (key.upArrow || key.downArrow)) {
+    return true
+  }
+
+  return false
+}
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -224,7 +260,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
       // intercept Ctrl+C here so the user can deny/dismiss — all other keys
       // fall through to the component-level handlers.
-      if (overlay.approval || overlay.clarify || overlay.confirm) {
+      //
+      // Scroll inputs (wheel / PageUp / PageDown / Shift+↑↓) are special:
+      // they must reach the transcript scroll handlers below even with a
+      // prompt up.  Long-thread context the prompt is asking about often
+      // lives above the visible viewport, and being unable to read it while
+      // answering felt like the prompt had locked the entire UI.  Explicitly
+      // skip the prompt-overlay early-return for scroll keys so they fall
+      // through to the wheel / PageUp / Shift+arrow handlers below.
+      const promptOverlay = overlay.approval || overlay.clarify || overlay.confirm
+      const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
+
+      if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
         }
@@ -298,7 +345,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         patchOverlayState({ picker: false })
       }
 
-      return
+      // When a prompt overlay is up and the user pressed a scroll key, fall
+      // through to the global scroll handlers below instead of returning.
+      // Otherwise nothing above this comment matched, and there's nothing
+      // useful to do for an arbitrary key while blocked.
+      if (!fallThroughForScroll) {
+        return
+      }
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {

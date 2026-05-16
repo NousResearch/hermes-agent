@@ -40,7 +40,7 @@ import os
 import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import (
@@ -107,9 +107,14 @@ class _BackgroundLoop:
 
         Returns the coroutine's result, or raises its exception.
         """
+        from agent.async_utils import safe_schedule_threadsafe
         if self._loop is None:
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("background loop not started")
-        fut: ConcurrentFuture = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        fut = safe_schedule_threadsafe(coro, self._loop)
+        if fut is None:
+            raise RuntimeError("background loop not running")
         try:
             return fut.result(timeout=timeout)
         except Exception:
@@ -305,6 +310,7 @@ class LSPService:
         *,
         delta: bool = True,
         timeout: Optional[float] = None,
+        line_shift: Optional[Callable[[int], Optional[int]]] = None,
     ) -> List[Dict[str, Any]]:
         """Synchronously open ``file_path`` in the right server, wait for
         diagnostics, return them.
@@ -313,6 +319,18 @@ class LSPService:
         any baseline previously captured via :meth:`snapshot_baseline`.
         Diagnostics present in the baseline are removed so the caller
         only sees errors introduced by the current edit.
+
+        When ``line_shift`` is provided, baseline diagnostics are
+        remapped through it before the set-difference.  This handles
+        the case where the edit deleted or inserted lines, causing
+        pre-existing diagnostics below the edit point to surface at
+        different line numbers in the post-edit snapshot — without
+        the shift, they'd all look "introduced by this edit".  Pass
+        a callable built by
+        :func:`agent.lsp.range_shift.build_line_shift` (pre_text,
+        post_text).  Omit when pre/post content isn't available;
+        the unshifted comparison still catches diagnostics that
+        didn't move.
 
         Returns an empty list when LSP is disabled, when no workspace
         can be detected, when no server matches, or when the server
@@ -344,6 +362,14 @@ class LSPService:
         if delta:
             baseline = self._delta_baseline.get(abs_path) or []
             if baseline:
+                if line_shift is not None:
+                    # Remap baseline diagnostics into post-edit
+                    # coordinates so shifted-but-otherwise-identical
+                    # entries hash equal under _diag_key.  Entries
+                    # that mapped into a deleted region drop out
+                    # silently — they no longer apply.
+                    from agent.lsp.range_shift import shift_baseline
+                    baseline = shift_baseline(baseline, line_shift)
                 seen = {_diag_key(d) for d in baseline}
                 diags = [d for d in diags if _diag_key(d) not in seen]
             # Roll baseline forward — next call returns deltas relative
@@ -585,8 +611,19 @@ class LSPService:
 
 
 def _diag_key(d: Dict[str, Any]) -> str:
-    """Content equality key used for delta filtering.  Mirrors
-    :func:`agent.lsp.client._diagnostic_key`."""
+    """Content equality key used for cross-edit delta filtering.
+
+    Includes the diagnostic's position range — when used together
+    with :func:`agent.lsp.range_shift.shift_baseline`, the baseline
+    is line-shifted into post-edit coordinates BEFORE this key is
+    computed, so identical-but-shifted diagnostics hash equal.  Two
+    genuinely distinct diagnostics at different lines (e.g. the same
+    error class introduced at a second site) hash differently and
+    are surfaced as new.
+
+    Mirrors :func:`agent.lsp.client._diagnostic_key`; intentionally
+    identical so the two layers agree on diagnostic identity.
+    """
     rng = d.get("range") or {}
     start = rng.get("start") or {}
     end = rng.get("end") or {}

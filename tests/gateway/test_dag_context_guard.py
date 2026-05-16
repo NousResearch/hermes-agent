@@ -8,6 +8,8 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource, SessionStore
+from agent.context_dag_reconcile import reconcile_full_transcript
+from agent.context_dag_store import ContextDAGStore
 from hermes_state import SessionDB
 
 
@@ -35,6 +37,7 @@ def _make_gateway(tmp_path):
     runner._session_db = db
     runner._agent_cache = OrderedDict()
     runner._running_agents = {}
+    runner.adapters = {Platform.TELEGRAM: object()}
     runner._session_model_overrides = {}
     runner._resolve_session_agent_runtime = lambda **kwargs: (
         "test-model",
@@ -116,7 +119,7 @@ def test_gateway_agent_session_kwargs_make_dag_hygiene_use_gateway_guard(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_gateway_compress_refuses_projection_only_dag_when_gateway_enabled(tmp_path):
+async def test_gateway_compress_reconciles_projection_only_dag_when_gateway_enabled(tmp_path):
     runner, store, entry, event = _make_gateway(tmp_path)
     for content in ("one", "two", "three", "four"):
         store.append_to_transcript(entry.session_id, {"role": "user", "content": content})
@@ -138,7 +141,46 @@ async def test_gateway_compress_refuses_projection_only_dag_when_gateway_enabled
     ):
         result = await runner._handle_compress_command(event)
 
-    assert "DAG context engine" in result
+    assert "DAG context engine is active" in result
     assert "did not rewrite" in result
+    assert "Mirrored missing raw message(s):" in result
     compress_mock.assert_not_called()
     rewrite_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_surfaces_dag_projection_reconciliation_state_when_enabled(tmp_path):
+    runner, store, entry, event = _make_gateway(tmp_path)
+    store.append_to_transcript(entry.session_id, {"role": "user", "content": "one"})
+    store.append_to_transcript(entry.session_id, {"role": "assistant", "content": "two"})
+    reconcile_full_transcript(
+        ContextDAGStore(runner._session_db),
+        entry.session_id,
+        store.load_transcript(entry.session_id),
+        source="test",
+    )
+    cfg = {
+        "context": {"engine": "dag", "dag": {"gateway_enabled": True}},
+        "agent": {},
+        "compression": {"enabled": True},
+    }
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        result = await runner._handle_status_command(event)
+
+    assert "DAG context: projection-only" in result
+    assert "raw transcript is not rewritten" in result
+    assert "DAG reconciliation: checkpointed" in result
+    assert "2 transcript message(s)" in result
+
+
+@pytest.mark.asyncio
+async def test_gateway_status_legacy_output_does_not_include_dag_lines_by_default(tmp_path):
+    runner, store, entry, event = _make_gateway(tmp_path)
+    cfg = {"context": {"engine": "legacy"}, "agent": {}, "compression": {"enabled": True}}
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        result = await runner._handle_status_command(event)
+
+    assert "DAG context:" not in result
+    assert "DAG reconciliation:" not in result

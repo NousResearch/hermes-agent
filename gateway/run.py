@@ -7513,7 +7513,7 @@ class GatewayRunner:
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
-                                    if getattr(_hyg_agent.context_compressor, "projection_only_compression", False):
+                                    if getattr(_hyg_agent.context_compressor, "projection_only_compression", False) is True:
                                         logger.warning(
                                             "Session hygiene: DAG projection-only compression skipped for gateway session %s",
                                             session_entry.session_id,
@@ -8610,6 +8610,51 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    def _dag_context_status_lines(self, session_id: str) -> list[str]:
+        """Return user-visible DAG context safety/status lines for /status.
+
+        Kept opt-in so legacy context users see the same /status output.
+        """
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+            context_cfg = cfg.get("context") or {}
+            if context_cfg.get("engine") != "dag":
+                return []
+            dag_cfg = context_cfg.get("dag") or {}
+            if not bool(dag_cfg.get("gateway_enabled", False)):
+                return []
+        except Exception:
+            return []
+
+        checkpoint = None
+        try:
+            if self._session_db:
+                from agent.context_dag_store import ContextDAGStore
+
+                checkpoint = ContextDAGStore(self._session_db).read_checkpoint(session_id)
+        except Exception:
+            checkpoint = None
+
+        lines = [
+            "",
+            "DAG context: projection-only; raw transcript is not rewritten, truncated, or rotated.",
+        ]
+        if checkpoint is None:
+            lines.append("DAG reconciliation: no checkpoint yet.")
+            return lines
+
+        metadata = checkpoint.metadata or {}
+        warnings = metadata.get("warnings") or []
+        lines.append(
+            "DAG reconciliation: checkpointed "
+            f"through message {checkpoint.last_ingested_message_id} "
+            f"({metadata.get('transcript_message_count', 0)} transcript message(s), "
+            f"{metadata.get('inserted', 0)} mirrored, {len(warnings)} warning(s))."
+        )
+        return lines
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -8670,6 +8715,7 @@ class GatewayRunner:
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
+        lines.extend(self._dag_context_status_lines(session_entry.session_id))
 
         # Session recap — what was this session ABOUT? Pure local compute,
         # no LLM call, no prompt-cache impact. Useful when juggling multiple
@@ -11186,10 +11232,36 @@ class GatewayRunner:
                 )
 
                 compressor = tmp_agent.context_compressor
-                if getattr(compressor, "projection_only_compression", False):
+                if getattr(compressor, "projection_only_compression", False) is True:
+                    reconcile = getattr(compressor, "reconcile_transcript", None)
+                    status = getattr(compressor, "get_status", lambda: {})()
+                    if callable(reconcile):
+                        try:
+                            rec = reconcile(msgs, source="gateway_compress")
+                            inserted = getattr(rec, "inserted", 0) if rec is not None else 0
+                            warnings = getattr(rec, "warnings", []) if rec is not None else []
+                            warning_line = (
+                                f" Reconciliation warning(s): {len(warnings)}; see DAG status for details."
+                                if warnings else ""
+                            )
+                            return (
+                                "DAG context engine is active for this gateway session. "
+                                "/compress rebuilt/reconciled DAG read state only; it did not rewrite, "
+                                "truncate, or rotate the raw transcript. "
+                                f"Mirrored missing raw message(s): {inserted}."
+                                f" Projection-only status: {status.get('gateway_compression_status', 'safe')}."
+                                f"{warning_line}"
+                            )
+                        except Exception as rec_err:
+                            logger.warning("DAG gateway /compress reconciliation failed safely: %s", rec_err)
+                            return (
+                                "DAG context engine is active, but projection-only reconciliation failed safely; "
+                                "/compress did not rewrite or truncate the raw transcript. "
+                                f"Error: {rec_err}"
+                            )
                     return (
-                        "DAG context engine is opt-in for CLI only until gateway-safe "
-                        "compression lands; /compress did not rewrite the transcript."
+                        "DAG context engine is projection-only in the gateway; /compress did not rewrite, "
+                        "truncate, or rotate the raw transcript."
                     )
                 if not compressor.has_content_to_compress(msgs):
                     return t("gateway.compress.nothing_to_do")

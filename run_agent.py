@@ -4615,6 +4615,84 @@ class AIAgent:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
 
+    def _projection_message_signature(self, msg: Dict) -> tuple:
+        """Stable identity for matching projection rows to raw current-turn rows."""
+        try:
+            content_key = json.dumps(msg.get("content"), sort_keys=True, default=str)
+        except Exception:
+            content_key = repr(msg.get("content"))
+        try:
+            tool_calls_key = json.dumps(msg.get("tool_calls"), sort_keys=True, default=str)
+        except Exception:
+            tool_calls_key = repr(msg.get("tool_calls"))
+        return (
+            msg.get("role"),
+            content_key,
+            msg.get("tool_name"),
+            msg.get("tool_call_id"),
+            tool_calls_key,
+        )
+
+    def _mark_projection_only_messages_for_persistence(self, original_messages: List[Dict], projection_messages: List[Dict]) -> None:
+        """Mark projection rows that must not be written as raw transcript.
+
+        Projection-only compression returns an API view (summaries + fresh tail)
+        while preserving the original raw session.  Later persist paths may be
+        called with ``conversation_history=None`` after the projection shrinks
+        the live ``messages`` list; without a side cursor, that would append the
+        projection/fresh-tail from index 0 into the raw DB.
+
+        Legacy projection-only compressors do not mirror the current turn into
+        the raw DB, so their current-turn rows remain persistable.  The real DAG
+        engine reconciles the full caller transcript inside ``compress()``; in
+        that path every projection row copied from the caller transcript,
+        including the current user message, has already been mirrored and must
+        be skipped.  Assistant/tool rows appended after compression have new
+        object identities and remain persistable.
+        """
+        if not projection_messages:
+            return
+
+        current_turn_idx = getattr(self, "_persist_user_message_idx", None)
+        if not isinstance(current_turn_idx, int) or current_turn_idx < 0:
+            current_turn_idx = len(original_messages)
+        current_turn_idx = min(current_turn_idx, len(original_messages))
+
+        compressor = getattr(self, "context_compressor", None)
+        covered_counts = getattr(compressor, "_last_compress_reconciled_transcript_covered_counts", None)
+        reconciles_raw_transcript = bool(
+            getattr(compressor, "projection_only_compression", False)
+            and callable(getattr(compressor, "reconcile_transcript", None))
+            and getattr(compressor, "_last_compress_reconciled_transcript_covered", False) is True
+        )
+
+        current_tail_counts = {}
+        for msg in original_messages[current_turn_idx:]:
+            if isinstance(msg, dict):
+                sig = self._projection_message_signature(msg)
+                current_tail_counts[sig] = current_tail_counts.get(sig, 0) + 1
+
+        persistable_counts = {}
+        if isinstance(covered_counts, dict):
+            for sig, count in current_tail_counts.items():
+                uncovered = count - int(covered_counts.get(sig, 0) or 0)
+                if uncovered > 0:
+                    persistable_counts[sig] = uncovered
+        elif not reconciles_raw_transcript:
+            persistable_counts = current_tail_counts
+
+        skip_ids = set(getattr(self, "_projection_only_skip_persist_ids", set()) or set())
+        for msg in projection_messages:
+            if not isinstance(msg, dict):
+                continue
+            sig = self._projection_message_signature(msg)
+            count = persistable_counts.get(sig, 0)
+            if count > 0:
+                persistable_counts[sig] = count - 1
+                continue
+            skip_ids.add(id(msg))
+        self._projection_only_skip_persist_ids = skip_ids
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
@@ -4795,7 +4873,10 @@ class AIAgent:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            projection_skip_ids = getattr(self, "_projection_only_skip_persist_ids", set()) or set()
             for msg in messages[flush_from:]:
+                if id(msg) in projection_skip_ids:
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —
@@ -10761,6 +10842,7 @@ class AIAgent:
             todo_snapshot = self._todo_store.format_for_injection()
             if todo_snapshot:
                 compressed.append({"role": "user", "content": todo_snapshot})
+            self._mark_projection_only_messages_for_persistence(messages, compressed)
             self._invalidate_system_prompt()
             new_system_prompt = self._build_system_prompt(system_message)
             self._cached_system_prompt = new_system_prompt

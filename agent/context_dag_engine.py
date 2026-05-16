@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_dag_assembler import ContextAssemblyError, assemble_context, estimate_message_tokens
 from agent.context_dag_models import AssemblyBudget
+from agent.context_dag_reconcile import TranscriptReconciliationResult, reconcile_full_transcript
 from agent.context_dag_store import ContextDAGStore
 from agent.context_dag_tools import ContextDAGExpansionError, expand_context
 from agent.context_engine import ContextCompressionResult, ContextEngine
@@ -59,6 +60,9 @@ class DAGContextEngine(ContextEngine):
         self._last_fresh_tail_start_message_id: Optional[int] = None
         self._last_checkpoint: Optional[Dict[str, Any]] = None
         self._last_summary_count = 0
+        self._last_reconciliation: Optional[Dict[str, Any]] = None
+        self._last_reconcile_warnings: List[Dict[str, Any]] = []
+        self._last_compress_reconciled_transcript_covered_counts: Dict[tuple, int] = {}
 
     @property
     def name(self) -> str:
@@ -83,6 +87,70 @@ class DAGContextEngine(ContextEngine):
             if session_db is not None:
                 self.session_db = session_db
                 self.store = ContextDAGStore(session_db)
+
+    def _record_reconciliation(self, result: TranscriptReconciliationResult) -> None:
+        self._last_reconciliation = {
+            "scanned": result.scanned,
+            "inserted": result.inserted,
+            "duplicates_skipped": result.duplicates_skipped,
+            "matched": result.matched,
+            "checkpoint_advanced": result.checkpoint_advanced,
+            "last_ingested_message_id": result.last_ingested_message_id,
+            "anchor_hash": result.anchor_hash,
+            "covered_ordinals": list(result.covered_ordinals),
+        }
+        self._last_reconcile_warnings = list(result.warnings)
+
+    def _projection_message_signature(self, msg: Dict[str, Any]) -> tuple:
+        """Stable identity for matching reconciled transcript occurrences to projection rows."""
+        try:
+            content_key = json.dumps(msg.get("content"), sort_keys=True, default=str)
+        except Exception:
+            content_key = repr(msg.get("content"))
+        try:
+            tool_calls_key = json.dumps(msg.get("tool_calls"), sort_keys=True, default=str)
+        except Exception:
+            tool_calls_key = repr(msg.get("tool_calls"))
+        return (
+            msg.get("role"),
+            content_key,
+            msg.get("tool_name"),
+            msg.get("tool_call_id"),
+            tool_calls_key,
+        )
+
+    def _record_compress_reconciled_coverage(
+        self,
+        messages: List[Dict[str, Any]],
+        result: Optional[TranscriptReconciliationResult],
+    ) -> None:
+        counts: Dict[tuple, int] = {}
+        if result is not None:
+            for ordinal in result.covered_ordinals:
+                if not isinstance(ordinal, int) or ordinal < 0 or ordinal >= len(messages):
+                    continue
+                message = messages[ordinal]
+                if not isinstance(message, dict):
+                    continue
+                sig = self._projection_message_signature(message)
+                counts[sig] = counts.get(sig, 0) + 1
+        self._last_compress_reconciled_transcript_covered_counts = counts
+
+    def reconcile_transcript(self, messages: List[Dict[str, Any]], *, source: str = "engine") -> Optional[TranscriptReconciliationResult]:
+        """Additively reconcile caller-provided raw transcript messages.
+
+        This is safe to call on session start, before assembly, or after a turn:
+        it skips stable duplicates, mirrors missing raw rows, and never rewrites
+        a raw transcript with DAG projection messages.
+        """
+
+        if not self.enabled or self.store is None or not self.session_id:
+            return None
+        result = reconcile_full_transcript(self.store, self.session_id, messages, source=source)
+        self._record_reconciliation(result)
+        if result.warnings:
+            logger.warning("DAG transcript reconciliation warnings for %s: %s", self.session_id, result.warnings)
+        return result
 
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         if not isinstance(usage, dict):
@@ -178,7 +246,20 @@ class DAGContextEngine(ContextEngine):
             )
 
         self._last_fallback_reason = None
+        self._last_compress_reconciled_transcript_covered = False
+        self._last_compress_reconciled_transcript_covered_counts = {}
         try:
+            if messages and self.store is not None and self.session_id:
+                existing_raw = self.store.db.get_messages(self.session_id)
+                # Only treat caller messages as a full raw transcript when they
+                # can plausibly cover the stored transcript.  Short fallback
+                # snippets passed to compress() must not be mirrored as raw.
+                if not existing_raw or len(messages) >= len(existing_raw):
+                    reconcile_result = self.reconcile_transcript(messages, source="compress")
+                    self._record_compress_reconciled_coverage(messages, reconcile_result)
+                    self._last_compress_reconciled_transcript_covered = bool(
+                        reconcile_result is not None and not reconcile_result.warnings
+                    )
             raw_messages = self._read_raw_messages(messages)
             if not self.store or not self.session_id:
                 assembled = raw_messages
@@ -208,6 +289,8 @@ class DAGContextEngine(ContextEngine):
             assembled = copy.deepcopy(messages)
 
         sanitized = self._sanitize_messages_for_api(assembled)
+        if self._last_fallback_reason:
+            self._last_compress_reconciled_transcript_covered = False
         self.compression_count += 1
         self.last_prompt_tokens = sum(estimate_message_tokens(m) for m in sanitized)
         return ContextCompressionResult(
@@ -319,7 +402,9 @@ class DAGContextEngine(ContextEngine):
                 "fresh_tail_start_message_id": self._last_fresh_tail_start_message_id,
                 "last_checkpoint": self._last_checkpoint,
                 "gateway_compression_enabled": self.gateway_compression_enabled,
-                "gateway_compression_status": "skipped_until_gateway_safe_compression_lands",
+                "gateway_compression_status": "projection_only_no_transcript_rewrite",
+                "reconciliation": self._last_reconciliation,
+                "reconciliation_warnings": self._last_reconcile_warnings,
                 "fallback_reason": self._last_fallback_reason,
             }
         )

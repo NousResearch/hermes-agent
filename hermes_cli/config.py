@@ -2063,6 +2063,16 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "VOICE_TOOLS_OPENAI_CUSTOM_KEY": {
+        "description": (
+            "Endpoint-specific API key for custom OpenAI-compatible TTS base_url values"
+        ),
+        "prompt": "Custom OpenAI-compatible TTS API key",
+        "url": "",
+        "tools": ["openai_tts"],
+        "password": True,
+        "category": "tool",
+    },
     "ELEVENLABS_API_KEY": {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",

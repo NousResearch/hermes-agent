@@ -290,11 +290,83 @@ def cmd_delete_collection(args: argparse.Namespace) -> None:
     _out({"ok": True, "deleted_count": removed, "collection": args.collection})
 
 
+def _read_json_payload() -> dict:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        _out({"ok": False, "error": f"Invalid JSON payload: {exc}"})
+        sys.exit(1)
+    if not isinstance(payload, dict):
+        _out({"ok": False, "error": "JSON payload must be an object"})
+        sys.exit(1)
+    return payload
+
+
+def _require_text(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        _out({"ok": False, "error": f"Missing or invalid JSON field: {key}"})
+        sys.exit(1)
+    return value
+
+
+def cmd_json(args: argparse.Namespace) -> None:
+    payload = _read_json_payload()
+    command = _require_text(payload, "command")
+
+    if command == "add":
+        cmd_add(argparse.Namespace(
+            question=_require_text(payload, "question"),
+            answer=_require_text(payload, "answer"),
+            collection=payload.get("collection") or "General",
+        ))
+    elif command == "add-quiz":
+        questions = payload.get("questions")
+        if not isinstance(questions, list):
+            _out({"ok": False, "error": "Missing or invalid JSON field: questions"})
+            sys.exit(1)
+        cmd_add_quiz(argparse.Namespace(
+            video_id=_require_text(payload, "video_id"),
+            questions=json.dumps(questions, ensure_ascii=False),
+            collection=payload.get("collection") or "Quiz",
+        ))
+    elif command == "rate":
+        rating = _require_text(payload, "rating")
+        if rating not in {"easy", "good", "hard", "retire"}:
+            _out({"ok": False, "error": f"Invalid rating: {rating}"})
+            sys.exit(1)
+        cmd_rate(argparse.Namespace(
+            id=_require_text(payload, "id"),
+            rating=rating,
+            user_answer=payload.get("user_answer"),
+        ))
+    elif command == "due":
+        cmd_due(argparse.Namespace(collection=payload.get("collection")))
+    elif command == "export":
+        cmd_export(argparse.Namespace(output=_require_text(payload, "output")))
+    elif command == "import":
+        cmd_import(argparse.Namespace(
+            file=_require_text(payload, "file"),
+            collection=payload.get("collection") or "Imported",
+        ))
+    elif command == "delete":
+        cmd_delete(argparse.Namespace(id=_require_text(payload, "id")))
+    elif command == "delete-collection":
+        cmd_delete_collection(argparse.Namespace(
+            collection=_require_text(payload, "collection"),
+        ))
+    else:
+        _out({"ok": False, "error": f"Unsupported JSON command: {command}"})
+        sys.exit(1)
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Memento flashcard manager")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("json", help="Run a command from a JSON object read on stdin")
 
     p_add = sub.add_parser("add", help="Create one card")
     p_add.add_argument("--question", required=True)
@@ -335,6 +407,7 @@ def main() -> None:
 
     args = parser.parse_args()
     cmd_map = {
+        "json": cmd_json,
         "add": cmd_add,
         "add-quiz": cmd_add_quiz,
         "due": cmd_due,

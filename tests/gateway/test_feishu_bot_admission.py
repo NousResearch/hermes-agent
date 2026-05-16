@@ -476,6 +476,8 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
 
     asyncio.run(adapter._hydrate_bot_identity())
 
+    # BaseRequest exposes uri as a plain string and http_method as an enum;
+    # both are directly accessible via getattr in all lark_oapi versions.
     assert captured["uri"] == "/open-apis/bot/v3/info"
     assert str(captured["http_method"]).endswith("GET")
     assert adapter._bot_open_id == "ou_hydrated"

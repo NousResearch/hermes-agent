@@ -258,6 +258,30 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "ticktick"
         assert "TickTick body." in result["content"]
 
+    def test_category_qualified_local_skill_rejects_traversal(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        local_skills = tmp_path / "local-skills"
+        (local_skills / "existingcategory").mkdir(parents=True)
+        outside_skill = tmp_path / "outside-skill"
+        (outside_skill / "references").mkdir(parents=True)
+        (outside_skill / "SKILL.md").write_text(
+            "---\nname: outside-skill\ndescription: escaped\n---\nESCAPED-MAIN-CONTENT\n"
+        )
+        (outside_skill / "references" / "secret.md").write_text("SECRET-REFERENCE-CONTENT\n")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
+
+        result = json.loads(skill_view("existingcategory:../../outside-skill"))
+        file_result = json.loads(
+            skill_view("existingcategory:../../outside-skill", "references/secret.md")
+        )
+
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+        assert "ESCAPED-MAIN-CONTENT" not in json.dumps(result)
+        assert file_result["success"] is False
+        assert "SECRET-REFERENCE-CONTENT" not in json.dumps(file_result)
+
     def test_stale_entry_self_heals(self, tmp_path):
         from tools.skills_tool import skill_view
 

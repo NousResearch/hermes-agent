@@ -325,8 +325,15 @@ class PluginContext:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        override: bool = False,
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided."""
+        """Register a tool in the global registry **and** track it as plugin-provided.
+
+        Pass ``override=True`` to replace an existing built-in tool with the
+        same name (e.g. swap the default ``browser_navigate`` for a custom
+        CDP-backed implementation). Without it, attempting to register a name
+        already claimed by a different toolset is rejected.
+        """
         from tools.registry import registry
 
         registry.register(
@@ -339,9 +346,13 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            override=override,
         )
         self._manager._plugin_tool_names.add(name)
-        logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
+        logger.debug(
+            "Plugin %s registered tool: %s%s",
+            self.manifest.name, name, " (override)" if override else "",
+        )
 
     # -- message injection --------------------------------------------------
 

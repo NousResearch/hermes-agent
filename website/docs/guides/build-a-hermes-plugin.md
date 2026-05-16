@@ -465,6 +465,30 @@ ctx.register_tool(
 )
 ```
 
+### Overriding a built-in tool
+
+To replace a built-in tool with your own implementation (e.g. swap the
+default browser tool for a headed-Chrome CDP backend, or replace
+`web_search` with a custom corporate index), pass `override=True`:
+
+```python
+def register(ctx):
+    ctx.register_tool(
+        name="browser_navigate",             # same name as the built-in
+        toolset="plugin_my_browser",         # your own toolset namespace
+        schema={...},
+        handler=my_custom_navigate,
+        override=True,                       # explicit opt-in
+    )
+```
+
+Without `override=True`, the registry rejects any registration that would
+shadow an existing tool from a different toolset — this prevents
+accidental overwrites. The override is logged at INFO level so it's
+auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
+tools, so the registration order is correct: your handler replaces the
+built-in one.
+
 ### Register multiple hooks
 
 ```python

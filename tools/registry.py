@@ -244,8 +244,16 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        override: bool = False,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        ``override=True`` is an explicit opt-in for plugins that intend to
+        replace an existing built-in tool implementation (e.g. swap the
+        default browser tool for a headed-Chrome CDP backend). Without it,
+        registrations that would shadow an existing tool from a different
+        toolset are rejected to prevent accidental overwrites.
+        """
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
@@ -260,13 +268,22 @@ class ToolRegistry:
                         "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
                         name, toolset, existing.toolset,
                     )
+                elif override:
+                    # Explicit plugin opt-in: replace the existing tool.
+                    # Logged at INFO so the override is auditable in agent.log.
+                    logger.info(
+                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
+                        "(override=True opt-in)",
+                        name, toolset, existing.toolset,
+                    )
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Deregister the "
-                        "existing tool first if this is intentional.",
+                        "shadow existing tool from toolset '%s'. Pass "
+                        "override=True to register() if the replacement is "
+                        "intentional, or deregister the existing tool first.",
                         name, toolset, existing.toolset,
                     )
                     return

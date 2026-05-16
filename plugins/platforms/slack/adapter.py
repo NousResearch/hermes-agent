@@ -94,6 +94,11 @@ async def _read_error_text_limited(
     text = await response.text()
     return str(text)[:limit]
 
+
+_SLACK_SPECIAL_MENTION_RE = re.compile(
+    r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
+)
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -2825,6 +2830,8 @@ class SlackAdapter(BasePlatformAdapter):
         Protected regions (code blocks, inline code) are extracted first so
         their contents are never modified.  Standard markdown constructs
         (headers, bold, italic, links) are translated to mrkdwn syntax.
+        Broadcast mentions are escaped before entity protection so model output
+        cannot trigger workspace- or channel-wide notifications by default.
         """
         if not content:
             return content
@@ -2840,6 +2847,14 @@ class SlackAdapter(BasePlatformAdapter):
             return key
 
         text = content
+
+        # Slack treats <!everyone>, <!channel>, and <!here> as executable
+        # broadcast mentions even when sent by a bot.  Escape only the leading
+        # angle bracket so the token is displayed literally while preserving
+        # the rest of the text for later formatting passes.
+        text = _SLACK_SPECIAL_MENTION_RE.sub(
+            lambda m: m.group(0).replace("<", "&lt;", 1), text
+        )
 
         # 1) Protect fenced code blocks (``` ... ```)
         text = re.sub(

@@ -588,6 +588,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    media_files = media_files or []
+
+    # Weixin handles text/media delivery inside its native helper and does not
+    # need the optional platform adapter imports below. Keep this branch early
+    # so a Weixin send is not blocked by unrelated optional dependencies (for
+    # example lark-oapi's heavy Feishu import path).
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.slack import SlackAdapter
 
@@ -604,8 +614,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _feishu_available = True
     except ImportError:
         _feishu_available = False
-
-    media_files = media_files or []
 
     if platform == Platform.SLACK and message:
         try:
@@ -662,10 +670,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
-
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
-    if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
     # The plugin's ``_standalone_send`` (registered in

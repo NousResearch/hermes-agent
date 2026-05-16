@@ -130,6 +130,65 @@ def auto_title_session(
         logger.debug("Failed to set auto-generated title: %s", e)
 
 
+def maybe_retitle_session(
+    session_db,
+    session_id: str,
+    user_message: str,
+    assistant_response: str,
+    conversation_history: list,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
+    every_n_turns: int = 6,
+) -> None:
+    """Periodically re-evaluate a session's title to keep it relevant as the
+    conversation evolves. Fires every ``every_n_turns`` user turns AFTER the
+    initial auto-title (so first-turn handling stays exclusively with
+    :func:`maybe_auto_title`).
+
+    Cheap path:
+    - Only runs every Nth turn.
+    - Only generates if conversation_history has at least 3 user messages.
+    - Compares to the existing title; if the new title differs meaningfully,
+      it's saved and the callback fires (which drives the thread rename).
+    """
+    if not session_db or not session_id or not user_message or not assistant_response:
+        return
+    user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
+    # First-turn is handled by maybe_auto_title; only act on 3rd+ user turns.
+    if user_msg_count < 3:
+        return
+    if every_n_turns <= 0 or (user_msg_count % every_n_turns) != 0:
+        return
+
+    def _runner():
+        try:
+            existing = session_db.get_session_title(session_id) or ""
+        except Exception:
+            return
+        new_title = generate_title(
+            user_message, assistant_response,
+            failure_callback=failure_callback, main_runtime=main_runtime,
+        )
+        if not new_title:
+            return
+        new_title = new_title.strip()
+        if not new_title or new_title.lower() == existing.strip().lower():
+            return
+        try:
+            session_db.set_session_title(session_id, new_title)
+        except Exception:
+            return
+        if title_callback is not None:
+            try:
+                title_callback(new_title)
+            except Exception:
+                logger.debug("Retitle callback failed", exc_info=True)
+
+    thread = threading.Thread(target=_runner, daemon=True, name="retitle")
+    thread.start()
+
+
 def maybe_auto_title(
     session_db,
     session_id: str,

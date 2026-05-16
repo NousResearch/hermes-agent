@@ -1746,6 +1746,21 @@ class GatewayRunner:
             return False
         return True
 
+    def _is_discord_thread_lane(self, source: SessionSource) -> bool:
+        """True for a Discord thread (auto-created or otherwise) that we can rename.
+
+        Used to decide whether session-title auto-generation should also drive a
+        live thread rename. DMs and plain text channels are excluded — only
+        actual thread surfaces.
+        """
+        if source.platform != Platform.DISCORD:
+            return False
+        if source.chat_type != "thread":
+            return False
+        if not source.chat_id or not source.thread_id:
+            return False
+        return True
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
@@ -11448,6 +11463,119 @@ class GatewayRunner:
 
         future.add_done_callback(_log_rename_failure)
 
+    # ------------------------------------------------------------------
+    # Discord thread auto-rename (parallel to the Telegram-topic path)
+    # ------------------------------------------------------------------
+
+    _DISCORD_THREAD_NAME_MAX = 100  # Discord hard limit
+    _DISCORD_RENAME_DEDUPE_TTL_S = 30.0  # ignore identical follow-up renames
+
+    def _sanitize_discord_thread_name(self, title: str) -> str:
+        cleaned = (title or "").strip().replace("\n", " ").replace("\r", " ")
+        # Collapse runs of whitespace.
+        cleaned = " ".join(cleaned.split())
+        if not cleaned:
+            return cleaned
+        return cleaned[: self._DISCORD_THREAD_NAME_MAX]
+
+    async def _rename_discord_thread_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Discord thread when Hermes (re)titles a session."""
+        if not self._is_discord_thread_lane(source):
+            return
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        client = getattr(adapter, "_client", None)
+        if client is None:
+            return
+        new_name = self._sanitize_discord_thread_name(title)
+        if not new_name:
+            return
+
+        try:
+            thread_id_int = int(source.thread_id)
+        except (TypeError, ValueError):
+            return
+
+        try:
+            channel = client.get_channel(thread_id_int)
+            if channel is None:
+                channel = await client.fetch_channel(thread_id_int)
+            if channel is None:
+                return
+            current_name = getattr(channel, "name", None)
+            if current_name == new_name:
+                return
+            edit = getattr(channel, "edit", None)
+            if not callable(edit):
+                return
+            await edit(name=new_name, reason="Hermes auto-title")
+            logger.debug(
+                "Renamed Discord thread %s: %r -> %r",
+                source.thread_id,
+                current_name,
+                new_name,
+            )
+        except Exception:
+            logger.debug("Failed to rename Discord thread for auto-title", exc_info=True)
+
+    def _schedule_discord_thread_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a Discord thread rename from the auto-title background thread."""
+        if not title or not self._is_discord_thread_lane(source):
+            return
+
+        # Dedupe identical rename requests within a short window so the
+        # periodic re-title path doesn't spam Discord's rate limiter when
+        # the title hasn't actually changed.
+        if not hasattr(self, "_discord_thread_rename_cache"):
+            self._discord_thread_rename_cache = {}
+        cache_key = f"{source.chat_id}:{source.thread_id}"
+        normalized = self._sanitize_discord_thread_name(title)
+        import time as _time
+        now = _time.monotonic()
+        prev = self._discord_thread_rename_cache.get(cache_key)
+        if prev and prev[0] == normalized and (now - prev[1]) < self._DISCORD_RENAME_DEDUPE_TTL_S:
+            return
+        self._discord_thread_rename_cache[cache_key] = (normalized, now)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_discord_thread_for_session_title(copied_source, session_id, title),
+            loop,
+            logger=logger,
+            log_message="Discord thread title rename failed to schedule",
+        )
+        if future is None:
+            return
+
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Discord thread title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
+
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
 
     def _should_send_telegram_capability_hint(self, source: SessionSource) -> bool:
@@ -15885,6 +16013,12 @@ class GatewayRunner:
                             effective_session_id,
                             title,
                         )
+                    elif self._is_discord_thread_lane(source):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_discord_thread_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
@@ -15893,6 +16027,22 @@ class GatewayRunner:
                         all_msgs,
                         **maybe_auto_title_kwargs,
                     )
+                    # Periodic re-title — fires only after the conversation
+                    # has accumulated enough turns. Reuses the same callback
+                    # so Discord threads (and Telegram topics) get renamed
+                    # whenever the topic genuinely drifts.
+                    try:
+                        from agent.title_generator import maybe_retitle_session
+                        maybe_retitle_session(
+                            self._session_db,
+                            effective_session_id,
+                            message,
+                            final_response,
+                            all_msgs,
+                            **maybe_auto_title_kwargs,
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

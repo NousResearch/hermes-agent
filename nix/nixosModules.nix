@@ -11,10 +11,10 @@
 # and read by hermes at startup — no container recreation needed for env changes.
 #
 # Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
-# so apt/uv-installed versions take priority. The container entrypoint provisions
-# extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
-# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
-# writable tool prefixes for npm i -g, pip install, uv tool install, etc.
+# so apt-installed versions take priority. The container entrypoint provisions
+# extensible tools on first boot: nodejs/npm via apt and a Python 3.12 venv at
+# ~/.venv with pip seeded by the Nix-built uv. Agents get writable tool prefixes
+# for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
 #   services.hermes-agent = {
@@ -151,20 +151,13 @@
         chmod 0440 /etc/sudoers.d/hermes
       fi
 
-      # uv (Python manager) — not in Ubuntu repos, retry-safe outside the sentinel
-      if ! command -v uv >/dev/null 2>&1 && [ ! -x "$TARGET_HOME/.local/bin/uv" ] && command -v curl >/dev/null 2>&1; then
-        su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
-      fi
-
       # Python 3.12 venv — gives the agent a writable Python with pip.
-      # --seed includes pip/setuptools so bare `pip install` works.
-      _UV_BIN="$TARGET_HOME/.local/bin/uv"
-      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
-        su -s /bin/sh "$TARGET_USER" -c "
-          export PATH=\"\$HOME/.local/bin:\$PATH\"
-          uv python install 3.12
-          uv venv --python 3.12 --seed \"\$HOME/.venv\"
-        " || true
+      # Use the Nix-built uv and Python store paths instead of fetching a runtime
+      # installer script in the privileged container entrypoint.
+      _UV_BIN="${pkgs.uv}/bin/uv"
+      _PYTHON_BIN="${pkgs.python312}/bin/python3"
+      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ] && [ -x "$_PYTHON_BIN" ]; then
+        su -s /bin/sh "$TARGET_USER" -c "$_UV_BIN venv --python $_PYTHON_BIN --seed $TARGET_HOME/.venv" || true
       fi
 
       # Put the agent venv first on PATH so python/pip resolve to writable copies

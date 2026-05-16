@@ -110,7 +110,9 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
         elif action in ("subscriptions", "subs"):
             _cmd_subscriptions(args)
         elif action == "subscribe":
-            _cmd_subscribe(args)
+            result = _cmd_subscribe(args)
+            if result is not None:
+                return result
         elif action == "renew-subscription":
             _cmd_renew_subscription(args)
         elif action == "delete-subscription":
@@ -167,6 +169,29 @@ def _default_change_type_for_resource(resource: str) -> str:
     return "updated"
 
 
+def _configured_webhook_client_state(
+    client_state_arg: str | None = None,
+    *,
+    webhook_config: Any | None = None,
+) -> str | None:
+    explicit = str(client_state_arg or "").strip()
+    if explicit:
+        return explicit
+
+    env_value = os.getenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "").strip()
+    if env_value:
+        return env_value
+
+    if webhook_config is None:
+        gateway_config = load_gateway_config()
+        webhook_config = gateway_config.platforms.get(Platform.MSGRAPH_WEBHOOK)
+    if webhook_config is None:
+        return None
+    extra = webhook_config.extra or {}
+    configured = str(extra.get("client_state") or "").strip()
+    return configured or None
+
+
 def _compact_job(job: dict) -> dict:
     payload = dict(job)
     summary = dict(payload.get("summary_payload") or {})
@@ -211,8 +236,13 @@ def _validate_configuration_snapshot(store: TeamsPipelineStore) -> dict[str, Any
 
     if not all(graph.values()):
         issues.append("Microsoft Graph app-only credentials are incomplete.")
+    webhook_client_state = _configured_webhook_client_state(
+        None, webhook_config=webhook_config
+    )
     if not webhook_enabled:
         issues.append("MSGRAPH_WEBHOOK_ENABLED is not enabled.")
+    if webhook_client_state is None:
+        issues.append("MSGRAPH_WEBHOOK_CLIENT_STATE is required for Teams pipeline webhook execution.")
     if not teams_enabled:
         warnings.append("Teams outbound delivery is disabled.")
     elif teams_mode == "incoming_webhook":
@@ -369,13 +399,19 @@ def _cmd_subscriptions(args) -> None:
         print()
 
 
-def _cmd_subscribe(args) -> None:
+def _cmd_subscribe(args) -> int | None:
     store = TeamsPipelineStore(_store_path(getattr(args, "store_path", None)))
     resource = str(getattr(args, "resource", "") or "").strip()
     notification_url = str(getattr(args, "notification_url", "") or "").strip()
     change_type = str(getattr(args, "change_type", "") or "").strip() or _default_change_type_for_resource(resource)
     expiration = str(getattr(args, "expiration", "") or "").strip() or _iso_utc_timestamp(1)
-    client_state = str(getattr(args, "client_state", "") or "").strip()
+    client_state = _configured_webhook_client_state(getattr(args, "client_state", ""))
+    if client_state is None:
+        print(
+            "MSGRAPH_WEBHOOK_CLIENT_STATE (or --client-state) is required to create "
+            "a Teams pipeline Graph subscription."
+        )
+        return 1
     lifecycle_url = str(getattr(args, "lifecycle_notification_url", "") or "").strip()
     tls_version = str(getattr(args, "latest_supported_tls_version", "") or "").strip() or "v1_2"
 
@@ -386,8 +422,7 @@ def _cmd_subscribe(args) -> None:
         "expirationDateTime": expiration,
         "latestSupportedTlsVersion": tls_version,
     }
-    if client_state:
-        payload["clientState"] = client_state
+    payload["clientState"] = client_state
     if lifecycle_url:
         payload["lifecycleNotificationUrl"] = lifecycle_url
 

@@ -52,6 +52,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+selfheal = ["ruamel.yaml>=0.18.16,<0.19", "requests>=2.33.0,<3"]
 modal = ["modal>=1.0.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
 vercel = ["vercel>=0.5.7,<0.6.0"]

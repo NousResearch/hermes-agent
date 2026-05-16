@@ -455,6 +455,27 @@ def test_save_platform_tools_does_not_preserve_hermes_telegram():
     assert "web" in saved
 
 
+def test_save_platform_tools_does_not_preserve_hidden_valid_toolsets():
+    """Hidden valid toolsets and aliases must not survive a picker save.
+
+    Otherwise entries like ``all`` or ``debugging`` can re-enable tools the
+    operator unchecked in the visible configurable list.
+    """
+    hidden_toolsets = {"all", "*", "debugging", "hermes-gateway", "search"}
+    config = {
+        "platform_toolsets": {
+            "telegram": ["web", "terminal", *sorted(hidden_toolsets)]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", {"web"})
+
+    saved = set(config["platform_toolsets"]["telegram"])
+    assert saved == {"web"}
+    assert saved.isdisjoint(hidden_toolsets)
+
+
 def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():
     """MCP server names must still be preserved even when platform defaults
     are being stripped out."""

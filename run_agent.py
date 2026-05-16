@@ -1174,6 +1174,7 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        skip_user_profile: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -1232,6 +1233,15 @@ class AIAgent:
             load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
+            skip_memory (bool): If True, disable BOTH MEMORY.md (agent notes) and USER.md
+                (user knowledge) for this AIAgent instance, plus any external memory provider.
+                All-or-nothing gate inherited from earlier versions; backward-compatible.
+            skip_user_profile (bool): If True, disable USER.md only — MEMORY.md and the
+                external provider remain governed by config. Compose with ``skip_memory``:
+                ``skip_memory=True`` disables everything regardless; ``skip_memory=False`` +
+                ``skip_user_profile=True`` keeps MEMORY.md but suppresses user-knowledge writes.
+                Use case: a per-agent override where you want agent self-improvement notes
+                retained but not user-persona accumulation (e.g. shared utility agents).
         """
         _install_safe_stdio()
 
@@ -1976,6 +1986,25 @@ class AIAgent:
         self._aux_compression_context_length_config = None
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
+        #
+        # ``skip_memory`` is the all-or-nothing gate inherited from earlier
+        # versions: True disables BOTH MEMORY.md (agent notes) and USER.md
+        # (user knowledge) AND the external provider (if any). Existing
+        # callers passing only this flag get the previous behavior intact.
+        #
+        # ``skip_user_profile`` (added 2026-05) is a finer-grained gate for
+        # callers that want MEMORY.md retained but USER.md disabled per
+        # agent. The two flags compose:
+        #
+        #   skip_memory=False, skip_user_profile=False  → both honour config
+        #   skip_memory=False, skip_user_profile=True   → MEMORY.md only
+        #   skip_memory=True,  skip_user_profile=*      → both disabled
+        #
+        # The external provider (loaded below at lines starting "Memory
+        # provider plugin") is shared by both stores conceptually — most
+        # providers (Honcho, Hindsight, Mem0, …) don't distinguish memory
+        # vs user profile internally. ``skip_user_profile`` therefore does
+        # NOT disable the external provider; only ``skip_memory`` does.
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
@@ -1986,7 +2015,10 @@ class AIAgent:
             try:
                 mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
-                self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._user_profile_enabled = (
+                    mem_config.get("user_profile_enabled", False)
+                    and not skip_user_profile
+                )
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore

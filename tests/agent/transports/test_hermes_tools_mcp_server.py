@@ -8,6 +8,7 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -222,6 +223,62 @@ class TestModuleSurface:
         assert server.tools["session_search"](query="oauth") == "search:oauth"
         assert server.tools["web_search"](query="hermes") == "handled"
         assert handle_calls == [("web_search", {"query": "hermes"})]
+
+    def test_build_server_wraps_stateless_dispatcher_errors_as_json(self, monkeypatch):
+        """MCP handlers should return structured errors instead of crashing.
+
+        The stateless wrappers touch profile files/SQLite; if those are
+        unavailable in the spawned subprocess, the MCP call should fail as a
+        tool result that Codex can read rather than tearing down the server.
+        """
+        from agent.transports import hermes_tools_mcp_server as m
+        import model_tools
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self.tools = {}
+
+            def add_tool(self, fn, name, description):
+                self.tools[name] = fn
+
+        fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
+        setattr(fastmcp_mod, "FastMCP", FakeFastMCP)
+        server_mod = types.ModuleType("mcp.server")
+        setattr(server_mod, "fastmcp", fastmcp_mod)
+        mcp_mod = types.ModuleType("mcp")
+        setattr(mcp_mod, "server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_mod)
+        monkeypatch.setattr(m, "EXPOSED_TOOLS", ("memory",))
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory",
+                        "description": "Manage memory",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+
+        def broken_dispatcher(**kwargs):
+            raise RuntimeError("memory store unavailable")
+
+        monkeypatch.setitem(
+            m._STATELESS_AGENT_LOOP_DISPATCHERS,
+            "memory",
+            broken_dispatcher,
+        )
+
+        server = m._build_server()
+        payload = json.loads(server.tools["memory"](action="list"))
+
+        assert payload == {"error": "memory store unavailable", "tool": "memory"}
 
     def test_build_server_preserves_hermes_parameter_schema(self, monkeypatch):
         """Codex should see Hermes' tool JSON schema, not FastMCP's **kwargs schema."""

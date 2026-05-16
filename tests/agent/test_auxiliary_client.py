@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
 
@@ -219,6 +220,77 @@ class TestReadCodexAccessToken:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         result = _read_codex_access_token()
         assert result == "plain-token-no-jwt"
+
+
+class TestResolveXaiOAuthForAux:
+    def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
+        """Auxiliary xAI OAuth must see pool-only credentials.
+
+        ``hermes auth status`` already reports these as logged in; compression
+        should not fall through to "no auxiliary provider configured" just
+        because the singleton auth-store entry is absent.
+        """
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+        monkeypatch.delenv("XAI_BASE_URL", raising=False)
+
+        pool = load_pool("xai-oauth")
+        pool.add_entry(PooledCredential(
+            provider="xai-oauth",
+            id="xai123",
+            label="pool-only",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token="pool-access-token",
+            refresh_token="pool-refresh-token",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        ))
+
+        assert _resolve_xai_oauth_for_aux() == (
+            "pool-access-token",
+            DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+
+    def test_pool_backed_credentials_honor_base_url_env_override(self, tmp_path, monkeypatch):
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_XAI_BASE_URL", "https://example.x.ai/v1/")
+
+        pool = load_pool("xai-oauth")
+        pool.add_entry(PooledCredential(
+            provider="xai-oauth",
+            id="xai456",
+            label="pool-only",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token="pool-access-token",
+            refresh_token="pool-refresh-token",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        ))
+
+        assert _resolve_xai_oauth_for_aux() == (
+            "pool-access-token",
+            "https://example.x.ai/v1",
+        )
 
 
 class TestAnthropicOAuthFlag:

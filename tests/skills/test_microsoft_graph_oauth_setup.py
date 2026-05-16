@@ -78,6 +78,46 @@ def test_get_auth_url_persists_state_and_pkce(auth_module, monkeypatch, capsys):
     assert stat.S_IMODE(auth_module.PENDING_AUTH_PATH.stat().st_mode) == 0o600
 
 
+def test_get_auth_url_encodes_tenant_path_segment(auth_module, monkeypatch, capsys):
+    auth_module.configure_client("client-id", tenant="tenant/with?bad\nline")
+    capsys.readouterr()
+    monkeypatch.setattr(auth_module, "_new_state", lambda: "saved-state")
+    monkeypatch.setattr(auth_module, "_new_code_verifier", lambda: "saved-verifier")
+
+    auth_module.get_auth_url()
+
+    url = capsys.readouterr().out.strip()
+    parsed = urlparse(url)
+    assert "\n" not in url
+    assert parsed.path == "/tenant%2Fwith%3Fbad%0Aline/oauth2/v2.0/authorize"
+
+
+def test_request_token_encodes_tenant_path_segment(auth_module, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "access-token"}
+
+    def fake_post(url, data, headers, timeout):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(auth_module, "httpx", type("FakeHttpx", (), {"post": staticmethod(fake_post)}))
+
+    response = auth_module._request_token("tenant/with?bad\nline", {"grant_type": "authorization_code"})
+
+    assert captured["url"] == "https://login.microsoftonline.com/tenant%2Fwith%3Fbad%0Aline/oauth2/v2.0/token"
+    assert captured["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}
+    assert captured["timeout"] == 30
+    assert response == {"access_token": "access-token"}
+
+
 def test_exchange_auth_code_reuses_pending_pkce_without_secret(auth_module, monkeypatch):
     auth_module.configure_client("client-id", tenant="tenant-id")
     auth_module.PENDING_AUTH_PATH.write_text(

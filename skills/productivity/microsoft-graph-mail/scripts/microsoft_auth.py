@@ -19,7 +19,7 @@ import secrets
 import sys
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -46,11 +46,19 @@ except ModuleNotFoundError:
 
 
 def _token_endpoint(tenant: str) -> str:
-    return f"{AUTHORITY_ROOT}/{tenant}/oauth2/v2.0/token"
+    return f"{AUTHORITY_ROOT}/{_tenant_path_segment(tenant)}/oauth2/v2.0/token"
 
 
 def _authorize_endpoint(tenant: str) -> str:
-    return f"{AUTHORITY_ROOT}/{tenant}/oauth2/v2.0/authorize"
+    return f"{AUTHORITY_ROOT}/{_tenant_path_segment(tenant)}/oauth2/v2.0/authorize"
+
+
+def _normalized_tenant(tenant: str | None) -> str:
+    return (tenant or DEFAULT_TENANT).strip() or DEFAULT_TENANT
+
+
+def _tenant_path_segment(tenant: str | None) -> str:
+    return quote(_normalized_tenant(tenant), safe="")
 
 
 def _new_code_verifier() -> str:
@@ -103,7 +111,7 @@ def _load_client_config() -> dict:
         sys.exit(1)
     return {
         "client_id": config["client_id"],
-        "tenant": config.get("tenant") or DEFAULT_TENANT,
+        "tenant": _normalized_tenant(config.get("tenant")),
         "redirect_uri": config.get("redirect_uri") or DEFAULT_REDIRECT_URI,
     }
 
@@ -126,7 +134,7 @@ def _missing_required_scopes(payload: dict) -> list[str]:
 
 def configure_client(client_id: str, tenant: str | None = None, redirect_uri: str | None = None) -> None:
     client_id = client_id.strip()
-    tenant = (tenant or DEFAULT_TENANT).strip() or DEFAULT_TENANT
+    tenant = _normalized_tenant(tenant)
     redirect_uri = (redirect_uri or DEFAULT_REDIRECT_URI).strip() or DEFAULT_REDIRECT_URI
     if not client_id:
         print("ERROR: --client-id is required.")

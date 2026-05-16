@@ -1703,7 +1703,11 @@ async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_
         runner = _gateway_runner_ref()
         if runner and hasattr(runner, "adapters"):
             from gateway.config import Platform
-            adapter = runner.adapters.get(Platform("google_chat"))
+            try:
+                platform_enum = Platform.GOOGLE_CHAT
+            except AttributeError:
+                platform_enum = Platform("google_chat")
+            adapter = runner.adapters.get(platform_enum)
             if adapter:
                 metadata = {"thread_id": thread_id} if thread_id else None
                 last_result = None
@@ -1728,8 +1732,28 @@ async def _send_google_chat(pconfig, chat_id, message, media_files=None, thread_
                         return {"error": f"Google Chat media send failed: {last_result.error}"}
 
                 return {"success": True, "platform": "google_chat", "chat_id": chat_id, "message_id": last_result.message_id if last_result else None}
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.debug("Failed to use live Google Chat adapter: %s", e)
+
+    # Standalone fallback
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get("google_chat")
+        if entry and entry.standalone_sender_fn:
+            return await entry.standalone_sender_fn(
+                pconfig=pconfig,
+                chat_id=chat_id,
+                message=message,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=False,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.debug("Failed to use standalone Google Chat sender: %s", e)
 
     return {"error": "Google Chat adapter not found or gateway not running with google_chat enabled."}
 

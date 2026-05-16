@@ -2362,6 +2362,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:
         # When delegation.api_key is not set, return None so _build_child_agent
@@ -2372,9 +2373,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         # callers to duplicate the key under delegation.api_key.
         api_key = configured_api_key  # None → inherited from parent in _build_child_agent
 
+        # Use the shared URL-based api_mode detector (same path the main agent's
+        # runtime resolver uses) so Anthropic-compatible direct endpoints with a
+        # /anthropic suffix — Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM
+        # proxies — pick the right transport automatically. Without this,
+        # subagents would default to chat_completions and hit 404s on endpoints
+        # that only speak the Anthropic Messages protocol. Fixes #10213.
+        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
         base_lower = configured_base_url.lower()
         provider = "custom"
-        api_mode = "chat_completions"
+        api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
@@ -2387,6 +2396,11 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+
+        # Explicit delegation.api_mode in config always wins. Lets users force
+        # a transport for non-standard endpoints the URL heuristic can't detect.
+        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+            api_mode = configured_api_mode
 
         return {
             "model": configured_model,

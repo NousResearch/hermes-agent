@@ -1146,6 +1146,10 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
+                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
+                           # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

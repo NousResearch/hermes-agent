@@ -531,7 +531,7 @@ class TestGetModelContextLengthLocalFallback:
                 provider="grok-build",
             )
 
-        assert result == 1000000
+        assert result == 512000
         mock_cache.assert_not_called()
         mock_endpoint.assert_not_called()
 

@@ -97,9 +97,10 @@ import {
   DBP,
   DFE,
   DISABLE_MOUSE_TRACKING,
-  ENABLE_MOUSE_TRACKING,
+  enableMouseTrackingFor,
   ENTER_ALT_SCREEN,
   EXIT_ALT_SCREEN,
+  type MouseTrackingMode,
   SHOW_CURSOR
 } from './termio/dec.js'
 import {
@@ -267,9 +268,11 @@ export default class Ink {
   // LF-induced scroll when screen.height === terminalRows) and gates
   // alt-screen-aware SIGCONT/resize/unmount handling.
   private altScreenActive = false
-  // Set alongside altScreenActive so SIGCONT resume knows whether to
-  // re-enable mouse tracking (not all <AlternateScreen> uses want it).
-  private altScreenMouseTracking = false
+  // Set alongside altScreenActive so SIGCONT resume knows which mouse
+  // tracking preset to re-enable (not all <AlternateScreen> uses want
+  // tracking, and tmux users routinely opt into the hover-free 'wheel'
+  // subset to silence prompt-row clipboard probes).
+  private altScreenMouseTracking: MouseTrackingMode = 'off'
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
   // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
@@ -570,8 +573,8 @@ export default class Ink {
       this.resizeSettleTimer = null
     }
 
-    if (this.altScreenMouseTracking) {
-      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    if (this.altScreenMouseTracking !== 'off') {
+      this.options.stdout.write(enableMouseTrackingFor(this.altScreenMouseTracking))
     }
 
     this.resetFramesForAltScreen()
@@ -609,7 +612,7 @@ export default class Ink {
       // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
       DISABLE_KITTY_KEYBOARD +
         DISABLE_MODIFY_OTHER_KEYS +
-        (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') +
+        (this.altScreenMouseTracking !== 'off' ? DISABLE_MOUSE_TRACKING : '') +
         // disable mouse (no-op if off)
         (this.altScreenActive ? '' : '\x1b[?1049h') +
         // enter alt (already in alt if fullscreen)
@@ -645,7 +648,7 @@ export default class Ink {
         // clear screen (now alt if fullscreen)
         '\x1b[H' +
         // cursor home
-        (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') +
+        enableMouseTrackingFor(this.altScreenMouseTracking) +
         (this.altScreenActive ? '' : '\x1b[?1049l') +
         // exit alt (non-fullscreen only)
         '\x1b[?25l' // hide cursor (Ink manages)
@@ -1249,13 +1252,13 @@ export default class Ink {
    * the first alt-screen frame (and first main-screen frame on exit) is
    * a full redraw with no stale diff state.
    */
-  setAltScreenActive(active: boolean, mouseTracking = false): void {
+  setAltScreenActive(active: boolean, mouseTracking: MouseTrackingMode = 'off'): void {
     if (this.altScreenActive === active) {
       return
     }
 
     this.altScreenActive = active
-    this.altScreenMouseTracking = active && mouseTracking
+    this.altScreenMouseTracking = active ? mouseTracking : 'off'
 
     // Hover state is alt-screen-scoped: dispatchHover is gated on
     // altScreenActive, so once we leave the alt screen there's no path to
@@ -1275,19 +1278,22 @@ export default class Ink {
   }
 
   /**
-   * Toggle mouse tracking at runtime while the alt screen is active.
-   * Writes the appropriate DEC reset/set sequences so the terminal
-   * (and ConPTY on Windows WSL2) reflects the change immediately.
+   * Switch mouse tracking preset at runtime while the alt screen is
+   * active. Always issues DISABLE first so switching between subsets (e.g.
+   * 'all' → 'wheel') clears mode 1003 instead of leaving it asserted —
+   * DEC private modes have no "set this exact bitmask" form, only
+   * individual set/reset, and tmux's mouse-mode bookkeeping does honor the
+   * reset so the prompt-row "No image in clipboard" spam stops.
    */
-  setAltScreenMouseTracking(enabled: boolean): void {
-    if (this.altScreenMouseTracking === enabled) {
+  setAltScreenMouseTracking(mode: MouseTrackingMode): void {
+    if (this.altScreenMouseTracking === mode) {
       return
     }
 
-    this.altScreenMouseTracking = enabled
+    this.altScreenMouseTracking = mode
 
     if (this.altScreenActive) {
-      this.options.stdout.write(enabled ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
+      this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(mode))
     }
   }
   get isAltScreenActive(): boolean {
@@ -1340,8 +1346,8 @@ export default class Ink {
     }
 
     // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
-    if (this.altScreenMouseTracking) {
-      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    if (this.altScreenMouseTracking !== 'off') {
+      this.options.stdout.write(enableMouseTrackingFor(this.altScreenMouseTracking))
     }
 
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
@@ -1399,7 +1405,7 @@ export default class Ink {
    */
   private reenterAltScreen(): void {
     this.options.stdout.write(
-      ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '')
+      ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + enableMouseTrackingFor(this.altScreenMouseTracking)
     )
     this.resetFramesForAltScreen()
   }

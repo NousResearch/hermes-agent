@@ -223,12 +223,25 @@ class MemoryManager:
                     provider.name, existing,
                 )
                 return
+
+        # Collect tool schemas BEFORE mutating state — if schema loading
+        # fails the provider must NOT be registered (fixes #9948).
+        try:
+            schemas = provider.get_tool_schemas()
+        except Exception as exc:
+            logger.error(
+                "Memory provider '%s' failed during schema loading: %s — NOT registered",
+                provider.name, exc,
+            )
+            return
+
+        if not is_builtin:
             self._has_external = True
 
         self._providers.append(provider)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
+        for schema in schemas:
             tool_name = schema.get("name", "")
             if tool_name and tool_name not in self._tool_to_provider:
                 self._tool_to_provider[tool_name] = provider
@@ -244,7 +257,7 @@ class MemoryManager:
         logger.info(
             "Memory provider '%s' registered (%d tools)",
             provider.name,
-            len(provider.get_tool_schemas()),
+            len(schemas),
         )
 
     @property

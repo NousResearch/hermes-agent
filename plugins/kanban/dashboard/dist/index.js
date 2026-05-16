@@ -51,6 +51,24 @@
     return str;
   }
 
+  // ``fetchJSON`` throws ``Error("<status>: <raw body>")`` on non-2xx, and
+  // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
+  // human-readable message out so banners/toasts don't have to leak HTTP
+  // plumbing at the user (e.g. ``409: {"detail":"…"}``).  See #26744.
+  function parseApiErrorMessage(err) {
+    const raw = (err && err.message) ? String(err.message) : String(err || "");
+    const m = raw.match(/^(\d{3}):\s*(.*)$/s);
+    const body = m ? m[2] : raw;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed.detail === "string") return parsed.detail;
+      if (parsed && parsed.detail && typeof parsed.detail.message === "string") {
+        return parsed.detail.message;
+      }
+    } catch (_e) { /* not JSON — fall through to raw body */ }
+    return body || raw;
+  }
+
   // Order matches BOARD_COLUMNS in plugin_api.py.
   const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
@@ -633,7 +651,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       }).catch(function (err) {
-        setError(tx(t, "moveFailed", "Move failed: ") + (err.message || err));
+        setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
       });
     }, [loadBoard, board, t]);
@@ -2300,6 +2318,11 @@
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState(null);
+    // Surface PATCH failures (e.g. 409 "parent not done") right next to
+    // the drawer's action row — without it, the drawer's only error
+    // surface (``err``) is hidden behind the loaded ``data`` and the
+    // Ready/Block/Complete buttons feel like no-ops.  See #26744.
+    const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
@@ -2311,7 +2334,7 @@
 
     const load = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
-        .then(function (d) { setData(d); setErr(null); })
+        .then(function (d) { setData(d); setErr(null); setPatchErr(null); })
         .catch(function (e) { setErr(String(e.message || e)); })
         .finally(function () { setLoading(false); });
     }, [props.taskId, boardSlug]);
@@ -2355,11 +2378,13 @@
       }
       const finalPatch = withCompletionSummary(patch, 1);
       if (!finalPatch) return Promise.resolve();
+      setPatchErr(null);
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
-      }).then(function () { load(); props.onRefresh(); });
+      }).then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
     };
 
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
@@ -2468,7 +2493,11 @@
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
-        data ? h(TaskDetail, {
+        patchErr ? h("div", {
+          className: "px-4 pt-2 text-sm text-destructive",
+          role: "alert",
+        }, patchErr) : null,
+        !loading && !err && data ? h(TaskDetail, {
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,

@@ -425,11 +425,12 @@ def test_raw_guest_update_routes_via_guest_query_id_and_caller_user():
 
 def test_send_guest_chat_uses_answer_guest_query():
     adapter = _make_adapter(guest_mode=True)
-    adapter._bot = SimpleNamespace(_post=AsyncMock(return_value={"message_id": 42}))
+    adapter._bot = SimpleNamespace(_post=AsyncMock(return_value={"inline_message_id": "inline-42"}))
 
     result = asyncio.run(adapter.send("guest:guest-query-1", "hello from Hermes"))
 
     assert result.success is True
+    assert result.message_id == "inline-42"
     adapter._bot._post.assert_awaited_once()
     endpoint = adapter._bot._post.await_args.args[0]
     data = adapter._bot._post.await_args.kwargs["data"]
@@ -438,3 +439,47 @@ def test_send_guest_chat_uses_answer_guest_query():
     payload = json.loads(data["result"])
     assert payload["type"] == "article"
     assert payload["input_message_content"]["message_text"] == "hello from Hermes"
+
+
+def test_guest_chat_second_send_edits_existing_inline_message():
+    adapter = _make_adapter(guest_mode=True)
+    adapter._bot = SimpleNamespace(_post=AsyncMock(return_value={"inline_message_id": "inline-42"}))
+
+    first = asyncio.run(adapter.send("guest:guest-query-1", "Думаю…"))
+    second = asyncio.run(adapter.send("guest:guest-query-1", "готовый ответ"))
+
+    assert first.success is True
+    assert second.success is True
+    assert adapter._bot._post.await_count == 2
+    first_call, second_call = adapter._bot._post.await_args_list
+    assert first_call.args[0] == "answerGuestQuery"
+    assert second_call.args[0] == "editMessageText"
+    assert second_call.kwargs["data"]["inline_message_id"] == "inline-42"
+    assert second_call.kwargs["data"]["text"] == "готовый ответ"
+
+
+def test_guest_edit_message_uses_inline_message_id():
+    adapter = _make_adapter(guest_mode=True)
+    adapter._bot = SimpleNamespace(_post=AsyncMock(return_value=True))
+
+    result = asyncio.run(adapter.edit_message("guest:guest-query-1", "inline-42", "🔎 session_search..."))
+
+    assert result.success is True
+    adapter._bot._post.assert_awaited_once()
+    endpoint = adapter._bot._post.await_args.args[0]
+    data = adapter._bot._post.await_args.kwargs["data"]
+    assert endpoint == "editMessageText"
+    assert data["inline_message_id"] == "inline-42"
+    assert data["text"] == "🔎 session_search..."
+
+
+def test_telegram_guest_sources_force_new_tool_progress_mode():
+    from gateway.run import _effective_tool_progress_mode
+
+    source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="guest:guest-query-1")
+
+    assert _effective_tool_progress_mode(source, "all") == "new"
+    assert _effective_tool_progress_mode(source, "off") == "new"
+
+    normal_source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="273403055")
+    assert _effective_tool_progress_mode(normal_source, "all") == "all"

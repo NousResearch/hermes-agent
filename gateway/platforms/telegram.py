@@ -441,6 +441,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Guest Bot API bridge: answerGuestQuery returns SentGuestMessage with
+        # an inline_message_id. Cache it per guest query so later progress
+        # updates/final sends edit the same guest bubble instead of trying to
+        # answer the one-shot query again.
+        self._guest_inline_message_ids: Dict[str, str] = {}
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
@@ -525,6 +530,10 @@ class TelegramAdapter(BasePlatformAdapter):
         python-telegram-bot exposes it in ``Update.ALL_TYPES``, requesting only
         ``Update.ALL_TYPES`` silently excludes guest summons from long-polling
         and webhook delivery.
+
+        Temporary local patch note: this production checkout intentionally
+        appends ``guest_message`` here until PTB ships first-class Guest Bot
+        update support.
         """
         updates = list(getattr(Update, "ALL_TYPES", []) or [])
         if _TELEGRAM_GUEST_UPDATE_TYPE not in {str(item) for item in updates}:
@@ -537,6 +546,29 @@ class TelegramAdapter(BasePlatformAdapter):
         if text.startswith(_TELEGRAM_GUEST_CHAT_PREFIX):
             return text[len(_TELEGRAM_GUEST_CHAT_PREFIX):] or None
         return None
+
+    def _guest_inline_message_ids_cache(self) -> Dict[str, str]:
+        cache = getattr(self, "_guest_inline_message_ids", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._guest_inline_message_ids = cache
+        return cache
+
+    @staticmethod
+    def _guest_inline_message_id_from_response(response: Any) -> Optional[str]:
+        if isinstance(response, dict):
+            inline_id = response.get("inline_message_id")
+            if inline_id:
+                return str(inline_id)
+            # Be permissive while PTB has no typed SentGuestMessage object and
+            # local tests/mocks may still use old message_id-shaped payloads.
+            message_id = response.get("message_id") or response.get("id")
+            return str(message_id) if message_id is not None else None
+        inline_id = getattr(response, "inline_message_id", None)
+        if inline_id:
+            return str(inline_id)
+        message_id = getattr(response, "message_id", None) or getattr(response, "id", None)
+        return str(message_id) if message_id is not None else None
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1533,6 +1565,10 @@ class TelegramAdapter(BasePlatformAdapter):
         PTB 22.x has no ``Bot.answer_guest_query`` helper yet. The private
         ``_post`` method is the same escape hatch PTB methods use internally,
         and can be removed once PTB exposes first-class Guest Bot support.
+
+        Temporary local patch note: keep this raw ``answerGuestQuery`` bridge
+        only until python-telegram-bot grows an official helper/API surface for
+        Guest Bots.
         """
         try:
             chunks = self.truncate_message(content.strip(), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
@@ -1550,13 +1586,56 @@ class TelegramAdapter(BasePlatformAdapter):
                 "answerGuestQuery",
                 data={"guest_query_id": guest_query_id, "result": json.dumps(result)},
             )
-            message_id = None
-            if isinstance(response, dict):
-                message_id = response.get("message_id") or response.get("id")
-            return SendResult(success=True, message_id=str(message_id) if message_id is not None else None, raw_response=response)
+            inline_message_id = self._guest_inline_message_id_from_response(response)
+            if inline_message_id:
+                self._guest_inline_message_ids_cache()[guest_query_id] = inline_message_id
+            return SendResult(success=True, message_id=inline_message_id, raw_response=response)
         except Exception as exc:
             logger.error("[%s] Failed to answer Telegram guest query: %s", self.name, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _edit_guest_inline_message(
+        self,
+        inline_message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit the single inline message created by ``answerGuestQuery``."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            text = content.strip()
+            chunks = self.truncate_message(text, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+            message_text = chunks[0] if chunks else text
+            data: Dict[str, Any] = {
+                "inline_message_id": inline_message_id,
+                "text": self.format_message(message_text) if finalize else message_text,
+            }
+            if finalize:
+                data["parse_mode"] = getattr(ParseMode, "MARKDOWN_V2", "MarkdownV2")
+            if self._disable_link_previews:
+                data["disable_web_page_preview"] = True
+            try:
+                response = await self._bot._post("editMessageText", data=data)
+            except Exception as fmt_exc:
+                if not finalize:
+                    raise
+                if "not modified" in str(fmt_exc).lower():
+                    return SendResult(success=True, message_id=inline_message_id)
+                # MarkdownV2 formatting is best-effort; fall back to raw text
+                # so a formatting edge case does not strand the guest bubble on
+                # the last tool-progress line.
+                data.pop("parse_mode", None)
+                data["text"] = message_text
+                response = await self._bot._post("editMessageText", data=data)
+            return SendResult(success=True, message_id=inline_message_id, raw_response=response)
+        except Exception as exc:
+            err = str(exc)
+            if "not modified" in err.lower():
+                return SendResult(success=True, message_id=inline_message_id)
+            logger.error("[%s] Failed to edit Telegram guest inline message %s: %s", self.name, inline_message_id, exc, exc_info=True)
+            return SendResult(success=False, error=err)
 
     async def send(
         self,
@@ -1575,6 +1654,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         guest_query_id = self._guest_query_id_from_chat_id(chat_id)
         if guest_query_id:
+            inline_message_id = self._guest_inline_message_ids_cache().get(guest_query_id)
+            if inline_message_id:
+                return await self._edit_guest_inline_message(
+                    inline_message_id,
+                    content,
+                    finalize=True,
+                )
             return await self._answer_guest_query(guest_query_id, content)
         
         try:
@@ -1774,6 +1860,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        guest_query_id = self._guest_query_id_from_chat_id(chat_id)
+        if guest_query_id:
+            inline_message_id = message_id or self._guest_inline_message_ids_cache().get(guest_query_id)
+            if not inline_message_id:
+                return SendResult(success=False, error="Guest inline message id not available")
+            return await self._edit_guest_inline_message(
+                inline_message_id,
+                content,
+                finalize=finalize,
+            )
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.

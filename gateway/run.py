@@ -64,6 +64,27 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_TELEGRAM_GUEST_CHAT_PREFIX = "guest:"
+
+
+def _is_telegram_guest_source(source: Any) -> bool:
+    platform_value = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+    return platform_value == "telegram" and str(getattr(source, "chat_id", "") or "").startswith(
+        _TELEGRAM_GUEST_CHAT_PREFIX
+    )
+
+
+def _effective_tool_progress_mode(source: Any, configured_mode: Any) -> str:
+    """Guest Bot turns need one editable progress bubble to keep the query alive."""
+    if _is_telegram_guest_source(source):
+        return "new"
+    return str(configured_mode or "all")
+
+
+def _guest_initial_progress_message(source: Any) -> Optional[str]:
+    if _is_telegram_guest_source(source):
+        return "Думаю…"
+    return None
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -14645,6 +14666,8 @@ class GatewayRunner:
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        progress_mode = _effective_tool_progress_mode(source, progress_mode)
+        is_guest_turn = _is_telegram_guest_source(source)
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -14654,6 +14677,7 @@ class GatewayRunner:
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
+            and not is_guest_turn
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,
@@ -14665,6 +14689,10 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        if progress_queue is not None:
+            _initial_guest_progress = _guest_initial_progress_message(source)
+            if _initial_guest_progress:
+                progress_queue.put(_initial_guest_progress)
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -15182,6 +15210,11 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            if is_guest_turn:
+                # Guest mode has a one-shot query. Keep UX to a single
+                # tool-progress bubble that is later overwritten by the final
+                # answer; token/interim streaming would fight that transport.
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages

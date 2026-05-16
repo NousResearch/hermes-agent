@@ -5360,3 +5360,160 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+class TestPruneReasoningHistory:
+    """Tests for the opt-in agent.max_reasoning_history_turns prune.
+
+    The prune drops reasoning_content / reasoning / reasoning_details from
+    assistant messages older than the last N turns when the user opts in via
+    config. DeepSeek/Kimi/Moonshot are blocked since they need their own
+    reasoning replayed for correctness.
+    """
+
+    def _make_agent(self, model="x-ai/grok-4.3", max_turns=None):
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"max_reasoning_history_turns": max_turns}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    @staticmethod
+    def _build_history(num_turns):
+        """Build a fake message list with `num_turns` assistant turns,
+        each with reasoning_content. Interleaves user/tool messages."""
+        msgs = []
+        for i in range(num_turns):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            msgs.append({
+                "role": "assistant",
+                "content": f"a{i}",
+                "reasoning_content": f"thought-{i}",
+                "reasoning": f"alt-thought-{i}",
+                "reasoning_details": [{"type": "summary", "text": f"d{i}"}],
+            })
+        return msgs
+
+    def test_default_no_op(self):
+        """No config → reasoning fields preserved on every assistant turn."""
+        agent = self._make_agent(max_turns=None)
+        msgs = self._build_history(5)
+        result = agent._prune_reasoning_history(msgs)
+        # Same length, every assistant still has reasoning_content
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 5
+        for a in assistants:
+            assert "reasoning_content" in a
+            assert "reasoning" in a
+            assert "reasoning_details" in a
+
+    def test_prune_keeps_last_n_on_grok(self):
+        """On grok-4.3 with N=2, only the last 2 assistant turns retain reasoning."""
+        agent = self._make_agent(model="x-ai/grok-4.3", max_turns=2)
+        msgs = self._build_history(5)
+        result = agent._prune_reasoning_history(msgs)
+        assistants = [m for m in result if m.get("role") == "assistant"]
+        assert len(assistants) == 5
+        # First 3 should be stripped
+        for a in assistants[:3]:
+            assert "reasoning_content" not in a
+            assert "reasoning" not in a
+            assert "reasoning_details" not in a
+            # Other fields preserved
+            assert a["content"].startswith("a")
+            assert a["role"] == "assistant"
+        # Last 2 should retain
+        for a in assistants[-2:]:
+            assert a["reasoning_content"].startswith("thought-")
+            assert a["reasoning"].startswith("alt-thought-")
+            assert a["reasoning_details"][0]["type"] == "summary"
+
+    def test_blocklist_deepseek_no_op_with_warning(self, caplog):
+        """DeepSeek is blocked: prune returns input unchanged + warning."""
+        import logging
+        agent = self._make_agent(model="deepseek/deepseek-v4-pro", max_turns=2)
+        msgs = self._build_history(5)
+        with caplog.at_level(logging.WARNING, logger="run_agent"):
+            result = agent._prune_reasoning_history(msgs)
+        # No pruning happened
+        for a in [m for m in result if m.get("role") == "assistant"]:
+            assert "reasoning_content" in a
+        assert any(
+            "blocklist" in rec.getMessage() and "deepseek" in rec.getMessage().lower()
+            for rec in caplog.records
+        )
+
+    def test_blocklist_kimi_no_op(self):
+        """Kimi is blocked: prune returns input unchanged."""
+        agent = self._make_agent(model="moonshotai/kimi-k2", max_turns=2)
+        msgs = self._build_history(5)
+        result = agent._prune_reasoning_history(msgs)
+        for a in [m for m in result if m.get("role") == "assistant"]:
+            assert "reasoning_content" in a
+
+    def test_blocklist_warning_is_idempotent(self, caplog):
+        """The blocklist warning fires only once per agent instance."""
+        import logging
+        agent = self._make_agent(model="deepseek/deepseek-v4-pro", max_turns=2)
+        msgs = self._build_history(5)
+        with caplog.at_level(logging.WARNING, logger="run_agent"):
+            agent._prune_reasoning_history(msgs)
+            agent._prune_reasoning_history(msgs)
+            agent._prune_reasoning_history(msgs)
+        warnings = [rec for rec in caplog.records if "blocklist" in rec.getMessage()]
+        assert len(warnings) == 1
+
+    def test_negative_n_is_no_op(self):
+        """Negative N is normalised to None at init → no-op."""
+        agent = self._make_agent(model="x-ai/grok-4.3", max_turns=-1)
+        assert agent._max_reasoning_history_turns is None
+        msgs = self._build_history(5)
+        result = agent._prune_reasoning_history(msgs)
+        for a in [m for m in result if m.get("role") == "assistant"]:
+            assert "reasoning_content" in a
+
+    def test_assistant_count_below_n_no_op(self):
+        """If assistant turns are fewer than N, nothing to prune."""
+        agent = self._make_agent(model="x-ai/grok-4.3", max_turns=10)
+        msgs = self._build_history(3)
+        result = agent._prune_reasoning_history(msgs)
+        for a in [m for m in result if m.get("role") == "assistant"]:
+            assert "reasoning_content" in a
+
+    def test_non_assistant_messages_untouched(self):
+        """User and tool messages are never modified."""
+        agent = self._make_agent(model="x-ai/grok-4.3", max_turns=1)
+        msgs = self._build_history(5)
+        result = agent._prune_reasoning_history(msgs)
+        for original, after in zip(msgs, result):
+            if original.get("role") != "assistant":
+                # Same message instance returned (no copy)
+                assert original is after
+
+    def test_does_not_mutate_input(self):
+        """The stored session messages are never mutated."""
+        agent = self._make_agent(model="x-ai/grok-4.3", max_turns=2)
+        msgs = self._build_history(5)
+        agent._prune_reasoning_history(msgs)
+        # Original list still has reasoning on every assistant
+        for a in [m for m in msgs if m.get("role") == "assistant"]:
+            assert "reasoning_content" in a
+            assert "reasoning" in a
+            assert "reasoning_details" in a

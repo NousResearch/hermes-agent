@@ -2115,6 +2115,27 @@ class AIAgent:
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+        # Optional opt-in: cap the number of historical turns whose
+        # reasoning_content is replayed to the API. Set via
+        # agent.max_reasoning_history_turns (int or null/missing). Default
+        # is None (no pruning, current behaviour). Models in the blocklist
+        # short-circuit the prune (one-time warning), since they require
+        # their own reasoning to be replayed for correctness (refs #15250
+        # DeepSeek, #17400 Kimi).
+        _raw_max_reasoning = _agent_section.get("max_reasoning_history_turns")
+        try:
+            self._max_reasoning_history_turns = (
+                int(_raw_max_reasoning) if _raw_max_reasoning is not None else None
+            )
+            if (
+                self._max_reasoning_history_turns is not None
+                and self._max_reasoning_history_turns < 0
+            ):
+                self._max_reasoning_history_turns = None
+        except (TypeError, ValueError):
+            self._max_reasoning_history_turns = None
+        self._strip_reasoning_blocked_warned = False
+
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
         try:
@@ -6309,6 +6330,78 @@ class AIAgent:
         return getattr(fn, "name", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+    # Models whose own reasoning_content must be replayed in history for
+    # correctness — they short-circuit any opt-in reasoning-history prune.
+    _REASONING_HISTORY_REQUIRED_MODELS = ("deepseek", "kimi", "moonshot")
+
+    def _prune_reasoning_history(
+        self,
+        api_messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return ``api_messages`` with reasoning fields stripped from older
+        assistant turns when ``agent.max_reasoning_history_turns`` is set.
+
+        Default behaviour (no config) is unchanged — full history replays.
+        When set to ``N`` (positive int), only the last ``N`` assistant
+        turns retain their ``reasoning_content`` / ``reasoning`` /
+        ``reasoning_details`` keys; older turns have these keys removed
+        from the per-call copy. The stored session messages are never
+        mutated.
+
+        Models matching ``_REASONING_HISTORY_REQUIRED_MODELS`` short-circuit
+        the prune with a one-time warning. DeepSeek (#15250) and Kimi
+        (#17400) require their own reasoning to be replayed; pruning would
+        break tool-call accuracy for them.
+        """
+        n = self._max_reasoning_history_turns
+        if n is None or n <= 0:
+            return api_messages
+
+        model_lower = (self.model or "").lower()
+        if any(
+            blocked in model_lower
+            for blocked in self._REASONING_HISTORY_REQUIRED_MODELS
+        ):
+            if not self._strip_reasoning_blocked_warned:
+                logger.warning(
+                    "agent.max_reasoning_history_turns=%d ignored: model %r "
+                    "is in the reasoning-history-required blocklist "
+                    "(DeepSeek/Kimi/Moonshot require their own "
+                    "reasoning_content to be replayed). No-op for this "
+                    "agent instance.",
+                    n,
+                    self.model,
+                )
+                self._strip_reasoning_blocked_warned = True
+            return api_messages
+
+        assistant_indices = [
+            i for i, msg in enumerate(api_messages)
+            if isinstance(msg, dict) and msg.get("role") == "assistant"
+        ]
+        if len(assistant_indices) <= n:
+            return api_messages
+
+        keep_indices = set(assistant_indices[-n:])
+        result: List[Dict[str, Any]] = []
+        for i, msg in enumerate(api_messages):
+            if (
+                i in keep_indices
+                or not isinstance(msg, dict)
+                or msg.get("role") != "assistant"
+            ):
+                result.append(msg)
+                continue
+            # Drop reasoning fields on a shallow copy; preserve everything else.
+            stripped = {
+                k: v
+                for k, v in msg.items()
+                if k not in ("reasoning_content", "reasoning", "reasoning_details")
+            }
+            result.append(stripped)
+        return result
+
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -11916,6 +12009,7 @@ class AIAgent:
             # tool_call was summarized away; Responses API rejects that as
             # "No tool call found for function call output".
             api_messages = self._sanitize_api_messages(api_messages)
+            api_messages = self._prune_reasoning_history(api_messages)
 
             # Same safety net as the main loop: drop thinking-only assistant
             # turns so Anthropic-family providers don't 400 the summary call.
@@ -12773,6 +12867,7 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+            api_messages = self._prune_reasoning_history(api_messages)
 
             # Drop thinking-only assistant turns (reasoning but no visible
             # output and no tool_calls) and merge any adjacent user messages

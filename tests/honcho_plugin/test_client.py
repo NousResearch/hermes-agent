@@ -523,6 +523,54 @@ class TestProfileScopedConfig:
         assert config.host == "hermes.dreamer"
         assert config.peer_name == "dreamer-user"
 
+    def test_workspace_fallback_sanitizes_dotted_host(self, tmp_path):
+        """Issue #26459: workspace fallback must not contain ``.`` characters.
+
+        When a profile host block exists but does not set an explicit
+        ``workspace``, the fallback uses ``resolved_host`` (``hermes.<profile>``).
+        Honcho's API regex is ``^[a-zA-Z0-9_-]+$``, so the dot makes every
+        init call fail with ``string_pattern_mismatch`` — once per minute the
+        plugin retries and the warning floods the journal. Dots must be
+        rewritten to underscores.
+        """
+        config_file = tmp_path / "config.json"
+        # No ``workspace`` field — exercises the fallback chain.
+        config_file.write_text(json.dumps({
+            "apiKey": "shared-key",
+            "hosts": {
+                "hermes.fundraising": {"peerName": "alice"},
+            },
+        }))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.fundraising", config_path=config_file,
+        )
+        assert "." not in config.workspace_id, (
+            f"workspace_id {config.workspace_id!r} contains '.', which violates "
+            "Honcho's ^[a-zA-Z0-9_-]+$ regex (issue #26459)"
+        )
+        assert config.workspace_id == "hermes_fundraising"
+
+    def test_explicit_workspace_field_is_passed_through_unchanged(self, tmp_path):
+        """Explicit ``workspace`` values must NOT be rewritten — user controls them.
+
+        Sanitization only kicks in on the fallback. If the user has set
+        ``hosts.<host>.workspace`` (or the root-level ``workspace``) to any
+        value, including one with characters Honcho would reject, it is
+        passed through verbatim so the user sees the real API error
+        rather than a silently-rewritten value.
+        """
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {
+                "hermes.fundraising": {"workspace": "my.explicit.ws"},
+            },
+        }))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.fundraising", config_path=config_file,
+        )
+        assert config.workspace_id == "my.explicit.ws"
+
 
 class TestObservationModeMigration:
     """Existing configs without explicit observationMode keep 'unified' default."""

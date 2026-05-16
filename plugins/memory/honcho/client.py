@@ -372,11 +372,16 @@ class HonchoClientConfig:
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
-        # Explicit host block fields win, then flat/global, then defaults
+        # Explicit host block fields win, then flat/global, then defaults.
+        # Issue #26459: when falling back to ``resolved_host`` (e.g.
+        # ``hermes.<profile>``), replace ``.`` with ``_`` because Honcho's
+        # workspace ID regex is ``^[a-zA-Z0-9_-]+$`` — a dotted host key
+        # makes the API reject the request once per minute. Explicit
+        # workspace fields are passed through unchanged (user controls them).
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
-            or resolved_host
+            or resolved_host.replace(".", "_")
         )
         ai_peer = (
             host_block.get("aiPeer")

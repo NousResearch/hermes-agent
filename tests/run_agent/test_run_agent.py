@@ -3832,6 +3832,86 @@ class TestCredentialPoolRecovery:
         assert context["message"] == "Weekly credits exhausted."
         assert context["reset_at"] == "2026-04-12T10:30:00Z"
 
+    def test_extract_api_error_context_parses_resets_in_seconds(self, agent):
+        """Codex 429 bodies expose ``resets_in_seconds`` instead of an
+        absolute ``resets_at`` — convert to an absolute epoch so downstream
+        consumers (credential pool, status formatter) get a consistent type.
+        """
+        import time as _time
+
+        response = SimpleNamespace(headers={})
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "resets_in_seconds": 756,
+                }
+            },
+            response=response,
+        )
+
+        before = _time.time()
+        context = agent._extract_api_error_context(error)
+        after = _time.time()
+
+        assert "reset_at" in context
+        assert before + 756 - 1 <= context["reset_at"] <= after + 756 + 1
+
+    def test_extract_api_error_context_resets_at_wins_over_resets_in_seconds(self, agent):
+        """When both keys are present, the absolute ``resets_at`` value is
+        authoritative — the agent must not silently convert it via the
+        relative path.
+        """
+        response = SimpleNamespace(headers={})
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "resets_at": "2026-04-12T10:30:00Z",
+                    "resets_in_seconds": 756,
+                }
+            },
+            response=response,
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reset_at"] == "2026-04-12T10:30:00Z"
+
+    def test_format_reset_in_hint_renders_numeric_epoch(self, agent):
+        import time as _time
+
+        reset_at = _time.time() + 780  # 13 minutes out
+        hint = agent._format_reset_in_hint(reset_at)
+        # Allow 12m..13m tolerance — `time.time()` ticks between the set and
+        # the format call, so the boundary may round down by a second.
+        assert hint in {"13m", "12m 59s", "12m 58s"}
+
+    def test_format_reset_in_hint_renders_iso_string(self, agent):
+        from datetime import datetime, timedelta, timezone
+
+        target = datetime.now(timezone.utc) + timedelta(seconds=180)
+        hint = agent._format_reset_in_hint(target.isoformat().replace("+00:00", "Z"))
+        # 3 minutes out — accept 2m 5xs through 3m
+        assert hint.startswith(("2m", "3m"))
+
+    def test_format_reset_in_hint_renders_milliseconds_epoch(self, agent):
+        import time as _time
+
+        reset_at_ms = (_time.time() + 600) * 1000.0
+        hint = agent._format_reset_in_hint(reset_at_ms)
+        assert hint in {"10m", "9m 59s", "9m 58s"}
+
+    def test_format_reset_in_hint_returns_empty_for_unparseable(self, agent):
+        assert agent._format_reset_in_hint(None) == ""
+        assert agent._format_reset_in_hint("") == ""
+        assert agent._format_reset_in_hint("not a date") == ""
+
+    def test_format_reset_in_hint_returns_empty_when_already_elapsed(self, agent):
+        import time as _time
+
+        assert agent._format_reset_in_hint(_time.time() - 60) == ""
+
     def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
         next_entry = SimpleNamespace(label="secondary")
         captured = {}

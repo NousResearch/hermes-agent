@@ -5203,6 +5203,13 @@ class AIAgent:
                 if value not in {None, ""}:
                     context["reset_at"] = value
                     break
+            if "reset_at" not in context:
+                resets_in_seconds = payload.get("resets_in_seconds")
+                if resets_in_seconds not in {None, ""}:
+                    try:
+                        context["reset_at"] = time.time() + float(resets_in_seconds)
+                    except (TypeError, ValueError):
+                        pass
             retry_after = payload.get("retry_after")
             if retry_after not in {None, ""} and "reset_at" not in context:
                 try:
@@ -5246,6 +5253,41 @@ class AIAgent:
                         context["reset_at"] = time.time() + float(sec_match.group(1))
 
         return context
+
+    @staticmethod
+    def _format_reset_in_hint(reset_at: Any) -> str:
+        """Render ``reset_at`` as a relative ``Xm Ys`` duration, or ``""``.
+
+        Accepts epoch seconds, epoch milliseconds, and ISO-8601 strings —
+        the same value shapes ``_extract_api_error_context`` may emit. Returns
+        an empty string when the value can't be parsed or has already elapsed,
+        so callers can safely concatenate without a None check.
+        """
+        if reset_at is None or reset_at == "":
+            return ""
+        target: Optional[float] = None
+        if isinstance(reset_at, (int, float)):
+            target = float(reset_at)
+        elif isinstance(reset_at, str):
+            raw = reset_at.strip()
+            if not raw:
+                return ""
+            try:
+                target = float(raw)
+            except ValueError:
+                try:
+                    target = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    return ""
+        if target is None or target <= 0:
+            return ""
+        if target > 1_000_000_000_000:
+            target = target / 1000.0
+        delta = target - time.time()
+        if delta <= 0:
+            return ""
+        from agent.nous_rate_guard import format_remaining
+        return format_remaining(delta)
 
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
@@ -14787,7 +14829,11 @@ class AIAgent:
                                     pass
                     wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
-                        self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                        _reset_hint = self._format_reset_in_hint(
+                            error_context.get("reset_at") if isinstance(error_context, dict) else None
+                        )
+                        _reset_suffix = f" Resets in ~{_reset_hint}." if _reset_hint else ""
+                        self._emit_status(f"⏱️ Rate limited.{_reset_suffix} Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:
                         self._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(

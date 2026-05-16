@@ -51,6 +51,37 @@ def test_dashboard_command_uses_ssh_mcp_environment(monkeypatch):
     assert "/home/abcosta/Knowledge/kb-anthony" in command[-1]
 
 
+def test_dashboard_command_refreshes_hermes_env(monkeypatch, tmp_path):
+    module = _load_module()
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "HERMES_KB_MCP_SSH_TARGET=helix-vpn",
+                "HERMES_KB_WORKSPACE=/home/abcosta/Knowledge/kb-anthony",
+                "HERMES_KB_BIN=/home/abcosta/.local/share/kb-engine-prod/.venv/bin/kb",
+                "",
+            ]
+        )
+    )
+    for key in (
+        "HERMES_KB_DASHBOARD_COMMAND",
+        "HERMES_KB_MCP_SSH_TARGET",
+        "HERMES_KB_WORKSPACE",
+        "HERMES_KB_BIN",
+        "HERMES_KB_PROD_BIN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    command = module._dashboard_command(limit=6)
+
+    assert command[0] == "ssh"
+    assert "helix-vpn" in command
+    assert "dashboard.live" in command[-1]
+
+
 @pytest.mark.asyncio
 async def test_live_dashboard_unwraps_mcp_packet(monkeypatch):
     module = _load_module()

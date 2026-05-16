@@ -56,6 +56,7 @@ async def live_dashboard(limit: int = Query(default=8, ge=1, le=50)) -> dict[str
 
 
 def _dashboard_command(*, limit: int) -> list[str]:
+    _refresh_hermes_env()
     configured = (
         os.environ.get("HERMES_KB_DASHBOARD_COMMAND")
         or os.environ.get("KB_DASHBOARD_COMMAND")
@@ -100,6 +101,17 @@ def _dashboard_command(*, limit: int) -> list[str]:
         args_json,
         "--json",
     ]
+
+
+def _refresh_hermes_env() -> None:
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+    except Exception:
+        return
+    try:
+        load_hermes_dotenv()
+    except Exception:
+        return
 
 
 def _unwrap_payload(raw: Any) -> Any:

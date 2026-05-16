@@ -1569,7 +1569,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.15.19"
+version = "0.15.20"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

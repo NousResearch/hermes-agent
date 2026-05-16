@@ -2560,7 +2560,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if isinstance(action_value, dict) else None
         )
 
-        if hermes_action:
+        if hermes_action in _APPROVAL_CHOICE_MAP:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
@@ -2605,6 +2605,38 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
+    @staticmethod
+    def _card_action_payload(action: Any, action_value: Any) -> Dict[str, Any]:
+        """Return the useful payload from a Feishu card action callback."""
+        payload: Dict[str, Any] = {}
+        if isinstance(action_value, dict):
+            payload.update(action_value)
+        elif action_value:
+            payload["value"] = action_value
+
+        form_value = getattr(action, "form_value", None) or {}
+        if form_value:
+            payload["form_value"] = form_value
+        input_value = getattr(action, "input_value", None)
+        if input_value:
+            payload["input_value"] = input_value
+        option = getattr(action, "option", None)
+        if option:
+            payload["option"] = option
+        options = getattr(action, "options", None)
+        if options:
+            payload["options"] = options
+        name = getattr(action, "name", None)
+        if name:
+            payload["name"] = name
+        checked = getattr(action, "checked", None)
+        if checked is not None:
+            payload["checked"] = checked
+        timezone = getattr(action, "timezone", None)
+        if timezone:
+            payload["timezone"] = timezone
+        return payload
+
     def _logical_card_action_key(self, event: Any, action_value: Any) -> str:
         context = getattr(event, "context", None)
         operator = getattr(event, "operator", None)
@@ -2613,10 +2645,11 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         open_id = str(getattr(operator, "open_id", "") or "")
         action_tag = str(getattr(action, "tag", "") or "button")
+        payload = self._card_action_payload(action, action_value)
         try:
-            value_json = json.dumps(action_value or {}, ensure_ascii=False, sort_keys=True, default=str)
+            value_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         except Exception:
-            value_json = str(action_value)
+            value_json = str(payload)
         return "|".join([open_message_id or chat_id, open_id, action_tag, value_json])
 
     def _is_logical_card_action_duplicate(self, event: Any, action_value: Any) -> bool:
@@ -2842,11 +2875,12 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
+        action_payload = self._card_action_payload(action, action_value)
 
         synthetic_text = f"card_action:{action_tag}"
-        if action_value:
+        if action_payload:
             try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                synthetic_text += f" {json.dumps(action_payload, ensure_ascii=False)}"
             except Exception:
                 pass
         open_message_id = str(getattr(context, "open_message_id", "") or "")

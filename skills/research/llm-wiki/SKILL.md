@@ -23,11 +23,19 @@ Contradictions have already been flagged. Synthesis reflects everything ingested
 **Division of labor:** The human curates sources and directs analysis. The agent
 summarizes, cross-references, files, and maintains consistency.
 
-## Gordon's Wiki — HTML Native (2026-05-10 onward)
+## Agent Brain Wiki (separate from Gordon's wiki)
 
-Gordon retired the markdown pipeline. Wiki pages are written **directly as static HTML** at `/opt/data/hermes-pages/wiki/`. No `md2html.py` conversion step — I edit HTML and push. The markdown wiki at `/opt/data/wiki/` has been deleted.
+My agent brain wiki lives at `/opt/data/hermes-brain/` (or `~/wiki` if that doesn't exist).
+It's markdown-based, Karpathy-style, for research synthesis and knowledge compilation.
+- `SCHEMA.md`, `index.md`, `log.md`, `raw/`, `entities/`, `concepts/`, etc.
+- Gordon does NOT use this — it's mine.
+- Gordon's wiki is separate: `/opt/data/hermes-pages/wiki/` (pure HTML, see below).
 
-**Location:** `/opt/data/hermes-pages/wiki/`
+**Do NOT conflate the two.** When I mention "the wiki" in a research context, I'm referring to my agent brain at `/opt/data/hermes-brain/`, not Gordon's HTML wiki.
+
+## Gordon's Wiki — Pure HTML
+
+Gordon retired the markdown pipeline. His wiki is **pure static HTML** at `/opt/data/hermes-pages/wiki/`.
 
 **Structure:**
 - `index.html` — wiki hub (auth-protected, lists all pages)
@@ -42,16 +50,17 @@ Gordon retired the markdown pipeline. Wiki pages are written **directly as stati
 **To add a page:**
 1. Write HTML directly to the appropriate subdirectory
 2. Add link in `index.html` under the correct section
-3. Commit and push: `cd /opt/data/hermes-pages && git add . && git commit -m "..." && GIT_TERMINAL_PROMPT=0 git push origin main`
-4. Cloudflare Pages auto-deploys in ~30s
+3. Deploy: `cd /opt/data/hermes-pages && git add . && git commit -m "..." && GIT_TERMINAL_PROMPT=0 git push origin main`
+4. Then run: `npx -y -p node@22 -p wrangler wrangler pages deploy /opt/data/hermes-pages --project-name hermes-pages --commit-dirty=true`
+5. Live in ~30s at `https://hermes-pages-d55.pages.dev/wiki/...`
 
-**Auth:** email `rouse.gordon@gmail.com`, password `GordonWiki2026!`, cookie `wiki_auth=GW2026`
+**⚠️ Git push alone does NOT trigger Cloudflare Pages deployment.** The push goes to GitHub but the Pages site doesn't update from git alone — you MUST run the `wrangler pages deploy` command after every push. This was discovered empirically (2026-05-16).
 
 **Deploy verification:** `curl -L -A 'Mozilla/5.0' https://hermes-pages-d55.pages.dev/wiki/...`
 
-**Do NOT:** regenerate from `/opt/data/hermes-pages/gordons-llm-wiki/` markdown — that was the old pipeline and is now stale.
+**Auth:** email `rouse.gordon@gmail.com`, password `GordonWiki2026!`, cookie `wiki_auth=GW2026`
 
-**LLM wiki skill still useful for:** research synthesis, cross-referencing, adding structured entries, linting existing HTML pages.
+**Do NOT:** use `md2html.py`, regenerate from markdown, or touch `/opt/data/hermes-pages/gordons-llm-wiki/`.
 
 ### Public standalone knowledge bases on Hermes Pages
 
@@ -105,7 +114,8 @@ Use this skill when the user:
 If unset, defaults to `~/wiki`.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI_PATH=/opt/data/memories
+WIKI="${WIKI_PATH:-/opt/data/memories}"
 ```
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
@@ -143,7 +153,8 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+WIKI_PATH=/opt/data/memories
+WIKI="${WIKI_PATH:-/opt/data/memories}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"

@@ -756,7 +756,7 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
 
 
 def test_ws_transport_disconnect_closes_idle_session_resources(monkeypatch):
-    transport = object()
+    transport = types.SimpleNamespace(is_closed=True)
     calls = {"ended": [], "worker_closed": 0, "agent_closed": 0}
 
     class _DB:
@@ -782,6 +782,53 @@ def test_ws_transport_disconnect_closes_idle_session_resources(monkeypatch):
 
     try:
         closed = server._close_sessions_for_transport(transport, "tui_disconnect")
+
+        assert closed == 1
+        assert "sid" not in server._sessions
+        assert calls["ended"] == [("session-key", "tui_disconnect")]
+        assert calls["worker_closed"] == 1
+        assert calls["agent_closed"] == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_ws_transport_disconnect_respects_idle_reap_grace(monkeypatch):
+    now = time.time()
+    transport = types.SimpleNamespace(is_closed=True)
+    calls = {"ended": [], "worker_closed": 0, "agent_closed": 0}
+
+    class _DB:
+        def end_session(self, session_id, end_reason):
+            calls["ended"].append((session_id, end_reason))
+
+    class _Worker:
+        def close(self):
+            calls["worker_closed"] += 1
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.close = lambda: calls.__setitem__("agent_closed", calls["agent_closed"] + 1)
+    agent.commit_memory_session = lambda _history: None
+
+    server._sessions["sid"] = _session(
+        agent=agent,
+        transport=transport,
+        slash_worker=_Worker(),
+        last_seen_at=now,
+        created_at=now,
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *args: None)
+
+    try:
+        assert server._close_sessions_for_transport(transport, "tui_disconnect") == 0
+        assert "sid" in server._sessions
+        assert calls == {"ended": [], "worker_closed": 0, "agent_closed": 0}
+
+        closed = server._reap_confirmed_idle_sessions(
+            grace_seconds=30.0,
+            now=now + 31.0,
+            end_reason="tui_disconnect",
+        )
 
         assert closed == 1
         assert "sid" not in server._sessions

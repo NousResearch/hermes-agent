@@ -112,6 +112,11 @@ class WSTransport:
     def close(self) -> None:
         self._closed = True
 
+    @property
+    def is_closed(self) -> bool:
+        """Whether this transport has observed a disconnect/write failure."""
+        return self._closed
+
 
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
@@ -166,15 +171,7 @@ async def handle_ws(ws: Any) -> None:
     finally:
         transport.close()
         server._close_sessions_for_transport(transport, end_reason="tui_disconnect")
-
-        # Detach the transport from any running sessions it still owns so
-        # later emits fall back to stdio instead of crashing into a closed
-        # socket. Idle sessions were finalized above to avoid leaking slash
-        # workers and open state.db rows when WS clients disconnect without a
-        # session.close RPC.
-        for _, sess in list(server._sessions.items()):
-            if sess.get("transport") is transport:
-                sess["transport"] = server._stdio_transport
+        server._schedule_idle_reap(end_reason="tui_disconnect")
 
         try:
             await ws.close()

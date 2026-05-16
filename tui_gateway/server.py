@@ -121,6 +121,7 @@ _pending: dict[str, tuple[str, threading.Event]] = {}
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
+_stale_session_repair_ran = False
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
@@ -131,6 +132,11 @@ try:
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
+try:
+    _idle_reap_grace = float(os.environ.get("HERMES_TUI_IDLE_REAP_GRACE_S") or "30")
+except (ValueError, TypeError):
+    _idle_reap_grace = 30.0
+_IDLE_REAP_GRACE_S = max(0.0, _idle_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -361,21 +367,85 @@ def _close_session_resources(session: dict | None, end_reason: str) -> None:
         pass
 
 
-def _close_sessions_for_transport(transport: object, end_reason: str = "tui_disconnect") -> int:
+def _close_sessions_for_transport(
+    transport: object,
+    end_reason: str = "tui_disconnect",
+    *,
+    grace_seconds: float | None = None,
+) -> int:
     """Close idle sessions owned by a disconnected transport.
 
     Dashboard/WebSocket TUI clients can disappear without issuing
     ``session.close``.  Leaving their sessions attached to a dead transport
-    keeps slash workers alive and leaves state.db rows open.  Close idle
-    sessions on disconnect; keep actively-running sessions alive and detach
-    them to stdio so in-flight turns can finish without writing to a dead WS.
+    keeps slash workers alive and leaves state.db rows open.  Running sessions
+    are detached to stdio so in-flight turns can finish without writing to a
+    dead WS. Idle sessions are reaped only after the confirmed-idle grace
+    window; a quick reconnect can reattach them before closeout.
     """
+    for _sid, session in list(_sessions.items()):
+        if session.get("transport") is transport and session.get("running"):
+            session["transport"] = _stdio_transport
+    return _reap_confirmed_idle_sessions(
+        grace_seconds=grace_seconds,
+        end_reason=end_reason,
+    )
+
+
+def _schedule_idle_reap(
+    *,
+    grace_seconds: float | None = None,
+    end_reason: str = "tui_idle_reap",
+) -> None:
+    """Schedule one best-effort idle reap after the grace window elapses."""
+    delay = _IDLE_REAP_GRACE_S if grace_seconds is None else max(0.0, grace_seconds)
+
+    def _run() -> None:
+        try:
+            _reap_confirmed_idle_sessions(
+                grace_seconds=grace_seconds,
+                end_reason=end_reason,
+            )
+        except Exception:
+            logger.debug("idle session reap failed", exc_info=True)
+
+    timer = threading.Timer(delay, _run)
+    timer.daemon = True
+    timer.start()
+
+
+def _session_transport_is_closed(session: dict) -> bool:
+    transport = session.get("transport")
+    return bool(
+        transport is not None
+        and transport is not _stdio_transport
+        and getattr(transport, "is_closed", False)
+    )
+
+
+def _reap_confirmed_idle_sessions(
+    *,
+    grace_seconds: float | None = None,
+    now: float | None = None,
+    end_reason: str = "tui_idle_reap",
+) -> int:
+    """Close sessions whose owning dashboard transport is confirmed dead.
+
+    This is intentionally narrower than a time-only idle timeout: a session is
+    eligible only when (1) it is not running an agent turn, (2) it is attached
+    to a non-stdio transport that has observed a disconnect/write failure, and
+    (3) it has remained idle beyond the grace window. That lets us reap slash
+    workers that were born during a dashboard disconnect race without killing
+    active local Ink sessions or long-running turns.
+    """
+    cutoff = (now if now is not None else time.time()) - (
+        _IDLE_REAP_GRACE_S if grace_seconds is None else max(0.0, grace_seconds)
+    )
     closed = 0
     for sid, session in list(_sessions.items()):
-        if session.get("transport") is not transport:
+        if session.get("running") or not _session_transport_is_closed(session):
             continue
-        if session.get("running"):
-            session["transport"] = _stdio_transport
+        last_seen = float(session.get("last_seen_at") or session.get("created_at") or 0.0)
+        if last_seen > cutoff:
             continue
         popped = _sessions.pop(sid, None)
         if popped is None:
@@ -398,7 +468,7 @@ atexit.register(_shutdown_sessions)
 
 
 def _get_db():
-    global _db, _db_error
+    global _db, _db_error, _stale_session_repair_ran
     if _db is None:
         from hermes_state import SessionDB
 
@@ -412,6 +482,14 @@ def _get_db():
                 exc,
             )
             return None
+    if not _stale_session_repair_ran:
+        _stale_session_repair_ran = True
+        try:
+            repaired = _db.repair_stale_open_sessions()
+            if repaired:
+                logger.info("repaired %s stale open TUI session rows", repaired)
+        except Exception:
+            logger.debug("stale open session repair failed", exc_info=True)
     return _db
 
 
@@ -552,6 +630,15 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
+        params = _params if isinstance(_params, dict) else {}
+        sid = params.get("session_id") or ""
+        if sid and sid in _sessions:
+            _sessions[sid]["last_seen_at"] = time.time()
+            if transport is not None:
+                _sessions[sid]["transport"] = transport
+
+        _reap_confirmed_idle_sessions()
+
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 
@@ -671,6 +758,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     except Exception:
                         pass
             ready.set()
+            _reap_confirmed_idle_sessions()
 
     threading.Thread(target=_build, daemon=True).start()
 
@@ -1986,6 +2074,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        "created_at": time.time(),
+        "last_seen_at": time.time(),
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
@@ -2178,6 +2268,8 @@ def _(rid, params: dict) -> dict:
         "slash_worker": None,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
+        "created_at": time.time(),
+        "last_seen_at": time.time(),
         "transport": current_transport() or _stdio_transport,
     }
 

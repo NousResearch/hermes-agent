@@ -732,6 +732,65 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def repair_stale_open_sessions(
+        self,
+        *,
+        older_than_seconds: float = 12 * 60 * 60,
+        end_reason: str = "stale_closeout_repair",
+    ) -> int:
+        """Close old open session rows that have reached a terminal idle state.
+
+        Crashy/dashboard-disconnect paths from older versions could leave
+        ``sessions.ended_at`` NULL long after the last turn was done.  This
+        repair is conservative: it only touches rows whose latest activity is
+        older than ``older_than_seconds`` and whose latest message is terminal
+        enough to prove no model/tool turn is currently mid-flight (assistant
+        with ``finish_reason='stop'``, a completed tool result, or no messages
+        at all).  It returns the number of rows updated.
+        """
+        now = time.time()
+        cutoff = now - max(0.0, float(older_than_seconds))
+
+        def _do(conn):
+            conn.execute(
+                """
+                WITH latest AS (
+                    SELECT
+                        s.id,
+                        s.started_at,
+                        m.role AS latest_role,
+                        m.finish_reason AS latest_finish_reason,
+                        m.timestamp AS latest_timestamp,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY s.id
+                            ORDER BY m.timestamp DESC, m.id DESC
+                        ) AS rn
+                    FROM sessions s
+                    LEFT JOIN messages m ON m.session_id = s.id
+                    WHERE s.ended_at IS NULL
+                ), candidates AS (
+                    SELECT id
+                    FROM latest
+                    WHERE rn = 1
+                      AND COALESCE(latest_timestamp, started_at) < ?
+                      AND (
+                            latest_role IS NULL
+                         OR (latest_role = 'assistant' AND latest_finish_reason = 'stop')
+                         OR latest_role = 'tool'
+                      )
+                )
+                UPDATE sessions
+                   SET ended_at = ?, end_reason = ?
+                 WHERE ended_at IS NULL
+                   AND id IN (SELECT id FROM candidates)
+                """,
+                (cutoff, now, end_reason),
+            )
+            row = conn.execute("SELECT changes()").fetchone()
+            return int(row[0]) if row else 0
+
+        return self._execute_write(_do) or 0
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):

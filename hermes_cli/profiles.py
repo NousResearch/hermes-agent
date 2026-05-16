@@ -1870,6 +1870,23 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+# Transient entries excluded from every profile export. SQLite WAL, SHM, and
+# rollback-journal sidecars can disappear between copytree's directory scan and
+# file copy while a live database checkpoints, causing the whole export to fail.
+_EXPORT_TRANSIENT_SUFFIXES = (
+    ".sock",
+    ".tmp",
+    ".db-shm",
+    ".db-wal",
+    ".db-journal",
+)
+
+
+def _is_transient_export_name(name: str) -> bool:
+    """Return True for cache or transient files unsafe to copy live."""
+    return name == "__pycache__" or name.endswith(_EXPORT_TRANSIENT_SUFFIXES)
+
+
 # ---------------------------------------------------------------------------
 # Sensitive-file detection (shared by every export path)
 # ---------------------------------------------------------------------------
@@ -2194,7 +2211,8 @@ def _default_export_ignore(root_dir: Path):
       credential-directory trees identified by
       :func:`_is_sensitive_export_entry`.
     * **Universal exclusions at any depth** — ``__pycache__``, sockets, temp
-      files; plus npm lockfiles, which may appear at the root.
+      files, and transient SQLite sidecars; plus npm lockfiles, which may
+      appear at the root.
 
     All other allow-listed profile artifacts are copied through untouched.
     """
@@ -2203,7 +2221,7 @@ def _default_export_ignore(root_dir: Path):
         ignored: set = set()
         for entry in contents:
             # Universal exclusions (any depth)
-            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+            if _is_transient_export_name(entry):
                 ignored.add(entry)
             # npm lockfiles can appear at root
             elif entry in {"package.json", "package-lock.json"}:
@@ -2292,7 +2310,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         def _named_ignore(directory: str, contents: list) -> set:
             ignored: set = set()
             for entry in contents:
-                if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+                if _is_transient_export_name(entry):
                     ignored.add(entry)
                 elif _is_sensitive_export_entry(directory, entry, profile_dir):
                     ignored.add(entry)

@@ -615,3 +615,82 @@ class TestCredentialExclusion:
             member = f"default/{path.relative_to(default_home).as_posix()}"
             assert member in name_set, f"{member} should be in export"
         assert not any(b.startswith("config.yaml.bak") for b in basenames)
+
+    def test_named_profile_export_excludes_sqlite_sidecars_at_any_depth(
+        self, tmp_path, monkeypatch
+    ):
+        """Named exports retain databases but omit transient SQLite sidecars."""
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "testprofile"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("model: test\n")
+
+        nested = profile_dir / "plugins" / "demo"
+        nested.mkdir(parents=True)
+        database_paths = [profile_dir / "state.db", nested / "kanban.db"]
+        sidecar_paths = [
+            profile_dir / "state.db-shm",
+            profile_dir / "state.db-wal",
+            profile_dir / "state.db-journal",
+            nested / "kanban.db-shm",
+            nested / "kanban.db-wal",
+            nested / "kanban.db-journal",
+        ]
+        for path in database_paths + sidecar_paths:
+            path.write_text("sqlite fixture\n")
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda n: profile_dir
+        )
+        monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+
+        result = export_profile("testprofile", str(tmp_path / "named.tar.gz"))
+        with tarfile.open(result, "r:gz") as tf:
+            names = set(tf.getnames())
+
+        for path in database_paths:
+            member = f"testprofile/{path.relative_to(profile_dir).as_posix()}"
+            assert member in names, f"{member} should remain exportable"
+        for path in sidecar_paths:
+            member = f"testprofile/{path.relative_to(profile_dir).as_posix()}"
+            assert member not in names, f"{member} must NOT be in export"
+
+    def test_default_profile_export_excludes_nested_sqlite_sidecars(
+        self, tmp_path, monkeypatch
+    ):
+        """Default exports omit sidecars within otherwise allow-listed trees."""
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True)
+        (default_home / "config.yaml").write_text("model: test\n")
+
+        nested = default_home / "plugins" / "demo"
+        nested.mkdir(parents=True)
+        database = nested / "kanban.db"
+        sidecars = [
+            nested / "kanban.db-shm",
+            nested / "kanban.db-wal",
+            nested / "kanban.db-journal",
+        ]
+        for path in [database, *sidecars]:
+            path.write_text("sqlite fixture\n")
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles._get_default_hermes_home", lambda: default_home
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda n: default_home
+        )
+        monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
+
+        result = export_profile("default", str(tmp_path / "default.tar.gz"))
+        with tarfile.open(result, "r:gz") as tf:
+            names = set(tf.getnames())
+
+        database_member = f"default/{database.relative_to(default_home).as_posix()}"
+        assert database_member in names
+        for path in sidecars:
+            member = f"default/{path.relative_to(default_home).as_posix()}"
+            assert member not in names, f"{member} must NOT be in export"

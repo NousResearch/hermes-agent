@@ -1,0 +1,71 @@
+# Reference job definition: router-first-review
+#
+# PURPOSE
+# -------
+# Supervise router-first routing outcomes for OpenClaw cron runs.
+# Hermes reviews whether blockrun/auto resolved correctly (local for simple
+# work, cloud escalation for coding/reasoning) and emits [ACK] or
+# [ESCALATION_NOTICE].
+#
+# ENDPOINT ASSUMPTION
+# -------------------
+# blockrun/auto routes through openclaw-cli-proxy at http://127.0.0.1:11435/v1.
+# Use 11435 unless a live probe of http://127.0.0.1:8402/v1/models explicitly
+# validates direct-8402 as the supported deployment path (see plan Item 6).
+#
+# ACTIVATION
+# ----------
+# This job is disabled by default.  Enable it as part of Item 7 operational
+# migration, after Items 1-4 land in clawdbot and routing outcome records are
+# being written to ~/.openclaw/routing-outcomes.jsonl.
+#
+# STATIC PROMPT
+# -------------
+# The prompt below is the canonical text from REVIEW_JOB_STATIC_PROMPT in
+# cron/router_review.py.  If the policy checks change, update both.
+#
+# FILE TOOLSET
+# ------------
+# enabled_toolsets: ["file"] gives the Hermes agent read access to
+# ~/.openclaw/routing-outcomes.jsonl.  Remove this once the review cron
+# switches to inline prompt generation via format_review_prompt().
+#
+# REGISTRATION
+# ------------
+# Register with the live Hermes gateway via:
+#   hermes cron add --name router-first-review --schedule "*/30 * * * *" \
+#     --prompt-file plans/router-review-job.yaml --enabled false
+# Or via the Hermes API: POST /api/cron/jobs with the fields below.
+
+name: router-first-review
+schedule: "*/30 * * * *"
+enabled: false
+deliver: local
+enabled_toolsets:
+  - file
+prompt: |
+  [REVIEW_REQUEST] Router-first routing outcome review.
+  Endpoint assumption: http://127.0.0.1:11435/v1 (openclaw-cli-proxy).
+
+  Read the routing outcomes file at ~/.openclaw/routing-outcomes.jsonl if it exists.
+  Apply the following policy checks to records from the last 60 minutes:
+
+  1. Simple jobs (job_type=simple, selected_model=blockrun/auto) resolved to
+     cloud model without router_pin → [warning].
+  2. Coding/tool-heavy/reasoning jobs (selected_model=blockrun/auto) resolved
+     to local model instead of escalating → [warning].
+  3. Router-first job (selected_model=blockrun/auto) with no resolved_model
+     recorded → [warning] (Items 1-4 not yet integrated).
+  4. Job with consecutive_local_failures >= 3 → [critical]
+     (GN100 / local inference down).
+  5. Explicit model pin (selected_model != blockrun/auto) with no
+     [router-pin: <reason>] marker for a non-coding job → [warning].
+
+  If the file does not exist, output:
+  [ACK] No routing outcomes yet. Items 1-4 integration pending.
+
+  If all checks pass, output:
+  [ACK] Routing outcomes reviewed. All policy checks passed.
+
+  If any violation is found, output:
+  [ESCALATION_NOTICE] <brief summary of highest-severity violation and job name>.

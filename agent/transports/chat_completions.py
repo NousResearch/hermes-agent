@@ -319,6 +319,30 @@ class ChatCompletionsTransport(ProviderTransport):
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 
+        # Z.AI / BigModel (GLM): stream tool-call args incrementally to avoid
+        # long silent gaps that trigger the server-side 30s idle timeout.
+        # Also inject thinking parameter for extended reasoning support.
+        _is_zai = (
+            provider_name == "zai"
+            or provider_name == "zai-cn"
+            or provider_name == "zai-coding-global"
+            or provider_name == "zai-coding-cn"
+            or ("z.ai" in str(base_url or "").lower())
+            or ("bigmodel.cn" in str(base_url or "").lower())
+        )
+
+        if _is_zai and tools:
+            extra_body.setdefault("tool_stream", True)
+
+        if _is_zai:
+            _zai_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _zai_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _zai_thinking_enabled else "disabled",
+            }
+
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
             extra_body["provider"] = provider_prefs
@@ -482,6 +506,12 @@ class ChatCompletionsTransport(ProviderTransport):
         )
         if profile_body:
             extra_body.update(profile_body)
+
+        # Z.AI / GLM: tool_stream must be set when tools are present to
+        # avoid 30s idle timeouts on the server side.
+        _zai_profile_names = ("zai", "zai-cn", "zai-coding-global", "zai-coding-cn")
+        if profile.name in _zai_profile_names and tools:
+            extra_body["tool_stream"] = True
 
         # Profile's reasoning/thinking extra_body entries
         if extra_body_from_profile:

@@ -769,3 +769,178 @@ class TestChatCompletionsCacheStats:
         r = SimpleNamespace(usage=SimpleNamespace(prompt_tokens_details=details))
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
+
+
+class TestZaiTransport:
+    """Tests for Z.AI / GLM provider-specific transport behavior."""
+
+    def _msgs(self):
+        return [{"role": "user", "content": "Hello"}]
+
+    def _tools(self):
+        return [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+
+    def test_zai_legacy_tool_stream(self, transport):
+        """Legacy path: provider_name=zai + tools → tool_stream in extra_body."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="zai",
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_zai_legacy_thinking_default(self, transport):
+        """Legacy path: provider_name=zai → thinking enabled by default."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_name="zai",
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_zai_legacy_thinking_disabled(self, transport):
+        """Legacy path: reasoning_config.enabled=False → thinking disabled."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_name="zai",
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_zai_legacy_no_tool_stream_without_tools(self, transport):
+        """Legacy path: no tools → tool_stream not set."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_name="zai",
+        )
+        assert "tool_stream" not in kw["extra_body"]
+
+    def test_zai_legacy_detection_by_base_url(self, transport):
+        """Legacy path: detect z.ai by base_url containing z.ai."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="custom",
+            base_url="https://api.z.ai/api/coding/paas/v4",
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_zai_legacy_detection_by_bigmodel_url(self, transport):
+        """Legacy path: detect z.ai by base_url containing bigmodel.cn."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="custom",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_zai_legacy_detection_zai_cn_provider(self, transport):
+        """Legacy path: provider_name=zai-cn → tool_stream + thinking."""
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="zai-cn",
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_zai_legacy_detection_zai_coding_global(self, transport):
+        """Legacy path: provider_name=zai-coding-global → tool_stream + thinking."""
+        kw = transport.build_kwargs(
+            model="glm-5-turbo",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="zai-coding-global",
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_non_zai_no_tool_stream(self, transport):
+        """Non-Z.AI provider: tool_stream must NOT be injected."""
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert "tool_stream" not in (kw.get("extra_body") or {})
+
+    def test_zai_profile_path_tool_stream(self, transport):
+        """Profile path: zai profile + tools → tool_stream in extra_body."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_zai_profile_path_thinking(self, transport):
+        """Profile path: zai profile → thinking enabled via profile hook."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_profile=profile,
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_zai_profile_path_thinking_disabled(self, transport):
+        """Profile path: reasoning_config.enabled=False → thinking disabled."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_profile=profile,
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_zai_profile_path_no_tool_stream_without_tools(self, transport):
+        """Profile path: zai profile without tools → no tool_stream."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            provider_profile=profile,
+        )
+        assert "tool_stream" not in kw["extra_body"]
+
+    def test_zai_coding_global_profile(self, transport):
+        """Profile path: zai-coding-global profile works with tool_stream."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai-coding-global")
+        kw = transport.build_kwargs(
+            model="glm-5-turbo",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_zai_cn_profile(self, transport):
+        """Profile path: zai-cn profile works with tool_stream."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai-cn")
+        kw = transport.build_kwargs(
+            model="glm-5",
+            messages=self._msgs(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}

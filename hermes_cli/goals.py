@@ -741,9 +741,58 @@ class GoalManager:
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
 
 
+def apply_continuation_hooks(
+    session_id: str,
+    goal_manager: "GoalManager",
+    decision: Dict[str, Any],
+    last_response: str,
+) -> bool:
+    """Invoke ``pre_goal_continuation`` plugin callbacks and react.
+
+    Returns ``True`` when the caller should PROCEED with the continuation
+    tick (no plugin vetoed). Returns ``False`` when a plugin returned
+    ``{"action": "pause", ...}`` — in that case this helper already
+    pauses the goal via ``goal_manager.pause()`` and the caller MUST
+    skip enqueueing the continuation prompt.
+
+    Failures (no plugin system loaded, callback raises, etc.) are
+    swallowed and treated as "proceed" — the hook must never wedge a
+    legitimate continuation.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+    except Exception:
+        return True
+    try:
+        results = invoke_hook(
+            "pre_goal_continuation",
+            session_id=session_id,
+            goal_manager=goal_manager,
+            decision=decision,
+            last_response=last_response,
+        )
+    except Exception:
+        return True
+
+    pause_reason: Optional[str] = None
+    for r in results or []:
+        if isinstance(r, dict) and r.get("action") == "pause":
+            pause_reason = str(r.get("reason") or "paused by plugin")
+            break
+    if pause_reason is None:
+        return True
+
+    try:
+        goal_manager.pause(reason=pause_reason)
+    except Exception:
+        pass
+    return False
+
+
 __all__ = [
     "GoalState",
     "GoalManager",
+    "apply_continuation_hooks",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",

@@ -8748,6 +8748,24 @@ class HermesCLI:
             _cprint(f"  {msg}")
 
         if decision.get("should_continue"):
+            # Plugin veto: pre_goal_continuation hook may pause the goal
+            # right before we'd enqueue the next tick (e.g. rate-limit guard).
+            try:
+                from hermes_cli.goals import apply_continuation_hooks
+                proceed = apply_continuation_hooks(
+                    session_id=getattr(mgr, "session_id", "") or "",
+                    goal_manager=mgr,
+                    decision=decision,
+                    last_response=last_response,
+                )
+            except Exception as exc:
+                logging.debug("goal continuation hook dispatch failed: %s", exc)
+                proceed = True
+            if not proceed:
+                _cprint(
+                    f"  {_DIM}⏸ Goal paused by plugin — use /goal resume to continue.{_RST}"
+                )
+                return
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:

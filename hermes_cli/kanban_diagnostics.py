@@ -568,6 +568,87 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_ghost_running(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task is marked ``running`` but lacks coherent claim/run metadata.
+
+    A legitimate running task is created only by the dispatcher claim path,
+    which writes a claim lock, TTL, worker PID, and current run pointer. Rows
+    without that metadata are usually stale UI/import artifacts (for example a
+    Notion row set to Running) and will never be naturally reclaimed by the TTL
+    sweeper if ``claim_expires`` is NULL. Surface them so operators can reclaim
+    them back to ready and let the dispatcher create a real run.
+    """
+    if _task_field(task, "status") != "running":
+        return []
+
+    required = ("claim_lock", "claim_expires", "worker_pid", "current_run_id")
+    missing = [name for name in required if _task_field(task, name) in (None, "")]
+    current_run_id = _task_field(task, "current_run_id")
+    run_state = None
+    matched_run = None
+    if current_run_id not in (None, ""):
+        for run in runs:
+            try:
+                if int(_task_field(run, "id", -1)) == int(current_run_id):
+                    matched_run = run
+                    break
+            except (TypeError, ValueError):
+                continue
+        if matched_run is None:
+            run_state = "missing"
+        elif _task_field(matched_run, "status") != "running" or _task_field(matched_run, "outcome") is not None:
+            run_state = "terminal"
+
+    if not missing and run_state is None:
+        return []
+
+    task_id = _task_field(task, "id")
+    actions = [
+        DiagnosticAction(
+            kind="reclaim",
+            label="Reclaim ghost running task",
+            payload={},
+            suggested=True,
+        ),
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Inspect task: hermes kanban show {task_id}" if task_id else "Inspect task details",
+            payload={"command": f"hermes kanban show {task_id}"} if task_id else {},
+        ),
+    ]
+    data = {
+        "missing_fields": missing,
+        "claim_lock": _task_field(task, "claim_lock"),
+        "claim_expires": _task_field(task, "claim_expires"),
+        "worker_pid": _task_field(task, "worker_pid"),
+        "current_run_id": current_run_id,
+        "last_heartbeat_at": _task_field(task, "last_heartbeat_at"),
+    }
+    if run_state is not None:
+        data["run_state"] = run_state
+
+    if missing:
+        reason = "missing " + ", ".join(missing)
+    else:
+        reason = f"current_run_id points to a {run_state} run"
+    return [Diagnostic(
+        kind="ghost_running",
+        severity="critical",
+        title=f"Ghost Running state: {reason}",
+        detail=(
+            "This task is marked running but does not have coherent dispatcher "
+            "claim/run metadata. It may appear stuck in Running forever because "
+            "normal stale-claim reclaim depends on a claim TTL. Reclaim it to "
+            "reset the row to ready and let the dispatcher create a fresh run."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data=data,
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Task has been in ``ready`` status for too long without any worker
     claiming it.
@@ -699,6 +780,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_ghost_running,
     _rule_stranded_in_ready,
 ]
 
@@ -711,6 +793,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "ghost_running",
     "stranded_in_ready",
 )
 

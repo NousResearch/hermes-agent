@@ -840,6 +840,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
+        # API clients may omit X-Hermes-Session-Key.  In that case, use the
+        # request/transcript session_id as the internal long-term-memory scope so
+        # cwd-based Honcho defaults cannot merge unrelated API conversations.
+        effective_gateway_session_key = gateway_session_key or session_id
+
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -857,7 +862,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
-            gateway_session_key=gateway_session_key,
+            gateway_session_key=effective_gateway_session_key,
         )
         return agent
 

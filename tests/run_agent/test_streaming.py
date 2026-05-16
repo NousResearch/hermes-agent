@@ -760,13 +760,13 @@ class TestHasStreamConsumers:
         assert agent._has_stream_consumers() is True
 
 
-# ── Test: Codex stream fires callbacks ────────────────────────────────
+# ── Test: Codex stream suppresses raw text callbacks ──────────────────
 
 
 class TestCodexStreamCallbacks:
-    """Verify _run_codex_stream fires delta callbacks."""
+    """Verify _run_codex_stream caches raw text deltas without leaking them."""
 
-    def test_codex_text_delta_fires_callback(self):
+    def test_codex_text_delta_is_cached_not_streamed(self):
         from run_agent import AIAgent
 
         deltas = []
@@ -809,7 +809,10 @@ class TestCodexStreamCallbacks:
         mock_client.responses.stream.return_value = mock_stream
 
         response = agent._run_codex_stream({}, client=mock_client)
-        assert "Hello from Codex!" in deltas
+        assert deltas == []
+        assert agent._codex_streamed_text_parts == ["Hello from Codex!"]
+        assert response is not None
+        assert response.output[0].content[0].text == "Hello from Codex!"
 
     def test_codex_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent

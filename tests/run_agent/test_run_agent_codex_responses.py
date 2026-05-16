@@ -1137,7 +1137,9 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     )
 
     assert finish_reason == "incomplete"
-    assert "inspect the repository" in (assistant_message.content or "")
+    assert assistant_message.content == ""
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+    assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
@@ -1456,7 +1458,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args, **_kwargs):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1472,11 +1474,15 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
 
     assert result["completed"] is True
     assert result["final_response"] == "Architecture summary complete."
-    assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "inspect the repo structure" in (msg.get("content") or "")
+    incomplete_messages = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant" and msg.get("finish_reason") == "incomplete"
+    ]
+    assert any(msg.get("content") == "" for msg in incomplete_messages)
+    assert not any(
+        "inspect the repo structure" in (msg.get("content") or "")
         for msg in result["messages"]
+        if msg.get("role") == "assistant"
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 

@@ -56,13 +56,14 @@ prompt: |
   map medium/high/complex/reasoning tiers to reasoning, low/simple tiers to simple,
   and keep coding/tool-heavy tiers as coding/tool-heavy.
 
-  1. Simple jobs (job_type/simple gateway tier, selected_model=blockrun/auto) resolved to
-     cloud model without router_pin → [warning].
+  1. Simple jobs (job_type/simple gateway tier) resolved to cloud model without
+     router_pin → [warning]. Current routing-decisions.json may store the actual
+     upstream model in selectedModel/resolvedModel rather than blockrun/auto.
   2. Coding/tool-heavy/reasoning jobs and gateway tiers such as research:reasoning
-     or research:medium (selected_model=blockrun/auto) resolved to local model
-     instead of escalating → [warning].
-  3. Router-first job (selected_model=blockrun/auto) with no resolved_model
-     recorded → [warning] (Items 1-4 not yet integrated).
+     or research:medium resolved to local model instead of escalating → [warning].
+     Do not require selectedModel to equal blockrun/auto for routing-decisions.json.
+  3. Router-first job or gateway decision with no resolved_model recorded → [warning]
+     (Items 1-4 not yet integrated).
   4. Job with consecutive_local_failures >= 3 → [critical]
      (GN100 / local inference down).
   5. Explicit model pin (selected_model != blockrun/auto) with no

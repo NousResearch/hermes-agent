@@ -380,6 +380,16 @@ def _is_cloud_model(model: Optional[str]) -> bool:
     return any(m.startswith(p) for p in _CLOUD_MODEL_PREFIXES)
 
 
+def _is_gateway_decision(o: RoutingOutcome) -> bool:
+    """Return True when *o* came from current OpenClaw routing-decisions.json."""
+    return o.job_name == "gateway-decision" or o.job_name.startswith("gateway/")
+
+
+def _is_router_first_outcome(o: RoutingOutcome) -> bool:
+    """Return True when route metadata shows the record used router-first policy."""
+    return o.selected_model == "blockrun/auto" or _is_gateway_decision(o)
+
+
 def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
     """Apply routing policy checks to a list of recent outcomes.
 
@@ -409,7 +419,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
         # ------------------------------------------------------------------
         if (
             job_type == "simple"
-            and o.selected_model == "blockrun/auto"
+            and _is_router_first_outcome(o)
             and _is_cloud_model(o.resolved_model)
             and not o.router_pin
         ):
@@ -430,7 +440,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
         # ------------------------------------------------------------------
         if (
             job_type in _ESCALATION_EXPECTED_TYPES
-            and o.selected_model == "blockrun/auto"
+            and _is_router_first_outcome(o)
             and _is_local_model(o.resolved_model)
         ):
             violations.append(
@@ -448,7 +458,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
         # ------------------------------------------------------------------
         # Check 3 — missing resolved_model metadata
         # ------------------------------------------------------------------
-        if o.selected_model == "blockrun/auto" and o.resolved_model is None:
+        if _is_router_first_outcome(o) and o.resolved_model is None:
             violations.append(
                 PolicyViolation(
                     severity="warning",
@@ -483,6 +493,7 @@ def review_outcomes(outcomes: List[RoutingOutcome]) -> List[PolicyViolation]:
         if (
             o.selected_model
             and o.selected_model != "blockrun/auto"
+            and not _is_router_first_outcome(o)
             and not o.router_pin
             # Coding pins are expected in phase one per the plan — only flag
             # non-coding job types where an unexplained pin is a surprise.
@@ -597,13 +608,14 @@ Each decision has at minimum: timestamp, selectedModel, resolvedModel, agentId, 
 
 Apply the following policy checks to decisions from the last 60 minutes:
 
-1. Simple jobs (job_type/simple gateway tier, selected_model=blockrun/auto) resolved to \
-cloud model without router_pin → [warning].
+1. Simple jobs (job_type/simple gateway tier) resolved to cloud model without \
+router_pin → [warning]. Current routing-decisions.json may store the actual \
+upstream model in selectedModel/resolvedModel rather than blockrun/auto.
 2. Coding/tool-heavy/reasoning jobs and gateway tiers such as research:reasoning \
-or research:medium (selected_model=blockrun/auto) resolved \
-to local model instead of escalating → [warning].
-3. Router-first job (selected_model=blockrun/auto) with no resolved_model \
-recorded → [warning] (ClawRouter may not be exposing the upstream model).
+or research:medium resolved to local model instead of escalating → [warning]. \
+Do not require selectedModel to equal blockrun/auto for routing-decisions.json.
+3. Router-first job or gateway decision with no resolved_model recorded \
+→ [warning] (ClawRouter may not be exposing the upstream model).
 4. Job with consecutive_local_failures >= {_CONSECUTIVE_LOCAL_FAILURE_THRESHOLD} \
 → [critical] (GN100 / local inference down).
 5. Explicit model pin (selected_model != blockrun/auto) with no \

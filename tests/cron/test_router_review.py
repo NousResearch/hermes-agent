@@ -387,10 +387,10 @@ class TestLoadRoutingDecisions:
                     "enforcement": "soft",
                     "routingMode": "balanced",
                     "originalOrder": ["blockrun/auto", "gemini/pro"],
-                    "finalOrder": ["blockrun/auto", "gemini/pro"],
-                    "reordered": False,
-                    "selectedModel": "blockrun/auto",
-                    "resolvedModel": "blockrun/auto",
+                    "finalOrder": ["gemini/pro", "blockrun/auto"],
+                    "reordered": True,
+                    "selectedModel": "gemini/pro",
+                    "resolvedModel": "gemini/pro",
                 }
             ],
             "stats": {
@@ -409,8 +409,8 @@ class TestLoadRoutingDecisions:
         o = outcomes[0]
         assert o.job_name == "gateway/archie"
         assert o.job_type == "reasoning"
-        assert o.selected_model == "blockrun/auto"
-        assert o.resolved_model == "blockrun/auto"
+        assert o.selected_model == "gemini/pro"
+        assert o.resolved_model == "gemini/pro"
 
 
 # ---------------------------------------------------------------------------
@@ -470,14 +470,17 @@ class TestCheck1SimpleWorkNotLocal:
     def test_gateway_simple_tier_cloud_resolved_warns(self):
         """OpenClaw tiers like 'routing:simple' should be classified as simple."""
         o = _outcome(
+            job_name="gateway/archie",
             job_type="routing:simple",
-            selected_model="blockrun/auto",
+            selected_model="claude-sonnet-4-5",
             resolved_model="claude-sonnet-4-5",
             router_pin=None,
         )
         violations = review_outcomes([o])
         check1 = [v for v in violations if "Simple job" in v.message]
+        check5 = [v for v in violations if "Explicit model pin" in v.message]
         assert len(check1) == 1
+        assert check5 == []
 
 
 # ---------------------------------------------------------------------------
@@ -523,13 +526,16 @@ class TestCheck2EscalationExpected:
     @pytest.mark.parametrize("gateway_tier", ["research:reasoning", "research:medium"])
     def test_gateway_tier_classified_for_escalation_checks(self, gateway_tier: str):
         o = _outcome(
+            job_name="gateway/archie",
             job_type=gateway_tier,
-            selected_model="blockrun/auto",
+            selected_model="gn100/qwen3.6:35b-a3b",
             resolved_model="gn100/qwen3.6:35b-a3b",
         )
         violations = review_outcomes([o])
         check2 = [v for v in violations if "did not escalate" in v.message]
+        check5 = [v for v in violations if "Explicit model pin" in v.message]
         assert len(check2) == 1
+        assert check5 == []
 
 
 # ---------------------------------------------------------------------------
@@ -571,11 +577,11 @@ class TestCheck3MissingResolvedModel:
         assert check3 == []
 
     def test_gateway_decision_resolved_model_none_fires_check3(self):
-        """Gateway decisions with selectedModel=blockrun/auto but no resolvedModel trigger check 3."""
+        """Gateway decisions with actual selectedModel but no resolvedModel trigger check 3."""
         o = RoutingOutcome(
             job_name="gateway/archie",
             job_id="",
-            selected_model="blockrun/auto",
+            selected_model="gemini/pro",
             resolved_model=None,
             job_type="research:reasoning",
             router_pin=None,

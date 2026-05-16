@@ -149,12 +149,28 @@ class KernelContractTests(unittest.TestCase):
         loop = _build_scenario()
         loop.run("what's the weather?")
         original = loop.memory.to_jsonl()
-        # Replay from the recorded JSONL.
-        result = run_from_trace(original)
+
+        # Drive the replay through ``build_replay_loop`` so we test the
+        # actual scripted model + scripted governance + recorded handler
+        # path — not just JSONL round-trip serde.
+        from agent.runtime import build_replay_loop
+
+        memory = AgentMemory.from_jsonl(original)
+        task_step = memory.task_step()
+        self.assertIsNotNone(task_step)
+        replay_loop = build_replay_loop(memory)
+        result = replay_loop.run(task_step.task, images=task_step.images)  # type: ignore[union-attr]
         self.assertTrue(result.completed)
-        # The replayed memory must serialize to the same bytes.
-        replayed_memory = AgentMemory.from_jsonl(original)
-        self.assertEqual(replayed_memory.to_jsonl(), original)
+
+        # The replayed loop's memory must serialize to the same bytes as
+        # the original. This is the actual byte-identical-replay guarantee.
+        self.assertEqual(replay_loop.memory.to_jsonl(), original)
+
+    def test_loop_refuses_reuse(self) -> None:
+        loop = _build_scenario()
+        loop.run("what's the weather?")
+        with self.assertRaises(RuntimeError):
+            loop.run("ask twice")
 
     def test_default_loop_is_fail_closed_on_tool_use(self) -> None:
         # No governance provided → DenyAllGovernance.

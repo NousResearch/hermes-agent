@@ -219,6 +219,7 @@ def _step_from_jsonable(payload: dict[str, Any]) -> MemoryStep:
                     output=o["output"],
                     is_error=o.get("is_error", False),
                     is_final_answer=o.get("is_final_answer", False),
+                    synthesized=o.get("synthesized", False),
                 )
                 for o in payload.get("tool_outputs", [])
             ),

@@ -95,7 +95,10 @@ class RunState:
             raise TypeError(f"cannot increment non-numeric state key {key!r} (type={type(current).__name__})")
         new_value = current + amount
         self._values[key] = new_value
-        self._record("increment", key, amount, reason)
+        # Audit log records the post-mutation value so all kinds (set /
+        # append / increment) carry the same semantics — ``value`` is what
+        # the key holds (or holds at end of) after the mutation.
+        self._record("increment", key, new_value, reason)
         return new_value
 
     def delete(self, key: str, *, reason: str) -> None:

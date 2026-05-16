@@ -15,9 +15,12 @@ The contract:
   * ``RecordedToolHandler.handle()`` returns the tool outputs that were
     recorded for the matching tool call ids; missing ids raise
     ``ReplayMissingToolOutput``.
-  * ``AllowAllGovernance`` is used during replay so the recorded decisions
-    are re-derived in the same shape. (For strict replay, supply a
-    ``ScriptedGovernance`` that returns exactly the recorded decisions.)
+  * Default governance during replay is ``ScriptedGovernance`` built from
+    the recorded decisions — the strictest mode, so the audit trail is
+    reproduced byte-for-byte. ``AllowAllGovernance`` is used only when
+    the trace contains no governance decisions (e.g. a no-tool run).
+    Pass an override to ``build_replay_loop`` if you want to see what
+    a different policy would have done against the same model trace.
 """
 
 from __future__ import annotations
@@ -143,11 +146,12 @@ def build_replay_loop(memory: AgentMemory, *, governance: GovernanceProtocol | N
                 )
             )
             for output in step.tool_outputs:
-                # Denied tool outputs are synthesized by the loop, not the
-                # handler — they should NOT be in the handler's id map.
-                # We detect them by the dict shape we wrote during the
-                # original run.
-                if isinstance(output.output, dict) and output.output.get("denied") is True:
+                # Synthesized outputs (governance denials, etc.) were
+                # fabricated by the loop, not produced by the handler.
+                # They must NOT enter the handler's id map — the replay
+                # loop will re-synthesize them via the same governance
+                # path it took the first time.
+                if output.synthesized:
                     continue
                 tool_outputs_by_id[output.id] = output
             for decision in step.governance_decisions:

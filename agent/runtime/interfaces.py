@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from .steps import StepFailure, ToolCall, ToolOutput
+from .steps import FailureKind, StepFailure, ToolCall, ToolOutput
 
 
 # ----- model + tool handler --------------------------------------------------
@@ -145,13 +145,19 @@ class SequentialIdSource:
 FINAL_ANSWER_TOOL = "final_answer"
 
 
-def failure_from_exception(kind: str, exc: BaseException, *, extra: dict[str, Any] | None = None) -> StepFailure:
+def failure_from_exception(
+    kind: FailureKind,
+    exc: BaseException,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> StepFailure:
     """Helper for building a ``StepFailure`` from a caught exception.
 
     Used at narrow boundaries where the loop explicitly opts to convert an
-    exception into a typed failure — never to silence one.
+    exception into a typed failure — never to silence one. ``kind`` must
+    be a ``FailureKind`` literal so the taxonomy stays enforced.
     """
     details: dict[str, Any] = {"exception_type": type(exc).__name__}
     if extra:
         details.update(extra)
-    return StepFailure(kind=kind, message=f"{type(exc).__name__}: {exc}", details=details)  # type: ignore[arg-type]
+    return StepFailure(kind=kind, message=f"{type(exc).__name__}: {exc}", details=details)

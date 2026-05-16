@@ -52,8 +52,9 @@ class ToolCall:
     """A single tool invocation requested by the model.
 
     ``id`` is the provider's call id when present (Anthropic/OpenAI return
-    one); otherwise the loop's injected ``IdSource`` assigns a stable id so
-    observations and governance decisions can be correlated.
+    one). The model shim is expected to either pass the provider id through
+    or substitute one from the loop's injected ``IdSource`` — the loop
+    asserts a non-empty id before submitting calls to the governance gate.
     """
 
     id: str
@@ -78,13 +79,21 @@ class ToolCall:
 
 @dataclass(frozen=True, slots=True)
 class ToolOutput:
-    """The result of executing a ``ToolCall``."""
+    """The result of executing a ``ToolCall``.
+
+    ``synthesized`` is ``True`` when the loop fabricated this output instead
+    of asking the handler to run it — e.g. when governance denied the call.
+    Replay uses this flag to skip the synthetic entries when rebuilding the
+    handler's id map (so a recorded run replays without spurious
+    ``ReplayMissingToolOutput`` errors).
+    """
 
     id: str  # mirrors ToolCall.id
     name: str
     output: Any
     is_error: bool = False
     is_final_answer: bool = False
+    synthesized: bool = False
 
 
 # ----- step base + variants --------------------------------------------------

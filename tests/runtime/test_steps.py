@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 
 from agent.runtime import ActionStep, FinalAnswerStep, PlanningStep, TaskStep, ToolCall, ToolOutput
@@ -10,7 +11,7 @@ from agent.runtime import ActionStep, FinalAnswerStep, PlanningStep, TaskStep, T
 class StepTests(unittest.TestCase):
     def test_task_step_is_frozen(self) -> None:
         step = TaskStep(step_number=0, task="hello")
-        with self.assertRaises(Exception):  # FrozenInstanceError is a dataclass subtype
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             step.task = "mutated"  # type: ignore[misc]
 
     def test_action_step_defaults(self) -> None:

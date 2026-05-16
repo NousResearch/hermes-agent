@@ -1,8 +1,8 @@
 """Hardened typed runtime for hermes-agent.
 
-Drop-in target: ``agent/runtime/`` inside the hermes-agent repo. See
-``../README.md`` for integration steps and
-``../2026-05-15-smolagents-runtime-upgrade.md`` for the design rationale.
+Lives under ``agent/runtime/``. See ``agent/runtime/README.md`` for the
+integration guide and ``docs/plans/2026-05-15-smolagents-runtime-upgrade.md``
+for the design rationale.
 
 Goal alignment (governance-ready execution kernel):
 
@@ -22,6 +22,14 @@ Public surface kept narrow on purpose — callers should import from
 ``agent.runtime`` rather than reaching into submodules.
 """
 
+from .acgs_governance import (
+    ACGSClient,
+    ACGSDecisionReceipt,
+    ACGSGovernance,
+    ACGSRule,
+    LocalACGSClient,
+    build_acgs_governance_from_config,
+)
 from .callbacks import CallbackRegistry, StepCallback
 from .governance import AllowAllGovernance, AllowListGovernance, DenyAllGovernance, GovernanceGate
 from .interfaces import (
@@ -112,6 +120,13 @@ __all__ = [
     "AllowListGovernance",
     "DenyAllGovernance",
     "GovernanceGate",
+    # acgs governance
+    "ACGSClient",
+    "ACGSDecisionReceipt",
+    "ACGSGovernance",
+    "ACGSRule",
+    "LocalACGSClient",
+    "build_acgs_governance_from_config",
     # transitions
     "LEGAL_TRANSITIONS",
     "TransitionGuard",

@@ -51,6 +51,7 @@ from .result import RunResult, Timing, TokenUsage
 from .state import RunState
 from .steps import (
     ActionStep,
+    FailureKind,
     FinalAnswerStep,
     MemoryStep,
     PlanningStep,
@@ -112,6 +113,11 @@ class MultiStepLoop:
         self.memory = AgentMemory()
         self.state = RunState(self._clock)
         self._interrupted = False
+        # Per-run caches — invalidated at the start of every run() and
+        # updated as steps land via _append(). Avoids O(N²) memory scans.
+        self._cached_task_text: str = ""
+        self._cached_prior_tool_names: list[str] = []
+        self._monotonic_step: int = 0  # last step_number actually appended
 
     # ---- public API ---------------------------------------------------------
 
@@ -120,6 +126,15 @@ class MultiStepLoop:
         self._interrupted = True
 
     def run(self, task: str, images: tuple[str, ...] = ()) -> RunResult:
+        # MultiStepLoop instances are single-use. State is frozen at the end
+        # of every run; reusing the instance would either silently rebuild
+        # over a frozen state or surface a misleading StateFrozenError mid-
+        # step. Refuse cleanly so the caller knows to build a new loop.
+        if self.state.frozen or len(self.memory) > 0:
+            raise RuntimeError(
+                "MultiStepLoop is single-use; construct a new instance per run()"
+            )
+
         started_at = self._clock.now()
         ok = self._append(TaskStep(step_number=0, started_at=started_at, task=task, images=images))
         if not ok:
@@ -138,21 +153,26 @@ class MultiStepLoop:
                     completed=False,
                 )
 
-            # Optional planning step.
+            # Optional planning step. Planning gets its own monotonic
+            # step_number so it never collides with the action step that
+            # follows in the same iteration — consumers indexing by
+            # step_number expect uniqueness.
             if (
                 self.planning_interval
                 and step_number > 1
                 and (step_number - 1) % self.planning_interval == 0
             ):
-                plan = self._planning_step(step_number)
+                plan_number = self._monotonic_step + 1
+                plan = self._planning_step(plan_number)
                 appended = self._append(plan)
                 if not appended:
                     return self._fail("transition_rejected", "could not append PlanningStep", started_at, token_usage)
                 if plan.failure and not self._should_continue(plan.failure):
                     return self._terminate_failure(plan.failure, started_at, token_usage)
 
-            # Action step.
-            action = self._action_step(step_number)
+            # Action step — also takes the next monotonic slot.
+            action_number = self._monotonic_step + 1
+            action = self._action_step(action_number)
             token_usage = token_usage + TokenUsage(action.input_tokens, action.output_tokens)
             appended = self._append(action)
             if not appended:
@@ -217,9 +237,8 @@ class MultiStepLoop:
     def _action_step(self, step_number: int) -> ActionStep:
         started = self._clock.now()
         messages = self.memory.to_messages()
-        prior_tool_names = tuple(
-            call.name for s in self.memory.action_steps() for call in s.tool_calls
-        )
+        # Cached on _append, not rebuilt — was O(N) per step previously.
+        prior_tool_names = tuple(self._cached_prior_tool_names)
 
         # 1. Model call.
         try:
@@ -233,20 +252,31 @@ class MultiStepLoop:
                 duration_s=self._clock.now() - started,
             )
 
-        # 2. Assign ids to any tool calls missing one.
+        # 2. Assign ids to any tool calls missing one. The contract is
+        # "every call has a non-empty id" — provider shims should supply
+        # one; the fallback covers shims that pass the model id through
+        # raw and need a stable substitute when it's empty/None.
         normalized_calls = tuple(
             ToolCall(
-                id=call.id or self._id_source.call_id(),
+                id=(call.id or self._id_source.call_id()),
                 name=call.name,
                 arguments=call.arguments,
             )
             for call in output.tool_calls
         )
+        # Defensive: surface a misbehaving shim early rather than letting
+        # governance see an empty-id call.
+        for c in normalized_calls:
+            if not c.id:
+                raise RuntimeError(
+                    f"ToolCall produced with empty id (name={c.name!r}); "
+                    "shim must populate ToolCall.id or rely on IdSource"
+                )
 
         # 3. Governance gate — decide each call.
         context = GovernanceContext(
             step_number=step_number,
-            task=self._task_text(),
+            task=self._cached_task_text,
             prior_tool_names=prior_tool_names,
             state_snapshot=self.state.snapshot(),
         )
@@ -271,6 +301,7 @@ class MultiStepLoop:
                             },
                             is_error=True,
                             is_final_answer=False,
+                            synthesized=True,
                         )
                     )
 
@@ -296,6 +327,7 @@ class MultiStepLoop:
                         is_final_answer=(
                             r.is_final_answer or r.name == self.final_answer_tool_name
                         ),
+                        synthesized=r.synthesized,
                     )
                     for r in results
                 )
@@ -357,6 +389,13 @@ class MultiStepLoop:
             )
             return False
         self.memory.append(step)
+        # Maintain caches consumed by _action_step / GovernanceContext so
+        # we don't rescan memory every iteration.
+        if isinstance(step, TaskStep):
+            self._cached_task_text = step.task
+        elif isinstance(step, ActionStep):
+            self._cached_prior_tool_names.extend(c.name for c in step.tool_calls)
+        self._monotonic_step = max(self._monotonic_step, step.step_number)
         self.callbacks.dispatch(step, self.state)
         if self.state.get("__interrupt__"):
             self._interrupted = True
@@ -372,10 +411,6 @@ class MultiStepLoop:
     def _should_continue(self, failure: StepFailure) -> bool:
         """Fail-closed: only continue if the caller opted in."""
         return self.continue_on_error
-
-    def _task_text(self) -> str:
-        task = self.memory.task_step()
-        return task.task if task is not None else ""
 
     def _last_useful_output(self) -> Any:
         for step in reversed(self.memory.steps):
@@ -396,7 +431,7 @@ class MultiStepLoop:
         completed: bool,
     ) -> RunResult:
         final = FinalAnswerStep(
-            step_number=len(self.memory) + 1,
+            step_number=self._monotonic_step + 1,
             started_at=self._clock.now(),
             output=output,
             triggered_by=triggered_by,
@@ -428,9 +463,9 @@ class MultiStepLoop:
             completed=False,
         )
 
-    def _fail(self, kind: str, message: str, started_at: float, token_usage: TokenUsage) -> RunResult:
+    def _fail(self, kind: FailureKind, message: str, started_at: float, token_usage: TokenUsage) -> RunResult:
         return self._terminate_failure(
-            StepFailure(kind=kind, message=message),  # type: ignore[arg-type]
+            StepFailure(kind=kind, message=message),
             started_at,
             token_usage,
         )
@@ -485,6 +520,7 @@ def _step_payload(step: MemoryStep) -> dict[str, Any]:
                 "output": o.output,
                 "is_error": o.is_error,
                 "is_final_answer": o.is_final_answer,
+                "synthesized": o.synthesized,
             }
             for o in step.tool_outputs
         ]

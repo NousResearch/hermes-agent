@@ -98,8 +98,15 @@ def choose_governance(config: dict[str, Any]) -> GovernanceProtocol:
         from agent.runtime import AllowAllGovernance
         return AllowAllGovernance()
     if mode.startswith("allow-list:"):
-        tools = mode.split(":", 1)[1].split(",")
+        # ``allow-list: lookup, final_answer`` → ["lookup", "final_answer"].
+        # Strip whitespace and drop empty entries so a stray comma or
+        # trailing space doesn't silently exclude a tool.
+        raw = mode.split(":", 1)[1]
+        tools = [t.strip() for t in raw.split(",") if t.strip()]
         return AllowListGovernance(allowed=tools)
+    if mode == "acgs":
+        from .acgs_governance import build_acgs_governance_from_config
+        return build_acgs_governance_from_config(config)
     return DenyAllGovernance()
 
 

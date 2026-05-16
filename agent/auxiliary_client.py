@@ -3983,8 +3983,13 @@ def _resolve_task_provider_model(
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url and cfg_api_key:
-            # Both base_url and api_key explicitly set → custom endpoint.
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            # Both base_url and api_key explicitly set. Preserve an explicit
+            # provider so downstream provider-specific logic still applies
+            # (e.g. transport quirks / parameter guards) on custom endpoints.
+            effective_provider = (
+                cfg_provider if cfg_provider and cfg_provider != "auto" else "custom"
+            )
+            return effective_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use
             # the provider so it can resolve credentials from env vars

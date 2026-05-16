@@ -1149,6 +1149,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print("\n[dim]Writing output files...[/dim]")
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        def write_file(out_path, entries):
+            with open(out_path, 'w', encoding='utf-8') as f:
+                for entry in entries:
+                    f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+        write_tasks = []
         for file_path in jsonl_files:
             output_path = output_dir / file_path.name
             file_results = results[file_path]
@@ -1160,9 +1166,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if file_results[idx] is not None
             ]
             
-            with open(output_path, 'w', encoding='utf-8') as f:
-                for entry in sorted_entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            write_tasks.append(asyncio.to_thread(write_file, output_path, sorted_entries))
+
+        if write_tasks:
+            await asyncio.gather(*write_tasks)
         
         # Record end time
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()

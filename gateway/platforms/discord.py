@@ -739,6 +739,29 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
+                # Fire `discord:message` hook for any registered observer.
+                # Runs AFTER dedup + self-message + system-message filters but
+                # BEFORE the DISCORD_ALLOW_BOTS gate, so hooks observe all
+                # third-party traffic regardless of the agent's chat-command
+                # bot policy. Hook failures are swallowed by the registry.
+                _gw_runner = getattr(adapter_self, "gateway_runner", None)
+                _hook_registry = getattr(_gw_runner, "hooks", None) if _gw_runner is not None else None
+                if _hook_registry is not None:
+                    try:
+                        await _hook_registry.emit("discord:message", {
+                            "platform": "discord",
+                            "message_id": str(message.id),
+                            "channel_id": str(getattr(getattr(message, "channel", None), "id", "") or ""),
+                            "guild_id": str(getattr(getattr(message, "guild", None), "id", "") or ""),
+                            "author_id": str(getattr(message.author, "id", "") or ""),
+                            "author_username": str(getattr(message.author, "name", "") or getattr(message.author, "username", "") or ""),
+                            "author_bot": bool(getattr(message.author, "bot", False)),
+                            "content": message.content or "",
+                            "created_at": message.created_at.isoformat() if message.created_at else None,
+                        })
+                    except Exception:
+                        logger.debug("[hooks] discord:message emit failed", exc_info=True)
+
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us

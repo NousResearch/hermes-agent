@@ -15,6 +15,10 @@ Events:
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing
   - command:*           -- Any slash command executed (wildcard match)
+  - discord:message     -- A Discord message reached the gateway (post-dedup,
+                           post-self-filter, post-system-message-filter; fires
+                           regardless of DISCORD_ALLOW_BOTS so observation
+                           hooks can see all third-party traffic)
 
 Errors in hooks are caught and logged but never block the main pipeline.
 """

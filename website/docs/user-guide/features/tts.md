@@ -218,7 +218,8 @@ tts:
   providers:
     voxcpm:
       type: command
-      command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
+      command: "voxcpm --ref ~/default-voice.wav --text-file {input_path} --out {output_path}"
+      clone_command: "voxcpm --ref {voice_reference_audio_path} --ref-text {voice_reference_text} --text-file {input_path} --out {output_path}"
       output_format: mp3
       timeout: 180
       voice_compatible: true       # try to deliver as a Telegram voice bubble
@@ -272,6 +273,8 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
 | `{model}`        | `tts.providers.<name>.model`                         |
 | `{speed}`        | Resolved speed multiplier (provider or global)       |
+| `{voice_reference_audio_path}` / `{ref_audio_path}` | Reference voice audio path when per-call cloning is requested |
+| `{voice_reference_text}` / `{ref_text}` | Optional transcript for the reference audio |
 
 Use `{{` and `}}` for literal braces.
 
@@ -281,6 +284,7 @@ Use `{{` and `}}` for literal braces.
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
 | `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
+| `clone_command`    | unset   | Optional command template used instead of `command` when `text_to_speech` is called with `voice_reference_audio_path`. |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
 | `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
@@ -289,6 +293,7 @@ Use `{{` and `}}` for literal braces.
 
 - **Built-in names always win.** A `tts.providers.openai` entry never shadows the native OpenAI provider, so no user config can silently replace a built-in.
 - **Default delivery is a document.** Command providers deliver as regular audio attachments on every platform. Opt in to voice-bubble delivery per-provider with `voice_compatible: true`.
+- **Per-call voice cloning is opt-in.** A command provider must define `clone_command`; then `text_to_speech` can be called with `voice_reference_audio_path` and optional `voice_reference_text` to render the requested text in that reference voice.
 - **Command failures surface to the agent.** Non-zero exit, empty output, or timeout all return an error with the command's stderr/stdout included so you can debug the provider from the conversation.
 - **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
 - **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.

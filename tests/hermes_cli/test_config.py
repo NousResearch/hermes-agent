@@ -938,6 +938,9 @@ class TestInterimAssistantMessageConfig:
     def test_default_config_enables_interim_assistant_messages(self):
         assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
+    def test_default_config_uses_dense_interim_assistant_spacing(self):
+        assert DEFAULT_CONFIG["display"]["interim_assistant_spacing"] == "dense"
+
     def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(

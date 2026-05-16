@@ -78,6 +78,27 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_interim_assistant_spacing_defaults_to_dense(self):
+        """Interim assistant spacing preserves legacy dense rendering by default."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "discord", "interim_assistant_spacing") == "dense"
+
+    def test_interim_assistant_spacing_global_and_platform_override(self):
+        """Interim assistant spacing supports global and platform-specific values."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "interim_assistant_spacing": "dense",
+                "platforms": {
+                    "discord": {"interim_assistant_spacing": "spaced"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "discord", "interim_assistant_spacing") == "spaced"
+        assert resolve_display_setting(config, "telegram", "interim_assistant_spacing") == "dense"
+
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides

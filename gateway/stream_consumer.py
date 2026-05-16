@@ -74,6 +74,11 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # Formatting for interim assistant commentary messages. "dense" preserves
+    # legacy single-newline rendering; "spaced" adds breathing room inside
+    # prose-only updates and after each interim bubble while preserving
+    # Markdown structures.
+    interim_assistant_spacing: str = "dense"
 
 
 class GatewayStreamConsumer:
@@ -1066,9 +1071,76 @@ class GatewayStreamConsumer:
         except Exception:
             pass  # best-effort — don't let this block the fallback path
 
+    @staticmethod
+    def _is_markdown_structure_line(line: str) -> bool:
+        """Return True for lines whose single-newline layout is meaningful."""
+        stripped = line.strip()
+        if not stripped:
+            return True
+        if stripped.startswith(("```", "> ", "# ", "## ", "### ", "#### ", "##### ", "###### ")):
+            return True
+        if re.match(r"^([-*+]\s+|\d+[.)]\s+)", stripped):
+            return True
+        if "|" in stripped and stripped.count("|") >= 2:
+            return True
+        return False
+
+    @classmethod
+    def _space_commentary_for_display(cls, text: str) -> str:
+        """Add breathing room between batched prose-only interim updates.
+
+        Discord and several mobile clients render single-newline paragraphs as
+        one dense block.  Interim assistant updates can be batched into one
+        commentary send, so separate plain prose lines with blank lines while
+        preserving Markdown lists, tables, blockquotes, headings, and fenced
+        code blocks where single-newline structure is significant.
+        """
+        if "\n" not in text:
+            return text
+
+        lines = text.split("\n")
+        spaced: list[str] = []
+        in_fence = False
+        for line in lines:
+            stripped = line.strip()
+            starts_or_ends_fence = stripped.startswith("```")
+            if spaced and stripped and spaced[-1].strip():
+                prev = spaced[-1]
+                prev_stripped = prev.strip()
+                preserve_tight = (
+                    in_fence
+                    or starts_or_ends_fence
+                    or prev_stripped.startswith("```")
+                    or prev_stripped.endswith(":")
+                    or cls._is_markdown_structure_line(prev)
+                    or cls._is_markdown_structure_line(line)
+                )
+                if not preserve_tight:
+                    spaced.append("")
+            spaced.append(line)
+            if starts_or_ends_fence:
+                in_fence = not in_fence
+        return "\n".join(spaced)
+
+    @classmethod
+    def format_interim_commentary(cls, text: str, spacing: str = "dense") -> str:
+        """Clean and format interim assistant commentary for display."""
+        cleaned = cls._clean_for_display(str(text or ""))
+        if str(spacing or "dense").lower() == "spaced":
+            cleaned = cls._space_commentary_for_display(cleaned)
+            if cleaned.strip():
+                # Discord trims trailing blank lines. Anchor the gap with a
+                # zero-width space so separate interim bubbles do not visually
+                # pile up, while still leaving the message content unchanged.
+                return cleaned.rstrip() + "\n\u200b"
+        return cleaned
+
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
-        text = self._clean_for_display(text)
+        text = self.format_interim_commentary(
+            text,
+            getattr(self.cfg, "interim_assistant_spacing", "dense"),
+        )
         if not text.strip():
             return False
         try:

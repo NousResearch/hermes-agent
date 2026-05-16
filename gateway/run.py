@@ -13981,6 +13981,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if source.platform == Platform.TELEGRAM
                             else 0.0
                         )
+                        _interim_spacing = resolve_display_setting(
+                            user_config,
+                            platform_key,
+                            "interim_assistant_spacing",
+                            "dense",
+                        )
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
@@ -13989,6 +13995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             fresh_final_after_seconds=_fresh_final_secs,
                             transport=_scfg.transport or "edit",
                             chat_type=getattr(source, "chat_type", "") or "",
+                            interim_assistant_spacing=_interim_spacing,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
@@ -14021,10 +14028,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
+                try:
+                    from gateway.stream_consumer import GatewayStreamConsumer
+                    display_text = GatewayStreamConsumer.format_interim_commentary(
+                        text,
+                        resolve_display_setting(
+                            user_config,
+                            platform_key,
+                            "interim_assistant_spacing",
+                            "dense",
+                        ),
+                    )
+                except Exception:
+                    logger.debug("interim commentary formatting failed", exc_info=True)
+                    display_text = str(text)
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
-                        text,
+                        display_text,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,

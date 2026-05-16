@@ -1192,7 +1192,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = await self._create_dm_topic(chat_id_int, name=name)
         return str(thread_id) if thread_id else None
 
-    async def ensure_dm_topic(self, chat_id: str, topic_name: str) -> Optional[str]:
+    async def ensure_dm_topic(self, chat_id: str, topic_name: str, force_create: bool = False) -> Optional[str]:
         """Return a private DM topic thread id, creating and persisting it if needed."""
         name = str(topic_name or "").strip()
         if not name:
@@ -1204,7 +1204,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         cache_key = f"{chat_id_int}:{name}"
         cached = self._dm_topics.get(cache_key)
-        if cached:
+        if cached and not force_create:
             return str(cached)
 
         topic_conf: Optional[Dict[str, Any]] = None
@@ -1219,7 +1219,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
             break
 
-        if topic_conf and topic_conf.get("thread_id"):
+        if topic_conf and topic_conf.get("thread_id") and not force_create:
             thread_id = int(topic_conf["thread_id"])
             self._dm_topics[cache_key] = thread_id
             return str(thread_id)
@@ -1242,7 +1242,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         topic_conf["thread_id"] = thread_id
         self._dm_topics[cache_key] = int(thread_id)
-        self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id))
+        self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
         return str(thread_id)
 
     async def rename_dm_topic(
@@ -1268,7 +1268,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self.name, chat_id, thread_id, name,
         )
 
-    def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
+    def _persist_dm_topic_thread_id(
+        self,
+        chat_id: int,
+        topic_name: str,
+        thread_id: int,
+        replace_existing: bool = False,
+    ) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
             from hermes_constants import get_hermes_home
@@ -1301,9 +1307,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 matching_chat_entry = chat_entry
                 for t in chat_entry.setdefault("topics", []):
                     if t.get("name") == topic_name:
-                        if not t.get("thread_id"):
-                            t["thread_id"] = thread_id
-                            changed = True
+                        if replace_existing or not t.get("thread_id"):
+                            if t.get("thread_id") != thread_id:
+                                t["thread_id"] = thread_id
+                                changed = True
                         break
                 else:
                     chat_entry.setdefault("topics", []).append(

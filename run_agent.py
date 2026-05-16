@@ -9415,6 +9415,23 @@ class AIAgent:
             )
 
     @staticmethod
+    def _kanban_complete_tool_succeeded(tool_name: str, tool_result: str) -> bool:
+        """Return True when kanban_complete reports a successful handoff.
+
+        Dispatcher-spawned workers must stop doing work immediately after a
+        successful completion write. Otherwise a model can keep issuing tool
+        calls after the board already says status=done, leaving post-complete
+        orphan work for the supervisor to kill.
+        """
+        if tool_name != "kanban_complete":
+            return False
+        try:
+            parsed = json.loads(tool_result)
+        except Exception:
+            return False
+        return bool(isinstance(parsed, dict) and parsed.get("ok") is True)
+
+    @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
         """Word-wrap verbose tool output to fit the terminal width.
 
@@ -10190,6 +10207,29 @@ class AIAgent:
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
+
+            if (
+                os.environ.get("HERMES_KANBAN_TASK")
+                and self._kanban_complete_tool_succeeded(function_name, function_result)
+            ):
+                # A completed Kanban worker has no authority to keep mutating
+                # the workspace/board. Synthesize skipped results for any
+                # remaining tool calls in this assistant turn so provider
+                # tool-call/result pairing stays valid, then return to the
+                # main loop where we emit a final response and exit.
+                for skipped_tc in assistant_message.tool_calls[i:]:
+                    skipped_name = skipped_tc.function.name
+                    messages.append({
+                        "role": "tool",
+                        "name": skipped_name,
+                        "content": (
+                            "[Tool execution skipped — kanban_complete "
+                            "succeeded; worker is exiting to prevent "
+                            "post-completion work]"
+                        ),
+                        "tool_call_id": skipped_tc.id,
+                    })
+                break
 
             # ── Per-tool /steer drain ───────────────────────────────────
             # Drain pending steer BETWEEN individual tool calls so the
@@ -13315,6 +13355,24 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    if os.environ.get("HERMES_KANBAN_TASK"):
+                        _tool_count = len(assistant_message.tool_calls or [])
+                        _recent_tool_msgs = messages[-_tool_count:] if _tool_count else []
+                        if any(
+                            isinstance(_msg, dict)
+                            and self._kanban_complete_tool_succeeded(
+                                _msg.get("name", ""),
+                                _msg.get("content", ""),
+                            )
+                            for _msg in _recent_tool_msgs
+                        ):
+                            final_response = (
+                                "Kanban task completed; worker exiting to "
+                                "prevent post-completion work."
+                            )
+                            messages.append({"role": "assistant", "content": final_response})
+                            break
 
                     if self._tool_guardrail_halt_decision is not None:
                         decision = self._tool_guardrail_halt_decision

@@ -2148,6 +2148,8 @@ class DispatchResult:
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
+    skipped_non_runnable: list[str] = field(default_factory=list)
+    """Human/approval tasks intentionally not auto-spawned."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -2496,6 +2498,63 @@ def _clear_spawn_failures(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _configured_runnable_human_assignees() -> set[str]:
+    """Return human-like assignees explicitly allowed to auto-dispatch.
+
+    Human approval tasks are board coordination artifacts by default, not
+    runnable worker profiles. Operators can opt a specific human-like profile
+    back into dispatch with either:
+
+    * ``HERMES_KANBAN_RUNNABLE_HUMAN_ASSIGNEES=human-alice,human-bob``; or
+    * ``kanban.runnable_human_assignees`` in config.yaml.
+
+    ``*`` allows all human-like assignees for private installs that
+    intentionally name real worker profiles ``human-*``.
+    """
+    raw_items: list[str] = []
+    env = os.environ.get("HERMES_KANBAN_RUNNABLE_HUMAN_ASSIGNEES", "")
+    if env.strip():
+        raw_items.extend(env.split(","))
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        configured = (cfg.get("kanban") or {}).get("runnable_human_assignees")
+        if isinstance(configured, str):
+            raw_items.extend(configured.split(","))
+        elif isinstance(configured, (list, tuple, set)):
+            raw_items.extend(str(x) for x in configured)
+    except Exception:
+        pass
+    return {item.strip().lower() for item in raw_items if item and item.strip()}
+
+
+def _is_non_runnable_human_task(
+    *,
+    assignee: Optional[str],
+    title: Optional[str],
+    runnable_human_assignees: Optional[set[str]] = None,
+) -> bool:
+    """Return True when a ready task should not be auto-spawned.
+
+    ``human-*`` assignees and explicit ``[HUMAN]`` / ``[APPROVAL]`` title
+    markers represent human-in-the-loop work. Spawning ``hermes -p`` for
+    those tasks causes crash loops instead of closing the approval loop.
+    """
+    assignee_norm = (assignee or "").strip().lower()
+    title_norm = (title or "").strip().lower()
+    looks_human = (
+        assignee_norm.startswith("human-")
+        or "[human]" in title_norm
+        or "[approval]" in title_norm
+    )
+    if not looks_human:
+        return False
+    allowed = runnable_human_assignees
+    if allowed is None:
+        allowed = _configured_runnable_human_assignees()
+    return "*" not in allowed and assignee_norm not in allowed
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -2531,8 +2590,9 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
+    runnable_humans = _configured_runnable_human_assignees()
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, title, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2542,6 +2602,13 @@ def dispatch_once(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        if _is_non_runnable_human_task(
+            assignee=row["assignee"],
+            title=row["title"],
+            runnable_human_assignees=runnable_humans,
+        ):
+            result.skipped_non_runnable.append(row["id"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

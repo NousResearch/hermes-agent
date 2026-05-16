@@ -12,9 +12,33 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+_KANBAN_PATH_ENV_KEYS = (
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_HOME",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_kanban_path_env(monkeypatch):
+    """Keep tests isolated when pytest itself runs inside a Kanban worker."""
+    for key in _KANBAN_PATH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
+    for key in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -365,6 +389,91 @@ def test_dispatch_skips_unassigned(kanban_home):
     assert not res.spawned
 
 
+def test_dispatch_skips_human_and_approval_tasks_by_default(kanban_home, monkeypatch):
+    """Human-in-the-loop tasks must not be claimed or spawned automatically."""
+    monkeypatch.delenv("HERMES_KANBAN_RUNNABLE_HUMAN_ASSIGNEES", raising=False)
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        human_assignee = kb.create_task(
+            conn,
+            title="Choose model/provider",
+            assignee="human-vladimir",
+        )
+        approval_marker = kb.create_task(
+            conn,
+            title="[APPROVAL][MODEL] Choose cheaper model/provider",
+            assignee="codex-test",
+        )
+        human_marker = kb.create_task(
+            conn,
+            title="[HUMAN] review security exception",
+            assignee="security-reviewer",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert set(res.skipped_non_runnable) == {
+            human_assignee,
+            approval_marker,
+            human_marker,
+        }
+        assert spawns == []
+        for tid in (human_assignee, approval_marker, human_marker):
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.claim_lock is None
+            assert task.current_run_id is None
+
+
+def test_dispatch_allows_explicitly_runnable_human_assignee(kanban_home, monkeypatch):
+    """Private installs can opt a human-* profile back into dispatch."""
+    monkeypatch.setenv("HERMES_KANBAN_RUNNABLE_HUMAN_ASSIGNEES", "human-vladimir")
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="real worker profile with legacy name",
+            assignee="human-vladimir",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert res.skipped_non_runnable == []
+    assert spawns == [tid]
+    assert task.status == "running"
+
+
+def test_blocked_human_task_is_not_retried(kanban_home, monkeypatch):
+    """Blocked human approvals stay parked until a human unblocks them."""
+    monkeypatch.delenv("HERMES_KANBAN_RUNNABLE_HUMAN_ASSIGNEES", raising=False)
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="[APPROVAL] choose model",
+            assignee="human-vladimir",
+        )
+        assert kb.block_task(conn, tid, reason="needs human decision")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert res.skipped_non_runnable == []
+    assert spawns == []
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+
+
 def test_dispatch_promotes_ready_and_spawns(kanban_home):
     spawns = []
 
@@ -489,7 +598,14 @@ class TestSharedBoardPaths:
     def _set_home(self, monkeypatch, tmp_path, hermes_home):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        for key in (
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_HOME",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+        ):
+            monkeypatch.delenv(key, raising=False)
 
     def test_default_install_anchors_at_home_dot_hermes(
         self, tmp_path, monkeypatch

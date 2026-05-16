@@ -24,12 +24,36 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban import run_slash
 
 
+_KANBAN_PATH_ENV_KEYS = (
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_HOME",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_kanban_path_env(monkeypatch):
+    """Keep tests isolated when pytest itself runs inside a Kanban worker."""
+    for key in _KANBAN_PATH_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
+    for key in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

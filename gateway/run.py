@@ -13842,6 +13842,11 @@ class GatewayRunner:
 
         proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True
@@ -13882,6 +13887,10 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
+            "hermes_proxy_scope": {
+                "origin_platform": platform_key,
+                "enabled_toolsets": enabled_toolsets,
+            },
         }
 
         # Set up platform streaming if available -------------------------
@@ -13891,8 +13900,6 @@ class GatewayRunner:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
 
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"

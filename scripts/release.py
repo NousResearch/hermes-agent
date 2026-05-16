@@ -42,6 +42,7 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "0x.badfriend@gmail.com": "discodirector",
+    "geoffplymale@gmail.com": "badMade",
     "altriatree@gmail.com": "TruaShamu",
     "m@mobrienv.dev": "mikeyobrien",
     "qiyin.zuo@pcitc.com": "qiyin-code",
@@ -983,6 +984,7 @@ AUTHOR_MAP = {
     "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
     "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
+    "geoffplymale@gmail.com": "badMade",  # PRs #69, #70 (sudo stdin guard, ddgs import security)
 }
 
 

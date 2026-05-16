@@ -30,6 +30,30 @@ class _StubSpotifyClient:
         return self.payload
 
 
+class _DeviceResolvingStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def get_devices(self):
+        self.calls.append(("get_devices", {}))
+        return {"devices": [
+            {"id": "phone-id", "name": "Phone"},
+            {"id": "kitchen-id", "name": "Kitchen Sonos"},
+        ]}
+
+    def start_playback(self, **kw):
+        self.calls.append(("start_playback", kw))
+        return {"ok": True}
+
+    def pause_playback(self, **kw):
+        self.calls.append(("pause_playback", kw))
+        return {"ok": True}
+
+    def add_to_queue(self, **kw):
+        self.calls.append(("add_to_queue", kw))
+        return {"ok": True}
+
+
 def test_spotify_client_retries_once_after_401(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     tokens = iter([
@@ -297,3 +321,54 @@ def test_spotify_playback_recently_played_action(monkeypatch: pytest.MonkeyPatch
     payload = json.loads(spotify_tool._handle_spotify_playback({"action": "recently_played", "limit": 5}))
     assert seen and seen[0]["limit"] == 5
     assert isinstance(payload, dict)
+
+
+def test_spotify_default_device_name_targets_playback_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _DeviceResolvingStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: stub)
+    monkeypatch.setattr(spotify_tool, "load_config", lambda: {"spotify": {"default_device_name": "kitchen sonos"}})
+
+    payload = json.loads(spotify_tool._handle_spotify_playback({"action": "pause"}))
+
+    assert payload["success"] is True
+    assert stub.calls == [
+        ("get_devices", {}),
+        ("pause_playback", {"device_id": "kitchen-id"}),
+    ]
+
+
+def test_spotify_explicit_device_id_wins_over_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _DeviceResolvingStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: stub)
+    monkeypatch.setattr(spotify_tool, "load_config", lambda: {"spotify": {"default_device_name": "Kitchen Sonos"}})
+
+    payload = json.loads(spotify_tool._handle_spotify_playback({"action": "pause", "device_id": "explicit-id"}))
+
+    assert payload["success"] is True
+    assert stub.calls == [("pause_playback", {"device_id": "explicit-id"})]
+
+
+def test_spotify_default_device_name_errors_with_available_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _DeviceResolvingStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: stub)
+    monkeypatch.setattr(spotify_tool, "load_config", lambda: {"spotify": {"default_device_name": "Bedroom"}})
+
+    payload = json.loads(spotify_tool._handle_spotify_playback({"action": "pause"}))
+
+    assert "error" in payload
+    assert "Bedroom" in payload["error"]
+    assert "Available devices: Phone, Kitchen Sonos" in payload["error"]
+
+
+def test_spotify_queue_add_uses_default_device_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _DeviceResolvingStub()
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: stub)
+    monkeypatch.setattr(spotify_tool, "load_config", lambda: {"spotify": {"default_device_name": "Kitchen Sonos"}})
+
+    payload = json.loads(spotify_tool._handle_spotify_queue({"action": "add", "uri": "spotify:track:abc"}))
+
+    assert payload["success"] is True
+    assert stub.calls == [
+        ("get_devices", {}),
+        ("add_to_queue", {"uri": "spotify:track:abc", "device_id": "kitchen-id"}),
+    ]

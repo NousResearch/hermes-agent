@@ -101,7 +101,17 @@ Once logged in, the agent has access to 7 Spotify tools. You talk to the agent n
 
 ### Tool reference
 
-All playback-mutating actions accept an optional `device_id` to target a specific device. If omitted, Spotify uses the currently active device.
+All playback-mutating actions accept an optional `device_id` to target a specific device. If omitted, Spotify uses the currently active device unless `spotify.default_device_name` is configured (see below).
+
+### Default playback device
+
+If you have an always-on Spotify Connect device (Sonos, Echo, smart speaker), set a default device name so play/pause/skip/queue actions can target it even when Spotify has no active device:
+
+```bash
+hermes config set spotify.default_device_name "Kitchen Sonos"
+```
+
+At call time Hermes lists your Spotify devices, matches the configured name case-insensitively, and passes its `device_id` to playback-mutating actions that did not specify one explicitly. Explicit `device_id` values always win. If the configured device is offline, Hermes returns a clear error with the currently available device names instead of silently falling back to Spotify's active-device guess.
 
 #### `spotify_playback`
 Control and inspect playback, plus fetch recently played history.
@@ -193,6 +203,14 @@ What happens at 7am every weekday:
 2. Agent reads the prompt, calls `spotify_devices list` to find "kitchen speaker" by name, then `spotify_devices transfer` → `spotify_playback set_volume` → `spotify_playback set_shuffle` → `spotify_search` + `spotify_playback play`.
 3. Music starts on the target speaker. Total cost: one session, a few tool calls, no human input.
 
+If the cron should always target the same always-on speaker, configure it once instead of asking every prompt to find the device:
+
+```bash
+hermes config set spotify.default_device_name "Kitchen Sonos"
+```
+
+Then playback and queue actions without an explicit `device_id` will target that speaker automatically.
+
 ### Wind-down at night
 
 ```bash
@@ -204,7 +222,7 @@ hermes cron add \
 
 ### Gotchas
 
-- **An active device must exist when the cron fires.** If no Spotify client is running (phone/desktop/Connect speaker), playback actions return `403 no active device`. For morning playlists, the trick is to target a device that's always on (Sonos, Echo, a smart speaker) rather than your phone.
+- **An active device must exist when the cron fires unless you configured `spotify.default_device_name`.** If no Spotify client is running (phone/desktop/Connect speaker), playback actions return `403 no active device`. For morning playlists, target an always-on device (Sonos, Echo, smart speaker) with `hermes config set spotify.default_device_name "Kitchen Sonos"` or name it explicitly in the cron prompt.
 - **Premium required for anything that mutates playback** — play, pause, skip, volume, transfer. Read-only cron jobs (scheduled "email me my recently played tracks") work fine on Free.
 - **The cron agent inherits your active toolsets.** Spotify must be enabled in `hermes tools` for the cron session to see the Spotify tools.
 - **Cron jobs run with `skip_memory=True`** so they don't write to your memory store.
@@ -223,7 +241,7 @@ To revoke the app on Spotify's side, visit [Apps connected to your account](http
 
 ## Troubleshooting
 
-**`403 Forbidden — Player command failed: No active device found`** — You need Spotify running on at least one device. Open the Spotify app on your phone, desktop, or web player, start any track for a second to register it, and retry. `spotify_devices list` shows what's currently visible.
+**`403 Forbidden — Player command failed: No active device found`** — You need Spotify running on at least one device, or configure an always-on target with `hermes config set spotify.default_device_name "Kitchen Sonos"`. Open the Spotify app on your phone, desktop, or web player, start any track for a second to register it, and retry. `spotify_devices list` shows what's currently visible.
 
 **`403 Forbidden — Premium required`** — You're on a Free account trying to use a playback-mutating action. See the feature matrix above.
 

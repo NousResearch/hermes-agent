@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
+from typing import Any, Dict, List, Optional
 from hermes_cli.auth import get_auth_status
+from hermes_cli.config import load_config
 from plugins.spotify.client import (
     SpotifyAPIError,
     SpotifyAuthRequiredError,
@@ -64,6 +64,69 @@ def _as_list(raw: Any) -> List[str]:
     return [str(raw).strip()] if str(raw).strip() else []
 
 
+def _configured_default_device_name() -> str:
+    try:
+        spotify_cfg = load_config().get("spotify", {}) or {}
+    except Exception:
+        spotify_cfg = {}
+    if not isinstance(spotify_cfg, dict):
+        return ""
+    return str(spotify_cfg.get("default_device_name") or "").strip()
+
+
+def _available_device_names(devices_payload: Any) -> list[str]:
+    if not isinstance(devices_payload, dict):
+        return []
+    devices = devices_payload.get("devices")
+    if not isinstance(devices, list):
+        return []
+    return [
+        str(device.get("name") or "").strip()
+        for device in devices
+        if isinstance(device, dict) and str(device.get("name") or "").strip()
+    ]
+
+
+def _resolve_default_device_id(client: SpotifyClient) -> Optional[str]:
+    """Resolve spotify.default_device_name to a Spotify Connect device id."""
+    configured_name = _configured_default_device_name()
+    if not configured_name:
+        return None
+
+    payload = client.get_devices()
+    devices = payload.get("devices") if isinstance(payload, dict) else None
+    if not isinstance(devices, list):
+        raise SpotifyError(
+            f"Configured default Spotify device {configured_name!r} could not be resolved: unexpected devices response."
+        )
+
+    configured_key = configured_name.casefold()
+    available = _available_device_names(payload)
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        device_name = str(device.get("name") or "").strip()
+        device_id = str(device.get("id") or "").strip()
+        if device_name.casefold() == configured_key and device_id:
+            return device_id
+
+    if available:
+        available_text = ", ".join(available)
+        raise SpotifyError(
+            f"Configured default Spotify device {configured_name!r} is offline or unavailable. Available devices: {available_text}."
+        )
+    raise SpotifyError(
+        f"Configured default Spotify device {configured_name!r} is offline or unavailable; Spotify reported no available devices."
+    )
+
+
+def _device_id_or_default(args: dict, client: SpotifyClient) -> Optional[str]:
+    explicit = str(args.get("device_id") or "").strip()
+    if explicit:
+        return explicit
+    return _resolve_default_device_id(client)
+
+
 def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:
     if not isinstance(payload, dict) or not payload.get("empty"):
         return None
@@ -117,7 +180,7 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
                     context_type = "artist"
                 context_uri = normalize_spotify_uri(raw_context, context_type)
             result = client.start_playback(
-                device_id=args.get("device_id"),
+                device_id=_device_id_or_default(args, client),
                 context_uri=context_uri,
                 uris=uris,
                 offset=payload_offset,
@@ -125,32 +188,32 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
             )
             return tool_result({"success": True, "action": action, "result": result})
         if action == "pause":
-            result = client.pause_playback(device_id=args.get("device_id"))
+            result = client.pause_playback(device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "next":
-            result = client.skip_next(device_id=args.get("device_id"))
+            result = client.skip_next(device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "previous":
-            result = client.skip_previous(device_id=args.get("device_id"))
+            result = client.skip_previous(device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "seek":
             if args.get("position_ms") is None:
                 return tool_error("position_ms is required for action='seek'")
-            result = client.seek(position_ms=int(args["position_ms"]), device_id=args.get("device_id"))
+            result = client.seek(position_ms=int(args["position_ms"]), device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "set_repeat":
             state = str(args.get("state") or "").strip().lower()
             if state not in {"track", "context", "off"}:
                 return tool_error("state must be one of: track, context, off")
-            result = client.set_repeat(state=state, device_id=args.get("device_id"))
+            result = client.set_repeat(state=state, device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "set_shuffle":
-            result = client.set_shuffle(state=_coerce_bool(args.get("state")), device_id=args.get("device_id"))
+            result = client.set_shuffle(state=_coerce_bool(args.get("state")), device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "set_volume":
             if args.get("volume_percent") is None:
                 return tool_error("volume_percent is required for action='set_volume'")
-            result = client.set_volume(volume_percent=max(0, min(100, int(args["volume_percent"]))), device_id=args.get("device_id"))
+            result = client.set_volume(volume_percent=max(0, min(100, int(args["volume_percent"]))), device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "result": result})
         if action == "recently_played":
             after = args.get("after")
@@ -192,7 +255,7 @@ def _handle_spotify_queue(args: dict, **kw) -> str:
             return tool_result(client.get_queue())
         if action == "add":
             uri = normalize_spotify_uri(str(args.get("uri") or ""), None)
-            result = client.add_to_queue(uri=uri, device_id=args.get("device_id"))
+            result = client.add_to_queue(uri=uri, device_id=_device_id_or_default(args, client))
             return tool_result({"success": True, "action": action, "uri": uri, "result": result})
         return tool_error(f"Unknown spotify_queue action: {action}")
     except Exception as exc:

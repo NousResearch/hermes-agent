@@ -104,7 +104,7 @@ spotify_devices({"action": "transfer", "device_id": "<id>", "play": true})
 
 ## Critical failure modes
 
-**`403 Forbidden — No active device found`** on any playback action means Spotify isn't running anywhere. Tell the user: "Open Spotify on your phone/desktop/web player first, start any track for a second, then retry." Don't retry the tool call blindly — it will fail the same way. You can call `spotify_devices list` to confirm; an empty list means no active device.
+**`403 Forbidden — No active device found`** on any playback action means Spotify isn't running anywhere. Tell the user: "Open Spotify on your phone/desktop/web player first, start any track for a second, then retry." If the user has an always-on Connect speaker, recommend `hermes config set spotify.default_device_name "Kitchen Sonos"` so playback and queue actions without an explicit `device_id` target that device automatically. Don't retry the tool call blindly — it will fail the same way. You can call `spotify_devices list` to confirm; an empty list means no active device.
 
 **`403 Forbidden — Premium required`** means the user is on Free and tried to mutate playback. Don't retry; tell them this action needs Premium. Reads still work (search, playlists, library, get_state).
 

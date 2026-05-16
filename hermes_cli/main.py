@@ -2396,10 +2396,15 @@ def cmd_chat(args):
         os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
 
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
-    # (rules), memory entries, and any preloaded skills coming from user config.
-    # Maps to AIAgent(skip_context_files=True, skip_memory=True).
+    # (rules), memory entries, any preloaded skills, AND the <available_skills> index.
+    # Maps to AIAgent(skip_context_files=True, skip_memory=True, skip_skills_index=True).
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"
+
+    # --no-skills-index: suppress only the <available_skills> catalogue block.
+    # Lighter than --ignore-rules: other context files (SOUL.md, AGENTS.md) are kept.
+    if getattr(args, "no_skills_index", False):
+        os.environ["HERMES_NO_SKILLS_INDEX"] = "1"
 
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
@@ -2445,6 +2450,7 @@ def cmd_chat(args):
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
+        "no_skills_index": getattr(args, "no_skills_index", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
     }

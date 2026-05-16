@@ -4646,6 +4646,10 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        skip_skills_index=(
+            is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+            or is_truthy_value(os.environ.get("HERMES_NO_SKILLS_INDEX"))
+        ),
         **_agent_cbs(sid),
     )
 

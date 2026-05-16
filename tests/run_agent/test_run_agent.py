@@ -1324,6 +1324,11 @@ class TestBuildSystemPrompt:
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
+                # skip_context_files=True now defaults skip_skills_index to
+                # True (ignore-rules / minimal-context coupling, #26815). This
+                # test specifically exercises the skills-prompt-from-tools
+                # path, so opt the index back on explicitly.
+                skip_skills_index=False,
             )
 
             prompt = agent._build_system_prompt()

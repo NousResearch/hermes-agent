@@ -3696,6 +3696,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        no_skills_index: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -3903,7 +3904,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
-        
+        # --no-skills-index: suppress <available_skills> block from system prompt.
+        # Implied by ignore_rules (--ignore-rules already strips all user context).
+        # Also honoured via HERMES_NO_SKILLS_INDEX=1 env var.
+        self.no_skills_index = (
+            no_skills_index
+            or self.ignore_rules
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
+
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
             os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
@@ -6137,7 +6146,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
-    
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
 
@@ -15786,6 +15794,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_skills_index: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15921,6 +15930,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        no_skills_index=no_skills_index,
     )
 
     if parsed_skills:

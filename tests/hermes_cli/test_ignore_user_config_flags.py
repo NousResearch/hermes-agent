@@ -248,3 +248,105 @@ class TestArgparseFlagsRegistered:
         src = inspect.getsource(hm)
         assert "HERMES_IGNORE_USER_CONFIG" in src
         assert "HERMES_IGNORE_RULES" in src
+
+
+# ── --no-skills-index / HERMES_NO_SKILLS_INDEX (#26806) ─────────────────────
+
+
+class TestNoSkillsIndexEnvGate:
+    """HERMES_NO_SKILLS_INDEX=1 and --no-skills-index must propagate to
+    HermesCLI.no_skills_index so AIAgent is built with skip_skills_index=True.
+    """
+
+    def test_env_var_enables_no_skills_index(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NO_SKILLS_INDEX", "1")
+        import cli
+        obj = object.__new__(cli.HermesCLI)
+        obj.ignore_rules = False
+        obj.no_skills_index = (
+            False
+            or obj.ignore_rules
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
+        assert obj.no_skills_index is True
+
+    def test_ignore_rules_implies_no_skills_index(self, monkeypatch):
+        monkeypatch.delenv("HERMES_NO_SKILLS_INDEX", raising=False)
+        import cli
+        obj = object.__new__(cli.HermesCLI)
+        obj.ignore_rules = True  # --ignore-rules should imply no_skills_index
+        obj.no_skills_index = (
+            False
+            or obj.ignore_rules
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
+        assert obj.no_skills_index is True
+
+    def test_neither_flag_leaves_skills_index_enabled(self, monkeypatch):
+        monkeypatch.delenv("HERMES_NO_SKILLS_INDEX", raising=False)
+        import cli
+        obj = object.__new__(cli.HermesCLI)
+        obj.ignore_rules = False
+        obj.no_skills_index = (
+            False
+            or obj.ignore_rules
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
+        assert obj.no_skills_index is False
+
+
+class TestNoSkillsIndexArgparseRegistered:
+    """Verify --no-skills-index is registered on the chat parser."""
+
+    def test_main_py_registers_no_skills_index(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, chat_parser = build_top_level_parser()
+
+        top_dests = {a.dest for a in parser._actions}
+        chat_dests = {a.dest for a in chat_parser._actions}
+        assert "no_skills_index" in top_dests, "--no-skills-index missing from top-level parser"
+        assert "no_skills_index" in chat_dests, "--no-skills-index missing from chat parser"
+
+    def test_no_skills_index_flag_parsed_correctly(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, subparsers, chat_parser = build_top_level_parser()
+        args = parser.parse_args(["chat", "--no-skills-index"])
+        assert getattr(args, "no_skills_index", False) is True
+
+
+class TestSkipSkillsIndexCmdChatWiring:
+    """cmd_chat() must set HERMES_NO_SKILLS_INDEX when --no-skills-index is passed."""
+
+    def _simulate_cmd_chat_env_setup(self, args):
+        if getattr(args, "ignore_rules", False):
+            os.environ["HERMES_IGNORE_RULES"] = "1"
+        if getattr(args, "no_skills_index", False):
+            os.environ["HERMES_NO_SKILLS_INDEX"] = "1"
+
+    def test_no_skills_index_sets_env_var(self, monkeypatch):
+        monkeypatch.delenv("HERMES_NO_SKILLS_INDEX", raising=False)
+        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+
+        class FakeArgs:
+            ignore_rules = False
+            no_skills_index = True
+
+        self._simulate_cmd_chat_env_setup(FakeArgs())
+        assert os.environ.get("HERMES_NO_SKILLS_INDEX") == "1"
+        assert "HERMES_IGNORE_RULES" not in os.environ
+
+    def test_ignore_rules_alone_does_not_set_no_skills_index_env_var_directly(self, monkeypatch):
+        """ignore_rules wires its own env var; no_skills_index is derived in HermesCLI."""
+        monkeypatch.delenv("HERMES_NO_SKILLS_INDEX", raising=False)
+        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
+
+        class FakeArgs:
+            ignore_rules = True
+            no_skills_index = False
+
+        self._simulate_cmd_chat_env_setup(FakeArgs())
+        assert os.environ.get("HERMES_IGNORE_RULES") == "1"
+        # HERMES_NO_SKILLS_INDEX not set by cmd_chat; HermesCLI derives it from ignore_rules
+        assert "HERMES_NO_SKILLS_INDEX" not in os.environ

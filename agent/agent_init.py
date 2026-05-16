@@ -320,6 +320,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_skills_index: Optional[bool] = None,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -411,6 +412,27 @@ def init_agent(
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
+    # Suppress <available_skills> system-prompt block when set.
+    #
+    # ``skip_skills_index`` is tri-state:
+    #   - True  : always suppress the skills index
+    #   - False : always keep the skills index (explicit opt-in, even under
+    #             ignore-rules mode)
+    #   - None  : derive the default — suppress when skip_context_files=True
+    #             (ignore-rules / minimal-context mode) or when
+    #             HERMES_NO_SKILLS_INDEX is set.
+    #
+    # The tri-state lets callers that pass skip_context_files=True purely for
+    # test isolation still exercise the skills-prompt path by passing
+    # skip_skills_index=False explicitly, without being forced into the
+    # ignore-rules coupling.
+    if skip_skills_index is None:
+        agent.skip_skills_index = (
+            skip_context_files
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
+    else:
+        agent.skip_skills_index = bool(skip_skills_index)
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""

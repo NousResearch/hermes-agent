@@ -229,7 +229,14 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=False,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills (including the <available_skills> index)",
+    )
+    _inherited_flag(
+        parser,
+        "--no-skills-index",
+        action="store_true",
+        default=False,
+        help="Suppress the <available_skills> system-prompt block (~3.5k tokens) without disabling other context. Useful for scripted/oneshot callers.",
     )
     _inherited_flag(
         parser,
@@ -410,7 +417,14 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills (including the <available_skills> index). Combine with --ignore-user-config for a fully isolated run.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-skills-index",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress the <available_skills> system-prompt block (~3.5k tokens) without disabling other context files. Useful for high-frequency scripted callers where skill discovery is not needed. Implied by --ignore-rules. Equivalent to HERMES_NO_SKILLS_INDEX=1.",
     )
     _inherited_flag(
         chat_parser,

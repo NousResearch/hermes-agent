@@ -290,7 +290,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-    if has_skills_tools:
+    # skip_skills_index suppresses the <available_skills> catalogue block to
+    # save ~3.5k input tokens on high-frequency scripted/oneshot callers.
+    # Set by: skip_context_files (--ignore-rules), --no-skills-index CLI flag,
+    # HERMES_NO_SKILLS_INDEX=1 env var, or AIAgent(skip_skills_index=True).
+    # The skill *tools* (skills_list, skill_view, skill_manage) stay registered;
+    # the model just won't have the index to discover available skills.
+    if has_skills_tools and not getattr(agent, 'skip_skills_index', False):
         avail_toolsets = {
             toolset
             for toolset in (

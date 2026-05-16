@@ -422,7 +422,8 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
         os.makedirs(log_dir, exist_ok=True)
         run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._streaming_path = os.path.join(log_dir, f"samples_{run_ts}.jsonl")
-        self._streaming_file = open(self._streaming_path, "w", encoding="utf-8")
+        loop = asyncio.get_running_loop()
+        self._streaming_file = await loop.run_in_executor(None, lambda: open(self._streaming_path, "w", encoding="utf-8"))
         self._streaming_lock = threading.Lock()
 
         print(f"\nYC-Bench eval matrix: {len(self.all_eval_items)} runs")
@@ -430,15 +431,20 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             print(f"  preset={item['preset']!r}  seed={item['seed']}")
         print(f"Streaming results to: {self._streaming_path}\n")
 
-    def _save_result(self, result: Dict[str, Any]):
-        """Write a single run result to the streaming JSONL file immediately."""
+    def _save_result_sync(self, result: Dict[str, Any]):
+        """Write a single run result to the streaming JSONL file synchronously."""
         if not hasattr(self, "_streaming_file") or self._streaming_file.closed:
             return
+        # CPU-bound JSON serialization outside the lock
+        data = json.dumps(result, ensure_ascii=False, default=str) + "\n"
         with self._streaming_lock:
-            self._streaming_file.write(
-                json.dumps(result, ensure_ascii=False, default=str) + "\n"
-            )
+            self._streaming_file.write(data)
             self._streaming_file.flush()
+
+    async def _save_result(self, result: Dict[str, Any]):
+        """Offload the synchronous file write to a thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._save_result_sync, result)
 
     # =========================================================================
     # Training pipeline stubs (eval-only -- not used)
@@ -595,7 +601,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
                 "db_path": db_path,
                 "messages": result.messages,
             }
-            self._save_result(out)
+            await self._save_result(out)
             return out
 
         except Exception as e:
@@ -616,7 +622,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
                 "error": str(e),
                 "elapsed_seconds": elapsed,
             }
-            self._save_result(out)
+            await self._save_result(out)
             return out
 
     # =========================================================================
@@ -649,7 +655,7 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
                 "turns_used": 0,
                 "error": "timeout",
             }
-            self._save_result(out)
+            await self._save_result(out)
             return out
 
     async def evaluate(self, *args, **kwargs) -> None:

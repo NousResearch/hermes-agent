@@ -5,6 +5,9 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# Change home directory for the 'hermes'
+usermod -d ${HERMES_HOME} hermes
+
 # --- Privilege dropping via gosu ---
 # When started as root (the default for Docker, or fakeroot in rootless Podman),
 # optionally remap the hermes user/group to match host-side ownership, fix volume

@@ -24,6 +24,7 @@ Example config::
         args: ["-y", "@modelcontextprotocol/server-github"]
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+        supports_parallel_tool_calls: true  # tools from this server may run concurrently
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:
@@ -56,6 +57,8 @@ Features:
     - Thread-safe architecture with dedicated background event loop
     - Sampling support: MCP servers can request LLM completions via
       sampling/createMessage (text and tool-use responses)
+    - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
+      flag allows concurrent execution of tools from the same server
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
@@ -1976,11 +1979,16 @@ def _handle_session_expired_and_retry(
     return None
 
 
+# Sanitized server names whose ``supports_parallel_tool_calls`` config is True.
+# Populated during ``register_mcp_servers()`` and queried by
+# ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
+_parallel_safe_servers: set = set()
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
-# Protects _mcp_loop, _mcp_thread, _servers, and _stdio_pids.
+# Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -3098,6 +3106,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        # Track which servers opt-in to parallel tool calls (idempotent).
+        for srv_name, srv_cfg in servers.items():
+            if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
+                _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
+            else:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
     if not new_servers:
         return _existing_tool_names()
@@ -3206,6 +3220,29 @@ def discover_mcp_tools() -> List[str]:
         logger.info(summary)
 
     return tool_names
+
+
+def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
+    """Check if an MCP tool belongs to a server that supports parallel tool calls.
+
+    MCP tool names follow the pattern ``mcp_{server}_{tool}``.  This extracts
+    the server component and checks it against the set of servers whose config
+    includes ``supports_parallel_tool_calls: true``.
+
+    Returns False for non-MCP tools or tools from servers without the flag.
+    """
+    if not tool_name.startswith("mcp_"):
+        return False
+    # Strip the "mcp_" prefix and extract the server name.
+    # Tool names are: mcp_{sanitized_server}_{sanitized_tool}
+    # We need to check all possible server prefixes because the server name
+    # itself may contain underscores after sanitization.
+    rest = tool_name[4:]  # strip "mcp_"
+    with _lock:
+        for server_name in _parallel_safe_servers:
+            if rest.startswith(server_name + "_") and len(rest) > len(server_name) + 1:
+                return True
+    return False
 
 
 def get_mcp_status() -> List[dict]:

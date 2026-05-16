@@ -668,8 +668,11 @@ registry.register(
         skill=args.get("skill"),
         skills=args.get("skills"),
         model=_mo[1],
-        provider=_mo[0] or args.get("provider"),
-        base_url=args.get("base_url"),
+        # Ignore hidden top-level provider/base_url args from model callers.
+        # Provider selection is only accepted through the structured model
+        # override, and endpoint URLs must come from operator config.
+        provider=_mo[0],
+        base_url=None,
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

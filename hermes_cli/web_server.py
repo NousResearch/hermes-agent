@@ -3001,19 +3001,13 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
-
-
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    WebSocket endpoints expose interactive chat/control surfaces and use the
+    same session token that the unauthenticated SPA HTML needs to bootstrap.
+    Keep them loopback-only even when the HTTP dashboard is publicly bound.
     """
-    if _is_public_bind():
-        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True

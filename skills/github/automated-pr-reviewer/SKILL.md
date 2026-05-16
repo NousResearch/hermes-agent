@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [GitHub, Code-Review, Automation, Pull-Requests, Cron]
+    tags: [GitHub, Code-Review, Automation, Pull-Requests, Cron, review]
     related_skills: [github-code-review, cronjob]
 ---
 
@@ -19,9 +19,9 @@ This skill sets up a scheduled workflow that monitors GitHub repository Pull Req
 
 1. **Trigger**: A scheduled job runs periodically (e.g., via cron).
 2. **Scan**: It queries GitHub for PR comments mentioning `@jules`.
-3. **Filter**: It filters out PRs that already have the `jules-reviewed` label.
+3. **Filter**: It filters out PRs that already have the `reviewed` label.
 4. **Action**: For each matching PR, the agent performs a comprehensive code review.
-5. **Mark Done**: Once reviewed, it adds the `jules-reviewed` label to the PR and posts the review comment.
+5. **Mark Done**: Once reviewed, it adds the `reviewed` label to the PR and posts the review comment.
 
 ## Setting Up the Automation
 
@@ -53,7 +53,7 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 echo "Scanning $REPO for '@jules' comments..."
 
 # Search for open PRs
-gh api -X GET search/issues -f q="repo:$REPO is:pr is:open in:comments \"@jules\" -label:jules-reviewed" \
+gh api -X GET search/issues -f q="repo:$REPO is:pr is:open in:comments \"@jules\" -label:reviewed" \
   --jq '.items[].number' > /tmp/prs_to_review.txt
 
 if [ ! -s /tmp/prs_to_review.txt ]; then
@@ -74,14 +74,14 @@ while read PR_NUMBER; do
 
   # 2. Add label to prevent duplicates
   # Ensure the label exists first
-  gh api -X POST repos/$REPO/labels -f name="jules-reviewed" -f color="0e8a16" --silent || true
+  gh api -X POST repos/$REPO/labels -f name="reviewed" -f color="0e8a16" --silent || true
 
   # Add label to PR
-  gh pr edit $PR_NUMBER --add-label "jules-reviewed"
+  gh pr edit $PR_NUMBER --add-label "reviewed"
 
   # 3. Reply to the PR acknowledging completion
   # Note for Agent: Make sure the actual code review is also submitted using the github-code-review standard.
-  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the \`jules-reviewed\` label."
+  gh pr comment $PR_NUMBER --body "Code review completed by @jules. Added the \`reviewed\` label."
 
   echo "Completed PR #$PR_NUMBER"
 
@@ -102,4 +102,4 @@ When you are asked to "check for PRs to review" or when this skill is run:
 2. For each PR number output by the script, read the diff using `git diff`.
 3. Analyze the diff using your code review capabilities.
 4. Post the review as a PR comment or PR Review (as detailed in `github-code-review`).
-5. Ensure the label `jules-reviewed` is added to prevent re-processing.
+5. Ensure the label `reviewed` is added to prevent re-processing.

@@ -3164,6 +3164,36 @@ class GatewayRunner:
                 continue
 
             source = entry.origin
+            event = MessageEvent(
+                text="",
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=False,
+            )
+            event = self._apply_pre_gateway_dispatch_hooks(event)
+            if event is None:
+                logger.info(
+                    "Skipping auto-resume for %s: pre_gateway_dispatch hook declined it",
+                    entry.session_key,
+                )
+                continue
+
+            source = event.source
+            if source.user_id is None:
+                logger.debug(
+                    "Skipping auto-resume for %s: origin has no user_id",
+                    entry.session_key,
+                )
+                continue
+            if not self._is_user_authorized(source):
+                logger.warning(
+                    "Skipping auto-resume for %s: origin user %s is no longer authorized on %s",
+                    entry.session_key,
+                    source.user_id,
+                    source.platform.value if source.platform else "unknown",
+                )
+                continue
+
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
@@ -3175,13 +3205,10 @@ class GatewayRunner:
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
-            event = MessageEvent(
-                text="",
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
+            # system note before the turn runs.  Authorization and gateway
+            # dispatch hooks were re-checked above before restoring the
+            # internal flag used for synthetic continuations.
+            event = dataclasses.replace(event, internal=True)
             task = asyncio.create_task(adapter.handle_message(event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
@@ -5627,6 +5654,47 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _apply_pre_gateway_dispatch_hooks(
+        self, event: MessageEvent
+    ) -> Optional[MessageEvent]:
+        """Apply gateway pre-dispatch hooks and return the event to continue."""
+        source = event.source
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        try:
+            hook_results = _invoke_hook(
+                "pre_gateway_dispatch",
+                event=event,
+                gateway=self,
+                session_store=self.session_store,
+            )
+        except Exception as hook_exc:
+            logger.warning("pre_gateway_dispatch invocation failed: %s", hook_exc)
+            return event
+
+        for result in hook_results:
+            if not isinstance(result, dict):
+                continue
+            action = result.get("action")
+            if action == "skip":
+                logger.info(
+                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                    result.get("reason"),
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id or "unknown",
+                )
+                return None
+            if action == "rewrite":
+                new_text = result.get("text")
+                if isinstance(new_text, str):
+                    event = dataclasses.replace(event, text=new_text)
+                    source = event.source
+                break
+            if action == "allow":
+                break
+
+        return event
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5654,38 +5722,10 @@ class GatewayRunner:
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
         if not is_internal:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    session_store=self.session_store,
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
-
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
-                    )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
+            event = self._apply_pre_gateway_dispatch_hooks(event)
+            if event is None:
+                return None
+            source = event.source
 
         if is_internal:
             pass

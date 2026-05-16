@@ -404,7 +404,16 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+            # Route through the sanitizer so framing tokens / CDATA / fences
+            # in exception strings don't reach the model as structural noise.
+            # See model_tools._sanitize_tool_error for rationale.
+            raw = f"Tool execution failed: {type(e).__name__}: {e}"
+            try:
+                from model_tools import _sanitize_tool_error
+                sanitized = _sanitize_tool_error(raw)
+            except Exception:
+                sanitized = raw  # defensive: never let the sanitizer block error propagation
+            return json.dumps({"error": sanitized})
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

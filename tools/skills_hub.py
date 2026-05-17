@@ -2433,8 +2433,20 @@ class OptionalSkillSource(SkillSource):
         if not files:
             return None
 
-        # Determine category from directory structure
+        # Prefer the declared frontmatter name when present so official skills
+        # install under the same identifier surfaced by search/list/inspect.
         name = skill_dir.name
+        skill_doc = files.get("SKILL.md")
+        if isinstance(skill_doc, bytes):
+            try:
+                skill_doc = skill_doc.decode("utf-8")
+            except UnicodeDecodeError:
+                skill_doc = ""
+        if isinstance(skill_doc, str):
+            fm = self._parse_frontmatter(skill_doc)
+            frontmatter_name = fm.get("name")
+            if isinstance(frontmatter_name, str) and frontmatter_name.strip():
+                name = frontmatter_name.strip()
 
         return SkillBundle(
             name=name,

@@ -519,6 +519,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if len(id_parts) >= 3:
             category = id_parts[1]
 
+    # Official optional skills are searched/listed by their frontmatter name.
+    # Keep install-time naming aligned even when the source directory uses a
+    # different slug (e.g. here-now/ -> name: here.now).
+    if bundle.source == "official" and meta is not None:
+        meta_name = getattr(meta, "name", "")
+        if isinstance(meta_name, str) and meta_name.strip():
+            bundle.name = meta_name.strip()
+
     # Check if already installed
     lock = HubLockFile()
     existing = lock.get_installed(bundle.name)
@@ -772,7 +780,8 @@ def do_list(source_filter: str = "all",
     ``skills.disabled`` list because ``-p`` swaps ``HERMES_HOME`` at process
     start.  No explicit profile flag needed here.
     """
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from agent.skill_utils import parse_frontmatter
+    from tools.skills_hub import HubLockFile, SKILLS_DIR, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
@@ -780,7 +789,24 @@ def do_list(source_filter: str = "all",
     c = console or _console
     ensure_hub_dirs()
     lock = HubLockFile()
-    hub_installed = {e["name"]: e for e in lock.list_installed()}
+    hub_installed = {}
+    for entry in lock.list_installed():
+        entry_name = entry.get("name")
+        if entry_name:
+            hub_installed[entry_name] = entry
+
+        install_path = entry.get("install_path")
+        if not install_path:
+            continue
+        skill_md = SKILLS_DIR / install_path / "SKILL.md"
+        try:
+            frontmatter, _body = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        frontmatter_name = frontmatter.get("name")
+        if isinstance(frontmatter_name, str) and frontmatter_name.strip():
+            hub_installed.setdefault(frontmatter_name.strip(), entry)
+
     builtin_names = set(_read_manifest())
 
     # Pull ALL skills (including disabled ones) so we can annotate status.

@@ -828,7 +828,11 @@ class CredentialPool:
                     nous_state,
                     min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
                     force_refresh=force,
-                    force_mint=force,
+                    auth_mode=(
+                        auth_mod.NOUS_INFERENCE_AUTH_LEGACY
+                        if force
+                        else auth_mod.NOUS_INFERENCE_AUTH_AUTO
+                    ),
                 )
                 # Apply returned fields: dataclass fields via replace, extras via dict update
                 field_updates = {}
@@ -949,25 +953,27 @@ class CredentialPool:
                                     exc,
                                     reason="credential_pool_refresh_failure",
                                 )
+                                auth_mod._quarantine_nous_pool_entries(
+                                    auth_store,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
                                 _save_provider_state(auth_store, "nous", state)
                                 _save_auth_store(auth_store)
                     except Exception as clear_exc:
                         logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
 
-                    cleared = replace(
-                        entry,
-                        access_token=None,
-                        refresh_token=None,
-                        agent_key=None,
-                        agent_key_expires_at=None,
-                    )
-                    self._replace_entry(entry, cleared)
+                    singleton_sources = {
+                        auth_mod.NOUS_DEVICE_CODE_SOURCE,
+                        f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
+                    }
+                    self._entries = [
+                        item for item in self._entries
+                        if item.source not in singleton_sources
+                    ]
+                    if self._current_id == entry.id:
+                        self._current_id = None
                     self._persist()
-                    self._mark_exhausted(
-                        cleared,
-                        401,
-                        {"reason": getattr(exc, "code", None), "message": str(exc)},
-                    )
                     return None
             self._mark_exhausted(entry, None)
             return None
@@ -1405,7 +1411,22 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")
-        if state and not _is_suppressed(provider, "device_code"):
+        has_runtime_material = bool(
+            isinstance(state, dict)
+            and (
+                str(state.get("access_token") or "").strip()
+                or str(state.get("agent_key") or "").strip()
+            )
+        )
+        if state and not has_runtime_material:
+            retained = [
+                entry for entry in entries
+                if entry.source not in {"device_code", "manual:device_code"}
+            ]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+        if state and has_runtime_material and not _is_suppressed(provider, "device_code"):
             active_sources.add("device_code")
             # Prefer a user-supplied label embedded in the singleton state
             # (set by persist_nous_credentials(label=...) when the user ran

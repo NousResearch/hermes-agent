@@ -81,6 +81,21 @@ class UpstreamAdapter(ABC):
               refresh fails. The proxy will return 401 to the client.
         """
 
+    def get_retry_credential(
+        self,
+        *,
+        failed_credential: UpstreamCredential,
+        status_code: int,
+    ) -> Optional[UpstreamCredential]:
+        """Return an alternate credential after an upstream auth failure.
+
+        The default is no retry. Providers can override this for one-shot
+        fallback paths, such as switching from a preferred token type to a
+        legacy bearer after the upstream rejects the first request.
+        """
+        del failed_credential, status_code
+        return None
+
     def describe(self) -> str:
         """One-line status summary for ``proxy status``."""
         try:

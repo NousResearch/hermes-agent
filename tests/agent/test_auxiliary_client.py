@@ -731,6 +731,7 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
@@ -1799,6 +1800,85 @@ class TestAuxiliaryPoolRotationRetry:
         assert fresh_client.chat.completions.create.call_count == 1
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
+        mock_fallback.assert_not_called()
+
+    def test_call_llm_auto_codex_pool_retry_connection_error_falls_back(self):
+        auth_err = _AuxAuth401()
+        conn_err = ConnectionError("Connection error.")
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = auth_err
+
+        rotated_client = MagicMock()
+        rotated_client.base_url = "https://chatgpt.com/backend-api/codex"
+        rotated_client.chat.completions.create.side_effect = conn_err
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        fallback_client.chat.completions.create.return_value = _DummyResponse("fallback-title")
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                return SimpleNamespace(id="cred-b")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (rotated_client, "gpt-5.5")]),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._try_payment_fallback", return_value=(fallback_client, "gemini-3-flash-preview", "api-key")) as mock_fallback,
+        ):
+            resp = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "title me"}],
+            )
+
+        assert resp.choices[0].message.content == "fallback-title"
+        mock_fallback.assert_called_once()
+        assert fallback_client.chat.completions.create.call_count == 1
+
+    def test_call_llm_explicit_codex_pool_retry_connection_error_does_not_fallback(self):
+        auth_err = _AuxAuth401()
+        conn_err = ConnectionError("Connection error.")
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = auth_err
+
+        rotated_client = MagicMock()
+        rotated_client.base_url = "https://chatgpt.com/backend-api/codex"
+        rotated_client.chat.completions.create.side_effect = conn_err
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                return SimpleNamespace(id="cred-b")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (rotated_client, "gpt-5.5")]),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+            pytest.raises(Exception, match="Connection error"),
+        ):
+            call_llm(
+                task="title_generation",
+                provider="openai-codex",
+                model="gpt-5.5",
+                messages=[{"role": "user", "content": "title me"}],
+            )
+
         mock_fallback.assert_not_called()
 
     @pytest.mark.asyncio

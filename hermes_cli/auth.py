@@ -39,7 +39,7 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -2426,8 +2426,9 @@ def _xai_start_callback_server(
     expected_path = XAI_OAUTH_REDIRECT_PATH
     handler_cls, result = _make_xai_callback_handler(expected_path)
 
-    class _ReuseHTTPServer(HTTPServer):
+    class _ReuseHTTPServer(ThreadingHTTPServer):
         allow_reuse_address = True
+        daemon_threads = True
 
     ports_to_try = [preferred_port]
     if preferred_port != 0:

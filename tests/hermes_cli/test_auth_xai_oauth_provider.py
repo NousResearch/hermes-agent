@@ -2,7 +2,9 @@
 
 import base64
 import json
+import socket
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ from hermes_cli.auth import (
     _xai_access_token_is_expiring,
     _xai_callback_cors_origin,
     _xai_oauth_build_authorize_url,
+    _xai_start_callback_server,
     _xai_validate_loopback_redirect_uri,
     get_xai_oauth_auth_status,
     refresh_xai_oauth_pure,
@@ -276,6 +279,29 @@ def test_xai_callback_cors_origin_rejects_unknown_origin():
     assert _xai_callback_cors_origin("https://attacker.example.com") == ""
     assert _xai_callback_cors_origin(None) == ""
     assert _xai_callback_cors_origin("") == ""
+
+
+def test_xai_callback_server_accepts_fallback_code_while_browser_connection_is_stuck():
+    """Regression: Chrome/xAI can leave a loopback connection open after
+    showing the Grok Build fallback code. A single-threaded callback server then
+    blocks forever and cannot accept the manual fallback callback.
+    """
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    stuck = socket.create_connection((XAI_OAUTH_REDIRECT_HOST, server.server_address[1]), timeout=2)
+    try:
+        stuck.sendall(b"GET /callback?code=stuck")
+        callback_url = f"{redirect_uri}?code=fallback-code&state=state-123"
+        with urllib.request.urlopen(callback_url, timeout=2) as response:
+            body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "xAI authorization received" in body
+        assert result["code"] == "fallback-code"
+        assert result["state"] == "state-123"
+    finally:
+        stuck.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
 
 
 # ---------------------------------------------------------------------------

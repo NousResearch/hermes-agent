@@ -91,6 +91,24 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "and stop."
 )
 
+# GCW-bound goals need stricter continuation than a normal free-form goal:
+# the next turn must re-read GCW's machine state before doing more work, and
+# must not let the /goal loop invent completion from chat-only progress.
+GCW_CONTINUATION_EVIDENCE_BLOCK = (
+    "\n\nGCW evidence-aware supervisor requirements:\n"
+    "- Treat GCW status/ledger/phase artifacts as the source of truth.\n"
+    "- Before continuing or declaring progress, read back the canonical issue "
+    "URL, status.json, ledger-updates.jsonl, phase report/handoff paths, "
+    "worker/process state, validator/closeout evidence, and missing gates.\n"
+    "- Only GCW terminal state `done` plus required evidence can satisfy the "
+    "goal successfully. `blocked`, `needs_user`, or `approval_required` may "
+    "stop only as a truthful non-success handoff with owner input/risk "
+    "acceptance named. `partial`, stale workers, missing artifacts, PR-only "
+    "evidence, or missing validator/closeout gates must continue.\n"
+    "- /subgoal criteria are judge-visible reminders/candidate gates unless a "
+    "later GCW artifact explicitly promotes them into validator/AC gates."
+)
+
 
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
@@ -131,6 +149,26 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "ANY criterion lacks specific evidence in the response, the goal "
     "is NOT done — return CONTINUE.\n\n"
     "Is the goal AND every additional criterion satisfied?"
+)
+
+GCW_JUDGE_EVIDENCE_BLOCK = (
+    "\n\nGCW-bound goal rule: If this goal involves GCW, /gcw, GaleHarness, "
+    "status.json, ledger-updates.jsonl, phase reports/handoffs, or GitHub "
+    "Issue closeout, require a concrete evidence summary in the agent's "
+    "response. The summary must identify the issue/run, GCW status/phase, "
+    "ledger/status readback, worker/process or terminal artifact evidence, "
+    "validator/closeout state, missing gates, terminal candidate, and evidence "
+    "links/paths. Mark DONE as successful only when the response shows GCW "
+    "terminal state `done` and required evidence. Also mark DONE for a "
+    "truthful terminal non-success handoff when the response explicitly reports "
+    "`blocked`, `needs_user`, or `approval_required` and identifies the owner "
+    "input/risk acceptance required. A `partial` state may stop only when the "
+    "response cites GCW artifact evidence that defines it as an owner-facing "
+    "final handoff; otherwise partial must continue. The reason for any "
+    "non-success stop must say it is blocked/needs user/partial handoff, not "
+    "completed. If it reports ordinary `partial`, stale worker, missing "
+    "report/handoff, PR-only, issue-only, local-only evidence, or any missing "
+    "validator/closeout gate, return CONTINUE."
 )
 
 
@@ -292,6 +330,19 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "… [truncated]"
 
 
+_GCW_GOAL_RE = re.compile(
+    r"(\bgcw\b|/gcw|galeharness|status\.json|ledger-updates\.jsonl|"
+    r"phase report|handoff|completion guard|github\.com/.+/issues/\d+)",
+    re.IGNORECASE,
+)
+
+
+def _is_gcw_bound_goal(goal: str, subgoals: Optional[List[str]] = None) -> bool:
+    """Heuristic: should /goal apply the GCW evidence-aware contract?"""
+    text = "\n".join([goal or "", *[s or "" for s in (subgoals or [])]])
+    return bool(_GCW_GOAL_RE.search(text))
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
@@ -435,6 +486,8 @@ def judge_goal(
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             current_time=current_time,
         )
+    if _is_gcw_bound_goal(goal, clean_subgoals):
+        prompt += GCW_JUDGE_EVIDENCE_BLOCK
 
     try:
         resp = client.chat.completions.create(
@@ -740,11 +793,15 @@ class GoalManager:
         if not self._state or self._state.status != "active":
             return None
         if self._state.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            prompt = CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
                 goal=self._state.goal,
                 subgoals_block=self._state.render_subgoals_block(),
             )
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
+        else:
+            prompt = CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
+        if _is_gcw_bound_goal(self._state.goal, self._state.subgoals):
+            prompt += GCW_CONTINUATION_EVIDENCE_BLOCK
+        return prompt
 
 
 __all__ = [
@@ -754,6 +811,8 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "GCW_CONTINUATION_EVIDENCE_BLOCK",
+    "GCW_JUDGE_EVIDENCE_BLOCK",
     "DEFAULT_MAX_TURNS",
     "load_goal",
     "save_goal",

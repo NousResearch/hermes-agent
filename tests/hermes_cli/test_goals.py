@@ -639,6 +639,19 @@ class TestContinuationPromptWithSubgoals:
         assert "1. write tests" in prompt
         assert "2. update docs" in prompt
 
+    def test_gcw_goal_continuation_requires_evidence_readback(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="cp-gcw")
+        mgr.set("Continue GCW https://github.com/acme/repo/issues/123 until done")
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "GCW evidence-aware supervisor requirements" in prompt
+        assert "status.json" in prompt
+        assert "ledger-updates.jsonl" in prompt
+        assert "partial" in prompt
+        assert "must continue" in prompt
+        assert "needs_user" in prompt
+
 
 class TestJudgeGoalWithSubgoals:
     def test_judge_uses_subgoals_template_when_provided(self, hermes_home):
@@ -694,7 +707,6 @@ class TestJudgeGoalWithSubgoals:
         from hermes_cli import goals
 
         captured = {}
-
         class _FakeMsg:
             content = '{"done": true, "reason": "ok"}'
         class _FakeChoice:
@@ -719,6 +731,46 @@ class TestJudgeGoalWithSubgoals:
         user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
         assert "Additional criteria" not in user_msg
         assert "ship it" in user_msg
+
+    def test_gcw_bound_judge_prompt_requires_terminal_evidence(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+        class _FakeMsg:
+            content = '{"done": false, "reason": "missing GCW terminal evidence"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        class _FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return _FakeResp()
+
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(_FakeClient, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            verdict, reason, _ = goals.judge_goal(
+                "Finish /gcw https://github.com/acme/repo/issues/123",
+                "status=partial; PR opened",
+                subgoals=["do not bypass validator gates"],
+            )
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "GCW-bound goal rule" in user_msg
+        assert "terminal state `done`" in user_msg
+        assert "missing report/handoff" in user_msg
+        assert "owner-facing final handoff" in user_msg
+        assert "ordinary `partial`" in user_msg
+        assert "validator/closeout" in user_msg
+        assert verdict == "continue"
+        assert "missing GCW" in reason
 
 
 class TestStatusLineSubgoalCount:

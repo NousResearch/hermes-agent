@@ -243,6 +243,25 @@ class TestJobCRUD:
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
 
+    def test_save_jobs_preserves_non_ascii_prompt(self, tmp_cron_dir):
+        """jobs.json should store non-ASCII (e.g. Chinese) text as readable
+        UTF-8, not as \\uXXXX escape sequences. Regression for #26128."""
+        from cron.jobs import JOBS_FILE
+        chinese_prompt = "生成并发送露娜的自拍照片给主人。"
+        create_job(prompt=chinese_prompt, schedule="30m")
+        raw = JOBS_FILE.read_text(encoding="utf-8")
+        assert chinese_prompt in raw, (
+            "Chinese characters should be stored as UTF-8 in jobs.json, "
+            f"but raw file did not contain the literal prompt. Raw start: {raw[:200]!r}"
+        )
+        assert "\\u" not in raw or "生成" in raw, (
+            "jobs.json appears to contain \\uXXXX escapes for non-ASCII text"
+        )
+        # Round-trip: loaded prompt must equal what we wrote.
+        loaded = list_jobs()
+        assert any(j["prompt"] == chinese_prompt for j in loaded)
+
+
     def test_default_delivery_origin(self, tmp_cron_dir):
         job = create_job(
             prompt="Test", schedule="30m",

@@ -44,6 +44,7 @@ prompt.submit           prompt.background       session.steer
 session.create          session.list            session.interrupt
 session.history         session.compress        session.branch
 session.title           session.usage           session.status
+sessions.patch          session.patch           (alias of sessions.patch)
 clarify.respond         sudo.respond            secret.respond
 approval.respond        config.set / config.get commands.catalog
 command.resolve         command.dispatch        cli.exec
@@ -51,6 +52,67 @@ reload.mcp              reload.env              process.stop
 delegation.status       subagent.interrupt      spawn_tree.save / list / load
 terminal.resize         clipboard.paste         image.attach
 ```
+
+### `sessions.patch` — partial session update
+
+`sessions.patch` (and its `session.patch` alias) lets a client update one or
+more session fields in a single round-trip — used by Hermes Desktop's
+"Edit session" panel (issue
+[#27455](https://github.com/NousResearch/hermes-agent/issues/27455)).
+
+```jsonc
+// Request
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "sessions.patch",
+  "params": {
+    "session_id": "<ephemeral sid from session.create>",
+    "patch": {
+      "title": "Refactor the kanban worker",
+      "system_prompt": "You are a meticulous reviewer..."
+    }
+  }
+}
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "session_id": "<sid>",
+    "session_key": "<db row id>",
+    "patched": {
+      "title": "Refactor the kanban worker",
+      "system_prompt": "You are a meticulous reviewer..."
+    },
+    "skipped": []
+  }
+}
+```
+
+The flat shape `{ "session_id": "...", "title": "..." }` is also accepted in
+addition to the nested `patch` object so the runtime adapter on the client
+side can use whichever shape is more convenient.
+
+**Supported fields:** `title`, `system_prompt`. Unknown fields are listed in
+`skipped` rather than failing the call — newer clients can add fields
+without breaking older gateways.
+
+**Error codes:**
+
+| Code   | Meaning                                                  |
+|--------|----------------------------------------------------------|
+| `4001` | session not found (ephemeral `session_id` unknown)       |
+| `4021` | `title` must be a non-empty string                       |
+| `4022` | `title` is already in use by another session             |
+| `4025` | no patchable fields supplied (or only unknown fields)    |
+| `4027` | `system_prompt` is not a string (pass `""` to clear)     |
+| `5007` | session DB unavailable / write failed                    |
+
+When `system_prompt` is patched the in-memory agent's cached prompt is
+invalidated so the next conversation-loop turn picks up the new value
+without restarting the session.
 
 ### Events streamed back
 

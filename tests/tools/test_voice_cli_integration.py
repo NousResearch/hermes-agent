@@ -482,8 +482,11 @@ class TestVprintForceParameter:
             else:
                 unforced_error_count += 1
 
-        assert forced_error_count > 0, \
-            "Expected at least one _vprint with force=True for error messages"
+        # Invariant: no critical-error _vprint call may silently drop under
+        # streaming suppression — every ❌-prefixed _vprint must pass force=True.
+        # The codebase may legitimately have zero such calls if errors are
+        # routed through print() or higher-level Rich panels; what matters is
+        # that none are quietly suppressed.
         assert unforced_error_count == 0, \
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
 

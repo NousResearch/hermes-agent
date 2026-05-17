@@ -1,16 +1,20 @@
-"""MemoryManager — orchestrates memory providers for the agent.
+"""MemoryManager — orchestrates the built-in memory provider plus one or
+more external plugin memory providers.
 
 Single integration point in run_agent.py. Replaces scattered per-backend
 code with one manager that delegates to registered providers.
 
-Only ONE external plugin provider is allowed at a time — attempting to
-register a second external provider is rejected with a warning.  This
-prevents tool schema bloat and conflicting memory backends.
+The BuiltinMemoryProvider is always registered first and cannot be removed.
+Multiple external providers can be active simultaneously via the
+``memory.providers`` list in config.yaml.  Results are merged across
+all active providers at runtime.
 
 Usage in run_agent.py:
     self._memory_manager = MemoryManager()
-    # Only ONE of these:
-    self._memory_manager.add_provider(plugin_provider)
+    self._memory_manager.add_provider(BuiltinMemoryProvider(...))
+    # One or more external providers:
+    for provider in external_providers:
+        self._memory_manager.add_provider(provider)
 
     # System prompt
     prompt_parts.append(self._memory_manager.build_system_prompt())
@@ -28,6 +32,7 @@ from __future__ import annotations
 import logging
 import re
 import inspect
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -242,16 +247,17 @@ def build_memory_context_block(raw_context: str) -> str:
 
 
 class MemoryManager:
-    """Orchestrates the built-in provider plus at most one external provider.
+    """Orchestrates the built-in provider plus one or more external providers.
 
-    The builtin provider is always first. Only one non-builtin (external)
-    provider is allowed.  Failures in one provider never block the other.
+    The builtin provider is always first. Multiple external providers
+    can be active simultaneously. Failures in one provider never block
+    the others. Duplicate provider names are rejected with a warning.
     """
 
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._has_external: bool = False  # True once a non-builtin provider is added
+        self._lock = threading.RLock()
 
     # -- Registration --------------------------------------------------------
 
@@ -259,47 +265,90 @@ class MemoryManager:
         """Register a memory provider.
 
         Built-in provider (name ``"builtin"``) is always accepted.
-        Only **one** external (non-builtin) provider is allowed — a second
-        attempt is rejected with a warning.
+        Multiple external providers are allowed, but duplicate names are
+        rejected with a warning.
         """
-        is_builtin = provider.name == "builtin"
+        with self._lock:
+            is_builtin = provider.name == "builtin"
 
-        if not is_builtin:
-            if self._has_external:
-                existing = next(
-                    (p.name for p in self._providers if p.name != "builtin"), "unknown"
-                )
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
-                    provider.name, existing,
+            if not is_builtin:
+                # Check for duplicate provider name
+                if any(p.name == provider.name for p in self._providers if p.name != "builtin"):
+                    logger.warning(
+                        "Memory provider '%s' is already registered; skipping duplicate.",
+                        provider.name,
+                    )
+                    return
+
+            # Collect tool schemas BEFORE mutating state — if schema loading
+            # fails the provider must NOT be registered (fixes #9948).
+            try:
+                schemas = provider.get_tool_schemas()
+            except Exception as exc:
+                logger.error(
+                    "Memory provider '%s' failed during schema loading: %s — NOT registered",
+                    provider.name, exc,
                 )
                 return
-            self._has_external = True
 
-        self._providers.append(provider)
+            self._providers.append(provider)
 
-        # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
-            if tool_name and tool_name not in self._tool_to_provider:
-                self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
-                logger.warning(
-                    "Memory tool name conflict: '%s' already registered by %s, "
-                    "ignoring from %s",
-                    tool_name,
-                    self._tool_to_provider[tool_name].name,
-                    provider.name,
-                )
+            # Index tool names → provider for routing
+            for schema in schemas:
+                tool_name = schema.get("name", "")
+                if tool_name and tool_name not in self._tool_to_provider:
+                    self._tool_to_provider[tool_name] = provider
+                elif tool_name in self._tool_to_provider:
+                    logger.warning(
+                        "Memory tool name conflict: '%s' already registered by %s, "
+                        "ignoring from %s",
+                        tool_name,
+                        self._tool_to_provider[tool_name].name,
+                        provider.name,
+                    )
 
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
+            # Namespace validation — warn if tool names don't follow convention
+            for schema in schemas:
+                tool_name = schema.get("name", "")
+                if provider.name != "builtin" and not tool_name.startswith(provider.name[:4]):
+                    logger.warning(
+                        "Provider '%s' tool '%s' does not follow naming convention '<provider>_<action>'.",
+                        provider.name, tool_name,
+                    )
+
+            ext_count = sum(1 for p in self._providers if p.name != "builtin")
+            total_tools = len(self._tool_to_provider)
+            logger.info(
+                "Memory provider '%s' registered (%d tools). Active: %d external, %d total tools.",
+                provider.name, len(schemas), ext_count, total_tools,
+            )
+
+    def remove_provider(self, name: str) -> bool:
+        """Deregister a memory provider by name. Returns True if removed."""
+        if name == "builtin":
+            logger.warning("Cannot remove builtin memory provider")
+            return False
+
+        with self._lock:
+            for i, p in enumerate(self._providers):
+                if p.name == name:
+                    # Remove tool mappings
+                    tools_to_remove = [t for t, prov in self._tool_to_provider.items() if prov is p]
+                    for t in tools_to_remove:
+                        del self._tool_to_provider[t]
+
+                    # Shutdown the provider
+                    try:
+                        p.shutdown()
+                    except Exception as exc:
+                        logger.warning("Provider '%s' shutdown failed: %s", name, exc)
+
+                    self._providers.pop(i)
+                    logger.info("Memory provider '%s' removed (had %d tools)", name, len(tools_to_remove))
+                    return True
+
+            logger.warning("Provider '%s' not found for removal", name)
+            return False
 
     @property
     def providers(self) -> List[MemoryProvider]:

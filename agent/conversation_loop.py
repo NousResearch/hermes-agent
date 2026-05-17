@@ -2333,6 +2333,39 @@ def run_conversation(
                     classified.reason == FailoverReason.payload_too_large
                 )
 
+                # Actionable hint for GitHub Models (Azure) 413 errors.
+                # The free tier enforces a hard 8K token cap per request,
+                # which Hermes' system prompt + tool schemas alone exceed.
+                # Compression can't help — the floor is the system prompt
+                # itself, not the conversation — so surface a clear "not
+                # compatible" message instead of looping into three futile
+                # compression attempts.
+                if (
+                    status_code == 413
+                    and isinstance(agent.base_url, str)
+                    and "models.inference.ai.azure.com" in agent.base_url
+                ):
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      exceeds that floor, so this endpoint cannot run an agentic loop.",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      Use the `copilot` provider with a Copilot subscription token (`hermes",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      setup` → GitHub Copilot), or pick any other provider.",
+                        force=True,
+                    )
+
                 if is_payload_too_large:
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:

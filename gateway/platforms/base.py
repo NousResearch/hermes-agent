@@ -829,6 +829,9 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ts": "text/plain",
+    ".py": "text/plain",
+    ".sh": "text/plain",
 }
 
 

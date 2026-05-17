@@ -617,6 +617,9 @@ def init_agent(
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers
                 client_kwargs["default_headers"] = build_or_headers()
+            elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
+                from agent.auxiliary_client import build_nvidia_nim_headers
+                client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
             elif base_url_host_matches(effective_base, "api.routermint.com"):
                 client_kwargs["default_headers"] = _ra()._routermint_headers()
             elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
@@ -655,9 +658,15 @@ def init_agent(
                 }
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
-                # Preserve any default_headers the router set
-                if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                    client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                # Preserve provider-specific headers the router set.  The
+                # OpenAI SDK stores caller-provided default_headers in
+                # _custom_headers; older/mocked clients may expose
+                # _default_headers instead.
+                _routed_headers = getattr(_routed_client, "_custom_headers", None)
+                if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "_default_headers", None)
+                if _routed_headers:
+                    client_kwargs["default_headers"] = dict(_routed_headers)
             else:
                 # When the user explicitly chose a non-OpenRouter provider
                 # but no credentials were found, fail fast with a clear
@@ -706,8 +715,11 @@ def init_agent(
                             }
                             if _provider_timeout is not None:
                                 client_kwargs["timeout"] = _provider_timeout
-                            if hasattr(_fb_client, "_default_headers") and _fb_client._default_headers:
-                                client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "_default_headers", None)
+                            if _fb_headers:
+                                client_kwargs["default_headers"] = dict(_fb_headers)
                             _fb_resolved = True
                             break
                     if not _fb_resolved:

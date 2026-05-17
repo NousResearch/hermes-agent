@@ -727,6 +727,33 @@ class TestDiscordChannelPromptsConfig:
         assert raw["discord"]["channel_prompts"] == {}
 
 
+class TestConfigMigrationPersistence:
+    def test_migration_version_bump_does_not_materialize_schema_defaults(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": DEFAULT_CONFIG["_config_version"] - 1,
+                    "checkpoints": {"enabled": True},
+                    "memory": {"user_char_limit": 2200},
+                    "context_length": 1000000,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["checkpoints"]["enabled"] is True
+        assert raw["memory"]["user_char_limit"] == 2200
+        assert raw["model"]["context_length"] == 1000000
+        assert "gateway_timeout" not in raw.get("agent", {})
+        assert "display" not in raw
+
+
 class TestUserMessagePreviewConfig:
     def test_default_config_preview_line_counts(self):
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]

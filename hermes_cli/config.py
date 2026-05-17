@@ -24,7 +24,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 
 logger = logging.getLogger(__name__)
 
@@ -3587,7 +3587,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             display["interim_assistant_messages"] = True
             config["display"] = display
             results["config_added"].append("display.interim_assistant_messages=true (default)")
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Added display.interim_assistant_messages=true")
 
@@ -3652,6 +3652,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
 
+    # ── Version 17 → 18: add explicit Discord channel prompt map ──
+    if current_ver < 18:
+        config = read_raw_config()
+        discord = config.get("discord", {})
+        if not isinstance(discord, dict):
+            discord = {}
+        if "channel_prompts" not in discord:
+            discord["channel_prompts"] = {}
+            config["discord"] = discord
+            results["config_added"].append("discord.channel_prompts={} (default)")
+            save_config(config, strip_defaults=False)
+            if not quiet:
+                print("  ✓ Added discord.channel_prompts={}")
+
     # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
     # The loader now requires plugins to appear in ``plugins.enabled`` before
     # loading. Existing installs had all discovered plugins loading by default
@@ -3701,7 +3715,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             plugins_cfg["enabled"] = grandfathered
             config["plugins"] = plugins_cfg
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append(
                 f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
             )
@@ -3781,7 +3795,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             touched = True
 
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if added_curator:
                 results["config_added"].append(
                     f"curator ({len(added_curator)} default key(s))"
@@ -4072,6 +4086,61 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
+def _strip_default_values(
+    config: Dict[str, Any],
+    defaults: Dict[str, Any] = DEFAULT_CONFIG,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Return *config* without keys whose values match ``DEFAULT_CONFIG``.
+
+    ``load_config()`` returns defaults deep-merged into the user's sparse
+    config. Persisting that expanded dict would materialize every default in
+    ``config.yaml`` and can overwrite future schema default changes. Keep
+    ``_config_version`` and any caller-specified paths even when they match
+    defaults so migrations can preserve their bookkeeping and intentional
+    default-valued additions.
+    """
+    preserve_keys = preserve_keys or {("_config_version",)}
+
+    def _strip(value: Any, default: Any, path: Tuple[str, ...]):
+        if path in preserve_keys:
+            return copy.deepcopy(value), True
+
+        if isinstance(value, dict):
+            default_dict = default if isinstance(default, dict) else {}
+            stripped: Dict[str, Any] = {}
+            for key, child in value.items():
+                child_default = default_dict.get(key)
+                stripped_child, keep = _strip(child, child_default, path + (key,))
+                if keep:
+                    stripped[key] = stripped_child
+            if stripped:
+                return stripped, True
+            if isinstance(default, dict):
+                return stripped, False
+            return stripped, value != default
+
+        return copy.deepcopy(value), value != default
+
+    stripped_config, _ = _strip(config, defaults, ())
+    return stripped_config if isinstance(stripped_config, dict) else {}
+
+
+def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
+    """Return leaf paths explicitly present in a raw config dict."""
+    paths: Set[Tuple[str, ...]] = set()
+
+    def _walk(value: Any, path: Tuple[str, ...]) -> None:
+        if isinstance(value, dict) and value:
+            for key, child in value.items():
+                _walk(child, path + (key,))
+        elif path:
+            paths.add(path)
+
+    _walk(config, ())
+    return paths
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -4331,7 +4400,12 @@ _COMMENTED_SECTIONS = """
 """
 
 
-def save_config(config: Dict[str, Any]):
+def save_config(
+    config: Dict[str, Any],
+    *,
+    strip_defaults: bool = True,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+):
     """Save configuration to ~/.hermes/config.yaml."""
     with _CONFIG_LOCK:
         if is_managed():
@@ -4349,6 +4423,18 @@ def save_config(config: Dict[str, Any]):
                 normalized,
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            )
+
+        if strip_defaults:
+            default_preserve_keys = {("_config_version",)}
+            if raw_existing:
+                default_preserve_keys.update(_explicit_config_paths(raw_existing))
+            if preserve_keys:
+                default_preserve_keys.update(preserve_keys)
+            normalized = _strip_default_values(
+                normalized,
+                DEFAULT_CONFIG,
+                preserve_keys=default_preserve_keys,
             )
 
         # Build optional commented-out sections for features that are off by
@@ -4983,7 +5069,7 @@ def edit_config():
     
     # Ensure config exists
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG)
+        save_config(DEFAULT_CONFIG, strip_defaults=False)
         print(f"Created {config_path}")
     
     # Find editor

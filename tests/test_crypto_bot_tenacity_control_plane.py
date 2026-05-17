@@ -280,6 +280,57 @@ def test_pr_ci_audit_uses_latest_status_per_context() -> None:
     assert payload["blocker"] is None
 
 
+def test_readiness_remote_branch_head_prefers_live_remote_over_stale_tracking_ref(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_git(_repo: Path, args: list[str]) -> tuple[int, str, str]:
+        calls.append(args)
+        if args[:3] == ["ls-remote", "origin", "refs/heads/feature"]:
+            return 0, "live-sha\trefs/heads/feature\n", ""
+        if args[:2] == ["rev-parse", "refs/remotes/origin/feature"]:
+            return 0, "stale-sha\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(readiness, "run_git", fake_run_git)
+
+    assert readiness.remote_branch_head(Path("/tmp/repo"), "feature") == "live-sha"
+    assert calls == [["ls-remote", "origin", "refs/heads/feature"]]
+
+
+def test_pr_ci_audit_falls_back_to_branch_target_pr_when_head_changed() -> None:
+    def fake_get(_url: str) -> dict[str, object]:
+        return {
+            "status": 200,
+            "data": [
+                {
+                    "number": 2,
+                    "state": "open",
+                    "html_url": "http://gitea/preston/crypto_bot/pulls/2",
+                    "head": {
+                        "ref": "hermes/dev13-006-daemon-trust-contract-mapping",
+                        "sha": "new-head",
+                    },
+                    "base": {"ref": "main"},
+                }
+            ],
+        }
+
+    payload = pr_ci_audit.discover_matching_pull(
+        api_base="http://gitea/api/v1",
+        owner="preston",
+        repo="crypto_bot",
+        source_branch="hermes/dev13-006-daemon-trust-contract-mapping",
+        source_head="old-head",
+        target_branch="main",
+        api_get=fake_get,
+    )
+
+    assert payload["number"] == 2
+    assert payload["match_count"] == 0
+    assert payload["branch_match_count"] == 1
+    assert payload["matched_by"] == "branch_target_fallback"
+
+
 def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
     labels = runner_recovery.RUNNER_LABELS.split(",")
 

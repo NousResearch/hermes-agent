@@ -337,13 +337,14 @@ act_runner job-container network requirement, rerun evidence sequence, and
 temporary-token hygiene. See `references/runner-networking-ci-recovery.md` for
 fail-closed repair/inspection of `actions/checkout` DNS failures caused by job
 containers not joining `crypto-bot-gitea-net`. See
-See `references/local-gitea-actions-toolcache-hardening.md` when CI gets past Node
+`references/local-gitea-actions-toolcache-hardening.md` when CI gets past Node
 and checkout but fails because local act_runner job images/toolcache lack
 GitHub-hosted-runner assumptions such as Python 3.13 arm64 toolcache metadata or
 `ripgrep`. See `references/pr-ci-deterministic-validator-iteration.md` when PR
-sync CI reaches deterministic validators and fails on missing evidence fixtures
-or commit-reachability false negatives; it records the evidence-first repair,
-validator rerun, commit/push, and final status-reporting loop.
+sync CI reaches deterministic validators, when Gitea append-only statuses must
+be collapsed to latest-per-context state, or when live PR HEAD differs from stale
+completion/PR-evidence packets; it records the evidence-first repair, validator
+rerun, commit/push, current-head mismatch triage, and final status-reporting loop.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

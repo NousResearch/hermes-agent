@@ -517,14 +517,15 @@ def open_pr_for_branch(
 def remote_branch_head(repo: Path, branch: str | None) -> str | None:
     if not branch:
         return None
+    code, out, _ = run_git(repo, ["ls-remote", "origin", f"refs/heads/{branch}"])
+    if code == 0 and out.strip():
+        first_field = out.splitlines()[0].split()[0]
+        if first_field:
+            return first_field
     code, out, _ = run_git(repo, ["rev-parse", f"refs/remotes/origin/{branch}"])
     if code == 0 and out.strip():
         return out.strip()
-    code, out, _ = run_git(repo, ["ls-remote", "--heads", "origin", branch])
-    if code != 0:
-        return None
-    first = out.splitlines()[0].split()[0] if out.splitlines() else ""
-    return first or None
+    return None
 
 
 def s006_pr_pilot_status(repo: Path, state_root: Path) -> dict[str, Any]:

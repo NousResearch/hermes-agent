@@ -84,6 +84,19 @@ A deterministic Python-quality failure in `tests/observability_service_test.py::
 
 This protects runtime-name leakage while preserving test/temp observability for synthetic database names. Validate with the targeted test, the observability test file, then `bash scripts/validation/validate-python-quality.sh` before commit/push.
 
+## Current PR HEAD vs stale local evidence
+
+When a PR advances beyond the HEAD named by the existing completion-gate and PR-evidence packets, reconcile in this order without remote mutation:
+
+1. Resolve the live PR by source branch, source HEAD, and target branch.
+2. Classify CI against the live PR HEAD using latest-per-context commit statuses.
+3. Compare completion-gate `target_full_head` and PR-evidence `source_head` to the live PR HEAD.
+4. If CI is passed but the local evidence names an older HEAD, report this as evidence freshness/scope mismatch rather than CI failure.
+5. Do not blindly regenerate S006 completion evidence against the expanded HEAD. First compute the current merge-base/diff and run the completion gate. If the expanded diff includes workflow/runtime/Python or other blocked surfaces outside the original docs-only allowlist, the correct conclusion is that S006 evidence cannot honestly be refreshed for that PR head without a policy/scope decision or branch narrowing.
+6. Keep `pr_created_ci_passed_merge_pending` distinct from merge readiness: passed CI plus matching PR identity is not enough when completion-gate/PR-evidence packets are stale or mismatched.
+
+If a mistyped base SHA creates a failing completion-gate artifact during investigation, remove that bad transient artifact immediately so future readiness scans do not pick it up as canonical evidence.
+
 ## Reporting discipline
 
 If the tool-call/session cap interrupts mid-repair, report the exact last verified state: latest pushed SHA, latest CI run/job statuses, log paths, uncommitted local changes, and which validation/commit/push steps remain. Never imply committed/pushed/green state before it is verified.

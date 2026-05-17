@@ -250,6 +250,7 @@ def discover_matching_pull(
     if status != 200 or not isinstance(pulls, list):
         return result
     matches: list[dict[str, Any]] = []
+    branch_matches: list[dict[str, Any]] = []
     for pull in pulls:
         if not isinstance(pull, dict):
             continue
@@ -261,18 +262,31 @@ def discover_matching_pull(
         )
         if identity["matches"]:
             matches.append(pull)
+            continue
+        if (
+            identity.get("head_ref") == source_branch
+            and identity.get("base_ref") == target_branch
+        ):
+            branch_matches.append(pull)
     result["match_count"] = len(matches)
-    if not matches:
+    result["branch_match_count"] = len(branch_matches)
+    candidates = matches or branch_matches
+    if not candidates:
         return result
     selected = next(
-        (pull for pull in matches if str(pull.get("state") or "").lower() == "open"),
-        matches[0],
+        (
+            pull
+            for pull in candidates
+            if str(pull.get("state") or "").lower() == "open"
+        ),
+        candidates[0],
     )
     result.update(
         {
             "number": pull_number(selected),
             "url": selected.get("html_url") or selected.get("url"),
             "pull": selected,
+            "matched_by": "exact_head" if matches else "branch_target_fallback",
         }
     )
     return result
@@ -552,6 +566,8 @@ def evaluate_pr_ci_audit(
             "readable": discovery["readable"],
             "status": discovery.get("status"),
             "match_count": discovery.get("match_count"),
+            "branch_match_count": discovery.get("branch_match_count"),
+            "matched_by": discovery.get("matched_by"),
             "url": discovery.get("url"),
             "error": discovery.get("error"),
         },

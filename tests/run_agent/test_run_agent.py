@@ -2501,6 +2501,61 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_api_sanitizer_stubs_stale_assistant_tool_call_before_user(self, agent):
+        """A tool result with the right id later in history is still invalid.
+
+        Chat APIs require assistant tool_calls to be followed immediately by
+        matching tool messages. If a user/assistant message appears first, the
+        old global-id sanitizer let the stale assistant tool_call through.
+        """
+        messages = [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "second"},
+            {"role": "tool", "tool_call_id": "call_old", "content": "late old result"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assistant_idx = next(i for i, m in enumerate(sanitized) if m.get("tool_calls"))
+        assert sanitized[assistant_idx + 1]["role"] == "tool"
+        assert sanitized[assistant_idx + 1]["tool_call_id"] == "call_old"
+        assert "Result unavailable" in sanitized[assistant_idx + 1]["content"]
+        assert not any(m.get("content") == "late old result" for m in sanitized)
+
+    def test_api_sanitizer_drops_tool_result_after_final_assistant(self, agent):
+        messages = [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_old",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_old", "content": "result"},
+            {"role": "assistant", "content": "Done."},
+            {"role": "tool", "tool_call_id": "call_old", "content": "duplicate stale result"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        assert [m.get("content") for m in sanitized if m.get("role") == "tool"] == ["result"]
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.

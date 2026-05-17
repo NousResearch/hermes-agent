@@ -6294,14 +6294,39 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Fix orphaned tool_call / tool_result pairs before every LLM call.
+        """Repair tool-call adjacency before every LLM call.
 
-        Runs unconditionally — not gated on whether the context compressor
-        is present — so orphans from session loading or manual message
-        manipulation are always caught.
+        OpenAI-compatible APIs require every assistant message with
+        ``tool_calls`` to be followed immediately by the matching tool-result
+        messages. A global "call id exists somewhere in history" check is not
+        enough: compressed/resumed sessions can keep an old tool result later in
+        the transcript, leaving a stale assistant tool call before a user or
+        assistant message. That shape is invalid on the wire even though the IDs
+        technically match.
+
+        This sanitizer is intentionally per-call only. It drops orphan/stale tool
+        results and inserts explicit unavailable-result stubs for assistant tool
+        calls whose immediate result is missing, without mutating stored history.
         """
-        # --- Role allowlist: drop messages with roles the API won't accept ---
-        filtered = []
+        sanitized: List[Dict[str, Any]] = []
+        pending_calls: Dict[str, str] = {}
+        completed_for_pending: set[str] = set()
+        dropped_tool_results = 0
+        inserted_stubs = 0
+
+        def _flush_missing_stubs() -> None:
+            nonlocal inserted_stubs, pending_calls, completed_for_pending
+            for call_id, tool_name in list(pending_calls.items()):
+                sanitized.append({
+                    "role": "tool",
+                    "name": tool_name,
+                    "content": "[Result unavailable — see context summary above]",
+                    "tool_call_id": call_id,
+                })
+                inserted_stubs += 1
+            pending_calls = {}
+            completed_for_pending = set()
+
         for msg in messages:
             role = msg.get("role")
             if role not in AIAgent._VALID_API_ROLES:
@@ -6310,58 +6335,47 @@ class AIAgent:
                     role,
                 )
                 continue
-            filtered.append(msg)
-        messages = filtered
 
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    cid = AIAgent._get_tool_call_id_static(tc)
-                    if cid:
-                        surviving_call_ids.add(cid)
+            if role == "tool":
+                call_id = msg.get("tool_call_id")
+                if call_id and call_id in pending_calls and call_id not in completed_for_pending:
+                    sanitized.append(msg)
+                    completed_for_pending.add(call_id)
+                    pending_calls.pop(call_id, None)
+                else:
+                    dropped_tool_results += 1
+                continue
 
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
+            if pending_calls:
+                _flush_missing_stubs()
 
-        # 1. Drop tool results with no matching assistant call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
-            ]
+            sanitized.append(msg)
+
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls") or []
+                if tool_calls:
+                    pending_calls = {}
+                    completed_for_pending = set()
+                    for tc in tool_calls:
+                        call_id = AIAgent._get_tool_call_id_static(tc)
+                        if call_id:
+                            pending_calls[call_id] = AIAgent._get_tool_call_name_static(tc)
+
+        if pending_calls:
+            _flush_missing_stubs()
+
+        if dropped_tool_results:
             logger.debug(
-                "Pre-call sanitizer: removed %d orphaned tool result(s)",
-                len(orphaned_results),
+                "Pre-call sanitizer: removed %d orphaned/stale tool result(s)",
+                dropped_tool_results,
             )
-
-        # 2. Inject stub results for calls whose result was dropped
-        missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
-            patched: List[Dict[str, Any]] = []
-            for msg in messages:
-                patched.append(msg)
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        cid = AIAgent._get_tool_call_id_static(tc)
-                        if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "name": AIAgent._get_tool_call_name_static(tc),
-                                "content": "[Result unavailable — see context summary above]",
-                                "tool_call_id": cid,
-                            })
-            messages = patched
+        if inserted_stubs:
             logger.debug(
                 "Pre-call sanitizer: added %d stub tool result(s)",
-                len(missing_results),
+                inserted_stubs,
             )
-        return messages
+
+        return sanitized
 
     @staticmethod
     def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:

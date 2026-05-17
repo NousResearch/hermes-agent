@@ -14071,18 +14071,27 @@ class AIAgent:
                     # ── Thinking block signature recovery ─────────────────
                     # Anthropic signs thinking blocks against the full turn
                     # content.  Any upstream mutation (context compression,
-                    # session truncation, message merging) invalidates the
-                    # signature → HTTP 400.  Recovery: strip reasoning_details
-                    # from all messages so the next retry sends no thinking
-                    # blocks at all.  One-shot — don't retry infinitely.
+                    # session truncation, message merging) or cross-provider
+                    # model switch (e.g. MiniMax → Anthropic) invalidates the
+                    # signature → HTTP 400.  Recovery: strip ALL thinking/
+                    # redacted_thinking blocks from assistant message content
+                    # arrays so the next retry sends no thinking blocks at all.
+                    # One-shot — don't retry infinitely.
                     if (
                         classified.reason == FailoverReason.thinking_signature
                         and not thinking_sig_retry_attempted
                     ):
                         thinking_sig_retry_attempted = True
+                        _THINKING_TYPES = ("thinking", "redacted_thinking")
                         for _m in messages:
-                            if isinstance(_m, dict):
-                                _m.pop("reasoning_details", None)
+                            if not isinstance(_m, dict):
+                                continue
+                            _m.pop("reasoning_details", None)
+                            if _m.get("role") == "assistant" and isinstance(_m.get("content"), list):
+                                _m["content"] = [
+                                    _b for _b in _m["content"]
+                                    if not (isinstance(_b, dict) and _b.get("type") in _THINKING_TYPES)
+                                ] or [{"type": "text", "text": "(thinking elided)"}]
                         self._vprint(
                             f"{self.log_prefix}⚠️  Thinking block signature invalid — "
                             f"stripped all thinking blocks, retrying...",
@@ -14090,7 +14099,7 @@ class AIAgent:
                         )
                         logging.warning(
                             "%sThinking block signature recovery: stripped "
-                            "reasoning_details from %d messages",
+                            "thinking blocks from %d messages",
                             self.log_prefix, len(messages),
                         )
                         continue

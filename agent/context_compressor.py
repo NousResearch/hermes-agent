@@ -1237,6 +1237,42 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         This method removes orphaned results and inserts stub results for
         orphaned calls so the message list is always well-formed.
         """
+        # 1. Remove tool results that are not immediately preceded by the
+        #    assistant that issued the matching tool_call.
+        #
+        #    Strict providers (Moonshot AI / Kimi) reject a tool message when
+        #    the immediately preceding message is not an assistant with a
+        #    tool_calls entry containing that tool_call_id.  A simple global
+        #    ID-set check is insufficient because the owning assistant may
+        #    appear earlier in the list while the tool message was separated
+        #    from it by a dropped message or boundary shift.
+        _last_assistant_call_ids: dict = {}
+        _orphaned_indices: set = set()
+        for idx, msg in enumerate(messages):
+            role = msg.get("role")
+            if role == "assistant":
+                _last_assistant_call_ids = {
+                    self._get_tool_call_id(tc): True
+                    for tc in msg.get("tool_calls") or []
+                    if self._get_tool_call_id(tc)
+                }
+            elif role == "tool":
+                _cid = msg.get("tool_call_id")
+                if not _cid or _cid not in _last_assistant_call_ids:
+                    _orphaned_indices.add(idx)
+            else:
+                # Any non-assistant, non-tool message (user, system, etc.)
+                # breaks the chain — the next tool must follow a fresh assistant.
+                _last_assistant_call_ids = {}
+
+        if _orphaned_indices:
+            messages = [
+                m for i, m in enumerate(messages) if i not in _orphaned_indices
+            ]
+            if not self.quiet_mode:
+                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(_orphaned_indices))
+
+        # Recompute global ID sets after removal so stub injection below is accurate.
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
@@ -1251,16 +1287,6 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 cid = msg.get("tool_call_id")
                 if cid:
                     result_call_ids.add(cid)
-
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
-            ]
-            if not self.quiet_mode:
-                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
         # 2. Add stub results for assistant tool_calls whose results were dropped
         missing_results = surviving_call_ids - result_call_ids

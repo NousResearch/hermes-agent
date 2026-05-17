@@ -6313,6 +6313,44 @@ class AIAgent:
             filtered.append(msg)
         messages = filtered
 
+        # 1. Drop tool results that are not immediately preceded by the
+        #    assistant that issued the matching tool_call.
+        #
+        #    Strict providers (Moonshot AI / Kimi) reject a tool message when
+        #    the immediately preceding message is not an assistant with a
+        #    tool_calls entry containing that tool_call_id.  A simple global
+        #    ID-set check is insufficient because the owning assistant may
+        #    appear earlier in the list while the tool message was separated
+        #    from it by a dropped message or boundary shift.
+        _last_assistant_call_ids: dict = {}
+        _orphaned_indices: set = set()
+        for idx, msg in enumerate(messages):
+            role = msg.get("role")
+            if role == "assistant":
+                _last_assistant_call_ids = {
+                    AIAgent._get_tool_call_id_static(tc): True
+                    for tc in msg.get("tool_calls") or []
+                    if AIAgent._get_tool_call_id_static(tc)
+                }
+            elif role == "tool":
+                _cid = msg.get("tool_call_id")
+                if not _cid or _cid not in _last_assistant_call_ids:
+                    _orphaned_indices.add(idx)
+            else:
+                # Any non-assistant, non-tool message (user, system, etc.)
+                # breaks the chain — the next tool must follow a fresh assistant.
+                _last_assistant_call_ids = {}
+
+        if _orphaned_indices:
+            messages = [
+                m for i, m in enumerate(messages) if i not in _orphaned_indices
+            ]
+            logger.debug(
+                "Pre-call sanitizer: removed %d orphaned tool result(s)",
+                len(_orphaned_indices),
+            )
+
+        # Recompute global ID sets after removal so stub injection below is accurate.
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
@@ -6327,18 +6365,6 @@ class AIAgent:
                 cid = msg.get("tool_call_id")
                 if cid:
                     result_call_ids.add(cid)
-
-        # 1. Drop tool results with no matching assistant call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
-            ]
-            logger.debug(
-                "Pre-call sanitizer: removed %d orphaned tool result(s)",
-                len(orphaned_results),
-            )
 
         # 2. Inject stub results for calls whose result was dropped
         missing_results = surviving_call_ids - result_call_ids

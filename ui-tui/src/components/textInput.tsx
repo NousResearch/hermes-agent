@@ -283,6 +283,12 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
   return ASCII_PRINTABLE_RE.test(removed)
 }
 
+export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Terminal.app still shows paint/cursor artifacts under the fast-echo
+  // bypass path. Fall back to the normal Ink render path there.
+  return (env.TERM_PROGRAM ?? '').trim() !== 'Apple_Terminal'
+}
+
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
 
@@ -559,7 +565,7 @@ export function TextInput({
     }, 16)
   }
 
-  const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
+  const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)

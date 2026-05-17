@@ -103,6 +103,7 @@ _PREFIX_PATTERNS = [
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
+    r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

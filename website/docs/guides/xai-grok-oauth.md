@@ -59,13 +59,22 @@ hermes auth add xai-oauth
 
 ### Remote / headless sessions
 
-On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser. Open the URL on any device with a browser, complete the consent flow, and Hermes finishes the loopback exchange when the redirect comes back.
+On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.
 
-If you need to force this behaviour explicitly:
+**Important:** the loopback listener still runs on the remote machine at `127.0.0.1:56121`. The xAI redirect needs to reach *that* listener, so opening the URL on your laptop will fail (`Could not establish connection. We couldn't reach your app.`) unless you forward the port:
 
 ```bash
+# In a separate terminal on your local machine:
+ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+
+# Then in your SSH session on the remote machine:
 hermes auth add xai-oauth --no-browser
+# Open the printed authorize URL in your local browser.
 ```
+
+Through a jump box / bastion: add `-J jump-user@jump-host`.
+
+See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) for the full step-by-step, including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
 
 ## How the Login Works
 
@@ -119,7 +128,7 @@ hermes --provider x-ai-oauth       # alias
 hermes --provider xai-grok-oauth   # alias
 ```
 
-## Direct-to-xAI Tools (TTS / Image / Video / Transcription)
+## Direct-to-xAI Tools (TTS / Image / Video / Transcription / X Search)
 
 Once you're logged in via OAuth, every direct-to-xAI tool reuses the same bearer token automatically — there is **no separate setup** unless you'd rather use an API key.
 
@@ -130,12 +139,17 @@ hermes tools
 # → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
+# → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok Subscription)"
 ```
 
 If OAuth tokens are already stored, the picker confirms it and skips the credential prompt. If neither OAuth nor `XAI_API_KEY` is set, the picker offers a 3-choice menu: OAuth login, paste API key, or skip.
 
 :::note Video generation is off by default
 The `video_gen` toolset is disabled by default. Enable it in `hermes tools` → `🎬 Video Generation` (press space) before the agent can call `video_generate`. Otherwise the agent may fall back to the bundled ComfyUI skill, which is also tagged for video generation.
+:::
+
+:::note X search is off by default
+The `x_search` toolset is disabled by default. Enable it in `hermes tools` → `🐦 X (Twitter) Search` (press space) before the agent can call `x_search`. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
 :::
 
 ### Models
@@ -182,13 +196,17 @@ Hermes detected that the `state` value returned by the authorization server does
 
 ### Logging in from a remote server
 
-On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. Open the URL on any device with a browser and complete the consent there — the loopback callback comes back to your remote host.
-
-You can also force this behaviour:
+On SSH or container sessions Hermes prints the authorization URL instead of opening a browser. The loopback callback listener still binds `127.0.0.1:56121` on the remote host — your laptop's browser can't reach it without an SSH local-forward:
 
 ```bash
+# Local machine, separate terminal:
+ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+
+# Remote machine:
 hermes auth add xai-oauth --no-browser
 ```
+
+Full walkthrough (jump boxes, mosh/tmux, port conflicts): [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md).
 
 ### "No xAI credentials found" error at runtime
 
@@ -208,6 +226,7 @@ This clears both the singleton OAuth entry in `auth.json` and any credential-poo
 
 ## See Also
 
+- [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — required reading if Hermes is on a different machine than your browser
 - [AI Providers reference](../integrations/providers.md)
 - [Environment Variables](../reference/environment-variables.md)
 - [Configuration](../user-guide/configuration.md)

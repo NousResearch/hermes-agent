@@ -670,9 +670,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
             logger.warning("[GoogleChat] Loop not accepting callbacks; dropping event")
             return
         try:
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            future = safe_schedule_threadsafe(
+                coro, loop,
+                logger=logger,
+                log_message="[GoogleChat] Failed to schedule background callback",
+                log_level=logging.WARNING,
+            )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
+            return
+        if future is None:
             return
         future.add_done_callback(self._log_background_failure)
 

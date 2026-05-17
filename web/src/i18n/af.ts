@@ -663,7 +663,7 @@ export const af: Translations = {
     columnHelp: {
       triage: "Rou idees — 'n spesifiseerder sal die spesifikasie uitwerk",
       todo: "Wag op afhanklikhede of nie toegewys nie",
-      ready: "Toegewys en wag vir 'n versender-tik",
+      ready: "Afhanklikhede is bevredig; wys 'n profiel toe om te versend",
       running: "Deur 'n werker geëis — in vlug",
       blocked: "Werker het mensinvoer aangevra",
       done: "Voltooi",

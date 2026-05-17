@@ -107,6 +107,9 @@ DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
 SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
 SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+
+XAI_OAUTH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth"
+OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh"
 DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-modify-playback-state",
     "user-read-playback-state",
@@ -2528,6 +2531,8 @@ def login_spotify_command(args) -> None:
     print(f"Full setup guide: {SPOTIFY_DOCS_URL}")
     print()
 
+    _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
+
     if open_browser and not _is_remote_session():
         try:
             opened = webbrowser.open(authorize_url)
@@ -2582,6 +2587,45 @@ def login_spotify_command(args) -> None:
 def _is_remote_session() -> bool:
     """Detect if running in an SSH session where webbrowser.open() won't work."""
     return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+
+
+def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) -> None:
+    """Print an SSH tunnel hint when running a loopback-redirect OAuth flow on a
+    remote host. The auth server (xAI, Spotify, ...) will redirect the user's
+    browser to ``127.0.0.1:<port>/callback``. If the browser is on a different
+    machine than the loopback listener (the usual SSH case), the redirect can't
+    reach the listener without a local port forward.
+
+    The hint is best-effort: silent if we don't think we're remote, or if we
+    can't parse a host/port out of the redirect URI.
+
+    Pass ``docs_url`` for a provider-specific guide (e.g. the xAI Grok OAuth
+    page); the generic OAuth-over-SSH guide is always shown after it.
+    """
+    if not _is_remote_session():
+        return
+    try:
+        parsed = urlparse(redirect_uri)
+    except Exception:
+        return
+    host = parsed.hostname or ""
+    port = parsed.port
+    if host not in ("127.0.0.1", "::1", "localhost") or not port:
+        return
+    print()
+    print("Remote session detected. Your browser will redirect to")
+    print(f"  {redirect_uri}")
+    print("which the loopback listener on THIS machine is waiting on. If your")
+    print("browser is on a different machine, forward the port first from your")
+    print("local machine in a separate terminal:")
+    print()
+    print(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>")
+    print()
+    print("Then open the authorize URL above in your local browser.")
+    if docs_url:
+        print(f"Provider docs:      {docs_url}")
+    print(f"SSH/jump-box guide: {OAUTH_OVER_SSH_DOCS_URL}")
+    print()
 
 
 # =============================================================================
@@ -5296,6 +5340,8 @@ def _xai_oauth_loopback_login(
         print(authorize_url)
         print()
         print(f"Waiting for callback on {redirect_uri}")
+
+        _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
 
         if open_browser and not _is_remote_session():
             try:

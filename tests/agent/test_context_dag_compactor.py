@@ -248,6 +248,23 @@ def test_leaf_compaction_rejects_cross_session_or_missing_span(tmp_path):
         db.close()
 
 
+def test_leaf_compaction_rejects_missing_middle_non_contiguous_span(tmp_path):
+    db = make_db(tmp_path)
+    try:
+        msg1 = db.append_message("sess-1", "user", "one")
+        msg2 = db.append_message("sess-1", "assistant", "two")
+        msg3 = db.append_message("sess-1", "user", "three")
+        db._execute_write(lambda conn: conn.execute("DELETE FROM messages WHERE id = ?", (msg2,)))
+        fake = FakeSummarizer()
+        compactor = ContextDAGCompactor(ContextDAGStore(db), summarizer=fake)
+
+        with pytest.raises(ValueError, match="complete contiguous span"):
+            compactor.compact_leaf_span("sess-1", msg1, msg3)
+        assert fake.requests == []
+    finally:
+        db.close()
+
+
 def test_leaf_compaction_write_is_atomic_and_retry_idempotent_after_source_failure(tmp_path):
     db = make_db(tmp_path)
     try:

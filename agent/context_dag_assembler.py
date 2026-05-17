@@ -246,8 +246,11 @@ def _index_raw_messages(raw_messages: Sequence[Dict[str, Any]]) -> Dict[int, int
     mapping: Dict[int, int] = {}
     for idx, message in enumerate(raw_messages):
         mid = _message_id(message)
-        if mid is not None:
-            mapping[mid] = idx
+        if mid is None:
+            continue
+        if mid in mapping:
+            raise ContextAssemblyError(f"duplicate raw message id {mid!r} at indexes {mapping[mid]} and {idx}")
+        mapping[mid] = idx
     return mapping
 
 

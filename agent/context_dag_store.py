@@ -68,6 +68,12 @@ class ContextDAGStore:
 
     @staticmethod
     def _summary_id(session_id: str, kind: str, source_hash: str, prompt_version: Optional[str]) -> str:
+        return ContextDAGStore.compute_summary_id(session_id, kind, source_hash, prompt_version)
+
+    @staticmethod
+    def compute_summary_id(session_id: str, kind: str, source_hash: str, prompt_version: Optional[str]) -> str:
+        """Return the deterministic id for a summary identity tuple."""
+
         raw = _json_dumps(
             {
                 "session_id": session_id,
@@ -200,7 +206,7 @@ class ContextDAGStore:
     ):
         if node_id is None:
             if source_hash:
-                node_id = self._summary_id(session_id, kind, source_hash, prompt_version)
+                node_id = self.compute_summary_id(session_id, kind, source_hash, prompt_version)
             else:
                 node_id = "ctxsum_" + hashlib.sha256(
                     f"{session_id}:{kind}:{summary_text}".encode("utf-8")

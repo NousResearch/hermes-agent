@@ -425,6 +425,25 @@ def test_summary_idempotency_tuple_wins_over_different_supplied_node_id(tmp_path
         db.close()
 
 
+def test_public_compute_summary_id_matches_created_source_hash_node_id(tmp_path):
+    db = make_db(tmp_path)
+    try:
+        store = ContextDAGStore(db)
+        expected_id = store.compute_summary_id("sess-1", "leaf", "source-hash", "p1")
+
+        node = store.create_summary_node(
+            session_id="sess-1",
+            summary_text="summary",
+            kind="leaf",
+            source_hash="source-hash",
+            prompt_version="p1",
+        )
+
+        assert node.id == expected_id
+    finally:
+        db.close()
+
+
 def test_replace_messages_detaches_dag_message_refs_without_integrity_error(tmp_path):
     db = make_db(tmp_path)
     try:

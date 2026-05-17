@@ -145,6 +145,19 @@ def test_tool_call_and_result_boundary_is_widened_together():
     assert [m["id"] for m in result] == [2, 3, 4]
 
 
+def test_projection_assembly_rejects_duplicate_raw_message_ids():
+    raw = [
+        _msg(1, "user", "first"),
+        _msg(2, "assistant", "second"),
+        _msg(2, "user", "duplicate second"),
+        _msg(3, "assistant", "third"),
+    ]
+    projection = _projection([{"kind": "raw_span", "start_message_id": 1, "end_message_id": 2}], tail_start=3)
+
+    with pytest.raises(ContextAssemblyError, match="duplicate raw message id 2"):
+        assemble_context(raw_messages=raw, summaries=[], projection=projection, budget=AssemblyBudget(max_tokens=500))
+
+
 def test_multiple_tool_calls_with_partial_result_gets_missing_result_stub_without_mutation():
     tool_calls = [
         {"id": "call_1", "type": "function", "function": {"name": "lookup_a", "arguments": "{}"}},

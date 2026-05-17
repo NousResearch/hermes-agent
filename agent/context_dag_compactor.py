@@ -91,13 +91,12 @@ class ContextDAGCompactor:
             raise ValueError(
                 f"No messages found for session {session_id!r} in span {start_message_id}-{end_message_id}"
             )
-        if messages[0]["id"] != start_message_id or messages[-1]["id"] != end_message_id:
-            found_ids = [message["id"] for message in messages]
-            raise ValueError(
-                f"No messages found for complete span {start_message_id}-{end_message_id}; found {found_ids!r}"
-            )
-
         message_ids = [message["id"] for message in messages]
+        expected_message_ids = list(range(start_message_id, end_message_id + 1))
+        if message_ids != expected_message_ids:
+            raise ValueError(
+                f"No messages found for complete contiguous span {start_message_id}-{end_message_id}; found {message_ids!r}"
+            )
         source_parts = [
             {
                 "source_type": "message_span",
@@ -218,7 +217,7 @@ class ContextDAGCompactor:
         ]
         source_hash = self.store.deterministic_source_hash(source_parts)
         expected_edges = [
-            {"parent_id": self.store._summary_id(session_id, "internal", source_hash, self.prompt_version), "child_id": child.id, "edge_order": index}
+            {"parent_id": self.store.compute_summary_id(session_id, "internal", source_hash, self.prompt_version), "child_id": child.id, "edge_order": index}
             for index, child in enumerate(children)
         ]
         expected_sources = [
@@ -275,7 +274,7 @@ class ContextDAGCompactor:
         if metadata:
             node_metadata.update(metadata)
 
-        parent_id = self.store._summary_id(session_id, "internal", source_hash, self.prompt_version)
+        parent_id = self.store.compute_summary_id(session_id, "internal", source_hash, self.prompt_version)
         expected_edges = [
             {"parent_id": parent_id, "child_id": child.id, "edge_order": index}
             for index, child in enumerate(children)
@@ -303,7 +302,7 @@ class ContextDAGCompactor:
         expected_sources: Optional[List[Dict[str, Any]]] = None,
         expected_edges: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[SummaryNode]:
-        node_id = self.store._summary_id(session_id, kind, source_hash, self.prompt_version)
+        node_id = self.store.compute_summary_id(session_id, kind, source_hash, self.prompt_version)
         node = self.store.get_summary_node(session_id, node_id)
         if node is not None and node.status == "valid":
             if expected_sources or expected_edges:

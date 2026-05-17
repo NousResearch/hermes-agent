@@ -1,6 +1,0 @@
-# AUTO-UPDATED
-# This schedule is automatically maintained by the self-heal compute-schedule workflow.
-# It is derived from recent telemetry (PR merge frequency, CI failure rate, etc.).
-# Manual overrides to the `cron` value will be respected.
-schedule:
-  cron: "0 2 * * *"

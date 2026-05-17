@@ -109,7 +109,6 @@ def preprocess_context_references(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
-    allowed_kinds: set[str] | None = None,
 ) -> ContextReferenceResult:
     coro = preprocess_context_references_async(
         message,
@@ -117,7 +116,6 @@ def preprocess_context_references(
         context_length=context_length,
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
-        allowed_kinds=allowed_kinds,
     )
     # Safe for both CLI (no loop) and gateway (loop already running).
     try:
@@ -138,7 +136,6 @@ async def preprocess_context_references_async(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
-    allowed_kinds: set[str] | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -154,18 +151,7 @@ async def preprocess_context_references_async(
     blocks: list[str] = []
     injected_tokens = 0
 
-    allowed_refs = refs
-    if allowed_kinds is not None:
-        allowed_refs = []
-        for ref in refs:
-            if ref.kind in allowed_kinds:
-                allowed_refs.append(ref)
-            else:
-                warnings.append(
-                    f"{ref.raw}: context reference expansion is disabled for this gateway toolset"
-                )
-
-    for ref in allowed_refs:
+    for ref in refs:
         warning, block = await _expand_reference(
             ref,
             cwd_path,
@@ -199,7 +185,7 @@ async def preprocess_context_references_async(
             f"@ context injection warning: {injected_tokens} tokens exceeds the 25% soft limit ({soft_limit})."
         )
 
-    stripped = _remove_reference_tokens(message, allowed_refs)
+    stripped = _remove_reference_tokens(message, refs)
     final = stripped
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)

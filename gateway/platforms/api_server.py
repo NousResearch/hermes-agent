@@ -25,6 +25,7 @@ Requires:
 """
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -49,7 +50,6 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
-from hermes_cli.auth import has_usable_secret
 
 logger = logging.getLogger(__name__)
 
@@ -533,9 +533,22 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
-def _new_chat_session_id() -> str:
-    """Return an unguessable API chat session ID for a new transcript."""
-    return f"api-{uuid.uuid4().hex}"
+def _derive_chat_session_id(
+    system_prompt: Optional[str],
+    first_user_message: str,
+) -> str:
+    """Derive a stable session ID from the conversation's first user message.
+
+    OpenAI-compatible frontends (Open WebUI, LibreChat, etc.) send the full
+    conversation history with every request.  The system prompt and first user
+    message are constant across all turns of the same conversation, so hashing
+    them produces a deterministic session ID that lets the API server reuse
+    the same Hermes session (and therefore the same Docker container sandbox
+    directory) across turns.
+    """
+    seed = f"{system_prompt or ''}\n{first_user_message}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    return f"api-{digest}"
 
 
 _CRON_AVAILABLE = False
@@ -579,7 +592,6 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
-        self._api_key_usable: bool = has_usable_secret(self._api_key, min_length=1)
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -599,9 +611,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
-        # Active approval session key for each run_id.  The approval core
-        # resolves requests by session key, while API clients address the
-        # in-flight run by run_id.
+        # Active approval session key for each run_id.  API runs use a
+        # per-run approval key so concurrent runs sharing conversation
+        # continuity cannot resolve each other's approval prompts.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
@@ -684,21 +696,6 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
-        if not self._api_key_usable:
-            logger.warning(
-                "[%s] Rejecting request: configured API key is a placeholder",
-                self.name,
-            )
-            return web.json_response(
-                {
-                    "error": {
-                        "message": "Invalid API key",
-                        "type": "invalid_request_error",
-                        "code": "invalid_api_key",
-                    }
-                },
-                status=401,
-            )
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -723,6 +720,16 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _API_SESSION_KEY_PREFIX = "api-server"
+
+    def _api_session_scope_key(self, raw: str) -> str:
+        """Return a deterministic API-server-only memory scope key."""
+        scope_digest = hmac.new(
+            self._api_key.encode("utf-8"),
+            raw.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"{self._API_SESSION_KEY_PREFIX}-{scope_digest}"
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -739,9 +746,10 @@ class APIServerAdapter(BasePlatformAdapter):
         on validation failure.
 
         Security: like session continuation, accepting a caller-supplied
-        memory scope requires API-key authentication so that an
-        unauthenticated client on a local-only server can't inject itself
-        into another user's long-term memory scope by guessing a key.
+        memory scope requires API-key authentication.  The caller's key is
+        then converted to an API-server namespace bound to the configured
+        bearer key, so API clients cannot impersonate deterministic native
+        gateway session keys (for example Telegram/Slack memory scopes).
         """
         raw = request.headers.get("X-Hermes-Session-Key", "").strip()
         if not raw:
@@ -774,7 +782,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        return raw, None
+        return self._api_session_scope_key(raw), None
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -1101,11 +1109,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
         else:
-            # Start a fresh, unguessable transcript when the caller does not
-            # explicitly opt into continuity with X-Hermes-Session-Id.  This
-            # keeps persisted history and tool sandboxes isolated between
-            # independent API clients, even when they share common prompts.
-            session_id = _new_chat_session_id()
+            # Derive a stable session ID from the conversation fingerprint so
+            # that consecutive messages from the same Open WebUI (or similar)
+            # conversation map to the same Hermes session.  The first user
+            # message + system prompt are constant across all turns.
+            first_user = ""
+            for cm in conversation_messages:
+                if cm.get("role") == "user":
+                    first_user = cm.get("content", "")
+                    break
+            session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -2915,7 +2928,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        approval_session_key = f"api_run:{run_id}"
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -2982,19 +2995,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     from gateway.session_context import clear_session_vars, set_session_vars
                     from tools.approval import (
                         register_gateway_notify,
+                        reset_current_run_id,
                         reset_current_session_key,
+                        set_current_run_id,
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
 
                     effective_task_id = session_id or run_id
                     approval_token = None
+                    approval_run_token = None
                     session_tokens = []
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
+                        approval_run_token = set_current_run_id(run_id)
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
@@ -3009,6 +3026,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
+                            if approval_run_token is not None:
+                                try:
+                                    reset_current_run_id(approval_run_token)
+                                except Exception:
+                                    pass
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)
@@ -3415,15 +3437,19 @@ class APIServerAdapter(BasePlatformAdapter):
             # Refuse to start network-accessible with a placeholder key.
             # Ported from openclaw/openclaw#64586.
             if is_network_accessible(self._host) and self._api_key:
-                if not has_usable_secret(self._api_key, min_length=8):
-                    logger.error(
-                        "[%s] Refusing to start: API_SERVER_KEY is set to a "
-                        "placeholder value. Generate a real secret "
-                        "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
-                        "before exposing the API server on %s.",
-                        self.name, self._host,
-                    )
-                    return False
+                try:
+                    from hermes_cli.auth import has_usable_secret
+                    if not has_usable_secret(self._api_key, min_length=8):
+                        logger.error(
+                            "[%s] Refusing to start: API_SERVER_KEY is set to a "
+                            "placeholder value. Generate a real secret "
+                            "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                            "before exposing the API server on %s.",
+                            self.name, self._host,
+                        )
+                        return False
+                except ImportError:
+                    pass
 
             # Port conflict detection — fail fast if port is already in use
             try:

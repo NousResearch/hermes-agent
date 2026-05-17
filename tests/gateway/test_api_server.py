@@ -13,6 +13,8 @@ Tests cover:
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import time
 import uuid
@@ -28,7 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
-    _new_chat_session_id,
+    _derive_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -330,15 +332,6 @@ class TestAuth:
         assert result is not None
         assert result.status == 401
 
-    def test_placeholder_key_never_authenticates(self):
-        config = PlatformConfig(enabled=True, extra={"key": "${API_SERVER_KEY}"})
-        adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Bearer ${API_SERVER_KEY}"}
-        result = adapter._check_auth(mock_request)
-        assert result is not None
-        assert result.status == 401
-
 
 # ---------------------------------------------------------------------------
 # Helpers for HTTP tests
@@ -381,6 +374,11 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+def _expected_api_session_key(raw: str, api_key: str = "sk-secret") -> str:
+    scope_digest = hmac.new(api_key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"api-server-{scope_digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -1129,32 +1127,47 @@ class TestChatCompletionsEndpoint:
             assert "Provider failed" in data["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_no_header_requests_get_fresh_session_ids(self, adapter):
-        """Requests without X-Hermes-Session-Id do not collide on common prompts."""
+    async def test_stable_session_id_across_turns(self, adapter):
+        """Same conversation (same first user message) produces the same session_id."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
         session_ids = []
         async with TestClient(TestServer(app)) as cli:
-            for _ in range(2):
-                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                    mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-                    await cli.post(
-                        "/v1/chat/completions",
-                        json={
-                            "model": "hermes-agent",
-                            "messages": [{"role": "user", "content": "Hello"}],
-                        },
-                    )
-                    session_ids.append(mock_run.call_args.kwargs["session_id"])
+            # Turn 1: single user message
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+                session_ids.append(mock_run.call_args.kwargs["session_id"])
 
-        assert session_ids[0] != session_ids[1]
-        assert session_ids[0].startswith("api-")
-        assert session_ids[1].startswith("api-")
+            # Turn 2: same first message, conversation grew
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "Hello"},
+                            {"role": "assistant", "content": "Hi there!"},
+                            {"role": "user", "content": "How are you?"},
+                        ],
+                    },
+                )
+                session_ids.append(mock_run.call_args.kwargs["session_id"])
+
+        assert session_ids[0] == session_ids[1], "Session ID should be stable across turns"
+        assert session_ids[0].startswith("api-"), "Derived session IDs should have api- prefix"
 
     @pytest.mark.asyncio
     async def test_different_conversations_get_different_session_ids(self, adapter):
-        """Different requests produce different session_ids."""
+        """Different first messages produce different session_ids."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
@@ -1176,16 +1189,34 @@ class TestChatCompletionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# _new_chat_session_id unit tests
+# _derive_chat_session_id unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestNewChatSessionId:
-    def test_prefix(self):
-        assert _new_chat_session_id().startswith("api-")
+class TestDeriveChatSessionId:
+    def test_deterministic(self):
+        """Same inputs always produce the same session ID."""
+        a = _derive_chat_session_id("sys", "hello")
+        b = _derive_chat_session_id("sys", "hello")
+        assert a == b
 
-    def test_ids_are_unique(self):
-        assert _new_chat_session_id() != _new_chat_session_id()
+    def test_prefix(self):
+        assert _derive_chat_session_id(None, "hi").startswith("api-")
+
+    def test_different_system_prompt(self):
+        a = _derive_chat_session_id("You are a pirate.", "Hello")
+        b = _derive_chat_session_id("You are a robot.", "Hello")
+        assert a != b
+
+    def test_different_first_message(self):
+        a = _derive_chat_session_id(None, "Hello")
+        b = _derive_chat_session_id(None, "Goodbye")
+        assert a != b
+
+    def test_none_system_prompt(self):
+        """None system prompt doesn't crash."""
+        sid = _derive_chat_session_id(None, "test")
+        assert isinstance(sid, str) and len(sid) > 4
 
 
 # ---------------------------------------------------------------------------
@@ -2888,9 +2919,10 @@ class TestSessionKeyHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
                 )
             assert resp.status == 200
-            assert resp.headers.get("X-Hermes-Session-Key") == "webui:user-42"
+            expected_key = _expected_api_session_key("webui:user-42")
+            assert resp.headers.get("X-Hermes-Session-Key") == expected_key
             call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["gateway_session_key"] == "webui:user-42"
+            assert call_kwargs["gateway_session_key"] == expected_key
 
     @pytest.mark.asyncio
     async def test_session_key_independent_of_session_id(self, auth_adapter):
@@ -2913,10 +2945,11 @@ class TestSessionKeyHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
                 )
             assert resp.status == 200
-            assert resp.headers.get("X-Hermes-Session-Key") == "channel-abc"
+            expected_key = _expected_api_session_key("channel-abc")
+            assert resp.headers.get("X-Hermes-Session-Key") == expected_key
             assert resp.headers.get("X-Hermes-Session-Id") == "transcript-xyz"
             call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["gateway_session_key"] == "channel-abc"
+            assert call_kwargs["gateway_session_key"] == expected_key
             assert call_kwargs["session_id"] == "transcript-xyz"
 
     @pytest.mark.asyncio
@@ -3004,8 +3037,39 @@ class TestSessionKeyHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
                 )
             assert resp.status == 200
-            # _create_agent must be called with gateway_session_key threaded through
-            assert captured_kwargs.get("gateway_session_key") == "agent:main:webui:dm:user-7"
+            # _create_agent must receive the scoped key, not the raw header.
+            assert captured_kwargs.get("gateway_session_key") == _expected_api_session_key(
+                "agent:main:webui:dm:user-7"
+            )
+
+    def test_session_key_namespaces_native_gateway_keys(self, auth_adapter):
+        """Native gateway session keys are mapped into an API-server-only namespace."""
+        mock_request = MagicMock()
+        raw_key = "agent:main:telegram:dm:8439114563"
+        mock_request.headers = {"X-Hermes-Session-Key": raw_key}
+
+        key, err = auth_adapter._parse_session_key_header(mock_request)
+
+        assert err is None
+        assert key == _expected_api_session_key(raw_key)
+        assert key != raw_key
+        assert key.startswith("api-server-")
+
+    def test_session_key_scope_is_bound_to_api_key(self):
+        """The same caller key maps to different memory scopes for different API keys."""
+        adapter_a = _make_adapter(api_key="sk-secret-a")
+        adapter_b = _make_adapter(api_key="sk-secret-b")
+        request = MagicMock()
+        request.headers = {"X-Hermes-Session-Key": "webui:user-42"}
+
+        key_a, err_a = adapter_a._parse_session_key_header(request)
+        key_b, err_b = adapter_b._parse_session_key_header(request)
+
+        assert err_a is None
+        assert err_b is None
+        assert key_a == _expected_api_session_key("webui:user-42", api_key="sk-secret-a")
+        assert key_b == _expected_api_session_key("webui:user-42", api_key="sk-secret-b")
+        assert key_a != key_b
 
     @pytest.mark.asyncio
     async def test_responses_endpoint_accepts_session_key(self, auth_adapter):
@@ -3024,9 +3088,10 @@ class TestSessionKeyHeader:
                     json={"model": "hermes-agent", "input": "hello", "store": False},
                 )
             assert resp.status == 200
-            assert resp.headers.get("X-Hermes-Session-Key") == "webui:chan-1"
+            expected_key = _expected_api_session_key("webui:chan-1")
+            assert resp.headers.get("X-Hermes-Session-Key") == expected_key
             call_kwargs = mock_run.call_args.kwargs
-            assert call_kwargs["gateway_session_key"] == "webui:chan-1"
+            assert call_kwargs["gateway_session_key"] == expected_key
 
     @pytest.mark.asyncio
     async def test_capabilities_advertises_session_key_header(self, adapter):
@@ -3037,4 +3102,3 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
-

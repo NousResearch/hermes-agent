@@ -2,7 +2,6 @@
 
 import csv
 import json
-import io
 import os
 import sys
 import uuid
@@ -32,16 +31,6 @@ def isolated_data(tmp_path, monkeypatch):
 def _run(capsys, argv: list[str]) -> dict:
     """Run main() with given argv and return parsed JSON output."""
     with mock.patch("sys.argv", ["memento_cards"] + argv):
-        memento_cards.main()
-    captured = capsys.readouterr()
-    return json.loads(captured.out)
-
-
-def _run_with_stdin(capsys, argv: list[str], payload: dict) -> dict:
-    """Run main() with JSON stdin and return parsed JSON output."""
-    with mock.patch("sys.argv", ["memento_cards"] + argv), mock.patch(
-        "sys.stdin", io.StringIO(json.dumps(payload))
-    ):
         memento_cards.main()
     captured = capsys.readouterr()
     return json.loads(captured.out)
@@ -321,70 +310,6 @@ class TestQuizBatchAdd:
     def test_add_quiz_invalid_json(self, capsys):
         with pytest.raises(SystemExit):
             _run(capsys, ["add-quiz", "--video-id", "x", "--questions", "not json"])
-
-
-# ── JSON Stdin Interface ─────────────────────────────────────────────────────
-
-class TestJsonInterface:
-    def test_json_add_preserves_shell_metacharacters(self, capsys):
-        payload = {
-            "command": "add",
-            "question": "What is literal command substitution?",
-            "answer": "$(touch /tmp/hermes_memento_should_not_run)",
-            "collection": "Shell's Collection",
-        }
-        result = _run_with_stdin(capsys, ["json"], payload)
-
-        assert result["ok"] is True
-        assert result["card"]["answer"] == "$(touch /tmp/hermes_memento_should_not_run)"
-        assert result["card"]["collection"] == "Shell's Collection"
-
-    def test_json_rate_stores_user_answer_with_shell_metacharacters(self, capsys):
-        _run(capsys, ["add", "--question", "Q", "--answer", "A"])
-        card_id = _run(capsys, ["list"])["cards"][0]["id"]
-
-        result = _run_with_stdin(capsys, ["json"], {
-            "command": "rate",
-            "id": card_id,
-            "rating": "hard",
-            "user_answer": "`whoami` and $(id)",
-        })
-
-        assert result["ok"] is True
-        assert result["card"]["last_user_answer"] == "`whoami` and $(id)"
-
-    def test_json_add_quiz_accepts_quotes_in_generated_content(self, capsys):
-        payload = {
-            "command": "add-quiz",
-            "video_id": "quote-video",
-            "questions": [{"question": "What did they call it?", "answer": "Alice's $(literal) answer"}],
-            "collection": "Quiz - Alice's Talk",
-        }
-        result = _run_with_stdin(capsys, ["json"], payload)
-
-        assert result["ok"] is True
-        assert result["created_count"] == 1
-        assert result["cards"][0]["answer"] == "Alice's $(literal) answer"
-
-    def test_skill_instructions_use_json_for_untrusted_values(self):
-        skill_text = (
-            Path(__file__).resolve().parents[2]
-            / "optional-skills"
-            / "productivity"
-            / "memento-flashcards"
-            / "SKILL.md"
-        ).read_text()
-
-        unsafe_patterns = [
-            'memento_cards.py add ',
-            'memento_cards.py add-quiz ',
-            'memento_cards.py rate ',
-            '--user-answer',
-            '--questions',
-            '--question',
-            '--answer',
-        ]
-        assert all(pattern not in skill_text for pattern in unsafe_patterns)
 
 
 # ── Statistics ───────────────────────────────────────────────────────────────

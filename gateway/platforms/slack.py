@@ -328,6 +328,46 @@ class SlackAdapter(BasePlatformAdapter):
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
+    def _is_callback_user_authorized(
+        self,
+        user_id: str,
+        *,
+        channel_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether a Slack interactive-button caller may perform gated actions."""
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+
+                normalized_channel_id = str(channel_id or "").strip()
+                source = SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id=normalized_channel_id or normalized_user_id,
+                    chat_type="dm" if normalized_channel_id.startswith("D") else "group",
+                    user_id=normalized_user_id,
+                    user_name=str(user_name).strip() if user_name else None,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[Slack] Falling back to env-only callback auth for user %s",
+                    normalized_user_id,
+                    exc_info=True,
+                )
+
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or normalized_user_id in allowed_ids
+
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
         if response is None or not hasattr(response, "get"):
@@ -1956,21 +1996,11 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so future messages can auto-trigger the bot
-            # only when the mention came from a gateway-authorized sender.
-            # Otherwise an unauthorized channel user could arm a thread before
-            # the central gateway auth check and inject context into a later
-            # authorized user's unmentioned reply.
-            if (
-                event_thread_ts
-                and not self._slack_strict_mention()
-                and self._is_sender_authorized_for_thread_engagement(
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    thread_ts=thread_ts,
-                    is_dm=is_dm,
-                )
-            ):
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skipped in strict mode: strict_mention=true bots must be
+            # re-mentioned every turn, so remembering the thread would
+            # defeat the feature (and re-enable agent-to-agent ack loops).
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
@@ -2465,15 +2495,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
         # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name, user_id,
-                )
-                return
+        if not self._is_callback_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                user_name, user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {
@@ -2805,32 +2836,6 @@ class SlackAdapter(BasePlatformAdapter):
             await self.handle_message(event)
         finally:
             _slash_user_id.reset(_slash_user_id_token)
-
-    def _is_sender_authorized_for_thread_engagement(
-        self,
-        *,
-        channel_id: str,
-        user_id: str,
-        thread_ts: Optional[str],
-        is_dm: bool,
-    ) -> bool:
-        """Return whether a sender may arm Slack thread auto-engagement."""
-        runner = getattr(self, "gateway_runner", None)
-        if runner is None:
-            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if not callable(auth_fn):
-            # Adapter-only/unit-test usage has no gateway authorization layer.
-            return True
-
-        source = self.build_source(
-            chat_id=channel_id,
-            chat_type="dm" if is_dm else "group",
-            user_id=user_id,
-            thread_id=thread_ts,
-        )
-        return bool(auth_fn(source))
 
     def _has_active_session_for_thread(
         self,

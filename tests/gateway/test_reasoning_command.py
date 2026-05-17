@@ -299,7 +299,7 @@ class TestReasoningCommand:
         assert _CapturingAgent.last_init is not None
         assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
-    def test_run_agent_includes_enabled_mcp_servers_in_gateway_toolsets(self, tmp_path, monkeypatch):
+    def test_run_agent_honors_explicit_gateway_toolset_mcp_restrictions(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
@@ -357,8 +357,8 @@ class TestReasoningCommand:
         enabled_toolsets = set(_CapturingAgent.last_init["enabled_toolsets"])
         assert "web" in enabled_toolsets
         assert "memory" in enabled_toolsets
-        assert "exa" in enabled_toolsets
-        assert "web-search-prime" in enabled_toolsets
+        assert "exa" not in enabled_toolsets
+        assert "web-search-prime" not in enabled_toolsets
 
     def test_run_agent_homeassistant_uses_default_platform_toolset(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

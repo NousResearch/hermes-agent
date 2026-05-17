@@ -335,6 +335,68 @@ class TestRunEvents:
                     "approval_not_pending",
                 }
 
+
+    @pytest.mark.asyncio
+    async def test_approval_response_is_bound_to_requested_run(self, adapter):
+        """Approving one run must not resolve another run in the same session."""
+        from tools import approval as approval_mod
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        approval_mod._gateway_queues.clear()
+        approval_mod._gateway_notify_cbs.clear()
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "first", "session_id": "shared-session"},
+                )
+                second_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "second", "session_id": "shared-session"},
+                )
+                assert first_resp.status == 202
+                assert second_resp.status == 202
+                first_run_id = (await first_resp.json())["run_id"]
+                second_run_id = (await second_resp.json())["run_id"]
+
+                assert agent_ready.wait(timeout=3.0)
+                await asyncio.sleep(0.1)
+
+                first_key = adapter._run_approval_sessions[first_run_id]
+                second_key = adapter._run_approval_sessions[second_run_id]
+                assert first_key != second_key
+
+                first_entry = _ApprovalEntry({
+                    "command": "dangerous first",
+                    "run_id": first_run_id,
+                })
+                second_entry = _ApprovalEntry({
+                    "command": "dangerous second",
+                    "run_id": second_run_id,
+                })
+                _gateway_queues[first_key] = [first_entry]
+                _gateway_queues[second_key] = [second_entry]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{second_run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 200
+                approval_data = await approval_resp.json()
+                assert approval_data["resolved"] == 1
+                assert not first_entry.event.is_set()
+                assert first_entry.result is None
+                assert second_entry.event.is_set()
+                assert second_entry.result == "once"
+
+                await cli.post(f"/v1/runs/{first_run_id}/stop")
+                await cli.post(f"/v1/runs/{second_run_id}/stop")
+
     @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)

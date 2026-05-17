@@ -2605,5 +2605,16 @@
     "headline": "One agent, many roles: nutritionist, developer, finance advisor",
     "quote": "Users treat their AI agent as a unified personal assistant across life domains: health tracking, software dev, financial planning, language learning. Multi-role auto-routing with named roles.",
     "size": "sm"
+  },
+  {
+  "id": "telegram-samimk-intelligent-home",
+  "source": "telegram",
+  "author": "@samimk",
+  "url": "https://github.com/samimk",
+  "date": "2026-05",
+  "category": "integrations",
+  "headline": "From smart home to intelligent home — my agent watches, thinks, and acts",
+  "quote": "I have a fairly extensive smart home system built on OpenHAB — door and motion sensors in every room, IP cameras with object detection, presence detection, LoRaWAN gateway monitoring, night presence simulation, and more. After a few weeks of 'raising' my Hermes agent, I no longer reach for the OpenHAB interface or Alexa — I just tell it what I need or ask what happened, and it handles everything. It filters out noise and only surfaces events that actually matter, takes contextual actions based on circumstances — scanning cameras when doors open while nobody is home, sending annotated snapshots via Telegram, monitoring infrastructure health, and giving me comprehensive nightly reports. It even knows that movement on the stairs at 3am isn't an intruder — it's just the cat going for a snack. The system went from me checking dashboards to the system proactively telling me what matters. That's the difference between a smart home and an intelligent home powered by Hermes Agent.",
+  "size": "lg"
   }
 ]

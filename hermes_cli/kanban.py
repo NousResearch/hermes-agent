@@ -15,6 +15,8 @@ Exposes the full 15-verb surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -2339,6 +2341,23 @@ def run_slash(rest: str) -> str:
 
     buf_out = io.StringIO()
     buf_err = io.StringIO()
+    def _usage_for(tokens_for_error: list[str]) -> str:
+        """Return argparse usage scoped to the failing slash command."""
+        usage_out = io.StringIO()
+        usage_err = io.StringIO()
+        help_tokens = tokens_for_error + ["-h"] if tokens_for_error else ["-h"]
+        try:
+            with contextlib.redirect_stdout(usage_out), contextlib.redirect_stderr(usage_err):
+                kanban_parser.parse_args(help_tokens)
+        except (SystemExit, argparse.ArgumentError):
+            pass
+        help_text = (usage_out.getvalue() or usage_err.getvalue()).rstrip()
+        if not help_text:
+            return ""
+        # The usage line is enough context for chat/gateway surfaces and avoids
+        # dumping long subcommand help for simple missing-argument errors.
+        return help_text.splitlines()[0]
+
     # ``-h`` / ``--help`` makes argparse print to stdout and SystemExit(0).
     # Capture both streams so neither the help text nor the error text
     # bypasses our buffer.
@@ -2352,9 +2371,16 @@ def run_slash(rest: str) -> str:
         if exc.code in {0, None} and out:
             return out
         body = err or out
+        usage = _usage_for(tokens[:1])
+        if usage and usage not in body:
+            body = f"{usage}\n{body}" if body else usage
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"⚠ /kanban usage error: {exc}"
+        usage = _usage_for(tokens[:1])
+        body = str(exc)
+        if usage:
+            body = f"{usage}\n{body}"
+        return f"⚠ /kanban usage error\n{body}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

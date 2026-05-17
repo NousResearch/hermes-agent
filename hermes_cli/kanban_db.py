@@ -92,6 +92,7 @@ from toolsets import get_toolset_names
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+CODEX_ASSIGNEE = "codex"
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -2588,6 +2589,8 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    error: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -2624,14 +2627,18 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            error=error,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
-        if run_id is None and reason:
+        if run_id is None and (reason or error or metadata):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                error=error,
+                metadata=metadata,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
@@ -3833,6 +3840,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
+        if is_codex_assignee(row["assignee"]):
+            return True
         if profile_exists(row["assignee"]):
             return True
     return False
@@ -3963,7 +3972,11 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if (
+            profile_exists is not None
+            and not is_codex_assignee(row["assignee"])
+            and not profile_exists(row["assignee"])
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -4048,6 +4061,74 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def is_codex_assignee(assignee: Optional[str]) -> bool:
+    """Return True when ``assignee`` should run through native Codex CLI."""
+    return (assignee or "").strip().lower() == CODEX_ASSIGNEE
+
+
+def _worker_spawn_env(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, str]:
+    """Build shared Kanban worker env pins for spawned subprocesses."""
+    env = dict(os.environ)
+    if task.tenant:
+        env["HERMES_TENANT"] = task.tenant
+    env["HERMES_KANBAN_TASK"] = task.id
+    env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if task.current_run_id is not None:
+        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.claim_lock:
+        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    env["HERMES_KANBAN_BOARD"] = _normalize_board_slug(board) or get_current_board()
+    return env
+
+
+def _spawn_codex_worker(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget Hermes-owned native Codex CLI worker subprocess."""
+    import subprocess
+
+    env = _worker_spawn_env(task, workspace, board=board)
+    env["HERMES_PROFILE"] = "codex-worker"
+    cmd = [
+        sys.executable,
+        "-m", "hermes_cli.codex_worker",
+        "--task-id", task.id,
+        "--workspace", workspace,
+        "--board", _normalize_board_slug(board) or get_current_board(),
+    ]
+
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
+
+    log_f = open(log_path, "ab")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if _IS_WINDOWS else 0
+    try:
+        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+            cmd,
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            creationflags=creationflags,
+        )
+    except FileNotFoundError:
+        log_f.close()
+        raise RuntimeError(
+            "`python -m hermes_cli.codex_worker` could not be launched. "
+            "Activate the Hermes venv before running the kanban dispatcher."
+        )
+    return proc.pid
+
+
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
 
@@ -4099,12 +4180,15 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
+    if is_codex_assignee(task.assignee):
+        return _spawn_codex_worker(task, workspace, board=board)
+
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    env = _worker_spawn_env(task, workspace, board=board)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -4124,27 +4208,6 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
-    if task.tenant:
-        env["HERMES_TENANT"] = task.tenant
-    env["HERMES_KANBAN_TASK"] = task.id
-    env["HERMES_KANBAN_WORKSPACE"] = workspace
-    if task.current_run_id is not None:
-        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
-    if task.claim_lock:
-        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
-    # Pin the shared board + workspaces root the dispatcher resolved, so
-    # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
-    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
-    # resolution in `kanban_home()` — symmetric resolution is the norm,
-    # but unusual symlink / Docker layouts are caught here too.
-    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
-    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
-    # Board slug — the final defense-in-depth pin. If the worker ever
-    # resolves kanban paths without the DB / workspaces env vars, the
-    # board slug still forces it to the right directory.
-    resolved_board = _normalize_board_slug(board) or get_current_board()
-    env["HERMES_KANBAN_BOARD"] = resolved_board
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

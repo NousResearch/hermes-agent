@@ -1044,6 +1044,61 @@ display:
 #     base_url: "https://ollama.com/v1"
 
 # =============================================================================
+# Multi-Agent Routing (Single Gateway, Multiple Personalities)
+# =============================================================================
+# Run multiple isolated agents from a single gateway process. Each agent has
+# its own model, system prompt (SOUL.md), memory, skills, and sessions.
+# Messages are routed by matching metadata (platform, chat, thread, user).
+#
+# Quick start:
+#   hermes agent add coder --model anthropic/claude-opus-4-6
+#   hermes agent add research --model anthropic/claude-sonnet-4-6
+#   # Then edit this file to add routes below
+#
+# The CLI `hermes agent` subcommand manages agents and warns about orphaned
+# routes when removing an agent. See `hermes agent --help` for details.
+# =============================================================================
+
+# default_agent: main   # Fallback when no route matches (default: "main")
+
+# agents:
+#   main:
+#     # Inherits gateway defaults — no overrides needed
+#   coder:
+#     model: "anthropic/claude-opus-4-6"
+#     provider: "anthropic"
+#     # home_dir: "~/.hermes/profiles/coder"  # Optional: isolate memory/skills/SOUL.md
+#     enabled_toolsets: [filesystem, terminal, web, skills]
+#   research:
+#     model: "anthropic/claude-sonnet-4-6"
+#     # home_dir: "~/.hermes/profiles/research"
+#     enabled_toolsets: [web, browser, vision, skills]
+#   creative:
+#     model: "openai/gpt-5"
+#     provider: "openrouter"
+
+# Routes are evaluated in declaration order — first match wins.
+# Supported match keys: platform, chat_id, thread_id, user_id, user_id_alt,
+# guild_id, parent_chat_id. All comparisons are exact string equality.
+#
+# routes:
+#   # Route a specific Telegram forum topic to the coder agent
+#   - match: { platform: telegram, chat_id: "-1001234567890", thread_id: "42" }
+#     agent: coder
+#   # Route the rest of that group to research
+#   - match: { platform: telegram, chat_id: "-1001234567890" }
+#     agent: research
+#   # Route a specific Slack workspace to coder
+#   - match: { platform: slack, guild_id: "T0ABC123" }
+#     agent: coder
+#   # Route a specific Discord channel to creative
+#   - match: { platform: discord, chat_id: "123456789012345678" }
+#     agent: creative
+#   # Route a specific user everywhere to research
+#   - match: { platform: telegram, user_id: "123456789" }
+#     agent: research
+
+# =============================================================================
 # Privacy
 # =============================================================================
 # privacy:

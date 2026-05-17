@@ -799,6 +799,22 @@ def test_cli_notify_subscribe_and_list(kanban_home):
     assert "Unsubscribed" in rm
 
 
+def test_cli_notify_subscribe_wildcard_with_author(kanban_home):
+    """Wildcard subscription (task_id='*') with --author filter is created
+    and surfaces in notify-list with the author_filter field populated."""
+    out = run_slash(
+        "notify-subscribe '*' --platform telegram --chat-id 999 --author dashboard",
+    )
+    assert "Subscribed" in out
+    assert "dashboard" in out
+    lst = run_slash("notify-list --json")
+    subs = json.loads(lst)
+    wildcards = [s for s in subs if s["task_id"] == "*"]
+    assert len(wildcards) == 1
+    assert wildcards[0]["author_filter"] == "dashboard"
+    assert wildcards[0]["platform"] == "telegram"
+
+
 def test_cli_log_missing_task(kanban_home):
     # No such task → exit-style (no log for...) message on stderr, returned
     # in combined output.

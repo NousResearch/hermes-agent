@@ -505,7 +505,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Subscribe a gateway source to a task's terminal events "
              "(used by /kanban subscribe in the gateway adapter)",
     )
-    p_nsub.add_argument("task_id")
+    p_nsub.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to subscribe to. Pass '*' (or omit with --all-boards / "
+             "--author) for a wildcard comment-event subscription.",
+    )
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
@@ -513,6 +519,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
+    )
+    p_nsub.add_argument(
+        "--all-boards", action="store_true",
+        help="Create a wildcard subscription on EVERY board (task_id='*'). "
+             "Combine with --author to narrow which authors trigger delivery.",
+    )
+    p_nsub.add_argument(
+        "--author", default=None,
+        help="Author filter for comment-event delivery (e.g. 'dashboard'). "
+             "NULL/omitted matches any author. Only meaningful for wildcard "
+             "subscriptions or per-task subs that want author-scoped comment "
+             "delivery.",
     )
 
     p_nlist = sub.add_parser(
@@ -1974,19 +1992,68 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    # Resolve the effective task_id. Wildcard ('*') is allowed for
+    # comment-event broadcast subscriptions; --all-boards implies it.
+    task_id = args.task_id
+    if args.all_boards and not task_id:
+        task_id = "*"
+    if not task_id:
+        print(
+            "notify-subscribe: pass a task_id, or '*' with --author for a "
+            "wildcard, or --all-boards [--author X]",
+            file=sys.stderr,
+        )
+        return 2
+
+    profile = args.notifier_profile or _profile_author()
+
+    # --all-boards: fan out the wildcard sub across every discovered board.
+    if args.all_boards:
+        if task_id != "*":
+            print(
+                "--all-boards requires task_id to be '*' (or omitted)",
+                file=sys.stderr,
+            )
+            return 2
+        boards = kb.list_boards(include_archived=False)
+        if not boards:
+            print("(no boards discovered)", file=sys.stderr)
+            return 1
+        installed = 0
+        for board_meta in boards:
+            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+            with kb.connect(board=slug) as conn:
+                kb.add_notify_sub(
+                    conn, task_id=task_id,
+                    platform=args.platform, chat_id=args.chat_id,
+                    thread_id=args.thread_id, user_id=args.user_id,
+                    notifier_profile=profile,
+                    author_filter=args.author,
+                )
+            installed += 1
+            print(f"Subscribed {args.platform}:{args.chat_id}"
+                  + (f":{args.thread_id}" if args.thread_id else "")
+                  + f" to '*' on board {slug}"
+                  + (f" (author={args.author})" if args.author else ""))
+        print(f"(installed {installed} wildcard subscription(s))")
+        return 0
+
+    # Single-board path (per-task or wildcard on the current board).
     with kb.connect() as conn:
-        if kb.get_task(conn, args.task_id) is None:
-            print(f"no such task: {args.task_id}", file=sys.stderr)
+        if task_id != "*" and kb.get_task(conn, task_id) is None:
+            print(f"no such task: {task_id}", file=sys.stderr)
             return 1
         kb.add_notify_sub(
-            conn, task_id=args.task_id,
+            conn, task_id=task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
-            notifier_profile=args.notifier_profile or _profile_author(),
+            notifier_profile=profile,
+            author_filter=args.author,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+          + f" to {task_id}"
+          + (f" (author={args.author})" if args.author else ""))
     return 0
 
 
@@ -2002,8 +2069,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
     for s in subs:
         thr = f":{s['thread_id']}" if s.get("thread_id") else ""
         owner = f"  owner={s['notifier_profile']}" if s.get("notifier_profile") else ""
+        author = f"  author={s['author_filter']}" if s.get("author_filter") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}")
+              f"  (since event {s['last_event_id']}){owner}{author}")
     return 0
 
 

@@ -4246,6 +4246,20 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Comment events are deliverable too — they're how Alex's web-UI
+        # replies reach a subscribed agent or chat. Kept as a separate
+        # tuple so the rendering branch can pick them out, even though
+        # the claim query unions both sets so a single per-sub cursor
+        # serves both terminal + comment delivery.
+        COMMENT_KINDS = ("commented",)
+        DELIVERABLE_KINDS = TERMINAL_KINDS + COMMENT_KINDS
+        # Comment-burst coalescing: a worker chain that drops several
+        # comments in a row (orchestrator narration, dashboard echoes)
+        # would otherwise flood the chat. Buffer per-subscription comment
+        # events for COMMENT_COALESCE_SECONDS and ship one summary; the
+        # buffer is held on the runner (`_kanban_comment_buffer`) keyed
+        # on (platform, chat_id, thread_id, task_id_or_wildcard).
+        COMMENT_COALESCE_SECONDS = 30.0
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4347,16 +4361,87 @@ class GatewayRunner:
                                         sub.get("task_id"), platform or "<missing>",
                                     )
                                     continue
+                                # Wildcard subscription: task_id='*' fans
+                                # out commented-event delivery for any task
+                                # on this board, with the per-sub author
+                                # filter applied. Terminal events are NOT
+                                # included in wildcard delivery — a wildcard
+                                # sub would otherwise flood the chat with
+                                # every completion on the whole board.
+                                if sub["task_id"] == "*":
+                                    old_cursor, cursor, events = _kb.claim_unseen_wildcard_events_for_sub(
+                                        conn,
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=COMMENT_KINDS,
+                                        author_filter=sub.get("author_filter"),
+                                    )
+                                    if not events:
+                                        continue
+                                    logger.debug(
+                                        "kanban notifier: claimed %d wildcard comment event(s) on board %s cursor %s→%s author_filter=%s",
+                                        len(events), slug, old_cursor, cursor,
+                                        sub.get("author_filter"),
+                                    )
+                                    # Resolve task per-event (different
+                                    # task_ids in one wildcard delivery).
+                                    events_with_task = []
+                                    for ev in events:
+                                        try:
+                                            ev_task = _kb.get_task(conn, ev.task_id)
+                                        except Exception:
+                                            ev_task = None
+                                        events_with_task.append((ev, ev_task))
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "events_with_task": events_with_task,
+                                        "task": None,  # wildcard: each ev carries its own
+                                        "board": slug,
+                                        "wildcard": True,
+                                    })
+                                    continue
+                                # Regular per-task subscription: union of
+                                # TERMINAL_KINDS and COMMENT_KINDS so a
+                                # single per-sub cursor governs both
+                                # delivery paths atomically.
+                                sub_author_filter = sub.get("author_filter")
                                 old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
                                     conn,
                                     task_id=sub["task_id"],
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=DELIVERABLE_KINDS,
                                 )
                                 if not events:
                                     continue
+                                # Apply per-sub author filter to comment
+                                # events only; terminal events ignore the
+                                # filter (a terminal ping is always
+                                # interesting to the requester, regardless
+                                # of who authored it — usually the worker
+                                # profile itself for runtime events).
+                                if sub_author_filter is not None:
+                                    filtered = []
+                                    for ev in events:
+                                        if ev.kind in COMMENT_KINDS:
+                                            ev_author = None
+                                            if isinstance(ev.payload, dict):
+                                                ev_author = ev.payload.get("author")
+                                            if ev_author != sub_author_filter:
+                                                continue
+                                        filtered.append(ev)
+                                    events = filtered
+                                    if not events:
+                                        # Cursor was advanced atomically
+                                        # in the claim — keep it advanced
+                                        # so we don't re-scan the filtered
+                                        # events forever.
+                                        continue
                                 task = _kb.get_task(conn, sub["task_id"])
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
@@ -4369,6 +4454,7 @@ class GatewayRunner:
                                     "events": events,
                                     "task": task,
                                     "board": slug,
+                                    "wildcard": False,
                                 })
                         finally:
                             conn.close()
@@ -4379,6 +4465,7 @@ class GatewayRunner:
                     sub = d["sub"]
                     task = d["task"]
                     board_slug = d.get("board")
+                    is_wildcard = d.get("wildcard", False)
                     platform_str = (sub["platform"] or "").lower()
                     try:
                         plat = _Platform(platform_str)
@@ -4404,19 +4491,39 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
-                    for ev in d["events"]:
+                    # Pre-bucket events into (terminal, comment) so a single
+                    # tick that pulled both kinds at once can ship the
+                    # comments as one coalesced summary (caps Teams chatter
+                    # when a worker drops several comments in a row).
+                    terminal_events = []
+                    comment_events = []
+                    if is_wildcard:
+                        # Wildcard subs are comment-only (TERMINAL kinds are
+                        # excluded from the claim). Each event carries its
+                        # own task in events_with_task.
+                        comment_events = list(d.get("events_with_task") or [])
+                    else:
+                        for ev in d["events"]:
+                            if ev.kind in COMMENT_KINDS:
+                                comment_events.append((ev, task))
+                            else:
+                                terminal_events.append(ev)
+                    sub_key = (
+                        sub["task_id"], sub["platform"],
+                        sub["chat_id"], sub.get("thread_id") or "",
+                    )
+                    metadata: dict[str, Any] = {}
+                    if sub.get("thread_id"):
+                        metadata["thread_id"] = sub["thread_id"]
+
+                    delivery_failed = False
+                    # 1) Terminal events: one message per event (existing
+                    # behaviour, unchanged for backward compat).
+                    for ev in terminal_events:
                         kind = ev.kind
-                        # Identity prefix: attribute terminal pings to the
-                        # worker that did the work. Makes fleets (where one
-                        # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
                             handoff = ""
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
@@ -4459,66 +4566,56 @@ class GatewayRunner:
                             )
                         else:
                             continue
-                        metadata: dict[str, Any] = {}
-                        if sub.get("thread_id"):
-                            metadata["thread_id"] = sub["thread_id"]
-                        sub_key = (
-                            sub["task_id"], sub["platform"],
-                            sub["chat_id"], sub.get("thread_id") or "",
+                        ok = await self._kanban_send_one(
+                            adapter, sub, d, board_slug, platform_str,
+                            sub_key, msg, metadata, kind,
+                            sub_fail_counts, MAX_SEND_FAILURES,
                         )
-                        try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
-                            # Reset the failure counter on success.
-                            sub_fail_counts.pop(sub_key, None)
-                        except Exception as exc:
-                            fails = sub_fail_counts.get(sub_key, 0) + 1
-                            sub_fail_counts[sub_key] = fails
-                            logger.warning(
-                                "kanban notifier: send failed for %s on %s "
-                                "(attempt %d/%d): %s",
-                                sub["task_id"], platform_str, fails,
-                                MAX_SEND_FAILURES, exc,
-                            )
-                            if fails >= MAX_SEND_FAILURES:
-                                logger.warning(
-                                    "kanban notifier: dropping subscription "
-                                    "%s on %s after %d consecutive send failures",
-                                    sub["task_id"], platform_str, fails,
-                                )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
-                                sub_fail_counts.pop(sub_key, None)
-                            else:
-                                await asyncio.to_thread(
-                                    self._kanban_rewind,
-                                    sub,
-                                    d["cursor"],
-                                    d.get("old_cursor", 0),
-                                    board_slug,
-                                )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
+                        if not ok:
+                            delivery_failed = True
                             break
-                    else:
-                        # All events delivered; advance cursor. The cursor
-                        # is the dedup mechanism — it prevents re-delivery
-                        # of the same event on subsequent ticks.
-                        await asyncio.to_thread(
-                            self._kanban_advance, sub, d["cursor"], board_slug,
+
+                    # 2) Comment events: one bundled message per delivery.
+                    # Within-tick coalescing (multiple comments captured in
+                    # the same poll cycle land in one message). Cross-tick
+                    # coalescing isn't done here — comments older than
+                    # COMMENT_COALESCE_SECONDS=30s rarely cluster in
+                    # practice and persisting a pending bucket across ticks
+                    # would require new state.
+                    if not delivery_failed and comment_events:
+                        msg = self._render_comment_bundle(
+                            sub, comment_events, board_slug,
+                            wildcard=is_wildcard,
                         )
-                        # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
-                        # kept alive so the user gets notified again if the
-                        # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
+                        if msg:
+                            ok = await self._kanban_send_one(
+                                adapter, sub, d, board_slug, platform_str,
+                                sub_key, msg, metadata, "commented",
+                                sub_fail_counts, MAX_SEND_FAILURES,
+                            )
+                            if not ok:
+                                delivery_failed = True
+
+                    if delivery_failed:
+                        # _kanban_send_one already handled rewind/drop;
+                        # don't advance the cursor or unsub.
+                        continue
+                    # All events delivered; advance cursor. The cursor
+                    # is the dedup mechanism — it prevents re-delivery
+                    # of the same event on subsequent ticks.
+                    await asyncio.to_thread(
+                        self._kanban_advance, sub, d["cursor"], board_slug,
+                    )
+                    # Unsubscribe only when the task has reached a truly
+                    # final status (done / archived). For blocked /
+                    # gave_up / crashed / timed_out the subscription is
+                    # kept alive so the user gets notified again if the
+                    # dispatcher respawns the task and it cycles into the
+                    # same state. See the longer comment on TERMINAL_KINDS
+                    # above for the failure mode this prevents.
+                    # Wildcard subs never auto-unsub on per-event state —
+                    # they're board-scoped and outlive any single task.
+                    if not is_wildcard:
                         task_terminal = task and task.status in {"done", "archived"}
                         if task_terminal:
                             await asyncio.to_thread(
@@ -4590,6 +4687,126 @@ class GatewayRunner:
             )
         finally:
             conn.close()
+
+    async def _kanban_send_one(
+        self,
+        adapter,
+        sub: dict,
+        d: dict,
+        board_slug: Optional[str],
+        platform_str: str,
+        sub_key: tuple,
+        msg: str,
+        metadata: dict,
+        kind: str,
+        sub_fail_counts: dict,
+        max_send_failures: int,
+    ) -> bool:
+        """Send one notifier message; handle failure → rewind / drop.
+
+        Returns True on success, False on failure (caller breaks the
+        delivery loop and skips cursor advance). Extracted from the
+        watcher loop so the same shape is reused by both terminal-event
+        and comment-bundle delivery paths.
+        """
+        try:
+            await adapter.send(sub["chat_id"], msg, metadata=metadata)
+            logger.debug(
+                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+            )
+            sub_fail_counts.pop(sub_key, None)
+            return True
+        except Exception as exc:
+            fails = sub_fail_counts.get(sub_key, 0) + 1
+            sub_fail_counts[sub_key] = fails
+            logger.warning(
+                "kanban notifier: send failed for %s on %s (attempt %d/%d): %s",
+                sub["task_id"], platform_str, fails, max_send_failures, exc,
+            )
+            if fails >= max_send_failures:
+                logger.warning(
+                    "kanban notifier: dropping subscription %s on %s after "
+                    "%d consecutive send failures",
+                    sub["task_id"], platform_str, fails,
+                )
+                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                sub_fail_counts.pop(sub_key, None)
+            else:
+                await asyncio.to_thread(
+                    self._kanban_rewind,
+                    sub,
+                    d["cursor"],
+                    d.get("old_cursor", 0),
+                    board_slug,
+                )
+            return False
+
+    def _render_comment_bundle(
+        self,
+        sub: dict,
+        comment_events: list,
+        board_slug: Optional[str],
+        *,
+        wildcard: bool,
+    ) -> Optional[str]:
+        """Render one delivery message bundling 1..N comment events.
+
+        Format (single comment):
+            📨 New comment on t_XXXX (board · title)
+            author=<author>
+            <body excerpt — first 500 chars>
+
+        Format (N>1, coalesced within one tick):
+            📨 N new comments on t_XXXX (board · title)
+              • [author1] <excerpt 200 chars>
+              • [author2] <excerpt 200 chars>
+              ...
+
+        Wildcard deliveries can span multiple tasks; each entry includes
+        its task_id prefix in the bulleted list.
+        """
+        if not comment_events:
+            return None
+        n = len(comment_events)
+        if n == 1:
+            ev, task = comment_events[0]
+            author = ""
+            excerpt = ""
+            if isinstance(ev.payload, dict):
+                author = str(ev.payload.get("author") or "")
+                excerpt = str(ev.payload.get("excerpt") or "").strip()
+            title = (task.title if task else ev.task_id)[:120]
+            board_part = f"[{board_slug}] · " if board_slug else ""
+            header = f"📨 New comment on {ev.task_id} ({board_part}{title})"
+            lines = [header]
+            if author:
+                lines.append(f"author={author}")
+            if excerpt:
+                lines.append(excerpt[:500])
+            return "\n".join(lines)
+        # Multi-event bundle.
+        if wildcard:
+            header = f"📨 {n} new comments (board {board_slug or '?'})"
+        else:
+            # All comments share the same task in non-wildcard subs.
+            ev0, task0 = comment_events[0]
+            title = (task0.title if task0 else ev0.task_id)[:120]
+            board_part = f"[{board_slug}] · " if board_slug else ""
+            header = f"📨 {n} new comments on {ev0.task_id} ({board_part}{title})"
+        lines = [header]
+        for ev, task in comment_events:
+            author = ""
+            excerpt = ""
+            if isinstance(ev.payload, dict):
+                author = str(ev.payload.get("author") or "")
+                excerpt = str(ev.payload.get("excerpt") or "").strip()
+            excerpt = excerpt.replace("\n", " ")[:200]
+            if wildcard:
+                lines.append(f"  • {ev.task_id} [{author}] {excerpt}")
+            else:
+                lines.append(f"  • [{author}] {excerpt}")
+        return "\n".join(lines)
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.

@@ -868,6 +868,21 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Worker-block auto-subscribe (card t_0abf738d). When a worker calls
+-- ``kanban_block`` from inside a dispatcher-spawned run, the tool layer
+-- writes one row here so the dispatcher tick knows to promote
+-- ``blocked -> ready`` as soon as a non-self ``commented`` event arrives.
+-- ``block_event_id`` is the baseline cursor: only comments with
+-- ``task_events.id > block_event_id`` count, which keeps pre-block context
+-- comments from causing a spurious wake. The row is removed atomically
+-- when the unblock fires so the next block-cycle starts fresh.
+CREATE TABLE IF NOT EXISTS kanban_auto_unblock_subs (
+    task_id           TEXT NOT NULL PRIMARY KEY,
+    notifier_profile  TEXT NOT NULL,
+    block_event_id    INTEGER NOT NULL,
+    created_at        INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
@@ -1097,6 +1112,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+        # Wildcard-comment subscriptions (task_id='*', kind set =
+        # COMMENT_KINDS): the author filter narrows delivery to comments
+        # written by a specific author (typically `dashboard`, but
+        # configurable). NULL = match any author.
+        if "author_filter" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "author_filter", "author_filter TEXT"
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -1638,7 +1661,18 @@ def add_comment(
             "VALUES (?, ?, ?, ?)",
             (task_id, author.strip(), body.strip(), now),
         )
-        _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        # The notifier needs the body excerpt and author to render the
+        # delivery message without joining task_comments. Cap the excerpt
+        # at 500 chars to keep event rows bounded; full text remains in
+        # task_comments.
+        _append_event(
+            conn, task_id, "commented",
+            {
+                "author": author,
+                "len": len(body),
+                "excerpt": body.strip()[:500],
+            },
+        )
         return int(cur.lastrowid or 0)
 
 
@@ -4550,18 +4584,27 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    author_filter: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    ``task_id='*'`` registers a wildcard subscription matching ``commented``
+    events for any task on this board. Combine with ``author_filter``
+    (e.g. ``dashboard``) to narrow which authors trigger delivery. NULL
+    ``author_filter`` matches any author.
+    """
     now = int(time.time())
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, author_filter, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (task_id, platform, chat_id, thread_id or "", user_id,
+             notifier_profile, author_filter, now),
         )
 
 
@@ -4692,6 +4735,77 @@ def claim_unseen_events_for_sub(
             (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
         )
         return old_cursor, new_cursor, events
+
+
+def claim_unseen_wildcard_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Iterable[str],
+    author_filter: Optional[str] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim board-wide unseen events for a wildcard subscription.
+
+    A wildcard subscription is one with ``task_id='*'`` — it does not pin a
+    single task; it matches all task_events on this board with kind in
+    ``kinds`` (typically COMMENT_KINDS) and, when ``author_filter`` is set,
+    only those whose payload.author equals ``author_filter``.
+
+    Returns ``(old_cursor, new_cursor, events)`` with the same semantics as
+    :func:`claim_unseen_events_for_sub`. The cursor is the maximum event id
+    inspected (regardless of whether the event matched the author filter)
+    so subsequent ticks don't re-scan the same range.
+    """
+    kind_list = list(kinds)
+    if not kind_list:
+        return 0, 0, []
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = '*' AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        q = (
+            "SELECT * FROM task_events WHERE id > ? AND kind IN ("
+            + ",".join("?" * len(kind_list))
+            + ") ORDER BY id ASC"
+        )
+        params: list[Any] = [old_cursor, *kind_list]
+        rows = conn.execute(q, params).fetchall()
+        out: list[Event] = []
+        max_id = old_cursor
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            max_id = max(max_id, int(r["id"]))
+            if author_filter is not None:
+                ev_author = None
+                if isinstance(payload, dict):
+                    ev_author = payload.get("author")
+                if ev_author != author_filter:
+                    continue
+            out.append(Event(
+                id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                payload=payload, created_at=r["created_at"],
+                run_id=(int(r["run_id"]) if "run_id" in r.keys()
+                        and r["run_id"] is not None else None),
+            ))
+        if max_id == old_cursor:
+            return old_cursor, old_cursor, []
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = '*' AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(max_id), platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, max_id, out
 
 
 def advance_notify_cursor(

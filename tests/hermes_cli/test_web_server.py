@@ -2324,3 +2324,76 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+class TestDashboardAgentPluginRoutes:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        self.client = TestClient(ws.app)
+        self.headers = {"X-Hermes-Session-Token": ws._SESSION_TOKEN}
+
+    def test_enable_accepts_namespaced_plugin_keys(self, monkeypatch):
+        calls: list[tuple[str, bool]] = []
+
+        def fake_set_enabled(name: str, enabled: bool):
+            calls.append((name, enabled))
+            return {"ok": True, "name": name}
+
+        import hermes_cli.plugins_cmd as plugins_cmd
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "dashboard_set_agent_plugin_enabled",
+            fake_set_enabled,
+        )
+
+        response = self.client.post(
+            "/api/dashboard/agent-plugins/image_gen%2Fopenai-codex/enable",
+            headers=self.headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert calls == [("image_gen/openai-codex", True)]
+
+    def test_disable_accepts_namespaced_plugin_keys(self, monkeypatch):
+        calls: list[tuple[str, bool]] = []
+
+        def fake_set_enabled(name: str, enabled: bool):
+            calls.append((name, enabled))
+            return {"ok": True, "name": name}
+
+        import hermes_cli.plugins_cmd as plugins_cmd
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "dashboard_set_agent_plugin_enabled",
+            fake_set_enabled,
+        )
+
+        response = self.client.post(
+            "/api/dashboard/agent-plugins/video_gen%2Fxai/disable",
+            headers=self.headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert calls == [("video_gen/xai", False)]
+
+    def test_namespaced_route_rejects_traversal(self, monkeypatch):
+        import hermes_cli.plugins_cmd as plugins_cmd
+
+        monkeypatch.setattr(
+            plugins_cmd,
+            "dashboard_set_agent_plugin_enabled",
+            lambda name, enabled: pytest.fail("should reject before mutating config"),
+        )
+
+        response = self.client.post(
+            "/api/dashboard/agent-plugins/image_gen%2F..%2Fsecret/enable",
+            headers=self.headers,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid plugin name."

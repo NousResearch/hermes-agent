@@ -289,6 +289,35 @@ def normalize_ci_state(value: str | None) -> str | None:
     return None
 
 
+def status_sort_key(item: dict[str, Any], index: int) -> tuple[str, int, int]:
+    """Return a stable recency key for a Gitea commit status item."""
+    timestamp = str(item.get("updated_at") or item.get("created_at") or "")
+    raw_id = item.get("id")
+    try:
+        numeric_id = int(raw_id)
+    except (TypeError, ValueError):
+        numeric_id = -1
+    return (timestamp, numeric_id, index)
+
+
+def latest_statuses_by_context(statuses: list[Any]) -> list[dict[str, Any]]:
+    """Collapse Gitea's append-only statuses to the latest row per context."""
+    latest: dict[str, tuple[tuple[str, int, int], dict[str, Any]]] = {}
+    anonymous: list[dict[str, Any]] = []
+    for index, item in enumerate(statuses):
+        if not isinstance(item, dict):
+            continue
+        context = str(item.get("context") or item.get("name") or "")
+        if not context:
+            anonymous.append(item)
+            continue
+        key = status_sort_key(item, index)
+        current = latest.get(context)
+        if current is None or key > current[0]:
+            latest[context] = (key, item)
+    return [item for _, item in latest.values()] + anonymous
+
+
 def classify_ci_state(
     *,
     statuses_record: dict[str, Any],
@@ -312,7 +341,8 @@ def classify_ci_state(
             "blocker": "ci_evidence_inaccessible",
         }
     statuses_data = statuses_record.get("data")
-    statuses = statuses_data if isinstance(statuses_data, list) else []
+    raw_statuses = statuses_data if isinstance(statuses_data, list) else []
+    statuses = latest_statuses_by_context(raw_statuses)
     combined_data = combined_record.get("data")
     combined_state = (
         normalize_ci_state(combined_data.get("state"))

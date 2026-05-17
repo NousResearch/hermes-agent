@@ -73,7 +73,7 @@ Observed Gitea status codes in the local setup:
 - `5`: waiting/queued
 - `6`: running
 
-Poll until every job leaves `{3,4,5,6}` rather than stopping when the first job finishes. Then fetch logs through the Gitea API with a temporary read-only token, save them outside the repo under `/tmp/.../logs/`, and delete the token in a trap. Do not print token material.
+Poll until every job leaves `{3,4,5,6}` rather than stopping when the first job finishes. Gitea commit-status rows are append-only: an initial pending row and later success row can both remain visible for the same context. CI auditors must collapse statuses to the latest row per `context`/job before classifying the commit; otherwise a passed run is misreported as pending. Then fetch logs through the Gitea API with a temporary read-only token, save them outside the repo under `/tmp/.../logs/`, and delete the token in a trap. Do not print token material.
 
 ## Runtime database metric redaction pitfall
 

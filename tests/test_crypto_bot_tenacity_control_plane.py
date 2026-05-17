@@ -258,6 +258,28 @@ def test_pr_ci_audit_counts_gitea_status_field_states() -> None:
     assert payload["blocker"] == "ci_evidence_pending"
 
 
+def test_pr_ci_audit_uses_latest_status_per_context() -> None:
+    payload = pr_ci_audit.classify_ci_state(
+        statuses_record={
+            "status": 200,
+            "data": [
+                {"status": "pending", "context": "Validate Crypto Bot / python"},
+                {"status": "pending", "context": "Validate Crypto Bot / governance"},
+                {"status": "pending", "context": "Validate Crypto Bot / secrets"},
+                {"status": "success", "context": "Validate Crypto Bot / python"},
+                {"status": "success", "context": "Validate Crypto Bot / governance"},
+                {"status": "success", "context": "Validate Crypto Bot / secrets"},
+            ],
+        },
+        combined_record={"status": 200, "data": {"state": "success", "total_count": 6}},
+        pr_head_matches=True,
+    )
+
+    assert payload["statuses_count"] == 3
+    assert payload["ci_state"] == "passed"
+    assert payload["blocker"] is None
+
+
 def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
     labels = runner_recovery.RUNNER_LABELS.split(",")
 

@@ -828,6 +828,29 @@ async def get_session_sources():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/sessions/sources")
+async def get_session_sources():
+    """Return distinct session sources (platforms) with counts."""
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            cursor = db._conn.execute(
+                "SELECT source, COUNT(*) as cnt FROM sessions "
+                "GROUP BY source ORDER BY cnt DESC"
+            )
+            sources = [
+                {"source": row["source"] or "local", "count": row["cnt"]}
+                for row in cursor.fetchall()
+            ]
+            return {"sources": sources}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/sources failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5."""

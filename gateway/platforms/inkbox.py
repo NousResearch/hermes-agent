@@ -1383,6 +1383,7 @@ class InkboxAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=str(chat_id),
             user_name=contact_name or from_address,
+            user_id_alt=from_address,
             thread_id=f"email:{thread_id}" if thread_id else None,
             chat_topic=subject or None,
             # MessageEvent.message_id is what the gateway passes back as
@@ -1451,6 +1452,7 @@ class InkboxAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=str(chat_id),
             user_name=contact_name or remote,
+            user_id_alt=remote,
             message_id=text_id,
         )
         if text is None:
@@ -1806,6 +1808,7 @@ class InkboxAdapter(BasePlatformAdapter):
 
         contact_id = meta.get("contact_id") or call_id or "unknown"
         contact_name = meta.get("contact_name") or contact_id
+        remote_phone_number = (meta.get("remote_phone_number") or "").strip() or None
         direction = (meta.get("direction") or "inbound").strip().lower()
 
         # Direction-aware session keying:
@@ -1924,6 +1927,7 @@ class InkboxAdapter(BasePlatformAdapter):
                 chat_type="dm",
                 user_id=str(contact_id),
                 user_name=contact_name,
+                user_id_alt=remote_phone_number,
                 thread_id=call_thread_id,
                 chat_topic="voice_call",
                 message_id=f"call:{call_id}:opening",
@@ -1974,6 +1978,7 @@ class InkboxAdapter(BasePlatformAdapter):
                         chat_type="dm",
                         user_id=str(contact_id),
                         user_name=contact_name,
+                        user_id_alt=remote_phone_number,
                         thread_id=call_thread_id,
                         chat_topic="voice_call",
                         message_id=payload.get("turn_id"),
@@ -2064,6 +2069,7 @@ class InkboxAdapter(BasePlatformAdapter):
                     chat_type="dm",
                     user_id=str(contact_id),
                     user_name=contact_name,
+                    user_id_alt=remote_phone_number,
                     thread_id=call_thread_id,
                     chat_topic="voice_call",
                     message_id=f"call:{call_id}:ended",

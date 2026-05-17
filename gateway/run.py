@@ -5717,8 +5717,14 @@ class GatewayRunner:
             return True
 
         check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
+        # Inkbox sessions are intentionally keyed to the resolved Contact
+        # when one exists, so a phone/email allowlist must still match the
+        # verified inbound channel address carried on the source.
+        if source.platform == Platform.INKBOX and source.user_id_alt:
+            check_ids.add(str(source.user_id_alt))
+        for check_id in list(check_ids):
+            if "@" in check_id:
+                check_ids.add(check_id.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:

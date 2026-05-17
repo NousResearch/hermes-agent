@@ -203,6 +203,8 @@ class TestWebhookRouting:
         assert ev.source.platform == Platform.INKBOX
         # contact_id resolved via lookup() should win over the raw email.
         assert ev.source.chat_id == "contact-uuid-123"
+        assert ev.source.user_id == "contact-uuid-123"
+        assert ev.source.user_id_alt == "alex@example.com"
         # email threads mint a sub-session.
         assert ev.source.thread_id == "email:thread-7"
         assert ev.source.chat_topic == "Hi there"
@@ -241,6 +243,8 @@ class TestWebhookRouting:
         assert ev.text.endswith("\nping")
         assert ev.text.startswith("[inkbox:sms")
         assert ev.source.chat_id == "contact-uuid-123"
+        assert ev.source.user_id == "contact-uuid-123"
+        assert ev.source.user_id_alt == "+15555550101"
         assert ev.media_urls == []
         assert ev.media_types == []
         # SMS does NOT mint a sub-session — same chat_id, no thread_id.
@@ -713,6 +717,81 @@ class TestWebhookRouting:
 
         assert resp.status == 200
         assert captured == []
+
+
+# ---------------------------------------------------------------------------
+# Authorization
+# ---------------------------------------------------------------------------
+
+class TestInkboxAuthorization:
+    def _runner(self):
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner(GatewayConfig())
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved = MagicMock(return_value=False)
+        return runner
+
+    def test_contact_scoped_sms_allows_verified_phone_alias(self, monkeypatch):
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("INKBOX_ALLOWED_USERS", "+15555550101")
+        source = SessionSource(
+            platform=Platform.INKBOX,
+            chat_id="contact-uuid-123",
+            chat_type="dm",
+            user_id="contact-uuid-123",
+            user_name="Alex",
+            user_id_alt="+15555550101",
+        )
+
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_contact_scoped_sms_still_allows_contact_id(self, monkeypatch):
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("INKBOX_ALLOWED_USERS", "contact-uuid-123")
+        source = SessionSource(
+            platform=Platform.INKBOX,
+            chat_id="contact-uuid-123",
+            chat_type="dm",
+            user_id="contact-uuid-123",
+            user_name="Alex",
+            user_id_alt="+15555550101",
+        )
+
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_contact_scoped_sms_rejects_unlisted_phone_alias(self, monkeypatch):
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("INKBOX_ALLOWED_USERS", "+15555550999")
+        source = SessionSource(
+            platform=Platform.INKBOX,
+            chat_id="contact-uuid-123",
+            chat_type="dm",
+            user_id="contact-uuid-123",
+            user_name="Alex",
+            user_id_alt="+15555550101",
+        )
+
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_phone_alias_auth_is_not_global_to_other_platforms(self, monkeypatch):
+        from gateway.session import SessionSource
+
+        monkeypatch.setenv("SMS_ALLOWED_USERS", "+15555550101")
+        source = SessionSource(
+            platform=Platform.SMS,
+            chat_id="contact-uuid-123",
+            chat_type="dm",
+            user_id="contact-uuid-123",
+            user_name="Alex",
+            user_id_alt="+15555550101",
+        )
+
+        assert self._runner()._is_user_authorized(source) is False
 
 
 # ---------------------------------------------------------------------------

@@ -234,3 +234,175 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Opt-in active wake: `--trigger-agent` subscriptions also schedule the
+# live gateway trigger path after the passive ACK is delivered.
+# ---------------------------------------------------------------------------
+
+
+class _TriggerSpy:
+    """Stand-in for gateway.run.trigger_agent_message."""
+
+    def __init__(self, result=None):
+        self.calls = []
+        self._result = result if result is not None else {"triggered": True}
+
+    def __call__(self, platform, chat_id, text, thread_id=None):
+        self.calls.append(
+            {"platform": platform, "chat_id": chat_id,
+             "text": text, "thread_id": thread_id}
+        )
+        return self._result
+
+
+def _subscribe(tid, *, trigger_agent):
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            trigger_agent=trigger_agent,
+        )
+    finally:
+        conn.close()
+
+
+def _completed_task(summary="all done"):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="wake me", assignee="worker")
+        return tid
+    finally:
+        conn.close()
+
+
+def test_trigger_agent_sub_wakes_origin_on_completed(tmp_path, monkeypatch):
+    """An opt-in subscription schedules the trigger path after a completed ACK."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-completed.db"))
+    kb.init_db()
+
+    tid = _completed_task()
+    _subscribe(tid, trigger_agent=True)
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, tid, summary="ship it")
+    finally:
+        conn.close()
+
+    spy = _TriggerSpy()
+    monkeypatch.setattr("gateway.run.trigger_agent_message", spy)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    # Passive ACK delivered AND the active wake scheduled with the same text.
+    assert len(adapter.sent) == 1
+    assert len(spy.calls) == 1, "completed ACK on a --trigger-agent sub must wake"
+    assert spy.calls[0]["chat_id"] == "chat-1"
+    assert spy.calls[0]["text"] == adapter.sent[0]["text"]
+    assert spy.calls[0]["platform"] == Platform.TELEGRAM
+
+
+def test_trigger_agent_sub_wakes_origin_on_blocked(tmp_path, monkeypatch):
+    """blocked maps BLOCK/NEED_MORE — it must also active-wake the origin."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-blocked.db"))
+    kb.init_db()
+
+    tid = _completed_task()
+    _subscribe(tid, trigger_agent=True)
+    conn = kb.connect()
+    try:
+        kb.block_task(conn, tid, reason="need more input")
+    finally:
+        conn.close()
+
+    spy = _TriggerSpy()
+    monkeypatch.setattr("gateway.run.trigger_agent_message", spy)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert "blocked" in adapter.sent[0]["text"].lower()
+    assert len(spy.calls) == 1, "blocked ACK on a --trigger-agent sub must wake"
+    assert spy.calls[0]["text"] == adapter.sent[0]["text"]
+
+
+def test_passive_sub_never_wakes_origin(tmp_path, monkeypatch):
+    """Default (passive) subscriptions deliver the ACK but never trigger."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-passive.db"))
+    kb.init_db()
+
+    tid = _completed_task()
+    _subscribe(tid, trigger_agent=False)
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, tid, summary="done quietly")
+    finally:
+        conn.close()
+
+    spy = _TriggerSpy()
+    monkeypatch.setattr("gateway.run.trigger_agent_message", spy)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1, "passive ACK still delivered"
+    assert spy.calls == [], "passive subscriptions must never wake the origin"
+
+
+def test_trigger_agent_sub_ignores_crash_retry_noise(tmp_path, monkeypatch):
+    """crashed/timed_out are retry noise — even an opt-in sub must not wake."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-crash.db"))
+    kb.init_db()
+
+    tid = _completed_task()
+    _subscribe(tid, trigger_agent=True)
+    conn = kb.connect()
+    try:
+        kb._append_event(conn, tid, kind="crashed")
+    finally:
+        conn.close()
+
+    spy = _TriggerSpy()
+    monkeypatch.setattr("gateway.run.trigger_agent_message", spy)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1, "crash is still delivered passively"
+    assert "crashed" in adapter.sent[0]["text"].lower()
+    assert spy.calls == [], "crash/timeout retry noise must not active-wake"
+
+
+def test_trigger_agent_failure_does_not_fail_passive_ack(tmp_path, monkeypatch):
+    """A trigger error is logged but never marks the passive send failed."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-trigfail.db"))
+    kb.init_db()
+
+    tid = _completed_task()
+    _subscribe(tid, trigger_agent=True)
+    conn = kb.connect()
+    try:
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    # No live runner → trigger path returns a sanitized error.
+    spy = _TriggerSpy(result={"trigger_error": "no live gateway runner"})
+    monkeypatch.setattr("gateway.run.trigger_agent_message", spy)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1, "passive ACK delivered despite trigger error"
+    assert len(spy.calls) == 1
+
+    # The subscription was still cleaned up (task is done) — the trigger
+    # error must not block the unsubscribe.
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()

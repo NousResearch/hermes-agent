@@ -293,6 +293,207 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+
+    def test_passive_default_does_not_trigger_agent(self):
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("tools.send_message_tool._trigger_gateway_agent") as trigger_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["mirrored"] is True
+        trigger_mock.assert_not_called()
+        mirror_mock.assert_called_once()
+
+    def test_trigger_agent_sends_suppresses_mirror_and_calls_helper(self):
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("tools.send_message_tool._trigger_gateway_agent", return_value={"triggered": True}) as trigger_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345:678",
+                        "message": "hello",
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["triggered"] is True
+        assert "mirrored" not in result
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "hello",
+            thread_id="678",
+            media_files=[],
+            force_document=False,
+        )
+        trigger_mock.assert_called_once_with(Platform.TELEGRAM, "12345", "678", "hello")
+        mirror_mock.assert_not_called()
+
+    def test_agent_mention_prose_does_not_auto_trigger_wake(self):
+        # An "@agent" prefix is message prose, not an explicit trigger
+        # request. Passive-by-default: it must mirror, never wake.
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("tools.send_message_tool._trigger_gateway_agent") as trigger_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "@agent please ACK this handoff",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["mirrored"] is True
+        trigger_mock.assert_not_called()
+        mirror_mock.assert_called_once()
+
+    def test_origin_marker_prose_does_not_auto_trigger_wake(self):
+        # Body prose like "from #research" must NOT silently flip
+        # trigger_agent on — an active wake is explicit only.
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("tools.send_message_tool._trigger_gateway_agent") as trigger_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "Follow-up confirmation from #research: please review and report back.",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["mirrored"] is True
+        trigger_mock.assert_not_called()
+        mirror_mock.assert_called_once()
+
+    def test_trigger_agent_no_live_runner_returns_sanitized_error(self):
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.run._gateway_runner_ref", lambda: None), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                        "trigger_agent": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["trigger_error"] == "no live gateway runner"
+        mirror_mock.assert_not_called()
+
+    def test_trigger_agent_missing_adapter_returns_sanitized_error(self):
+        from gateway.run import trigger_agent_message
+
+        runner = SimpleNamespace(adapters={})
+        with patch("gateway.run._gateway_runner_ref", lambda: runner):
+            result = trigger_agent_message(Platform.TELEGRAM, "12345", "hello")
+
+        assert result == {"trigger_error": "no live adapter"}
+
+    def test_send_blocked_by_stale_control_plane_authority(self):
+        # A real send fails closed BEFORE the platform send when the
+        # session env declares stale resume authority (here: a stale
+        # compaction summary). The control-plane gate runs in _handle_send.
+        config, _telegram_cfg = _make_config()
+        send_mock = AsyncMock(return_value={"success": True})
+        stale_env = {
+            "HERMES_CONTROL_PLANE_LANE": "#hermes-main",
+            "HERMES_CONTROL_PLANE_EPOCH": "100",
+            "HERMES_RESUME_COMPACTION_EPOCH": "1",  # stale vs epoch 100
+        }
+
+        with patch.dict(os.environ, stale_env), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "control-plane authority gate" in result["error"]
+        # The platform send never ran — the gate fired before the side effect.
+        send_mock.assert_not_awaited()
+
+    def test_send_allowed_when_no_authority_contract_configured(self):
+        # With no HERMES_CONTROL_PLANE_* env, the gate is an explicit no-op
+        # and an ordinary send proceeds unchanged.
+        config, _telegram_cfg = _make_config()
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            os.environ.pop("HERMES_CONTROL_PLANE_LANE", None)
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"

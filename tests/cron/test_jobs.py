@@ -254,6 +254,18 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_trigger_agent_defaults_passive_and_can_opt_in(self, tmp_cron_dir):
+        passive = create_job(prompt="Passive", schedule="30m")
+        assert passive["trigger_agent"] is False
+
+        active = create_job(
+            prompt="Active", schedule="30m", trigger_agent=True,
+            origin={"platform": "telegram", "chat_id": "123"},
+        )
+        fetched = get_job(active["id"])
+        assert fetched is not None
+        assert fetched["trigger_agent"] is True
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):

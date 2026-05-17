@@ -571,7 +571,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             return msg
         return None  # local-only jobs don't deliver — not a failure
 
-    from tools.send_message_tool import _send_to_platform
+    from tools.send_message_tool import _send_to_platform, _trigger_gateway_agent
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -694,6 +694,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    if job.get("trigger_agent") and cleaned_delivery_content.strip():
+                        trigger_result = _trigger_gateway_agent(
+                            platform,
+                            chat_id,
+                            thread_id,
+                            cleaned_delivery_content.strip(),
+                        )
+                        if trigger_result.get("trigger_error"):
+                            msg = f"trigger_agent error: {trigger_result['trigger_error']}"
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
             except Exception as e:
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -727,6 +738,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            if job.get("trigger_agent") and cleaned_delivery_content.strip():
+                trigger_result = _trigger_gateway_agent(
+                    platform,
+                    chat_id,
+                    thread_id,
+                    cleaned_delivery_content.strip(),
+                )
+                if trigger_result.get("trigger_error"):
+                    msg = f"trigger_agent error: {trigger_result['trigger_error']}"
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    delivery_errors.append(msg)
 
     if delivery_errors:
         return "; ".join(delivery_errors)

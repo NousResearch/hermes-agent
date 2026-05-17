@@ -1173,6 +1173,58 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def trigger_agent_message(platform: Platform, chat_id: str, text: str, thread_id: str | None = None) -> dict:
+    """Wake a destination gateway session from send_message(trigger_agent=True).
+
+    This is intentionally runner-bound: active handoffs only work in the live
+    gateway process where the destination adapter and event loop exist.  Other
+    processes (CLI/cron/tests without a runner) get a stable sanitized error
+    instead of silently claiming an agent was triggered.
+    """
+    runner = _gateway_runner_ref()
+    if runner is None:
+        return {"trigger_error": "no live gateway runner"}
+
+    adapter = runner.adapters.get(platform)
+    if adapter is None:
+        return {"trigger_error": "no live adapter"}
+
+    source = adapter.build_source(
+        chat_id=str(chat_id),
+        chat_type="thread" if thread_id else "channel",
+        thread_id=str(thread_id) if thread_id else None,
+        is_bot=True,
+    )
+    event = MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        internal=True,
+    )
+
+    async def _run_trigger() -> None:
+        await adapter.handle_message(event)
+
+    def _schedule_on_loop() -> None:
+        task = asyncio.create_task(_run_trigger())
+        runner._background_tasks.add(task)
+        task.add_done_callback(runner._background_tasks.discard)
+
+    loop = getattr(runner, "_gateway_loop", None)
+    if loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(_schedule_on_loop)
+    else:
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return {"trigger_error": "no live gateway runner"}
+        task = running_loop.create_task(_run_trigger())
+        runner._background_tasks.add(task)
+        task.add_done_callback(runner._background_tasks.discard)
+
+    return {"triggered": True}
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -4396,6 +4448,20 @@ class GatewayRunner:
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                             platform_str, sub["task_id"],
                         )
+                        skipped_ack_kind = next(
+                            (ev.kind for ev in d["events"] if ev.kind in ("completed", "blocked")),
+                            None,
+                        )
+                        await asyncio.to_thread(
+                            self._kanban_record_ack_outcome,
+                            sub,
+                            board_slug,
+                            "SKIPPED_WITH_REASON",
+                            "no_live_adapter",
+                            None,
+                            skipped_ack_kind,
+                            {"retrying": True},
+                        )
                         await asyncio.to_thread(
                             self._kanban_rewind,
                             sub,
@@ -4405,6 +4471,17 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
+                    # Captures the final ACK message text once a terminal
+                    # ACK event is delivered passively. Used only when the
+                    # subscription explicitly opted into active wake.
+                    # ACK kinds == completed (GO) + blocked (BLOCK /
+                    # NEED_MORE / review-required). Retry noise
+                    # (crashed / timed_out / gave_up) is deliberately
+                    # excluded — the dispatcher will respawn those and
+                    # they must not wake the origin agent.
+                    final_ack_msg: Optional[str] = None
+                    final_ack_kind: Optional[str] = None
+                    WAKE_ACK_KINDS = ("completed", "blocked")
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -4500,6 +4577,9 @@ class GatewayRunner:
                                     )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            if kind in WAKE_ACK_KINDS:
+                                final_ack_msg = msg
+                                final_ack_kind = kind
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -4510,6 +4590,16 @@ class GatewayRunner:
                                 MAX_SEND_FAILURES, exc,
                             )
                             if fails >= MAX_SEND_FAILURES:
+                                await asyncio.to_thread(
+                                    self._kanban_record_ack_outcome,
+                                    sub,
+                                    board_slug,
+                                    "FAILED",
+                                    None,
+                                    f"{type(exc).__name__}: {exc}",
+                                    kind,
+                                    {"attempts": fails, "dropped": True},
+                                )
                                 logger.warning(
                                     "kanban notifier: dropping subscription "
                                     "%s on %s after %d consecutive send failures",
@@ -4518,6 +4608,16 @@ class GatewayRunner:
                                 await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
                                 sub_fail_counts.pop(sub_key, None)
                             else:
+                                await asyncio.to_thread(
+                                    self._kanban_record_ack_outcome,
+                                    sub,
+                                    board_slug,
+                                    "FAILED",
+                                    None,
+                                    f"{type(exc).__name__}: {exc}",
+                                    kind,
+                                    {"attempts": fails, "retrying": True},
+                                )
                                 await asyncio.to_thread(
                                     self._kanban_rewind,
                                     sub,
@@ -4544,6 +4644,79 @@ class GatewayRunner:
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
                         task_terminal = task and task.status in {"done", "archived"}
+                        # Explicit opt-in active wake: only subscriptions
+                        # created with `--trigger-agent` get the live
+                        # trigger path scheduled, and only after a passive
+                        # terminal ACK (completed / blocked) was actually
+                        # delivered. Ordinary subscriptions remain passive
+                        # — this is the loop-safe guard (passive is the
+                        # default; crashed/timed_out/gave_up retry events
+                        # never wake even on a --trigger-agent sub).
+                        wake_note: Optional[str] = None
+                        # Structured active-wake outcome, kept ORTHOGONAL to
+                        # the passive ACK / work verdict: a wake failure here
+                        # never downgrades the work verdict or the passive
+                        # delivery. None = no wake attempted.
+                        wake_status: Optional[str] = None
+                        wake_error: Optional[str] = None
+                        if sub.get("trigger_agent") and final_ack_msg:
+                            try:
+                                result = trigger_agent_message(
+                                    plat,
+                                    sub["chat_id"],
+                                    final_ack_msg,
+                                    sub.get("thread_id") or None,
+                                )
+                                if result.get("trigger_error"):
+                                    wake_status = "unavailable"
+                                    wake_error = str(result["trigger_error"])
+                                    wake_note = (
+                                        "Active wake unavailable: "
+                                        f"{wake_error} "
+                                        "(passive ACK still delivered)."
+                                    )
+                                    logger.warning(
+                                        "kanban notifier: active wake for %s "
+                                        "not delivered: %s (passive ACK still sent)",
+                                        sub["task_id"], wake_error,
+                                    )
+                                else:
+                                    wake_status = "scheduled"
+                                    wake_note = "Active wake scheduled."
+                                    logger.debug(
+                                        "kanban notifier: scheduled active wake "
+                                        "for %s on %s/%s",
+                                        sub["task_id"], platform_str, sub["chat_id"],
+                                    )
+                            except Exception as exc:
+                                # The passive ACK already succeeded; an
+                                # active-wake failure must not mark the
+                                # platform send failed or block the unsub.
+                                wake_status = "failed"
+                                wake_error = str(exc)
+                                wake_note = (
+                                    f"Active wake failed: {exc} "
+                                    "(passive ACK still delivered)."
+                                )
+                                logger.warning(
+                                    "kanban notifier: active wake for %s failed: "
+                                    "%s (passive ACK still sent)",
+                                    sub["task_id"], exc,
+                                )
+                        # Durable delivery record. `notify-list` drops the
+                        # subscription once the task is done, so without
+                        # this the durable trail could not tell that a final
+                        # ACK was actually delivered (vs. never subscribed).
+                        # Recorded only for terminal ACK kinds (completed /
+                        # blocked) — retry noise is excluded. Persists both a
+                        # human comment and a typed `ack_delivered` event
+                        # carrying a DeliveryEnvelope projection.
+                        if final_ack_msg:
+                            await asyncio.to_thread(
+                                self._kanban_record_delivery,
+                                sub, board_slug, wake_note,
+                                final_ack_kind, wake_status, wake_error,
+                            )
                         if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
@@ -4588,6 +4761,113 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
+            )
+        finally:
+            conn.close()
+
+    def _kanban_record_delivery(
+        self,
+        sub: dict,
+        board: Optional[str] = None,
+        wake_note: Optional[str] = None,
+        ack_kind: Optional[str] = None,
+        wake_status: Optional[str] = None,
+        wake_error: Optional[str] = None,
+    ) -> None:
+        """Sync helper: durably record an ACK delivery.
+
+        Runs in ``to_thread``. Persists two things, both because the
+        subscription row is removed once the task is done:
+
+        * a typed ``ack_delivered`` event carrying a
+          :class:`DeliveryEnvelope` projection — the work verdict and the
+          ACK status are kept strictly orthogonal, and the active-wake
+          outcome is recorded as a *separate* facet so a failed wake never
+          downgrades the ``GO``/``BLOCK`` work verdict;
+        * a human-readable comment so ``kanban show`` stays honest about
+          whether delivery actually happened.
+
+        ``ack_kind`` is the terminal event kind (``completed`` -> ``GO`` /
+        ``blocked`` -> ``BLOCK``); ``wake_status`` / ``wake_error`` carry
+        the active-wake outcome (``None`` when no wake was attempted).
+        """
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.control_plane_contracts import AckMode
+        conn = _kb.connect(board=board)
+        try:
+            target = f"{sub['platform']}:{sub['chat_id']}"
+            if sub.get("thread_id"):
+                target += f":{sub['thread_id']}"
+
+            extra: dict[str, Any] = {}
+            if wake_status is not None:
+                extra["active_wake"] = {
+                    "status": wake_status,
+                    "error": wake_error,
+                    "delivered": wake_status == "scheduled",
+                    "mode": AckMode.ACTIVE_WAKE.value,
+                }
+            try:
+                _kb.record_ack_outcome(
+                    conn,
+                    sub["task_id"],
+                    ack_status="SENT",
+                    target=target,
+                    work_event_kind=ack_kind,
+                    extra=extra or None,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "kanban notifier: could not record ack_delivered event "
+                    "for %s: %s", sub.get("task_id"), exc,
+                )
+
+            body = f"Kanban notifier: final ACK delivered to {target}."
+            if wake_note:
+                body += f" {wake_note}"
+            _kb.add_comment(conn, sub["task_id"], "kanban-notifier", body)
+        except Exception as exc:
+            # Observability is best-effort — a failed write must never
+            # block the unsub or re-fire the delivered ACK.
+            logger.debug(
+                "kanban notifier: could not record delivery for %s: %s",
+                sub.get("task_id"), exc,
+            )
+        finally:
+            conn.close()
+
+    def _kanban_record_ack_outcome(
+        self,
+        sub: dict,
+        board: Optional[str],
+        ack_status: str,
+        reason: Optional[str] = None,
+        error: Optional[str] = None,
+        work_event_kind: Optional[str] = None,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Sync helper: durably record failed/skipped ACK outcomes."""
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect(board=board)
+        try:
+            target = f"{sub['platform']}:{sub['chat_id']}"
+            if sub.get("thread_id"):
+                target += f":{sub['thread_id']}"
+            _kb.record_ack_outcome(
+                conn,
+                sub["task_id"],
+                ack_status=ack_status,
+                reason=reason,
+                error=error,
+                target=target,
+                work_event_kind=work_event_kind,
+                extra=extra,
+            )
+        except Exception as exc:
+            logger.debug(
+                "kanban notifier: could not record ACK outcome for %s: %s",
+                sub.get("task_id"), exc,
             )
         finally:
             conn.close()
@@ -5347,10 +5627,15 @@ class GatewayRunner:
                 self._running_agent_count(),
             )
             if timed_out:
+                _drain_action = "restart" if self._restart_requested else "shutdown"
                 logger.warning(
-                    "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
+                    "Gateway drain timed out after %.1fs with %d active agent(s); "
+                    "interrupting remaining work. This is a controlled timeout, not a "
+                    "crash: affected session(s) are flagged resumable and the %s will "
+                    "still complete.",
                     timeout,
                     self._running_agent_count(),
+                    _drain_action,
                 )
                 # Mark forcibly-interrupted sessions as resume_pending BEFORE
                 # interrupting the agents.  This preserves each session's
@@ -5376,16 +5661,27 @@ class GatewayRunner:
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
+                _marked_resumable = 0
                 for _sk, _agent in list(self._running_agents.items()):
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                        if self.session_store.mark_resume_pending(_sk, _resume_reason):
+                            _marked_resumable += 1
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
+                if _marked_resumable:
+                    logger.info(
+                        "Flagged %d interrupted session(s) as resumable (reason=%s); "
+                        "each auto-resumes on its next message, and the %s "
+                        "proceeds normally.",
+                        _marked_resumable,
+                        _resume_reason,
+                        _drain_action,
+                    )
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )

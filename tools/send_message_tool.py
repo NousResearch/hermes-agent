@@ -140,6 +140,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "trigger_agent": {
+                "type": "boolean",
+                "description": "When true, after a successful platform send, wake the destination gateway session by injecting a synthetic internal inbound MessageEvent via the live GatewayRunner instead of passively mirroring the message. Defaults to false."
             }
         },
         "required": []
@@ -170,6 +174,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    trigger_agent = bool(args.get("trigger_agent", False))
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -205,6 +210,21 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    # Control-plane authority gate. Fail-closed before the real send when
+    # the session's HERMES_CONTROL_PLANE_* / HERMES_RESUME_* env declares
+    # stale compaction/history/context/todo authority (or a cross-lane
+    # mutation without approval). No-op when no such env is configured —
+    # ordinary CLI/cron sends are unaffected.
+    try:
+        from hermes_cli.control_plane_contracts import authorize_mutation_from_env
+        _auth = authorize_mutation_from_env("send")
+    except Exception:
+        _auth = None
+    if _auth is not None and not _auth.authorized:
+        return tool_error(
+            f"send blocked by control-plane authority gate: {_auth.reason}"
+        )
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -252,6 +272,13 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+    # Passive-by-default: an active destination wake happens ONLY when the
+    # caller explicitly passes trigger_agent=True. Message prose ("from
+    # #research", "@agent ...", handoff/ACK wording) is NEVER inspected to
+    # silently flip trigger_agent on — an active wake is a deliberate,
+    # explicit decision, and a subscription/return policy that requires a
+    # wake must opt in through its own channel (e.g. notify-subscribe
+    # --trigger-agent), not through body text.
 
     used_home_channel = False
     if not chat_id:
@@ -313,30 +340,50 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
-            try:
-                from gateway.mirror import mirror_to_session
-                from gateway.session_context import get_session_env
-                source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
-                user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-                if mirror_to_session(
-                    platform_name,
-                    chat_id,
-                    mirror_text,
-                    source_label=source_label,
-                    thread_id=thread_id,
-                    user_id=user_id,
-                ):
-                    result["mirrored"] = True
-            except Exception:
-                pass
+            if trigger_agent:
+                result.update(_trigger_gateway_agent(platform, chat_id, thread_id, mirror_text))
+            else:
+                # Mirror the sent message into the target's gateway session.
+                try:
+                    from gateway.mirror import mirror_to_session
+                    from gateway.session_context import get_session_env
+                    source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+                    user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                    if mirror_to_session(
+                        platform_name,
+                        chat_id,
+                        mirror_text,
+                        source_label=source_label,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                    ):
+                        result["mirrored"] = True
+                except Exception:
+                    pass
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _trigger_gateway_agent(platform, chat_id: str, thread_id: str | None, text: str) -> dict:
+    """Schedule an active destination-agent wake-up through the live gateway."""
+    try:
+        from gateway.run import trigger_agent_message
+        trigger_result = trigger_agent_message(platform, chat_id, text, thread_id=thread_id)
+    except Exception as exc:
+        return {"trigger_error": _sanitize_error_text(str(exc))}
+
+    if not isinstance(trigger_result, dict):
+        return {"trigger_error": "invalid trigger result"}
+    if trigger_result.get("error") and "trigger_error" not in trigger_result:
+        trigger_result = {"trigger_error": trigger_result.get("error")}
+    if "trigger_error" in trigger_result:
+        trigger_result["trigger_error"] = _sanitize_error_text(str(trigger_result["trigger_error"]))
+    return trigger_result
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

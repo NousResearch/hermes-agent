@@ -524,6 +524,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    trigger_agent: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -573,6 +574,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        trigger_agent: When True, after a successful cron delivery, ask the
+                live gateway to inject a synthetic inbound message for the
+                destination session. Defaults to False so cron delivery remains
+                passive unless explicitly opted in.
 
     Returns:
         The created job dict
@@ -608,6 +613,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    normalized_trigger_agent = bool(trigger_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -639,6 +645,7 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "trigger_agent": normalized_trigger_agent,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

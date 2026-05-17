@@ -186,11 +186,18 @@ class SSHEnvironment(BaseEnvironment):
 
             tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
             ssh_cmd = self._build_ssh_command()
-            # --no-overwrite-dir prevents tar from overwriting the mode of
-            # existing directories (e.g. /home/<user>) with the staging
-            # directory's mode.  Without this, a umask 002 produces 0775
-            # dirs which breaks sshd StrictModes (refuses authorized_keys).
-            ssh_cmd.append("tar xf - --no-overwrite-dir -C /")
+            # GNU tar supports --no-overwrite-dir, but macOS ships bsdtar,
+            # which rejects that flag.  Detect support on the remote side so
+            # SSH workers targeting macOS can still run without a persistent
+            # file-sync warning on every tool call.  Keep the safer GNU-tar
+            # flag where available to avoid clobbering directory modes.
+            tar_extract_cmd = "tar xf - --no-overwrite-dir -C /"
+            if not self._remote_tar_supports_no_overwrite_dir():
+                # bsdtar on macOS also tries to restore mtimes on existing
+                # system/user directories from the archive and exits non-zero
+                # when that is not permitted.  -m skips mtime restoration.
+                tar_extract_cmd = "tar xmf - -C /"
+            ssh_cmd.append(tar_extract_cmd)
 
             tar_proc = subprocess.Popen(
                 tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -236,6 +243,16 @@ class SSHEnvironment(BaseEnvironment):
                 )
 
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _remote_tar_supports_no_overwrite_dir(self) -> bool:
+        """Return whether remote tar accepts GNU tar's --no-overwrite-dir."""
+        cmd = self._build_ssh_command()
+        cmd.append("tar --no-overwrite-dir --help >/dev/null 2>&1")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
 
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

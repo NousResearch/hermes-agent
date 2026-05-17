@@ -213,6 +213,24 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
 
+    def test_trigger_agent_can_be_created_and_updated(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Wake destination",
+                schedule="every 1h",
+                trigger_agent=True,
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["trigger_agent"] is True
+
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], trigger_agent=False)
+        )
+        assert updated["success"] is True
+        assert "trigger_agent" not in updated["job"]
+
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(
             cronjob(

@@ -930,6 +930,10 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
     notifier_profile TEXT,
+    -- Opt-in active wake: when 1, the gateway notifier additionally
+    -- schedules the live trigger path (wakes the origin agent) after
+    -- the passive final ACK is delivered. Default 0 = passive only.
+    trigger_agent INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -1200,6 +1204,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        if "trigger_agent" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "trigger_agent",
+                "trigger_agent INTEGER NOT NULL DEFAULT 0",
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -1330,6 +1339,25 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _authorize_board_mutation(action_kind: str) -> None:
+    """Fail-closed control-plane authority gate for a board mutation.
+
+    Runs the env-driven authority check before a side-effecting Kanban
+    mutation. Raises :class:`~hermes_cli.control_plane_contracts.StaleAuthorityError`
+    when the session env (``HERMES_CONTROL_PLANE_*`` / ``HERMES_RESUME_*``)
+    declares stale compaction/history/context/todo authority, or a
+    cross-lane mutation without an approved route / explicit approval.
+
+    No-op when no authority contract is configured — ordinary CLI / cron /
+    test callers that never set those vars are unaffected.
+    """
+    try:
+        from hermes_cli.control_plane_contracts import authorize_mutation_from_env
+    except Exception:
+        return
+    authorize_mutation_from_env("board").raise_for_status()
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1376,6 +1404,7 @@ def create_task(
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
     """
+    _authorize_board_mutation("create_task")
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1549,6 +1578,56 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                # Auto-subscribe the origin chat when the body carries an
+                # `Origin/return_to:` directive. A final/reporter task
+                # created from a Warroom handoff names its return chat in
+                # the body rather than issuing an explicit
+                # `notify-subscribe`; without this parse the terminal ACK
+                # has nowhere to go. The subscription stays passive — the
+                # directive only requests return routing, not an active
+                # wake — and `notifier_profile` is left NULL so whichever
+                # gateway has the adapter connected delivers it.
+                origin = parse_origin_return_to(body)
+                if origin:
+                    _insert_notify_sub_row(
+                        conn,
+                        task_id=task_id,
+                        platform=origin["platform"],
+                        chat_id=origin["chat_id"],
+                        thread_id=origin["thread_id"],
+                        notifier_profile=None,
+                    )
+                    # Materialize the legacy `Origin/return_to:` prose into
+                    # a structured, immutable OriginReturnContract so the
+                    # durable event carries a stable `return_id` handle —
+                    # downstream readers route on that id instead of
+                    # re-parsing body prose. Prose parsing above is kept
+                    # only as the back-compat migration path.
+                    from hermes_cli.control_plane_contracts import (
+                        OriginReturnContract,
+                    )
+                    origin_contract = OriginReturnContract.from_origin_dict(
+                        origin, source="legacy_prose",
+                    )
+                    # Durable record: `notify-list` drops the row once the
+                    # task is done, so without this event `kanban show`
+                    # could not tell "never subscribed" from "subscribed,
+                    # delivered, cleaned up".
+                    _append_event(
+                        conn,
+                        task_id,
+                        "origin_subscribed",
+                        {
+                            "platform": origin["platform"],
+                            "chat_id": origin["chat_id"],
+                            "thread_id": origin["thread_id"],
+                            "source": "origin_return_to",
+                            "return_id": (
+                                origin_contract.return_id
+                                if origin_contract else None
+                            ),
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -1808,6 +1887,137 @@ def add_comment(
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
         return int(cur.lastrowid or 0)
+
+
+def record_task_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict] = None,
+) -> None:
+    """Append a durable task event in its own write transaction.
+
+    Public sibling of :func:`_append_event` for callers — e.g. the gateway
+    kanban notifier recording an ``ack_delivered`` event — that need to
+    persist an event outside the create/complete/block flows. Raises
+    ``ValueError`` for an unknown task.
+    """
+    with write_txn(conn):
+        if not conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone():
+            raise ValueError(f"unknown task {task_id}")
+        _append_event(conn, task_id, kind, payload)
+
+
+_ACK_SAFE_REDACTIONS = (
+    re.compile(r"(?i)(token|secret|api[_-]?key|password)\s*[:=]\s*[^\s,;]+"),
+    re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"),
+)
+
+
+def _safe_ack_text(value: Optional[str], *, limit: int = 240) -> Optional[str]:
+    """Return a one-line, redacted ACK reason/error for durable events."""
+    if value is None:
+        return None
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    for pat in _ACK_SAFE_REDACTIONS:
+        text = pat.sub(lambda m: f"{m.group(1)}=<redacted>" if m.lastindex else "<redacted>", text)
+    return text[:limit]
+
+
+def _work_verdict_for_ack(kind: Optional[str] = None) -> Any:
+    from hermes_cli.control_plane_contracts import WorkVerdict
+
+    return {
+        "completed": WorkVerdict.GO,
+        "blocked": WorkVerdict.BLOCK,
+    }.get(kind or "", WorkVerdict.PENDING)
+
+
+def _ack_event_kind(ack_status: str) -> str:
+    if ack_status == "SENT":
+        return "ack_delivered"
+    if ack_status == "FAILED":
+        return "ack_failed"
+    if ack_status == "SKIPPED_WITH_REASON":
+        return "ack_skipped"
+    return "ack_status"
+
+
+def _append_ack_outcome_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ack_status: str,
+    reason: Optional[str] = None,
+    error: Optional[str] = None,
+    target: Optional[str] = None,
+    event_kind: Optional[str] = None,
+    work_event_kind: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Append a typed DeliveryEnvelope-like ACK outcome inside a txn."""
+    from hermes_cli.control_plane_contracts import DeliveryAckState, DeliveryEnvelope
+
+    if ack_status == "SENT":
+        ack = DeliveryAckState.passive_sent()
+    elif ack_status == "FAILED":
+        ack = DeliveryAckState.failed(_safe_ack_text(error) or "send_failed")
+    elif ack_status == "SKIPPED_WITH_REASON":
+        ack = DeliveryAckState.skipped(_safe_ack_text(reason) or "unspecified")
+    else:
+        ack = DeliveryAckState.pending()
+    envelope = DeliveryEnvelope(task_id, _work_verdict_for_ack(work_event_kind), ack)
+    payload = envelope.project()
+    if target:
+        payload["target"] = _safe_ack_text(target, limit=200)
+    if extra:
+        payload.update(extra)
+    _append_event(conn, task_id, event_kind or _ack_event_kind(ack.status.value), payload)
+
+
+def record_ack_outcome(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ack_status: str,
+    reason: Optional[str] = None,
+    error: Optional[str] = None,
+    target: Optional[str] = None,
+    event_kind: Optional[str] = None,
+    work_event_kind: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Durably record a typed ACK outcome for a task.
+
+    This generic ACK substrate is used by gateway/notifier code for delivered,
+    failed, and skipped paths. It intentionally writes a task event only: the
+    work verdict/status remains untouched and orthogonal.
+    """
+    with write_txn(conn):
+        if not conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone():
+            raise ValueError(f"unknown task {task_id}")
+        _append_ack_outcome_event(
+            conn,
+            task_id,
+            ack_status=ack_status,
+            reason=reason,
+            error=error,
+            target=target,
+            event_kind=event_kind,
+            work_event_kind=work_event_kind,
+            extra=extra,
+        )
+
+
+def _has_notify_subscription(conn: sqlite3.Connection, task_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM kanban_notify_subs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone() is not None
 
 
 def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
@@ -2641,6 +2851,7 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    _authorize_board_mutation("complete_task")
     now = int(time.time())
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
@@ -2752,6 +2963,15 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+        if not _has_notify_subscription(conn, task_id):
+            _append_ack_outcome_event(
+                conn,
+                task_id,
+                ack_status="SKIPPED_WITH_REASON",
+                reason="no_subscription",
+                work_event_kind="completed",
+                extra={"ack_required": False},
+            )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -2921,6 +3141,7 @@ def block_task(
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
+    _authorize_board_mutation("block_task")
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -2965,6 +3186,15 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        if not _has_notify_subscription(conn, task_id):
+            _append_ack_outcome_event(
+                conn,
+                task_id,
+                ack_status="SKIPPED_WITH_REASON",
+                reason="no_subscription",
+                work_event_kind="blocked",
+                extra={"ack_required": False},
+            )
         return True
 
 
@@ -3317,6 +3547,7 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    _authorize_board_mutation("archive_task")
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -5680,6 +5911,126 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+# Platforms an `Origin/return_to:` directive may resolve to. Mirrors
+# gateway.config.Platform values; kanban_db is deliberately import-clean
+# of the gateway package, so the set is duplicated here. An unrecognised
+# platform token makes the directive unresolvable (no subscription).
+_NOTIFY_RETURN_PLATFORMS = frozenset({
+    "local", "telegram", "discord", "whatsapp", "slack", "signal",
+    "mattermost", "matrix", "homeassistant", "email", "sms", "dingtalk",
+    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+    "qqbot", "yuanbao", "webhook",
+})
+
+_ORIGIN_RETURN_TO_RE = re.compile(
+    r"Origin\s*/\s*return_to\s*:\s*(?P<rest>[^\n]*)", re.IGNORECASE,
+)
+# Canonical gateway target shape: `platform:chat_id[:thread_id]`.
+_RETURN_TARGET_RE = re.compile(
+    r"(?P<platform>[A-Za-z][\w-]*):(?P<chat_id>[\w-]+)(?::(?P<thread_id>[\w-]+))?"
+)
+# Optional platform word immediately before `chat_id`, then the id itself.
+_RETURN_CHAT_ID_RE = re.compile(
+    r"(?:(?P<platform>[A-Za-z][\w-]*)\s+)?chat[ _]?id\s*[=:]\s*(?P<chat_id>[\w-]+)",
+    re.IGNORECASE,
+)
+_RETURN_THREAD_ID_RE = re.compile(
+    r"thread[ _]?id\s*[=:]\s*(?P<thread_id>[\w-]+)", re.IGNORECASE,
+)
+_RETURN_WORD_RE = re.compile(r"[A-Za-z][\w-]*")
+
+
+def parse_origin_return_to(body: Optional[str]) -> Optional[dict]:
+    """Parse an ``Origin/return_to:`` directive out of a task body.
+
+    Returns ``{"platform", "chat_id", "thread_id"}`` when the directive
+    names a resolvable platform + chat id, else ``None``.
+
+    Recognised shapes (case-insensitive)::
+
+        Origin/return_to: discord:149789... (#hermes-main)
+        Origin/return_to: #hermes-main Discord chat_id=149789...; <prose>
+
+    Only the text before the first ``;`` is parsed — the remainder is
+    free-text provenance prose. The canonical ``platform:chat_id`` target
+    wins when present. Otherwise the platform is the word immediately
+    before ``chat_id=``; failing that, the first known platform name
+    appearing in the directive is used.
+    """
+    if not body:
+        return None
+    m = _ORIGIN_RETURN_TO_RE.search(body)
+    if not m:
+        return None
+    directive = m.group("rest").split(";", 1)[0]
+    tm = _RETURN_TARGET_RE.search(directive)
+    if tm and tm.group("platform").lower() in _NOTIFY_RETURN_PLATFORMS:
+        return {
+            "platform": tm.group("platform").lower(),
+            "chat_id": tm.group("chat_id"),
+            "thread_id": tm.group("thread_id"),
+        }
+    cm = _RETURN_CHAT_ID_RE.search(directive)
+    if not cm:
+        return None
+    chat_id = cm.group("chat_id")
+    platform = (cm.group("platform") or "").lower()
+    if platform not in _NOTIFY_RETURN_PLATFORMS:
+        # The token before `chat_id` was not a platform (e.g. `#hermes-main`
+        # is not — `#` is not a word char). Scan for any known name.
+        platform = ""
+        for word in _RETURN_WORD_RE.findall(directive):
+            if word.lower() in _NOTIFY_RETURN_PLATFORMS:
+                platform = word.lower()
+                break
+    if not platform:
+        return None
+    tm = _RETURN_THREAD_ID_RE.search(directive)
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": tm.group("thread_id") if tm else None,
+    }
+
+
+def _insert_notify_sub_row(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    trigger_agent: bool = False,
+) -> None:
+    """Insert (idempotently) a notify subscription row.
+
+    The caller MUST already hold an open write transaction — this helper
+    issues no ``BEGIN``/``COMMIT`` so it can be reused both by
+    :func:`add_notify_sub` and inline from :func:`create_task`.
+    """
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id,
+             notifier_profile, trigger_agent, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, platform, chat_id, thread_id or "", user_id,
+         notifier_profile, 1 if trigger_agent else 0, now),
+    )
+    if trigger_agent:
+        # Existing passive rows can be upgraded explicitly without
+        # resetting their cursor or recreating the subscription.
+        conn.execute(
+            "UPDATE kanban_notify_subs SET trigger_agent = 1 "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        )
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -5689,18 +6040,21 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    trigger_agent: bool = False,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
+    for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    ``trigger_agent`` is an explicit opt-in: when true the gateway
+    notifier also schedules the live trigger path (actively wakes the
+    origin agent) once the final ACK has been delivered passively.
+    Ordinary subscriptions stay passive (default false).
+    """
     with write_txn(conn):
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+        _insert_notify_sub_row(
+            conn, task_id=task_id, platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id,
+            notifier_profile=notifier_profile, trigger_agent=trigger_agent,
         )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by

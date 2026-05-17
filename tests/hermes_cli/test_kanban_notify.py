@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import pytest
 
 from pathlib import Path
@@ -638,3 +639,583 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+# ---------------------------------------------------------------------------
+# Opt-in active wake (`--trigger-agent`)
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_agent_defaults_false_and_persists(kanban_home):
+    """`add_notify_sub` defaults to passive; the opt-in flag round-trips."""
+    conn = kb.connect()
+    try:
+        passive = kb.create_task(conn, title="passive", assignee="w")
+        active = kb.create_task(conn, title="active", assignee="w")
+        kb.add_notify_sub(conn, task_id=passive, platform="telegram", chat_id="c1")
+        kb.add_notify_sub(
+            conn, task_id=active, platform="telegram", chat_id="c2",
+            trigger_agent=True,
+        )
+        passive_sub = kb.list_notify_subs(conn, passive)[0]
+        active_sub = kb.list_notify_subs(conn, active)[0]
+    finally:
+        conn.close()
+
+    # Default is passive (stored as 0, falsy).
+    assert not passive_sub["trigger_agent"]
+    # Opt-in persisted as a truthy integer.
+    assert active_sub["trigger_agent"] == 1
+
+
+def test_trigger_agent_column_migrates_on_legacy_db(tmp_path):
+    """A legacy `kanban_notify_subs` without `trigger_agent` migrates safely.
+
+    Old DB files predate the column; `init_db` must add it via the
+    additive migration pass and existing rows must default to 0 (passive).
+    """
+    db_path = tmp_path / "legacy-kanban.db"
+    legacy = sqlite3.connect(str(db_path))
+    try:
+        legacy.execute(
+            """
+            CREATE TABLE kanban_notify_subs (
+                task_id       TEXT NOT NULL,
+                platform      TEXT NOT NULL,
+                chat_id       TEXT NOT NULL,
+                thread_id     TEXT NOT NULL DEFAULT '',
+                user_id       TEXT,
+                notifier_profile TEXT,
+                created_at    INTEGER NOT NULL,
+                last_event_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (task_id, platform, chat_id, thread_id)
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, created_at) VALUES (?, ?, ?, ?)",
+            ("legacy-task", "telegram", "chat1", 0),
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    # init_db re-runs the additive migration pass against the legacy file.
+    kb.init_db(db_path=db_path)
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        cols = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(kanban_notify_subs)"
+        )}
+        assert "trigger_agent" in cols, "migration must add trigger_agent"
+        row = conn.execute(
+            "SELECT trigger_agent FROM kanban_notify_subs WHERE task_id = ?",
+            ("legacy-task",),
+        ).fetchone()
+        assert row["trigger_agent"] == 0, "legacy rows default to passive"
+    finally:
+        conn.close()
+
+
+def test_cli_notify_subscribe_trigger_agent_flag(kanban_home):
+    """`/kanban notify-subscribe --trigger-agent` opts the row into active wake."""
+    from hermes_cli import kanban as kb_cli
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="cli flag", assignee="w")
+    finally:
+        conn.close()
+
+    # Without the flag → passive.
+    out = kb_cli.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id passive-chat"
+    )
+    assert "Subscribed" in out
+    assert "active wake" not in out
+
+    # With the flag → active wake.
+    out = kb_cli.run_slash(
+        f"notify-subscribe {tid} --platform telegram "
+        f"--chat-id active-chat --trigger-agent"
+    )
+    assert "active wake" in out
+
+    conn = kb.connect()
+    try:
+        subs = {s["chat_id"]: s for s in kb.list_notify_subs(conn, tid)}
+    finally:
+        conn.close()
+    assert not subs["passive-chat"]["trigger_agent"]
+    assert subs["active-chat"]["trigger_agent"] == 1
+
+    # notify-list surfaces the flag on the active row only.
+    listing = kb_cli.run_slash(f"notify-list {tid}")
+    active_line = next(ln for ln in listing.splitlines() if "active-chat" in ln)
+    passive_line = next(ln for ln in listing.splitlines() if "passive-chat" in ln)
+    assert "trigger-agent" in active_line
+    assert "trigger-agent" not in passive_line
+
+
+# ---------------------------------------------------------------------------
+# Origin/return_to auto-subscription
+#
+# A final/reporter task whose body carries an `Origin/return_to:` directive
+# must auto-subscribe the named origin chat so the terminal ACK is routed
+# back even when no explicit `notify-subscribe` was issued. The Warroom
+# fixture relied on this and silently lost the ACK because `create_task`
+# stored the body verbatim without parsing the directive.
+# ---------------------------------------------------------------------------
+
+# The exact directive shape from the failing Warroom fixture.
+_FIXTURE_BODY = (
+    "Final reporter task.\n\n"
+    "Origin/return_to: #hermes-main Discord chat_id=1497895797579190357; "
+    "source report was #research -> #hermes-main handoff on 2026-05-15."
+)
+_COLON_FIXTURE_BODY = (
+    "Origin/return_to: discord:1497895797579190357 (#hermes-main)\n"
+    "Standing lane anchor: #hermes-main owns Hermes/Agent OS/Kanban."
+)
+_FIXTURE_CHAT_ID = "1497895797579190357"
+
+
+def test_parse_origin_return_to_extracts_platform_and_chat():
+    parsed = kb.parse_origin_return_to(_FIXTURE_BODY)
+    assert parsed == {
+        "platform": "discord",
+        "chat_id": _FIXTURE_CHAT_ID,
+        "thread_id": None,
+    }
+
+
+def test_parse_origin_return_to_supports_platform_colon_target():
+    parsed = kb.parse_origin_return_to(
+        "Origin/return_to: discord:1497895797579190357 (#hermes-main)"
+    )
+    assert parsed == {
+        "platform": "discord",
+        "chat_id": _FIXTURE_CHAT_ID,
+        "thread_id": None,
+    }
+
+
+def test_parse_origin_return_to_supports_thread_id():
+    parsed = kb.parse_origin_return_to(
+        "Origin/return_to: telegram chat_id=42 thread_id=7; prose"
+    )
+    assert parsed == {"platform": "telegram", "chat_id": "42", "thread_id": "7"}
+
+
+def test_parse_origin_return_to_none_when_unresolvable():
+    # No directive at all.
+    assert kb.parse_origin_return_to("just a normal body") is None
+    assert kb.parse_origin_return_to(None) is None
+    # Directive present but no chat id → not resolvable.
+    assert kb.parse_origin_return_to("Origin/return_to: #hermes-main Discord") is None
+    # Directive with a chat id but no recognisable platform → not resolvable.
+    assert kb.parse_origin_return_to("Origin/return_to: chat_id=99") is None
+
+
+def test_create_task_auto_subscribes_from_origin_return_to(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="final report", assignee="reporter", body=_FIXTURE_BODY,
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        events = list(kb.list_events(conn, tid))
+        event_kinds = [e.kind for e in events]
+    finally:
+        conn.close()
+
+    assert len(subs) == 1, f"expected one auto-subscription, got {subs!r}"
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == _FIXTURE_CHAT_ID
+    # Auto-subscriptions stay passive — the directive only asks for return
+    # routing, not an active wake.
+    assert not subs[0]["trigger_agent"]
+    # The auto-subscription is recorded durably so `kanban show` reflects it.
+    assert "origin_subscribed" in event_kinds
+    # The legacy prose is materialized into a structured OriginReturnContract:
+    # the durable event carries a stable, opaque return_id handle.
+    origin_ev = next(e for e in events if e.kind == "origin_subscribed")
+    assert (origin_ev.payload or {}).get("return_id", "").startswith("ret_")
+
+
+def test_create_task_auto_subscribes_from_platform_colon_return_to(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="final report", assignee="reporter", body=_COLON_FIXTURE_BODY,
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1, f"expected one auto-subscription, got {subs!r}"
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == _FIXTURE_CHAT_ID
+    assert not subs[0]["trigger_agent"]
+
+
+def test_create_task_without_directive_does_not_subscribe(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="plain task", assignee="w", body="no directive")
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert subs == []
+
+
+def test_completion_without_subscription_records_ack_skipped(kanban_home):
+    """A task can finish GO without an origin subscription; that ACK absence
+    must be durable and typed instead of being inferred from missing events."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="plain task", assignee="w", body="no directive")
+        assert kb.complete_task(conn, tid, result="GO") is True
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    kinds = [e.kind for e in events]
+    assert "completed" in kinds
+    ack_ev = next(e for e in events if e.kind == "ack_skipped")
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "SKIPPED_WITH_REASON"
+    assert ack_ev.payload["ack"]["reason"] == "no_subscription"
+    assert ack_ev.payload["ack_required"] is False
+
+
+def test_block_without_subscription_records_ack_skipped(kanban_home):
+    """A task can finish BLOCK without an origin subscription; that missing
+    ACK must also be durable and typed, separate from the work verdict."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="plain blocked task", assignee="w", body="no directive")
+        assert kb.block_task(conn, tid, reason="BLOCK: needs input") is True
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    kinds = [e.kind for e in events]
+    assert "blocked" in kinds
+    ack_ev = next(e for e in events if e.kind == "ack_skipped")
+    assert ack_ev.payload is not None
+    assert ack_ev.payload["work"]["verdict"] == "BLOCK"
+    assert ack_ev.payload["ack"]["status"] == "SKIPPED_WITH_REASON"
+    assert ack_ev.payload["ack"]["reason"] == "no_subscription"
+    assert ack_ev.payload["ack_required"] is False
+
+
+# --------------------------------------------------------------------------
+# Control-plane authority gate wired into real Kanban mutation entrypoints
+# --------------------------------------------------------------------------
+
+def test_create_task_blocked_by_stale_compaction_authority(kanban_home, monkeypatch):
+    """A real create_task call fails closed before the row is written when
+    the session env declares a stale compaction summary."""
+    from hermes_cli.control_plane_contracts import StaleAuthorityError
+
+    monkeypatch.setenv("HERMES_CONTROL_PLANE_LANE", "#hermes-main")
+    monkeypatch.setenv("HERMES_CONTROL_PLANE_EPOCH", "100")
+    monkeypatch.setenv("HERMES_RESUME_COMPACTION_EPOCH", "1")  # stale
+
+    conn = kb.connect()
+    try:
+        with pytest.raises(StaleAuthorityError):
+            kb.create_task(conn, title="should not be created", assignee="w")
+        # No task row materialized — the gate fired before any write.
+        assert kb.list_tasks(conn) == []
+    finally:
+        conn.close()
+
+
+def test_complete_task_blocked_by_cross_lane_mutation(kanban_home, monkeypatch):
+    """A real complete_task call into a foreign lane fails closed without an
+    explicit approval / pre-approved route."""
+    from hermes_cli.control_plane_contracts import StaleAuthorityError
+
+    conn = kb.connect()
+    try:
+        # Created with no authority env — ordinary path, unaffected.
+        tid = kb.create_task(conn, title="cross-lane target", assignee="w")
+        # Now the session is on #hermes-main but the mutation targets the
+        # #warroom lane: cross-lane without approval must be rejected.
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_LANE", "#hermes-main")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_EPOCH", "100")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_TARGET_LANE", "#warroom")
+        with pytest.raises(StaleAuthorityError):
+            kb.complete_task(conn, tid, result="GO")
+        # Verdict unchanged — the task did not transition to done.
+        assert kb.get_task(conn, tid).status != "done"
+    finally:
+        conn.close()
+
+
+def test_cross_lane_mutation_allowed_with_explicit_approval(kanban_home, monkeypatch):
+    """The same cross-lane mutation succeeds once an explicit approval is
+    present — the gate blocks silent cross-lane writes, not approved ones."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="approved cross-lane", assignee="w")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_LANE", "#hermes-main")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_EPOCH", "100")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_TARGET_LANE", "#warroom")
+        monkeypatch.setenv("HERMES_CONTROL_PLANE_APPROVAL", "1")
+        assert kb.complete_task(conn, tid, result="GO") is True
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_final_completion_with_origin_return_to_delivers_passive_ack(kanban_home):
+    """End-to-end: a final task with an Origin/return_to body and no manual
+    subscribe still posts a passive ACK to the origin chat on GO."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="final report", assignee="reporter", body=_COLON_FIXTURE_BODY,
+        )
+        kb.complete_task(conn, tid, result="GO")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1), timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    assert fake_adapter.send.call_args[0][0] == _FIXTURE_CHAT_ID
+    assert "done" in fake_adapter.send.call_args[0][1]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+    assert subs == [], "subscription should be cleaned up after final delivery"
+    # notify-list now shows nothing; the durable comment keeps `show` honest
+    # about the fact that delivery actually happened.
+    assert any("final ACK delivered" in c for c in comments), comments
+    # A typed ack_delivered event carries the DeliveryEnvelope projection:
+    # the work verdict and the ACK status are recorded as separate facets.
+    ack_ev = next(e for e in events if e.kind == "ack_delivered")
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "SENT"
+    assert ack_ev.payload["ack"]["mode"] == "passive_sent"
+    # No active wake was requested on this passive subscription.
+    assert "active_wake" not in ack_ev.payload
+
+
+def test_cli_create_subscribe_then_final_completion(kanban_home):
+    """Regression for the documented manual flow: create -> notify-subscribe
+    with `--platform discord --chat-id <id>` -> final completion delivers."""
+    import re as _re
+    from hermes_cli import kanban as kb_cli
+
+    out = kb_cli.run_slash('create "manual final" --assignee reporter')
+    m = _re.search(r"Created\s+(t_[0-9a-f]+)", out)
+    assert m, f"unexpected create output: {out!r}"
+    tid = m.group(1)
+
+    out = kb_cli.run_slash(
+        f"notify-subscribe {tid} --platform discord --chat-id {_FIXTURE_CHAT_ID}"
+    )
+    assert "Subscribed" in out
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        assert len(subs) == 1 and subs[0]["platform"] == "discord"
+        kb.complete_task(conn, tid, result="GO")
+        _, events = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="discord",
+            chat_id=_FIXTURE_CHAT_ID, kinds=["completed"],
+        )
+    finally:
+        conn.close()
+    assert [e.kind for e in events] == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_notifier_send_failure_records_ack_failed_and_retries(kanban_home):
+    """Adapter send failures are durable ACK_FAILED events; they do not erase
+    the GO work verdict and they keep retry/drop behavior explicit."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="final report", assignee="reporter")
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chatX")
+        kb.complete_task(conn, tid, result="GO")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _fail_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+        raise RuntimeError("boom token=abcdefghijklmnopqrstuvwxyz123456")
+
+    fake_adapter.send = AsyncMock(side_effect=_fail_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1), timeout=10.0,
+        )
+
+    fake_adapter.send.assert_called_once()
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+
+    assert len(subs) == 1, "transient failure should keep subscription for retry"
+    ack_ev = next(e for e in events if e.kind == "ack_failed")
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "FAILED"
+    assert "<redacted>" in ack_ev.payload["ack"]["error"]
+    assert ack_ev.payload["retrying"] is True
+    assert ack_ev.payload["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_notifier_helper_records_no_live_adapter_ack_skipped(kanban_home):
+    """The reachable disconnected-adapter helper path records typed
+    ACK_SKIPPED/no_live_adapter without triggering active wake behavior."""
+    from gateway.run import GatewayRunner
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="final report", assignee="reporter")
+        kb.add_notify_sub(conn, task_id=tid, platform="discord", chat_id="chatX")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_record_ack_outcome(
+        {"task_id": tid, "platform": "discord", "chat_id": "chatX"},
+        None,
+        "SKIPPED_WITH_REASON",
+        "no_live_adapter",
+        None,
+        "completed",
+        {"retrying": True},
+    )
+
+    conn = kb.connect()
+    try:
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+    ack_ev = next(e for e in events if e.kind == "ack_skipped")
+    assert ack_ev.payload["work"]["verdict"] == "GO"
+    assert ack_ev.payload["ack"]["status"] == "SKIPPED_WITH_REASON"
+    assert ack_ev.payload["ack"]["reason"] == "no_live_adapter"
+    assert ack_ev.payload["retrying"] is True
+
+
+@pytest.mark.asyncio
+async def test_notifier_records_trigger_agent_unavailable_fallback(kanban_home):
+    """When `--trigger-agent` is set but the active wake target is
+    unavailable, the passive ACK is still delivered and a durable comment
+    records why the wake did not happen."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="active wake task", assignee="reporter")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="chatX",
+            trigger_agent=True,
+        )
+        kb.complete_task(conn, tid, result="GO")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.DISCORD: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch("gateway.run.trigger_agent_message",
+               return_value={"trigger_error": "no live adapter"}):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1), timeout=10.0,
+        )
+
+    # Passive ACK still delivered despite the unavailable wake target.
+    fake_adapter.send.assert_called_once()
+
+    conn = kb.connect()
+    try:
+        comments = [c.body for c in kb.list_comments(conn, tid)]
+        events = list(kb.list_events(conn, tid))
+    finally:
+        conn.close()
+    delivery = [c for c in comments if "final ACK delivered" in c]
+    assert delivery, f"expected a durable delivery comment, got {comments!r}"
+    assert "unavailable" in delivery[0].lower(), delivery[0]
+    # The active-wake failure is recorded as a SEPARATE facet — it must
+    # NOT downgrade the work verdict or the passive ACK.
+    ack_ev = next(e for e in events if e.kind == "ack_delivered")
+    assert ack_ev.payload["work"]["verdict"] == "GO", "work verdict stays GO"
+    assert ack_ev.payload["ack"]["status"] == "SENT"
+    assert ack_ev.payload["ack"]["mode"] == "passive_sent"
+    assert ack_ev.payload["active_wake"]["status"] == "unavailable"
+    assert ack_ev.payload["active_wake"]["delivered"] is False

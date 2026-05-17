@@ -26,6 +26,7 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -926,6 +927,58 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     calls = session_store.mark_resume_pending.call_args_list
     marked = {args[0][0] for args in calls}
     assert marked == {session_key_real}
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_logs_controlled_recovery_summary(caplog):
+    """A graceful restart that exceeds the drain window must log that the
+    timeout is *controlled* — interrupted sessions are flagged resumable
+    and the service restart still completes — so an operator reading
+    gateway.log does not mistake it for a crash (kanban t_7cb865e0)."""
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_drain_timeout = 0.05
+    runner._restart_requested = True
+    runner._running_agents = {"agent:main:telegram:dm:A": MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"), patch(
+        "gateway.status.remove_pid_file"
+    ), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, detached_restart=False, service_restart=True)
+
+    # Warning still names the timeout, but now frames it as controlled.
+    assert "drain timed out" in caplog.text
+    assert "controlled timeout, not a crash" in caplog.text
+    assert "the restart will still complete" in caplog.text
+    # Follow-up INFO line confirms how many sessions were actually flagged.
+    assert "Flagged 1 interrupted session(s) as resumable" in caplog.text
+    assert "reason=restart_timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_shutdown_summary_uses_shutdown_wording(caplog):
+    """When the drain timeout happens on a plain shutdown (no restart), the
+    messaging says 'shutdown', not 'restart'."""
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_drain_timeout = 0.05
+    runner._running_agents = {"agent:main:telegram:dm:A": MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=True)
+    runner.session_store = session_store
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"), patch(
+        "gateway.status.remove_pid_file"
+    ), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert "the shutdown will still complete" in caplog.text
+    assert "reason=shutdown_timeout" in caplog.text
 
 
 # ---------------------------------------------------------------------------

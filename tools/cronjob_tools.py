@@ -277,6 +277,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["script"] = job["script"]
     if job.get("no_agent"):
         result["no_agent"] = True
+    if job.get("trigger_agent"):
+        result["trigger_agent"] = True
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -307,6 +309,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    trigger_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -374,6 +377,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                trigger_agent=bool(trigger_agent),
             )
             return json.dumps(
                 {
@@ -525,6 +529,8 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if trigger_agent is not None:
+                updates["trigger_agent"] = bool(trigger_agent)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -642,6 +648,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "trigger_agent": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Default: False (passive cron delivery). When true, after "
+                    "a successful delivery, ask the live gateway to wake the "
+                    "destination agent session by injecting a synthetic inbound "
+                    "message. Use only when the cron output should be treated as "
+                    "an actionable message for that channel's agent, not merely "
+                    "a visible report."
+                ),
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -724,6 +742,7 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        trigger_agent=args.get("trigger_agent"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

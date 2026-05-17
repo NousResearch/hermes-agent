@@ -726,6 +726,49 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_adapter_trigger_agent_opt_in_after_delivery(self):
+        """Live-adapter cron delivery should also honor explicit trigger_agent opt-in."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "live-active-wake",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "555", "thread_id": "777"},
+            "trigger_agent": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._trigger_gateway_agent", return_value={"triggered": True}) as trigger_mock:
+            result = _deliver_result(
+                job,
+                "Wake mission control",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        trigger_mock.assert_called_once_with(Platform.DISCORD, "555", "777", "Wake mission control")
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform
@@ -737,7 +780,8 @@ class TestDeliverResultWrapping:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
-             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+             patch("gateway.mirror.mirror_to_session") as mirror_mock, \
+             patch("tools.send_message_tool._trigger_gateway_agent") as trigger_mock:
             job = {
                 "id": "test-job",
                 "deliver": "origin",
@@ -746,6 +790,55 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Hello!")
 
         mirror_mock.assert_not_called()
+        trigger_mock.assert_not_called()
+
+    def test_trigger_agent_opt_in_calls_gateway_trigger_after_delivery(self):
+        """Cron deliveries should actively wake the destination only when explicitly opted in."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._trigger_gateway_agent", return_value={"triggered": True}) as trigger_mock:
+            job = {
+                "id": "active-wake-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123", "thread_id": "456"},
+                "trigger_agent": True,
+            }
+            result = _deliver_result(job, "Wake research")
+
+        assert result is None
+        trigger_mock.assert_called_once_with(Platform.TELEGRAM, "123", "456", "Wake research")
+
+    def test_trigger_agent_error_is_reported_as_delivery_error(self):
+        """A failed active wake should be surfaced instead of silently claiming success."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._trigger_gateway_agent", return_value={"trigger_error": "no live gateway"}):
+            job = {
+                "id": "active-wake-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "trigger_agent": True,
+            }
+            result = _deliver_result(job, "Wake research")
+
+        assert result is not None
+        assert "trigger_agent error" in result
 
     def test_origin_delivery_preserves_thread_id(self):
         """Origin delivery should forward thread_id to the send helper."""

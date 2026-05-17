@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -133,6 +134,70 @@ class TestControlSocketPath:
         assert SSHEnvironment(host="h", user="u", port=23).control_socket != base
         assert SSHEnvironment(host="h", user="v", port=22).control_socket != base
         assert SSHEnvironment(host="g", user="u", port=22).control_socket != base
+
+
+class TestSSHBulkUploadTarCompatibility:
+    def _make_env(self, supports_no_overwrite_dir):
+        env = object.__new__(SSHEnvironment)
+        env.host = "h"
+        env.user = "u"
+        env.port = 22
+        env.key_path = ""
+        env.control_socket = Path("/tmp/hermes-test.sock")
+        env._build_ssh_command = lambda extra_args=None: ["ssh"] + (extra_args or [])
+        env._remote_tar_supports_no_overwrite_dir = lambda: supports_no_overwrite_dir
+        return env
+
+    def _fake_popen(self, calls):
+        class Proc:
+            def __init__(self, args):
+                self.args = args
+                self.returncode = 0
+                self.stdout = MagicMock()
+                self.stderr = MagicMock()
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return (b"", b"")
+
+            def wait(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def _popen(args, **kwargs):
+            calls.append(args)
+            return Proc(args)
+
+        return _popen
+
+    def test_bulk_upload_uses_gnu_no_overwrite_dir_when_supported(self, tmp_path, monkeypatch):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        env = self._make_env(supports_no_overwrite_dir=True)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        popen_calls = []
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", self._fake_popen(popen_calls))
+
+        env._ssh_bulk_upload([(str(src), "/Users/devhub/.hermes/file.txt")])
+
+        assert any("tar xf - --no-overwrite-dir -C /" in call for call in popen_calls)
+
+    def test_bulk_upload_falls_back_for_bsd_tar_without_no_overwrite_dir(self, tmp_path, monkeypatch):
+        src = tmp_path / "file.txt"
+        src.write_text("data")
+        env = self._make_env(supports_no_overwrite_dir=False)
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+        popen_calls = []
+        monkeypatch.setattr("tools.environments.ssh.subprocess.Popen", self._fake_popen(popen_calls))
+
+        env._ssh_bulk_upload([(str(src), "/Users/devhub/.hermes/file.txt")])
+
+        assert any("tar xmf - -C /" in call for call in popen_calls)
+        assert not any("--no-overwrite-dir" in " ".join(call) for call in popen_calls)
 
 
 class TestTerminalToolConfig:

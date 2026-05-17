@@ -6026,7 +6026,7 @@ def _default_spawn(
         log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            "Install Autolycus or activate its venv before running the kanban dispatcher."
         )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The

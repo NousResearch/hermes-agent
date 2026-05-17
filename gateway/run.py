@@ -12837,7 +12837,11 @@ class GatewayRunner:
                 update_cmd = (
                     f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
                     f" > {shlex.quote(str(output_path))} 2>&1; "
-                    f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
+                    # Avoid `status=$?`: `status` is a read-only special parameter
+                    # in zsh, and this command string is copied/reused in macOS/zsh
+                    # operator wrappers. Keep the template zsh-safe even though this
+                    # specific subprocess currently runs under bash.
+                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:

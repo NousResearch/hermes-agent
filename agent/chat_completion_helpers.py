@@ -233,6 +233,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
+    if tools_for_api:
+        from model_tools import sort_openai_tool_schemas
+        tools_for_api = sort_openai_tool_schemas(tools_for_api)
+    for msg in api_messages:
+        if isinstance(msg, dict):
+            msg.pop("_local_replay_content", None)
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()

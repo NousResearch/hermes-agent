@@ -12,6 +12,8 @@ Verifies that the agent cache correctly:
 import hashlib
 import json
 import threading
+from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,29 @@ def _make_runner():
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     return runner
+
+
+def _metadata_agent(session_id="session-1", model="model-a", provider="provider-a"):
+    return SimpleNamespace(
+        load_soul_identity=False,
+        skip_context_files=True,
+        valid_tool_names=set(),
+        provider=provider,
+        model=model,
+        platform="",
+        _tool_use_enforcement="auto",
+        _memory_store=None,
+        _memory_enabled=False,
+        _user_profile_enabled=False,
+        _memory_manager=None,
+        pass_session_id=True,
+        session_id=session_id,
+        _frozen_system_metadata_block=None,
+    )
+
+
+def _metadata_block(prompt_parts):
+    return prompt_parts["volatile"].split("Conversation started: ", 1)[1]
 
 
 class TestAgentConfigSignature:
@@ -440,6 +465,66 @@ class TestAgentCacheLifecycle:
         # Simulate second turn — prompt should be frozen
         prompt2 = agent._cached_system_prompt
         assert prompt1 is prompt2  # same object, not rebuilt
+
+    def test_system_metadata_frozen_across_rebuild(self, monkeypatch):
+        """Compression-style prompt rebuilds reuse the same metadata bytes."""
+        from agent.system_prompt import build_system_prompt_parts
+
+        agent = _metadata_agent()
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 1, 9, 0),
+        )
+        first = build_system_prompt_parts(agent)
+
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 2, 10, 30),
+        )
+        second = build_system_prompt_parts(agent)
+
+        assert _metadata_block(first) == _metadata_block(second)
+
+    def test_clearing_cached_system_prompt_does_not_refresh_metadata(self, monkeypatch):
+        from agent.system_prompt import build_system_prompt
+
+        agent = _metadata_agent()
+        agent._cached_system_prompt = None
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 1, 9, 0),
+        )
+        first = build_system_prompt(agent)
+
+        agent._cached_system_prompt = None
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 3, 11, 45),
+        )
+        second = build_system_prompt(agent)
+
+        assert "Thursday, January 01, 2026" in first
+        assert "Thursday, January 01, 2026" in second
+
+    def test_fresh_agent_gets_fresh_metadata(self, monkeypatch):
+        from agent.system_prompt import build_system_prompt
+
+        first_agent = _metadata_agent(session_id="session-a")
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 1, 9, 0),
+        )
+        first = build_system_prompt(first_agent)
+
+        second_agent = _metadata_agent(session_id="session-b")
+        monkeypatch.setattr(
+            "hermes_time.now",
+            lambda: datetime(2026, 1, 2, 10, 30),
+        )
+        second = build_system_prompt(second_agent)
+
+        assert "Thursday, January 01, 2026" in first
+        assert "Friday, January 02, 2026" in second
 
     def test_callbacks_update_without_cache_eviction(self):
         """Per-message callbacks can be set on cached agent."""

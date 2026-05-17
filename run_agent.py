@@ -3602,6 +3602,13 @@ class AIAgent:
             or self._needs_mimo_tool_reasoning()
         )
 
+    def _is_local_cache_sensitive_backend(self) -> bool:
+        """Return True for local OpenAI-compatible backends with prefix caches."""
+        provider = (self.provider or "").lower()
+        if provider in {"ollama", "lmstudio"}:
+            return True
+        return bool(self.base_url and is_local_endpoint(self.base_url))
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

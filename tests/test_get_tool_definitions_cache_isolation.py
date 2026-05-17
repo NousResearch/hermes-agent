@@ -52,6 +52,17 @@ class TestQuietModeCacheIsolation:
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
 
+    def test_tool_names_sorted_on_cache_miss_and_hit(self):
+        """Tool order is part of the OpenAI-compatible payload cache key."""
+        first = model_tools.get_tool_definitions(quiet_mode=True)
+        second = model_tools.get_tool_definitions(quiet_mode=True)
+
+        first_names = [t["function"]["name"] for t in first]
+        second_names = [t["function"]["name"] for t in second]
+
+        assert first_names == sorted(first_names)
+        assert second_names == sorted(second_names)
+
     def test_caller_mutation_does_not_poison_cache(self):
         """Simulate run_agent appending LCM tool schemas to the returned
         list. A second call must NOT see those appended entries."""

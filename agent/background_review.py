@@ -19,6 +19,7 @@ for invariants and PR review criteria.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -417,6 +418,18 @@ def _run_review_in_thread(
             # measured impact (~26% end-to-end cost reduction on
             # Sonnet 4.5).
             review_agent._cached_system_prompt = agent._cached_system_prompt
+            # The local OpenAI-compatible tool block is part of llama.cpp's
+            # prompt-cache prefix.  The review fork must not rebuild a subtly
+            # different tool list/order after the parent turn finishes; inherit
+            # the exact parent presentation and let the whitelist below enforce
+            # which tools may actually execute.
+            if isinstance(getattr(agent, "tools", None), list):
+                review_agent.tools = copy.deepcopy(agent.tools)
+                review_agent.valid_tool_names = {
+                    t.get("function", {}).get("name")
+                    for t in review_agent.tools
+                    if isinstance(t, dict) and t.get("function", {}).get("name")
+                }
             # Defensive: pin session_start + session_id to the
             # parent's so any code path that re-renders parts of
             # the system prompt (compression, plugin hooks) still

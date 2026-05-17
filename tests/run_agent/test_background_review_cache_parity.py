@@ -33,6 +33,11 @@ def _make_agent_stub(agent_cls):
         "PARENT-SYSTEM-PROMPT-BYTES — must be inherited verbatim "
         "for prefix-cache parity"
     )
+    agent.tools = [
+        {"type": "function", "function": {"name": "memory", "description": "m"}},
+        {"type": "function", "function": {"name": "feishu_doc_read", "description": "f"}},
+    ]
+    agent.valid_tool_names = {"memory", "feishu_doc_read"}
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
@@ -183,3 +188,60 @@ def test_review_fork_pins_session_start_and_session_id():
         "Review fork did not inherit parent's session_id — "
         "system-prompt rebuild paths would diverge."
     )
+
+
+def test_review_fork_inherits_parent_tool_schema_order():
+    """The review fork must reuse the parent's exact tool presentation.
+
+    Local OpenAI-compatible backends render the ``tools`` request field into
+    the prompt before messages. Rebuilding the review agent's tools after the
+    parent turn can reorder dynamic tools and invalidate llama.cpp prefix
+    checkpoints even when the system prompt is inherited byte-for-byte.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.tools = [
+                {"type": "function", "function": {"name": "feishu_doc_read"}},
+                {"type": "function", "function": {"name": "memory"}},
+            ]
+            self.valid_tool_names = {"feishu_doc_read", "memory"}
+
+        def run_conversation(self, *args, **kwargs):
+            captured["tool_names"] = [
+                t["function"]["name"] for t in self.tools
+            ]
+            captured["valid_tool_names"] = set(self.valid_tool_names)
+            raise RuntimeError("stop after recording")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured["tool_names"] == [
+        t["function"]["name"] for t in agent.tools
+    ]
+    assert captured["valid_tool_names"] == agent.valid_tool_names

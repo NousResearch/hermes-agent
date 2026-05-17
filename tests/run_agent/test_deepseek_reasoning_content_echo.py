@@ -289,6 +289,178 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
 
+    def test_local_custom_endpoint_inlines_reasoning_for_template(self) -> None:
+        """Local llama.cpp replay needs the generated <think> bytes in content."""
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "local thought trace",
+        }
+        api_msg = {"role": "assistant", "content": ""}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == "<think>\nlocal thought trace\n</think>"
+        assert "reasoning_content" not in api_msg
+        assert "_local_replay_content" not in api_msg
+
+    def test_any_local_endpoint_inlines_reasoning_for_template(self) -> None:
+        """Provider labels vary for llama.cpp/ik_llama.cpp; local URL is decisive."""
+        agent = _make_agent(
+            provider="openai",
+            model="qwen3",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "Visible tool preface.",
+            "reasoning": "local thought trace",
+        }
+        api_msg = {"role": "assistant", "content": "Visible tool preface."}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == (
+            "<think>\nlocal thought trace\n</think>\n\nVisible tool preface."
+        )
+        assert "reasoning_content" not in api_msg
+        assert "_local_replay_content" not in api_msg
+
+    def test_local_custom_endpoint_inlines_stored_reasoning_content(self) -> None:
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://192.168.1.10:8080/v1",
+        )
+        source = {
+            "role": "assistant",
+            "content": "Visible answer.",
+            "reasoning_content": "stored local reasoning",
+        }
+        api_msg = {"role": "assistant", "content": "Visible answer."}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == (
+            "<think>\nstored local reasoning\n</think>\n\nVisible answer."
+        )
+        assert "reasoning_content" not in api_msg
+        assert "_local_replay_content" not in api_msg
+
+    def test_local_custom_endpoint_inlines_reasoning_before_tool_calls(self) -> None:
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"/tmp/a"}'},
+            }
+        ]
+        source = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "I should read the file first.",
+            "tool_calls": tool_calls,
+        }
+        api_msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == "<think>\nI should read the file first.\n</think>"
+        assert api_msg["tool_calls"] == tool_calls
+        assert "_local_replay_content" not in api_msg
+        assert "reasoning_content" not in api_msg
+
+    def test_local_custom_endpoint_does_not_double_wrap_thinking_tags(self) -> None:
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://localhost:8080/v1",
+        )
+        content = "<thinking>\nprior thought\n</thinking>\n\nVisible answer."
+        source = {
+            "role": "assistant",
+            "content": content,
+            "reasoning": "stored local reasoning",
+        }
+        api_msg = {"role": "assistant", "content": content}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg["content"] == content
+        assert "reasoning_content" not in api_msg
+        assert "_local_replay_content" not in api_msg
+
+    def test_local_custom_endpoint_no_reasoning_leaves_content_alone(self) -> None:
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://localhost:8080/v1",
+        )
+        source = {"role": "assistant", "content": "Visible answer."}
+        api_msg = {"role": "assistant", "content": "Visible answer."}
+
+        agent._copy_reasoning_content_for_api(source, api_msg)
+
+        assert api_msg == {"role": "assistant", "content": "Visible answer."}
+
+    def test_build_api_kwargs_strips_internal_local_replay_marker(self) -> None:
+        """Legacy local replay markers are internal and must not reach providers."""
+        from agent.chat_completion_helpers import build_api_kwargs
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        agent = _make_agent(
+            provider="custom",
+            model="qwen3",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+        agent.api_mode = "chat_completions"
+        agent.tools = None
+        agent.max_tokens = None
+        agent.reasoning_config = None
+        agent.request_overrides = None
+        agent.session_id = "s1"
+        agent.providers_allowed = []
+        agent.providers_ignored = []
+        agent.providers_order = []
+        agent.provider_sort = ""
+        agent.provider_require_parameters = False
+        agent.provider_data_collection = ""
+        agent.openrouter_min_coding_score = None
+        agent._ollama_num_ctx = None
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "127.0.0.1"
+        agent._ephemeral_max_output_tokens = None
+        agent._get_transport = lambda: ChatCompletionsTransport()
+        agent._is_qwen_portal = lambda: False
+        agent._is_openrouter_url = lambda: False
+        agent._supports_reasoning_extra_body = lambda: False
+        agent._prepare_messages_for_non_vision_model = lambda messages: messages
+        agent._resolved_api_call_timeout = lambda: 30
+        agent._max_tokens_param = lambda value: {"max_tokens": value}
+
+        api_messages = [
+            {
+                "role": "assistant",
+                "content": "Visible only",
+                "_local_replay_content": "<think>\nr\n</think>\n\nVisible only",
+            }
+        ]
+
+        kwargs = build_api_kwargs(agent, api_messages)
+
+        assert kwargs["messages"][0]["content"] == "Visible only"
+        assert "_local_replay_content" not in kwargs["messages"][0]
+
 
 class TestBuildAssistantMessageDeepSeekReasoningContent:
     """_build_assistant_message pins replay-safe DeepSeek tool-call state."""

@@ -1777,9 +1777,66 @@ def looks_like_codex_intermediate_ack(
 
 
 
+_THINKING_TAG_RE = re.compile(r"<(?:think|thinking)\b[^>]*>", re.IGNORECASE)
+
+
+def _assistant_content_has_thinking_tag(content: Any) -> bool:
+    if isinstance(content, str):
+        return bool(_THINKING_TAG_RE.search(content))
+    return False
+
+
+def _stored_reasoning_text(source_msg: dict) -> Optional[str]:
+    for key in ("reasoning_content", "reasoning"):
+        value = source_msg.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _with_inline_thinking_for_local_replay(content: Any, reasoning_text: str) -> Any:
+    """Return assistant content with a canonical local replay thinking block."""
+    if not isinstance(content, str):
+        return content
+    reasoning_body = reasoning_text.strip()
+    if not reasoning_body:
+        return content
+    thinking = f"<think>\n{reasoning_body}\n</think>"
+    visible = content.strip()
+    if visible:
+        return f"{thinking}\n\n{visible}"
+    return thinking
+
+
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
     if source_msg.get("role") != "assistant":
+        return
+
+    if agent._is_local_cache_sensitive_backend():
+        reasoning_text = _stored_reasoning_text(source_msg)
+        content = api_msg.get("content")
+        if content is None:
+            content = source_msg.get("content", "")
+        if isinstance(content, str) and _assistant_content_has_thinking_tag(content):
+            # Raw local content already carries thinking tags; avoid a duplicate.
+            api_msg["content"] = content
+            api_msg.pop("reasoning_content", None)
+        elif reasoning_text:
+            # llama.cpp / ik_llama.cpp cache the generated assistant bytes,
+            # including inline <think> blocks before tool calls.  Their
+            # OpenAI-compatible chat-template path may ignore reasoning_content
+            # on replay, especially for assistant tool_call turns, so put the
+            # stored reasoning back into content for local cache coherence.
+            replay_content = _with_inline_thinking_for_local_replay(
+                content,
+                reasoning_text,
+            )
+            api_msg["content"] = replay_content
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg.pop("reasoning_content", None)
+        api_msg.pop("_local_replay_content", None)
         return
 
     # 1. Explicit reasoning_content already set — preserve it verbatim

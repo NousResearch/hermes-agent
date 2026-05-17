@@ -9,10 +9,32 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    sort_openai_tool_schemas,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+
+
+# =========================================================================
+# Tool schema ordering
+# =========================================================================
+
+def test_sort_openai_tool_schemas_preserves_set_and_sorts_by_function_name():
+    tools = [
+        {"type": "function", "function": {"name": "memory_search"}},
+        {"type": "function", "function": {"name": "context_expand"}},
+        {"type": "function", "function": {"name": "browser_navigate"}},
+    ]
+
+    sorted_tools = sort_openai_tool_schemas(tools)
+
+    assert [t["function"]["name"] for t in sorted_tools] == [
+        "browser_navigate",
+        "context_expand",
+        "memory_search",
+    ]
+    assert {id(t) for t in sorted_tools} == {id(t) for t in tools}
 
 
 # =========================================================================

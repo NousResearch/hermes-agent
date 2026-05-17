@@ -16,7 +16,7 @@ Three tiers are joined with ``\\n\\n``:
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
-  provider block, timestamp/session/model/provider line.
+  provider block, frozen session/model/provider metadata line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
+from model_tools import sort_openai_tool_schemas
 
 
 def _ra():
@@ -57,6 +58,33 @@ def _ra():
     return run_agent
 
 
+def _get_frozen_metadata_block(agent: Any) -> str:
+    """Return the session metadata block, freezing it on first render."""
+    frozen = getattr(agent, "_frozen_system_metadata_block", None)
+    if isinstance(frozen, str) and frozen:
+        return frozen
+
+    from hermes_time import now as _hermes_now
+
+    now = _hermes_now()
+    metadata_lines = [
+        f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    ]
+    if agent.pass_session_id and agent.session_id:
+        metadata_lines.append(f"Session ID: {agent.session_id}")
+    if agent.model:
+        metadata_lines.append(f"Model: {agent.model}")
+    if agent.provider:
+        metadata_lines.append(f"Provider: {agent.provider}")
+
+    frozen = "\n".join(metadata_lines)
+    try:
+        agent._frozen_system_metadata_block = frozen
+    except Exception:
+        pass
+    return frozen
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -67,7 +95,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
       * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
         and caller-supplied system_message.
       * ``volatile`` — memory snapshot, user profile, external
-        memory provider block, timestamp line.
+        memory provider block, frozen metadata line.
 
     Joined into a single string by :func:`build_system_prompt` and
     cached on ``agent._cached_system_prompt`` for the lifetime of the
@@ -233,7 +261,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
-    # ── Volatile tier (changes per session/turn — never cached) ───
+    # ── Volatile tier (memory may change; metadata is frozen per agent) ───
     volatile_parts: List[str] = []
 
     if agent._memory_store:
@@ -256,22 +284,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import now as _hermes_now
-    now = _hermes_now()
-    # Date-only (not minute-precision) so the system prompt is byte-stable
-    # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
-    # session resume without a stored prompt).  The model can still query the
-    # exact wall-clock time via tools when it actually needs it.
-    # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
-    if agent.pass_session_id and agent.session_id:
-        timestamp_line += f"\nSession ID: {agent.session_id}"
-    if agent.model:
-        timestamp_line += f"\nModel: {agent.model}"
-    if agent.provider:
-        timestamp_line += f"\nProvider: {agent.provider}"
-    volatile_parts.append(timestamp_line)
+    volatile_parts.append(_get_frozen_metadata_block(agent))
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
@@ -321,7 +334,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
     # Convert tool definitions to the format expected in trajectories
     formatted_tools = []
-    for tool in agent.tools:
+    for tool in sort_openai_tool_schemas(agent.tools):
         func = tool["function"]
         formatted_tool = {
             "name": func["name"],

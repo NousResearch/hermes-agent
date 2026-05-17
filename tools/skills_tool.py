@@ -132,6 +132,7 @@ class SkillReadinessStatus(str, Enum):
 
 # Prompt injection detection — shared by local-skill and plugin-skill paths.
 _INJECTION_PATTERNS: list = [
+    # ── Prompt injection (existing) ──
     "ignore previous instructions",
     "ignore all previous",
     "you are now",
@@ -141,6 +142,24 @@ _INJECTION_PATTERNS: list = [
     "system prompt:",
     "<system>",
     "]]>",
+    # ── Code execution indicators ──
+    "os.system(",
+    "os.popen(",
+    "subprocess.run(",
+    "subprocess.popen(",
+    "subprocess.call(",
+    "pickle.load(",
+    "pickle.loads(",
+    "ctypes.cdll(",
+    "ctypes.cdll.",
+    "__import__('os')",
+    "importlib.import_module",
+    "../../../",
+    "shutil.rmtree(",
+    "os.environ['ld_preload",
+    "os.environ['pythonpath",
+    " os.setuid(",
+    " os.setgid(",
 ]
 
 

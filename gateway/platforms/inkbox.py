@@ -118,12 +118,15 @@ CONTACT_CACHE_TTL_SECONDS = 300
 WEBHOOK_DEDUP_TTL_SECONDS = 300
 SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
 
+# Stable ``error`` codes returned by the Inkbox SMS send endpoint. Sourced
+# from the live server (apps/api_server/subapps/phone/send_text_service.py).
 SMS_SENDER_PROVISIONING_ERROR_CODES = frozenset({
-    "messaging_profile_disabled",
     "sender_sms_pending",
-    "sender_sms_disabled",
-    "sender_sms_not_ready",
-    "sender_sms_unavailable",
+    "sender_sms_assignment_failed",
+    "sender_not_registered",
+    "sender_registration_required",
+    "messaging_profile_disabled",
+    "toll_free_sms_unsupported",
 })
 SMS_CONSENT_ERROR_CODES = frozenset({
     "recipient_not_opted_in",
@@ -131,15 +134,16 @@ SMS_CONSENT_ERROR_CODES = frozenset({
     "recipient_blocked",
 })
 SMS_RATE_LIMIT_ERROR_CODES = frozenset({
-    "rate_limited",
-    "daily_send_limit_exceeded",
-    "sms_send_limit_exceeded",
+    "carrier_rate_limit",
+    "sender_rate_limited",
 })
 SMS_TRANSIENT_ERROR_CODES = frozenset({
-    "temporary_unavailable",
-    "provider_unavailable",
-    "upstream_unavailable",
-    "timeout",
+    "carrier_unavailable",
+})
+SMS_PERMANENT_ERROR_CODES = frozenset({
+    "invalid_phone_number",
+    "message_too_long",
+    "carrier_rejected",
 })
 
 # Hermes emits a few classes of admin/system notice via adapter.send() —
@@ -250,6 +254,8 @@ def _classify_sms_error(
         return ("recipient_consent", False)
     if code in SMS_RATE_LIMIT_ERROR_CODES:
         return ("rate_limit", False)
+    if code in SMS_PERMANENT_ERROR_CODES:
+        return ("permanent", False)
 
     if status_code in {408, 500, 502, 503, 504}:
         return ("transient", True)

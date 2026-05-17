@@ -496,8 +496,8 @@ class TestSend:
         identity = adapter._inkbox.get_identity.return_value
 
         class FakeInkboxAPIError(Exception):
-            status_code = 503
-            detail = {"detail": {"error": "provider_unavailable", "message": "try later"}}
+            status_code = 502
+            detail = {"detail": {"error": "carrier_unavailable", "message": "Carrier unavailable."}}
 
         identity.send_text.side_effect = FakeInkboxAPIError("unavailable")
 

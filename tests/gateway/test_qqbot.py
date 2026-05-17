@@ -1076,7 +1076,7 @@ class TestBuildApprovalKeyboard:
             parsed = parse_approval_button_data(btn.action.data)
             assert parsed is not None
             assert parsed[0] == session_key
-            assert parsed[1] in ("allow-once", "allow-always", "deny")
+            assert parsed[1] in {"allow-once", "allow-always", "deny"}
 
 
 class TestBuildUpdatePromptKeyboard:

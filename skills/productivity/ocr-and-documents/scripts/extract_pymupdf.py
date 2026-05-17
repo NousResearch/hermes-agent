@@ -68,7 +68,7 @@ def show_metadata(path):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
+    if not args or args[0] in {"-h", "--help"}:
         print(__doc__)
         sys.exit(0)
 

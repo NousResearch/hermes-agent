@@ -628,7 +628,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in ("todo", "triage"):
+            elif s in {"todo", "triage"}:
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -742,7 +742,7 @@ def _set_status_direct(
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
     # If we re-opened something, children may have gone stale.
-    if new_status in ("done", "ready"):
+    if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)
     return True
 
@@ -868,7 +868,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
-                    elif s in ("todo", "running", "triage"):
+                    elif s in {"todo", "running", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")

@@ -3718,7 +3718,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert payload.get("status") == "complete"
     # Text stays empty — we did NOT fabricate an "Error:" string
     text = payload.get("text", "")
-    assert text in ("", None), f"expected empty text, got {text!r}"
+    assert text in {"", None}, f"expected empty text, got {text!r}"
 
 
 # ── session.most_recent ──────────────────────────────────────────────

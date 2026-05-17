@@ -252,7 +252,7 @@ class TestDetectProviderForModel:
         result = detect_provider_for_model("deepseek-chat", "openai-codex")
         assert result is not None
         # Provider is deepseek (direct) or openrouter (fallback) depending on creds
-        assert result[0] in ("deepseek", "openrouter")
+        assert result[0] in {"deepseek", "openrouter"}
 
     def test_current_provider_model_returns_none(self):
         """Models belonging to the current provider should not trigger a switch."""
@@ -302,7 +302,7 @@ class TestDetectProviderForModel:
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
             result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
-        assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
+        assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
 
 class TestIsNousFreeTier:

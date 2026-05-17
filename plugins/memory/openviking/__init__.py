@@ -357,7 +357,7 @@ def _is_windows_absolute_path(value: str) -> bool:
         len(value) >= 3
         and value[0].isalpha()
         and value[1] == ":"
-        and value[2] in ("/", "\\")
+        and value[2] in {"/", "\\"}
     )
 
 
@@ -381,7 +381,7 @@ def _is_local_path_reference(value: str) -> bool:
 
 def _path_from_file_uri(uri: str) -> Path | str:
     parsed = urlparse(uri)
-    if parsed.netloc not in ("", "localhost"):
+    if parsed.netloc not in {"", "localhost"}:
         return f"Unsupported non-local file URI: {uri}"
     return Path(url2pathname(parsed.path)).expanduser()
 
@@ -755,7 +755,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         level = args.get("level", "overview")
 
-        summary_level = level in ("abstract", "overview")
+        summary_level = level in {"abstract", "overview"}
         # OpenViking expects directory URIs for pseudo summary files
         # (e.g. viking://user/hermes/.overview.md).
         resolved_uri = self._normalize_summary_uri(uri) if summary_level else uri
@@ -832,7 +832,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         result = self._unwrap_result(resp)
 
         # Format list/tree results for readability
-        if action in ("list", "tree"):
+        if action in {"list", "tree"}:
             raw_entries = result
             if isinstance(result, dict):
                 raw_entries = result.get("entries") or result.get("items") or result.get("children") or []
@@ -887,7 +887,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         payload: Dict[str, Any] = {}
         for key in ("reason", "to", "parent", "instruction", "wait", "timeout"):
-            if key in args and args[key] not in (None, ""):
+            if key in args and args[key] not in {None, ""}:
                 payload[key] = args[key]
 
         parsed_url = urlparse(url)

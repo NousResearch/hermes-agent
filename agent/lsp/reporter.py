@@ -28,7 +28,7 @@ def format_diagnostic(d: Dict[str, Any]) -> str:
     col = int(start.get("character", 0)) + 1
     msg = str(d.get("message") or "").rstrip()
     code = d.get("code")
-    code_part = f" [{code}]" if code not in (None, "") else ""
+    code_part = f" [{code}]" if code not in {None, ""} else ""
     source = d.get("source")
     source_part = f" ({source})" if source else ""
     return f"{sev} [{line}:{col}] {msg}{code_part}{source_part}"

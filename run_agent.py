@@ -1365,7 +1365,7 @@ class AIAgent:
         the existing 1M-context-beta branch handles them; revisit if other
         subscription tiers start producing the same loop signature).
         """
-        if status_code not in (401, 403, None):
+        if status_code not in {401, 403, None}:
             return False
         if not isinstance(error_context, dict):
             return False
@@ -1774,7 +1774,7 @@ class AIAgent:
             import os as _os
             env = _os.environ.get("HERMES_FILE_MUTATION_VERIFIER")
             if env is not None:
-                return env.strip().lower() not in ("0", "false", "no", "off")
+                return env.strip().lower() not in {"0", "false", "no", "off"}
             # Read from the persisted config.yaml so gateway and CLI share
             # the same setting.  Import lazily to avoid a startup-time cycle.
             try:

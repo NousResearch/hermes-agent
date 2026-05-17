@@ -1396,7 +1396,7 @@ def _detect_light_mode() -> bool:
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
             if last.isdigit():
                 bg = int(last)
-                if bg in (7, 15):
+                if bg in {7, 15}:
                     result = True
                     _LIGHT_MODE_CACHE = result
                     return result
@@ -7706,7 +7706,7 @@ class HermesCLI:
             # google-gemini/gemini-cli#19332.
             _rest = cmd_original.split(None, 1)
             _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
-            if _args in ("--delete", "-d"):
+            if _args in {"--delete", "-d"}:
                 self._delete_session_on_exit = True
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
@@ -13835,7 +13835,7 @@ class HermesCLI:
             if _errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
             elif (
-                _errno in (errno.EINVAL, errno.EBADF)
+                _errno in {errno.EINVAL, errno.EBADF}
                 or "is not registered" in _msg
                 or "Bad file descriptor" in _msg
                 or "Invalid argument" in _msg

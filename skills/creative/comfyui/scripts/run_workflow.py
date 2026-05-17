@@ -204,7 +204,7 @@ class ComfyRunner:
                     s = data.get("status")
                     if s == "completed":
                         return {"status": "success", "data": data}
-                    if s in ("failed",):
+                    if s in {"failed",}:
                         return {"status": "error", "data": data}
                     if s == "cancelled":
                         return {"status": "cancelled", "data": data}
@@ -386,7 +386,7 @@ class ComfyRunner:
         # local path; otherwise put the file in output_dir flat.
         target_parts: list[str] = []
         if preserve_subfolder and subfolder:
-            target_parts.extend(p for p in subfolder.split("/") if p and p not in (".", ".."))
+            target_parts.extend(p for p in subfolder.split("/") if p and p not in {".", ".."})
         target_parts.append(filename)
         out_path = safe_path_join(output_dir, *target_parts)
 
@@ -467,7 +467,7 @@ def inject_params(
     # Auto-randomize seed when it's -1 in args, or when randomize_seed_if_unset
     # and user didn't pass a seed.
     if "seed" in params:
-        if "seed" in args and args["seed"] in (None, -1, "-1"):
+        if "seed" in args and args["seed"] in {None, -1, "-1"}:
             args = dict(args)
             args["seed"] = coerce_seed(args["seed"])
             warnings.append(f"seed=-1 expanded to {args['seed']}")

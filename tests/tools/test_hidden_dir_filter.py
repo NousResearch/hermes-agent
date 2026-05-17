@@ -24,7 +24,7 @@ def _new_filter_matches(path: Path) -> bool:
 
     Returns True when the path SHOULD be filtered out.
     """
-    return any(part in ('.git', '.github', '.hub') for part in path.parts)
+    return any(part in {'.git', '.github', '.hub'} for part in path.parts)
 
 
 class TestOldFilterBrokenOnWindows:

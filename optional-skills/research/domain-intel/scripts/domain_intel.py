@@ -185,7 +185,7 @@ def whois_lookup(domain):
     for key, pat in patterns.items():
         matches = re.findall(pat, raw, re.IGNORECASE)
         if matches:
-            if key in ("name_servers", "status"):
+            if key in {"name_servers", "status"}:
                 result[key] = list(dict.fromkeys(m.strip().lower() for m in matches))
             else:
                 result[key] = matches[0].strip()

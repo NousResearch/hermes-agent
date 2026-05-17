@@ -841,7 +841,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # bot silently treated every clicker as authorized — meaning any
         # Teams user who could message the bot could approve dangerous commands.
         allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
-        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}
 
         if not allow_all:
             if not allowed_csv:

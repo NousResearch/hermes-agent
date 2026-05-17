@@ -72,7 +72,7 @@ def register(ctx) -> None:
     # tested path there and guest-join Chromium is flakier. Refuse to register
     # rather than half-working.
     system = platform.system().lower()
-    if system not in ("linux", "darwin"):
+    if system not in {"linux", "darwin"}:
         logger.info(
             "google_meet plugin: platform=%s not supported (linux/macos only)",
             system,

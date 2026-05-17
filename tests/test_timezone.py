@@ -63,7 +63,7 @@ class TestHermesTimeNow:
         assert result.tzinfo is not None
         # Offset is -5h or -4h depending on DST
         offset_hours = result.utcoffset().total_seconds() / 3600
-        assert offset_hours in (-5, -4)
+        assert offset_hours in {-5, -4}
 
     def test_invalid_timezone_falls_back(self, caplog):
         """Invalid timezone logs warning and falls back to server-local."""

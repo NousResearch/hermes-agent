@@ -8863,7 +8863,7 @@ class GatewayRunner:
                 lines.append("Failed/paused: (none)")
             return "\n".join(lines)
 
-        if action in ("pause", "resume"):
+        if action in {"pause", "resume"}:
             if not target:
                 return f"Usage: /platform {action} <name>"
             platform = _resolve_platform(target)

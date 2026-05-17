@@ -51,7 +51,7 @@ def main() -> int:
         field = args.field
         if field is None:
             for k, v in vars(org).items():
-                if isinstance(v, str) and not k.startswith("_") and k not in ("id",):
+                if isinstance(v, str) and not k.startswith("_") and k not in {"id",}:
                     field = k
                     break
         val = getattr(org, field, None) if field else None

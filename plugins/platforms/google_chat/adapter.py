@@ -1539,7 +1539,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if sender_email and space_name:
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
-        chat_type = "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group"
+        chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
         text = msg.get("argumentText") or msg.get("text") or ""
         text = text.strip()
 
@@ -1935,7 +1935,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return True
         except HttpError as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
-            if status in (403, 404):
+            if status in {403, 404}:
                 return False
             logger.debug(
                 "[GoogleChat] delete_message failed: %s",
@@ -1958,7 +1958,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         update_mask = ",".join(update_mask_fields) or "text"
 
         # Patch body cannot carry thread (immutable).
-        patch_body = {k: v for k, v in body.items() if k not in ("thread",)}
+        patch_body = {k: v for k, v in body.items() if k not in {"thread",}}
 
         def _do_patch() -> Dict[str, Any]:
             return (
@@ -2791,7 +2791,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             upload_resp = await asyncio.to_thread(_upload)
         except HttpError as exc:
             status = getattr(getattr(exc, "resp", None), "status", None)
-            if status in (401, 403):
+            if status in {401, 403}:
                 logger.warning(
                     "[GoogleChat] media.upload auth failure for identity=%s "
                     "(token revoked or scope missing) — falling back to "
@@ -2927,7 +2927,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         display = info.get("displayName") or chat_id
         return {
             "name": display,
-            "type": "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group",
+            "type": "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group",
             "chat_id": chat_id,
         }
 

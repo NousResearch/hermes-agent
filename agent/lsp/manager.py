@@ -162,7 +162,7 @@ class LSPService:
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     ) -> None:
         self._enabled = enabled
-        self._wait_mode = wait_mode if wait_mode in ("document", "full") else "document"
+        self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
         self._wait_timeout = wait_timeout
         self._install_strategy = install_strategy
         self._binary_overrides = binary_overrides or {}

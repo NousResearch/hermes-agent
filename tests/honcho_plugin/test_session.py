@@ -1570,7 +1570,7 @@ class TestDialecticLifecycleSmoke:
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
         _, kwargs = mgr.dialectic_query.call_args
-        assert kwargs.get("reasoning_level") in ("medium", "high"), \
+        assert kwargs.get("reasoning_level") in {"medium", "high"}, \
             f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
         assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
 

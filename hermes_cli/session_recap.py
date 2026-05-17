@@ -171,7 +171,7 @@ def _recent_window(
     cut = 0
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
-        if isinstance(msg, Mapping) and msg.get("role") in ("user", "assistant"):
+        if isinstance(msg, Mapping) and msg.get("role") in {"user", "assistant"}:
             count += 1
             if count >= window:
                 cut = i

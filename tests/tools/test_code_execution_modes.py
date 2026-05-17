@@ -125,7 +125,7 @@ class TestResolveChildPython(unittest.TestCase):
     def test_project_with_no_venv_falls_back(self):
         """Project mode without VIRTUAL_ENV or CONDA_PREFIX → sys.executable."""
         env = {k: v for k, v in os.environ.items()
-               if k not in ("VIRTUAL_ENV", "CONDA_PREFIX")}
+               if k not in {"VIRTUAL_ENV", "CONDA_PREFIX"}}
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(_resolve_child_python("project"), sys.executable)
 

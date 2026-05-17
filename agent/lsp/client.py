@@ -232,7 +232,7 @@ class LSPClient:
         the process is killed and the client is left in state
         ``"error"`` — re-call ``start()`` to retry.
         """
-        if self._state in ("running", "starting"):
+        if self._state in {"running", "starting"}:
             return
         self._state = "starting"
         try:

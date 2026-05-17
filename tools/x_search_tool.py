@@ -147,7 +147,7 @@ def _extract_response_text(payload: Dict[str, Any]) -> str:
             continue
         for content in item.get("content", []) or []:
             ctype = content.get("type")
-            if ctype in ("output_text", "text"):
+            if ctype in {"output_text", "text"}:
                 text = str(content.get("text") or "").strip()
                 if text:
                     parts.append(text)

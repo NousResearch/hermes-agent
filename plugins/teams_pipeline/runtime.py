@@ -62,7 +62,7 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
             "chat_id",
         ):
             value = teams_extra.get(key)
-            if value not in (None, ""):
+            if value not in {None, ""}:
                 teams_delivery[key] = value
 
         if teams_delivery:

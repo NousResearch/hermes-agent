@@ -76,7 +76,7 @@ def _filter_response_headers(headers) -> dict:
         if key.lower() in _HOP_BY_HOP_HEADERS:
             continue
         # aiohttp recomputes Content-Encoding/Content-Length on stream — let it.
-        if key.lower() in ("content-encoding", "content-length"):
+        if key.lower() in {"content-encoding", "content-length"}:
             continue
         out[key] = value
     return out

@@ -450,7 +450,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer and answer not in ("y", "yes"):
+        if answer and answer not in {"y", "yes"}:
             raise FeatureUnavailable(
                 feature, missing, "user declined install at prompt"
             )

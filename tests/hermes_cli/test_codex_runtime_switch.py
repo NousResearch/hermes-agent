@@ -105,7 +105,7 @@ class TestApply:
         assert "Cannot enable" in r.message
         assert "npm i -g @openai/codex" in r.message
         # Config NOT mutated on failure
-        assert cfg.get("model", {}).get("openai_runtime") in (None, "")
+        assert cfg.get("model", {}).get("openai_runtime") in {None, ""}
 
     def test_enable_succeeds_when_codex_present(self):
         cfg = {}

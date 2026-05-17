@@ -610,7 +610,7 @@ def _is_secret_key(key: str) -> bool:
     normalized = _normalize_secret_key(key)
     if normalized == "token" or normalized.endswith("token"):
         return True
-    if normalized in ("auth", "authorization"):
+    if normalized in {"auth", "authorization"}:
         return True
     return any(marker in normalized for marker in _SECRET_KEY_MARKERS)
 
@@ -831,7 +831,7 @@ class Migrator:
         # Flip the config-block flag when a conflict/error occurs on a
         # config.yaml write.  Later config-mutating options will skip rather
         # than attempting a partial write.
-        if status in (STATUS_CONFLICT, STATUS_ERROR) and destination is not None:
+        if status in {STATUS_CONFLICT, STATUS_ERROR} and destination is not None:
             dest_str = str(destination)
             if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
                 self._config_apply_blocked = True
@@ -1526,7 +1526,7 @@ class Migrator:
                 api_key = resolve_secret_input(raw_key, openclaw_env)
                 if not api_key:
                     # Warn if a SecretRef with file/exec source was silently unresolvable
-                    if isinstance(raw_key, dict) and raw_key.get("source") in ("file", "exec"):
+                    if isinstance(raw_key, dict) and raw_key.get("source") in {"file", "exec"}:
                         self.record(
                             "provider-keys",
                             self.source_root / "openclaw.json",
@@ -1736,7 +1736,7 @@ class Migrator:
         tts_data: Dict[str, Any] = {}
 
         provider = tts.get("provider")
-        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge", "microsoft"):
+        if isinstance(provider, str) and provider in {"elevenlabs", "openai", "edge", "microsoft"}:
             # OpenClaw renamed "edge" to "microsoft"; Hermes still uses "edge"
             tts_data["provider"] = "edge" if provider == "microsoft" else provider
 
@@ -2304,11 +2304,11 @@ class Migrator:
         if defaults.get("thinkingDefault"):
             # Map OpenClaw thinking -> Hermes reasoning_effort
             thinking = defaults["thinkingDefault"]
-            if thinking in ("always", "high", "xhigh"):
+            if thinking in {"always", "high", "xhigh"}:
                 agent_cfg["reasoning_effort"] = "high"
-            elif thinking in ("auto", "medium", "adaptive"):
+            elif thinking in {"auto", "medium", "adaptive"}:
                 agent_cfg["reasoning_effort"] = "medium"
-            elif thinking in ("off", "low", "none", "minimal"):
+            elif thinking in {"off", "low", "none", "minimal"}:
                 agent_cfg["reasoning_effort"] = "low"
             changes = True
 
@@ -2626,8 +2626,8 @@ class Migrator:
             if not isinstance(ch_cfg, dict):
                 continue
             complex_keys = {k: v for k, v in ch_cfg.items()
-                          if k not in ("botToken", "appToken", "allowFrom", "enabled")
-                          and v and k not in ("requireMention", "autoThread")}
+                          if k not in {"botToken", "appToken", "allowFrom", "enabled"}
+                          and v and k not in {"requireMention", "autoThread"}}
             if complex_keys:
                 complex_archive[ch_name] = complex_keys
 
@@ -2671,7 +2671,7 @@ class Migrator:
 
         # Archive remaining browser settings
         advanced = {k: v for k, v in browser.items()
-                   if k not in ("cdpUrl", "headless") and v}
+                   if k not in {"cdpUrl", "headless"} and v}
         if advanced and self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)

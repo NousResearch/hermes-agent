@@ -68,7 +68,7 @@ def test_create_job_no_agent_stores_field(hermes_env):
     assert job["no_agent"] is True
     assert job["script"] == "watchdog.sh"
     # Prompt can be empty/None for no_agent jobs.
-    assert job["prompt"] in (None, "")
+    assert job["prompt"] in {None, ""}
 
 
 def test_create_job_default_is_not_no_agent(hermes_env):
@@ -148,7 +148,7 @@ def test_cronjob_tool_update_toggles_no_agent(hermes_env):
 
     off = json.loads(cronjob(action="update", job_id=job_id, no_agent=False, prompt="run"))
     assert off["success"] is True
-    assert off["job"].get("no_agent") in (False, None)
+    assert off["job"].get("no_agent") in {False, None}
 
     on = json.loads(cronjob(action="update", job_id=job_id, no_agent=True))
     assert on["success"] is True

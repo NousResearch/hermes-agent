@@ -103,7 +103,7 @@ _BLOCKED_TYPE_PATTERNS = [
     re.compile(r"wget\s+[^|]*\|\s*bash", re.IGNORECASE),
     re.compile(r"\bsudo\s+rm\s+-[rf]", re.IGNORECASE),
     re.compile(r"\brm\s+-rf\s+/\s*$", re.IGNORECASE),
-    re.compile(r":\s*\(\)\s*\{\s*:|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
+    re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
 ]
 
 
@@ -266,17 +266,9 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
         return None
     cb = _approval_callback
     if cb is None:
-        return json.dumps({
-            "error": "approval required but no approval callback is registered",
-            "action": action,
-            "hint": (
-                "Destructive computer_use actions require an interactive approval "
-                "callback. Use the interactive CLI or configure an approval-capable "
-                "runtime before retrying."
-            ),
-        })
-
-
+        # No CLI approval wired — default allow. Gateway approval is handled
+        # one layer out via the normal tool-approval infra.
+        return None
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)

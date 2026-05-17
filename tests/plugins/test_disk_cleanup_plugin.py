@@ -188,6 +188,28 @@ class TestTrackForgetQuick:
         assert summary["deleted"] == 0
         assert p.exists()
 
+    def test_quick_rejects_tampered_unsafe_path(self, _isolate_env, tmp_path):
+        dg = _load_lib()
+        victim_dir = tmp_path / "victim"
+        victim_dir.mkdir()
+        (victim_dir / "important.txt").write_text("keep")
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True)
+        tracked_file.write_text(json.dumps([
+            {
+                "path": str(victim_dir),
+                "category": "test",
+                "size": 0,
+                "timestamp": "2026-01-01T00:00:00+00:00",
+            }
+        ]))
+
+        summary = dg.quick()
+
+        assert summary["deleted"] == 0
+        assert victim_dir.exists()
+        assert not json.loads(tracked_file.read_text())
+
     def test_quick_preserves_protected_top_level_dirs(self, _isolate_env):
         dg = _load_lib()
         for d in ("logs", "memories", "sessions", "cron", "cache"):

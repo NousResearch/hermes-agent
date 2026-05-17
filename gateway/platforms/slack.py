@@ -328,6 +328,46 @@ class SlackAdapter(BasePlatformAdapter):
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
+    def _is_callback_user_authorized(
+        self,
+        user_id: str,
+        *,
+        channel_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Return whether a Slack interactive-button caller may perform gated actions."""
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+
+                normalized_channel_id = str(channel_id or "").strip()
+                source = SessionSource(
+                    platform=Platform.SLACK,
+                    chat_id=normalized_channel_id or normalized_user_id,
+                    chat_type="dm" if normalized_channel_id.startswith("D") else "group",
+                    user_id=normalized_user_id,
+                    user_name=str(user_name).strip() if user_name else None,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[Slack] Falling back to env-only callback auth for user %s",
+                    normalized_user_id,
+                    exc_info=True,
+                )
+
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or normalized_user_id in allowed_ids
+
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
         if response is None or not hasattr(response, "get"):
@@ -396,16 +436,13 @@ class SlackAdapter(BasePlatformAdapter):
     def _pop_slash_context(
         self, chat_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Return and remove the slash-command context for *chat_id*, if fresh.
+        """Return and remove the current user's slash-command context.
 
         Contexts older than ``_SLASH_CTX_TTL`` seconds are silently discarded.
-
-        Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
-        to match the exact ``(channel_id, user_id)`` key.  This prevents a
-        concurrent slash command from a different user on the same channel from
-        stealing another user's ephemeral context.  Falls back to a
-        channel-only scan when the ContextVar is unset (e.g. send() called
-        from a non-slash code path — should not match anything).
+        The remaining lookup must match the exact ``(channel_id, user_id)``
+        tuple, with ``user_id`` supplied by the slash-command ContextVar.
+        A normal channel send has no slash user context and must not consume a
+        pending ``response_url`` for an unrelated user.
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -416,21 +453,10 @@ class SlackAdapter(BasePlatformAdapter):
         for k in stale_keys:
             self._slash_command_contexts.pop(k, None)
 
-        # Precise match: (channel_id, user_id) from ContextVar.
         uid = _slash_user_id.get()
-        if uid:
-            return self._slash_command_contexts.pop((chat_id, uid), None)
-
-        # Fallback: channel-only scan (only reachable when ContextVar is
-        # unset, i.e. send() called outside a slash-command async context).
-        match_key = None
-        for key in list(self._slash_command_contexts):
-            if key[0] == chat_id:
-                match_key = key
-                break
-        if match_key is None:
+        if not uid:
             return None
-        return self._slash_command_contexts.pop(match_key)
+        return self._slash_command_contexts.pop((chat_id, uid), None)
 
     async def _send_slash_ephemeral(
         self,
@@ -2455,15 +2481,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
         # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name, user_id,
-                )
-                return
+        if not self._is_callback_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                user_name, user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {

@@ -10437,12 +10437,16 @@ class AIAgent:
         Kimi ``/coding`` and Moonshot thinking mode both require
         ``reasoning_content`` on every assistant tool-call message; omitting
         it causes the next replay to fail with HTTP 400.
+
+        Also detects Kimi models served through third-party providers (e.g.
+        ollama-cloud) by matching ``kimi`` in the model name.
         """
         return (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or "kimi" in (self.model or "").lower()
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:

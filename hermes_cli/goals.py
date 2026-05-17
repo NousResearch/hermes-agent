@@ -34,6 +34,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ JUDGE_SYSTEM_PROMPT = (
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
     "Is the goal satisfied?"
 )
 
@@ -120,6 +122,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop (all must also be "
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
     "satisfied. Do not accept generic phrases like 'all requirements "
@@ -415,6 +418,7 @@ def judge_goal(
 
     # Build the prompt — pick the with-subgoals variant when applicable.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     if clean_subgoals:
         subgoals_block = "\n".join(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
@@ -423,11 +427,13 @@ def judge_goal(
             goal=_truncate(goal, 2000),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
         )
 
     try:

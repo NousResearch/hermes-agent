@@ -425,7 +425,7 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
 

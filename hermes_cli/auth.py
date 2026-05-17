@@ -2610,7 +2610,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
         return
     host = parsed.hostname or ""
     port = parsed.port
-    if host not in ("127.0.0.1", "::1", "localhost") or not port:
+    if host not in {"127.0.0.1", "::1", "localhost"} or not port:
         return
     print()
     print("Remote session detected. Your browser will redirect to")
@@ -5246,7 +5246,7 @@ def _login_xai_oauth(
                     reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     reuse = "y"
-                if reuse in ("", "y", "yes"):
+                if reuse in {"", "y", "yes"}:
                     config_path = _update_config_for_provider(
                         "xai-oauth",
                         existing.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL),

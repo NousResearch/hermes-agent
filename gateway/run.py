@@ -8663,6 +8663,24 @@ class GatewayRunner:
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
+        # Session recap — what was this session ABOUT? Pure local compute,
+        # no LLM call, no prompt-cache impact. Useful when juggling multiple
+        # gateway sessions and you want a one-glance reminder of where this
+        # one left off. Inspired by Claude Code 2.1.114's /recap.
+        try:
+            from hermes_cli.session_recap import build_recap
+            history = self.session_store.load_transcript(session_entry.session_id)
+            recap = build_recap(
+                history,
+                session_title=title,
+                session_id=session_entry.session_id,
+                platform=source.platform.value if source else None,
+            )
+            if recap:
+                lines.extend(["", recap])
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("build_recap failed in /status: %s", exc)
+
         return "\n".join(lines)
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
@@ -8845,7 +8863,7 @@ class GatewayRunner:
                 lines.append("Failed/paused: (none)")
             return "\n".join(lines)
 
-        if action in ("pause", "resume"):
+        if action in {"pause", "resume"}:
             if not target:
                 return f"Usage: /platform {action} <name>"
             platform = _resolve_platform(target)
@@ -12528,6 +12546,12 @@ class GatewayRunner:
             and getattr(source, "chat_type", None) == "dm"
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
+            # Telegram DM topic lanes need direct_messages_topic_id in metadata
+            # so synthetic/queued messages (goal continuations, status notices)
+            # route to the correct topic even when reply anchor is unavailable.
+            tid = str(thread_id)
+            if tid and tid not in {"", "1"}:
+                metadata["direct_messages_topic_id"] = tid
             anchor = reply_to_message_id or getattr(source, "message_id", None)
             if anchor is not None:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
@@ -12813,7 +12837,11 @@ class GatewayRunner:
                 update_cmd = (
                     f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
                     f" > {shlex.quote(str(output_path))} 2>&1; "
-                    f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
+                    # Avoid `status=$?`: `status` is a read-only special parameter
+                    # in zsh, and this command string is copied/reused in macOS/zsh
+                    # operator wrappers. Keep the template zsh-safe even though this
+                    # specific subprocess currently runs under bash.
+                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:
@@ -16800,6 +16828,33 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_logging import setup_logging
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
+    # Periodic process memory usage logging (gateway only) — emits a
+    # grep-friendly "[MEMORY] rss=...MB ..." line every N minutes so
+    # slow leaks in the long-lived gateway process show up as a time
+    # series in agent.log / gateway.log.  Ported from cline/cline#10343.
+    # Controlled by the logging.memory_monitor section in config.yaml.
+    try:
+        from gateway import memory_monitor as _memory_monitor
+
+        _mm_cfg = {}
+        try:
+            # config is loaded a few lines up; re-read the logging section
+            # here so we pick up user overrides without coupling to local
+            # variable names inside the start_gateway body.
+            from hermes_cli.config import load_config as _load_cli_config
+
+            _mm_cfg = (_load_cli_config() or {}).get("logging", {}).get("memory_monitor", {}) or {}
+        except Exception:
+            _mm_cfg = {}
+        if _mm_cfg.get("enabled", True):
+            try:
+                _mm_interval = float(_mm_cfg.get("interval_seconds", 300))
+            except (TypeError, ValueError):
+                _mm_interval = 300.0
+            _memory_monitor.start_memory_monitoring(interval_seconds=_mm_interval)
+    except Exception as _mm_exc:
+        logger.debug("Failed to start memory monitor: %s", _mm_exc)
+
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above
@@ -17013,6 +17068,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
+    except Exception:
+        pass
+
+    # Stop the periodic memory monitor (if it was started above).
+    # This also emits one final "[MEMORY] shutdown rss=..." line so the
+    # last RSS reading before gateway exit is always in the log.
+    try:
+        from gateway import memory_monitor as _memory_monitor
+
+        _memory_monitor.stop_memory_monitoring(timeout=2.0)
     except Exception:
         pass
 

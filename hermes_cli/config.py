@@ -134,8 +134,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
-    # observability/langfuse` or `hermes tools → Langfuse`); credentials gate
-    # the plugin at runtime.
+    # observability/langfuse`); credentials gate the plugin at runtime.
     "HERMES_LANGFUSE_ENV",
     "HERMES_LANGFUSE_RELEASE",
     "HERMES_LANGFUSE_SAMPLE_RATE",
@@ -1307,6 +1306,18 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
+        # When True, any uploaded file is cached to disk with mime
+        # application/octet-stream and the path is surfaced to the agent so it
+        # can use terminal/read_file/etc. against it. Default False preserves
+        # the historical allowlist behaviour.
+        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        "allow_any_attachment": False,
+        # Maximum bytes per attachment the gateway will cache. The whole file
+        # is held in memory while being written, so unlimited uploads carry a
+        # real memory cost. Default 32 MiB matches the historical hardcoded
+        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        "max_attachment_bytes": 33554432,
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1477,6 +1488,15 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        # Periodic process memory usage logging (gateway only). Emits a
+        # grep-friendly "[MEMORY] rss=...MB ..." line at the configured
+        # interval so slow leaks in the long-lived gateway are visible
+        # in agent.log / gateway.log as a time series. Ported from
+        # cline/cline#10343.
+        "memory_monitor": {
+            "enabled": True,         # Flip to false to silence the periodic line
+            "interval_seconds": 300, # Default: every 5 minutes
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
@@ -2894,6 +2914,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "discover_models",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2983,6 +3004,10 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    discover_models = entry.get("discover_models")
+    if isinstance(discover_models, bool):
+        normalized["discover_models"] = discover_models
 
     return normalized
 

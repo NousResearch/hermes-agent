@@ -829,6 +829,9 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ts": "text/plain",
+    ".py": "text/plain",
+    ".sh": "text/plain",
 }
 
 
@@ -2011,6 +2014,13 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
+    def prepare_tts_text(self, text: str) -> str:
+        """Prepare text for TTS. Override to filter tool output, code, etc.
+
+        Default strips markdown formatting and truncates to 4000 chars.
+        """
+        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+
     async def play_tts(
         self,
         chat_id: str,
@@ -3141,7 +3151,7 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
+                            speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
                             tts_result_str = await asyncio.to_thread(

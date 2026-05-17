@@ -823,6 +823,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        reasoning_effort_override: Optional[str] = None,
+        fast_mode_override: Optional[bool] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -838,6 +840,18 @@ class APIServerAdapter(BasePlatformAdapter):
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
+
+        ``reasoning_effort_override`` accepts an OpenAI-style effort value
+        (``"none"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``,
+        ``"xhigh"``) from the request body and supersedes the gateway
+        ``agent.reasoning_effort`` config for this call only.  Empty,
+        ``None``, or unrecognised values fall back to the gateway default.
+
+        ``fast_mode_override`` is a Hermes-specific boolean: when ``True``
+        and the resolved model supports Priority Processing / Anthropic
+        Fast Mode, the matching provider-specific ``request_overrides`` are
+        injected so external API consumers can opt into fast mode per
+        request without persisting it to ``config.yaml``.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
@@ -856,6 +870,34 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
+        # Apply reasoning effort override from the request body.  External
+        # UIs (e.g. Mission Control, CCC) send per-request effort hints so
+        # users can dial thinking depth on the fly without touching
+        # config.yaml; an unrecognised value is logged and ignored so a
+        # malformed client cannot silently force the gateway default away.
+        if reasoning_effort_override is not None:
+            from hermes_constants import parse_reasoning_effort
+
+            parsed_effort = parse_reasoning_effort(reasoning_effort_override)
+            if parsed_effort is not None:
+                reasoning_config = parsed_effort
+            elif str(reasoning_effort_override).strip():
+                logger.warning(
+                    "Ignoring unknown reasoning_effort '%s' from request body",
+                    reasoning_effort_override,
+                )
+
+        # Apply fast mode override from the request body.  Mirrors the
+        # gateway's ``/fast`` slash command: we only set request_overrides
+        # when the resolved model actually supports Priority Processing
+        # (OpenAI) or Anthropic Fast Mode, so toggling fast_mode against an
+        # unsupported model is a silent no-op rather than a hard error.
+        request_overrides = None
+        if fast_mode_override:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            request_overrides = resolve_fast_mode_overrides(model) or None
+
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -873,6 +915,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
+            request_overrides=request_overrides,
             gateway_session_key=gateway_session_key,
         )
         return agent
@@ -1104,6 +1147,14 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # Per-request thinking depth / fast-mode hints.  Extracted here so
+        # both the streaming and idempotent paths feed the same values into
+        # _run_agent without re-reading body further down.
+        _chat_reasoning_effort = body.get("reasoning_effort")
+        if _chat_reasoning_effort is not None and not isinstance(_chat_reasoning_effort, str):
+            _chat_reasoning_effort = None
+        _chat_fast_mode = bool(body.get("fast_mode")) if body.get("fast_mode") is not None else None
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -1186,6 +1237,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                reasoning_effort_override=_chat_reasoning_effort,
+                fast_mode_override=_chat_fast_mode,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1205,6 +1258,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                reasoning_effort_override=_chat_reasoning_effort,
+                fast_mode_override=_chat_fast_mode,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2165,6 +2220,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
+        # Per-request thinking depth / fast-mode hints for /v1/responses.
+        # Extracted up here so both streaming and idempotent paths share
+        # the same body lookup without re-reading it later.
+        _resp_reasoning_effort = body.get("reasoning_effort")
+        if _resp_reasoning_effort is not None and not isinstance(_resp_reasoning_effort, str):
+            _resp_reasoning_effort = None
+        _resp_fast_mode = bool(body.get("fast_mode")) if body.get("fast_mode") is not None else None
+
         stream = bool(body.get("stream", False))
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
@@ -2218,6 +2281,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                reasoning_effort_override=_resp_reasoning_effort,
+                fast_mode_override=_resp_fast_mode,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2251,6 +2316,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                reasoning_effort_override=_resp_reasoning_effort,
+                fast_mode_override=_resp_fast_mode,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2709,6 +2776,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        reasoning_effort_override: Optional[str] = None,
+        fast_mode_override: Optional[bool] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2720,6 +2789,11 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        ``reasoning_effort_override`` and ``fast_mode_override`` are
+        forwarded to :meth:`_create_agent` so per-request body hints can
+        adjust thinking depth and Priority Processing for a single call
+        without mutating ``config.yaml``.
         """
         loop = asyncio.get_running_loop()
 
@@ -2732,6 +2806,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                reasoning_effort_override=reasoning_effort_override,
+                fast_mode_override=fast_mode_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2906,6 +2982,15 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
+
+        # Per-request thinking depth / fast-mode hints — same shape as
+        # /v1/chat/completions and /v1/responses so external schedulers
+        # (e.g. Mission Control, CCC) can issue a one-off "/v1/runs +
+        # high effort" without persisting to config.yaml.
+        _run_reasoning_effort = body.get("reasoning_effort")
+        if _run_reasoning_effort is not None and not isinstance(_run_reasoning_effort, str):
+            _run_reasoning_effort = None
+        _run_fast_mode = bool(body.get("fast_mode")) if body.get("fast_mode") is not None else None
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -2947,6 +3032,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    reasoning_effort_override=_run_reasoning_effort,
+                    fast_mode_override=_run_fast_mode,
                 )
                 self._active_run_agents[run_id] = agent
 

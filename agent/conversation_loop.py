@@ -2251,7 +2251,13 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _pool_may_recover_from_rate_limit(
+                    #
+                    # Use the lazy ``_ra()`` accessor (see the module
+                    # docstring) -- a bare ``_pool_may_recover_from_rate_limit``
+                    # reference raised ``NameError`` on every 429 because the
+                    # function lives in ``run_agent`` and is not imported at
+                    # module scope here.  Fixes #27465.
+                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),

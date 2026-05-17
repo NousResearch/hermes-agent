@@ -1877,6 +1877,93 @@ class SessionDB:
         """Count CJK characters in text."""
         return sum(1 for ch in text if cls._is_cjk_codepoint(ord(ch)))
 
+    @staticmethod
+    def _has_fts5_operators(query: str) -> bool:
+        """Return True if *query* contains explicit FTS5 syntax operators.
+
+        Used to decide whether a LIKE fallback is appropriate: if the user
+        wrote boolean operators (AND / OR / NOT) or prefix wildcards we
+        respect their intent and do NOT fall back, since LIKE cannot honour
+        those semantics.
+        """
+        # Strip quoted phrases first so "OR" inside a phrase doesn't count
+        stripped = re.sub(r'"[^"]*"', " ", query)
+        # Boolean operators (case-insensitive, word-boundary)
+        if re.search(r"\b(?:AND|OR|NOT)\b", stripped, re.IGNORECASE):
+            return True
+        # Prefix wildcard (e.g. "deploy*")
+        if "*" in stripped:
+            return True
+        return False
+
+    def _like_fallback_search(
+        self,
+        query: str,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Substring (LIKE) fallback when FTS5 returns 0 results.
+
+        Splits the query on whitespace and requires ALL terms to appear in
+        the message content, tool_name, or tool_calls columns.  This mirrors
+        FTS5's implicit AND behaviour but uses plain substring matching so
+        terms that the FTS5 tokenizer would split or drop (URLs, emails,
+        version strings, special jargon) are still found (#24680).
+        """
+        terms = query.strip().split()
+        if not terms:
+            return []
+
+        token_clauses = []
+        like_params: list = []
+        for tok in terms:
+            esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            token_clauses.append(
+                "(m.content LIKE ? ESCAPE '\\' OR "
+                "m.tool_name LIKE ? ESCAPE '\\' OR "
+                "m.tool_calls LIKE ? ESCAPE '\\')"
+            )
+            like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+
+        where = [f"({' AND '.join(token_clauses)})"]
+        if source_filter is not None:
+            where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            like_params.extend(source_filter)
+        if exclude_sources is not None:
+            where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            like_params.extend(exclude_sources)
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            like_params.extend(role_filter)
+
+        # Use the first term for the snippet highlight
+        like_sql = f"""
+            SELECT m.id, m.session_id, m.role,
+                   substr(m.content,
+                          max(1, instr(m.content, ?) - 40),
+                          120) AS snippet,
+                   m.content, m.timestamp, m.tool_name,
+                   s.source, s.model, s.started_at AS session_started
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(where)}
+            ORDER BY m.timestamp DESC
+            LIMIT ? OFFSET ?
+        """
+        like_params.extend([limit, offset])
+        like_params = [terms[0]] + like_params  # for instr() snippet
+
+        try:
+            with self._lock:
+                cursor = self._conn.execute(like_sql, like_params)
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception:
+            logging.debug("LIKE fallback search failed", exc_info=True)
+            return []
+
     def search_messages(
         self,
         query: str,
@@ -1901,6 +1988,9 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        # Preserve the original query for LIKE fallback — sanitization
+        # wraps dotted/hyphenated terms in quotes which breaks LIKE matching.
+        raw_query = query
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -2075,10 +2165,22 @@ class SessionDB:
                 try:
                     cursor = self._conn.execute(sql, params)
                 except sqlite3.OperationalError:
-                    # FTS5 query syntax error despite sanitization — return empty
-                    return []
+                    # FTS5 query syntax error despite sanitization — will
+                    # try LIKE fallback below if query has no FTS5 operators.
+                    matches = []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+            # LIKE fallback: when FTS5 returns 0 results (or errors out) for
+            # a simple query (no explicit boolean operators or prefix
+            # wildcards), retry with LIKE substring matching.  This catches
+            # cases where FTS5's tokenizer splits or drops terms (URLs,
+            # emails, version strings, special jargon) that a plain
+            # substring search would find (#24680).
+            if not matches and not self._has_fts5_operators(raw_query):
+                matches = self._like_fallback_search(
+                    raw_query, source_filter, exclude_sources, role_filter, limit, offset,
+                )
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

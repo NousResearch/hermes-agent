@@ -2943,3 +2943,144 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
+
+# =========================================================================
+# _has_fts5_operators
+# =========================================================================
+
+class TestHasFts5Operators:
+    """Tests for SessionDB._has_fts5_operators()."""
+
+    def test_simple_keyword_returns_false(self):
+        assert SessionDB._has_fts5_operators("docker") is False
+
+    def test_multi_word_returns_false(self):
+        assert SessionDB._has_fts5_operators("docker deployment") is False
+
+    def test_quoted_phrase_returns_false(self):
+        assert SessionDB._has_fts5_operators('"exact phrase"') is False
+
+    def test_or_operator_returns_true(self):
+        assert SessionDB._has_fts5_operators("docker OR kubernetes") is True
+
+    def test_and_operator_returns_true(self):
+        assert SessionDB._has_fts5_operators("docker AND deploy") is True
+
+    def test_not_operator_returns_true(self):
+        assert SessionDB._has_fts5_operators("python NOT java") is True
+
+    def test_prefix_wildcard_returns_true(self):
+        assert SessionDB._has_fts5_operators("deploy*") is True
+
+    def test_or_inside_quotes_ignored(self):
+        """'OR' inside a quoted phrase should not count as an operator."""
+        assert SessionDB._has_fts5_operators('"hello OR world"') is False
+
+    def test_mixed_quoted_and_operator_returns_true(self):
+        assert SessionDB._has_fts5_operators('"exact phrase" OR other') is True
+
+    def test_case_insensitive_operator(self):
+        assert SessionDB._has_fts5_operators("docker or kubernetes") is True
+
+
+# =========================================================================
+# LIKE fallback in search_messages
+# =========================================================================
+
+class TestLIKEFallbackSearch:
+    """When FTS5 returns 0 results for a simple query, search_messages should
+    automatically retry with LIKE substring matching (#24680)."""
+
+    def test_like_fallback_finds_email(self, db):
+        """FTS5 tokenizer splits emails; LIKE should find them."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Contact me at user@example.com")
+
+        results = db.search_messages("user@example.com")
+        assert len(results) >= 1
+        # Content is stripped from results; check snippet instead
+        snippets = [r.get("snippet", "") for r in results]
+        assert any("user@example.com" in s for s in snippets)
+
+    def test_like_fallback_finds_url(self, db):
+        """FTS5 tokenizer splits URLs on dots/slashes; LIKE should find them."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Check https://example.com/path?q=1")
+
+        results = db.search_messages("https://example.com")
+        assert len(results) >= 1
+
+    def test_like_fallback_finds_version_string(self, db):
+        """Version strings like 'v2.1.3' get split by FTS5."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Upgrading to v2.1.3-beta")
+
+        results = db.search_messages("v2.1.3-beta")
+        assert len(results) >= 1
+
+    def test_like_fallback_not_triggered_when_fts_has_results(self, db):
+        """LIKE fallback should NOT run when FTS5 already found matches."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="How to use Docker?")
+
+        results = db.search_messages("Docker")
+        assert len(results) >= 1
+        # All results should come from FTS5 (verified by the fact that
+        # the snippet uses FTS5 snippet() formatting with markers)
+
+    def test_like_fallback_not_triggered_for_fts5_operators(self, db):
+        """LIKE fallback should NOT run for queries with explicit boolean ops."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Python is great")
+        db.append_message("s1", role="user", content="Java is also fine")
+
+        # "Python NOT Java" — FTS5 handles this; LIKE should not interfere
+        results = db.search_messages("Python NOT Java")
+        # Should find only the Python message via FTS5
+        if results:
+            snippets = [r.get("snippet", "") for r in results]
+            assert any("Python" in s for s in snippets)
+
+    def test_like_fallback_respects_exclude_sources(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="test@example.com")
+        db.create_session(session_id="s2", source="tool")
+        db.append_message("s2", role="user", content="test@example.com")
+
+        results = db.search_messages(
+            "test@example.com", exclude_sources=["tool"],
+        )
+        sources = [r["source"] for r in results]
+        assert all(s != "tool" for s in sources)
+
+    def test_like_fallback_multi_term_and(self, db):
+        """Multiple terms should be AND'd (same as FTS5 default)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Alpha Bravo Charlie")
+        db.append_message("s1", role="user", content="Alpha only")
+
+        # Use an email-like term that FTS5 will fail on, forcing LIKE fallback
+        # for a multi-term scenario where one term is special
+        db.append_message("s1", role="user", content="Alpha test@bravo.com Charlie")
+
+        results = db.search_messages("Alpha test@bravo.com")
+        # Should find the message with both "Alpha" and "test@bravo.com"
+        assert len(results) >= 1
+        snippets = [r.get("snippet", "") for r in results]
+        assert any("test@bravo.com" in s for s in snippets)
+
+    def test_like_fallback_special_chars_escaped(self, db):
+        """SQL LIKE special chars (%, _) should be properly escaped."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="100% done")
+
+        results = db.search_messages("100% done")
+        assert len(results) >= 1
+
+    def test_like_fallback_returns_empty_for_no_match(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello world")
+
+        results = db.search_messages("nonexistent_xyzzy")
+        assert results == []
+

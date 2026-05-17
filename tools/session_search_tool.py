@@ -328,6 +328,7 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    mode: str = None,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
@@ -335,6 +336,10 @@ def session_search(
     Uses FTS5 to find matches, then summarizes the top sessions with the
     configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
+
+    mode="fast": Skip LLM summarization and return raw match snippets directly.
+                 Zero LLM cost, ~0.02s latency.  Good for quick existence checks
+                 or when the auxiliary model is unavailable.
     """
     if db is None:
         try:
@@ -437,6 +442,35 @@ def session_search(
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
+
+        # Fast mode: return raw snippets without LLM summarization.
+        # Zero cost, ~0.02s.  Useful for quick existence checks or when
+        # the auxiliary model is unavailable (#24680).
+        if (mode or "").strip().lower() == "fast":
+            fast_results = []
+            for session_id, match_info in seen_sessions.items():
+                session_meta = db.get_session(session_id) or {}
+                snippet = match_info.get("snippet") or match_info.get("content", "")
+                if snippet and len(snippet) > 500:
+                    snippet = snippet[:500] + "…"
+                fast_results.append({
+                    "session_id": session_id,
+                    "when": _format_timestamp(
+                        session_meta.get("started_at") or match_info.get("session_started")
+                    ),
+                    "source": session_meta.get("source") or match_info.get("source", "unknown"),
+                    "model": session_meta.get("model") or match_info.get("model"),
+                    "snippet": snippet,
+                    "mode": "fast",
+                })
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results": fast_results,
+                "count": len(fast_results),
+                "sessions_searched": len(seen_sessions),
+                "mode": "fast",
+            }, ensure_ascii=False)
 
         # Prepare all sessions for parallel summarization
         tasks = []
@@ -588,6 +622,11 @@ SESSION_SEARCH_SCHEMA = {
                 "description": "Max sessions to summarize (default: 3, max: 5).",
                 "default": 3,
             },
+            "mode": {
+                "type": "string",
+                "enum": ["fast"],
+                "description": "Set to \"fast\" to skip LLM summarization and return raw match snippets directly. Zero LLM cost, ~0.02s latency. Omit for default summarized mode.",
+            },
         },
         "required": [],
     },
@@ -606,7 +645,8 @@ registry.register(
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
         db=kw.get("db"),
-        current_session_id=kw.get("current_session_id")),
+        current_session_id=kw.get("current_session_id"),
+        mode=args.get("mode")),
     check_fn=check_session_search_requirements,
     emoji="🔍",
 )

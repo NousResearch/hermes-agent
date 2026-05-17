@@ -576,3 +576,148 @@ class TestSessionSearch:
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+
+# =========================================================================
+# Fast mode (mode="fast")
+# =========================================================================
+
+class TestFastMode:
+    """session_search with mode='fast' should skip LLM summarization and
+    return raw snippets directly (#24680)."""
+
+    def test_fast_mode_returns_snippets_without_llm(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "content": "deploy with docker", "source": "cli",
+             "session_started": 1709500000, "model": "test",
+             "snippet": ">>>deploy<<< with docker"},
+        ]
+        mock_db.get_session.return_value = {
+            "id": "s1", "parent_session_id": None,
+            "source": "cli", "started_at": 1709500000,
+            "model": "test",
+        }
+
+        result = json.loads(session_search(
+            query="deploy", db=mock_db, mode="fast",
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "fast"
+        assert result["count"] == 1
+        entry = result["results"][0]
+        assert entry["mode"] == "fast"
+        assert "snippet" in entry
+        assert "summary" not in entry  # no LLM summary
+
+    def test_fast_mode_skips_summarization_call(self):
+        """In fast mode, async_call_llm should NOT be called."""
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "content": "test", "source": "cli",
+             "session_started": 1709500000, "model": "test",
+             "snippet": "test"},
+        ]
+        mock_db.get_session.return_value = {
+            "id": "s1", "parent_session_id": None,
+            "source": "cli", "started_at": 1709500000,
+        }
+
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock) as mock_llm:
+            result = json.loads(session_search(
+                query="test", db=mock_db, mode="fast",
+            ))
+            mock_llm.assert_not_called()
+
+        assert result["success"] is True
+        assert result["mode"] == "fast"
+
+    def test_fast_mode_truncates_long_snippet(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        long_content = "x" * 1000
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "content": long_content, "source": "cli",
+             "session_started": 1709500000, "model": "test",
+             "snippet": long_content},
+        ]
+        mock_db.get_session.return_value = {
+            "id": "s1", "parent_session_id": None,
+            "source": "cli", "started_at": 1709500000,
+        }
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, mode="fast",
+        ))
+
+        assert result["success"] is True
+        snippet = result["results"][0]["snippet"]
+        assert len(snippet) <= 510  # 500 + ellipsis
+
+    def test_fast_mode_excludes_current_session(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "20260304_120000_abc123"
+        mock_db.search_messages.return_value = [
+            {"session_id": current_sid, "content": "match", "source": "cli",
+             "session_started": 1709500000, "model": "test",
+             "snippet": "match"},
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None}
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, current_session_id=current_sid,
+            mode="fast",
+        ))
+
+        assert result["success"] is True
+        assert result["count"] == 0
+
+    def test_fast_mode_returns_empty_when_no_results(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="nonexistent", db=mock_db, mode="fast",
+        ))
+
+        assert result["success"] is True
+        assert result["count"] == 0
+        assert result["results"] == []
+
+    def test_fast_mode_case_insensitive(self):
+        """mode='FAST' or 'Fast' should also work."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        for mode_val in ("FAST", "Fast", " fast "):
+            mock_db = MagicMock()
+            mock_db.search_messages.return_value = [
+                {"session_id": "s1", "content": "test", "source": "cli",
+                 "session_started": 1709500000, "model": "test",
+                 "snippet": "test"},
+            ]
+            mock_db.get_session.return_value = {
+                "id": "s1", "parent_session_id": None,
+                "source": "cli", "started_at": 1709500000,
+            }
+
+            result = json.loads(session_search(
+                query="test", db=mock_db, mode=mode_val,
+            ))
+            assert result.get("mode") == "fast", f"mode={mode_val!r} should be recognized"

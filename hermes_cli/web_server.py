@@ -1816,7 +1816,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     """
     if provider_id == "nous":
         from hermes_cli.auth import (
-            _nous_device_scope,
+            _nous_device_scope_with_env_override,
             _request_nous_device_code_with_scope_fallback,
             PROVIDER_REGISTRY,
         )
@@ -1828,7 +1828,10 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             or pconfig.portal_base_url
         ).rstrip("/")
         client_id = pconfig.client_id
-        scope, explicit_scope = _nous_device_scope(None, default_scope=pconfig.scope)
+        scope, explicit_scope = _nous_device_scope_with_env_override(
+            None,
+            default_scope=pconfig.scope,
+        )
 
         def _do_nous_device_request():
             with httpx.Client(
@@ -1982,7 +1985,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import (
-        NOUS_INFERENCE_AUTH_FRESH,
+        NOUS_INFERENCE_AUTH_MODE_FRESH,
         _poll_for_token,
         refresh_nous_oauth_from_state,
     )
@@ -2031,7 +2034,7 @@ def _nous_poller(session_id: str) -> None:
             min_key_ttl_seconds=300,
             timeout_seconds=15.0,
             force_refresh=False,
-            auth_mode=NOUS_INFERENCE_AUTH_FRESH,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)

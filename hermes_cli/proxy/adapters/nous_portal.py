@@ -19,8 +19,8 @@ from typing import Any, Dict, FrozenSet, Optional
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
-    NOUS_INFERENCE_AUTH_AUTO,
-    NOUS_INFERENCE_AUTH_LEGACY,
+    NOUS_INFERENCE_AUTH_MODE_AUTO,
+    NOUS_INFERENCE_AUTH_MODE_LEGACY,
     _load_auth_store,
     _is_terminal_nous_refresh_error,
     _quarantine_nous_oauth_state,
@@ -28,7 +28,7 @@ from hermes_cli.auth import (
     _save_auth_store,
     _write_shared_nous_state,
     refresh_nous_oauth_from_state,
-    )
+)
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,9 @@ class NousPortalAdapter(UpstreamAdapter):
         )
 
     def get_credential(self) -> UpstreamCredential:
-        return self._get_credential(auth_mode=NOUS_INFERENCE_AUTH_AUTO)
+        return self._get_credential(
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
+        )
 
     def get_retry_credential(
         self,
@@ -87,13 +89,16 @@ class NousPortalAdapter(UpstreamAdapter):
         failed_credential: UpstreamCredential,
         status_code: int,
     ) -> Optional[UpstreamCredential]:
-        del failed_credential
         if status_code != 401:
             return None
+        if failed_credential.bearer.count(".") != 2:
+            return None
         logger.info("proxy: Nous upstream rejected bearer; retrying with legacy session key")
-        return self._get_credential(auth_mode=NOUS_INFERENCE_AUTH_LEGACY)
+        return self._get_credential(
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+        )
 
-    def _get_credential(self, *, auth_mode: str) -> UpstreamCredential:
+    def _get_credential(self, *, inference_auth_mode: str) -> UpstreamCredential:
         with self._lock:
             state = self._read_state()
             if state is None:
@@ -104,7 +109,7 @@ class NousPortalAdapter(UpstreamAdapter):
             try:
                 refreshed = refresh_nous_oauth_from_state(
                     state,
-                    auth_mode=auth_mode,
+                    inference_auth_mode=inference_auth_mode,
                 )
             except AuthError as exc:
                 if _is_terminal_nous_refresh_error(exc):

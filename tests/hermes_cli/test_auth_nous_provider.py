@@ -217,8 +217,8 @@ def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
 
     assert creds["api_key"] == token
-    assert creds["source"] == "invoke_jwt"
-    assert creds["auth_path"] == "invoke_jwt"
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
+    assert creds["auth_path"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
 
     payload = json.loads((hermes_home / "auth.json").read_text())
     singleton = payload["providers"]["nous"]
@@ -297,7 +297,7 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
     creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
 
     assert creds["api_key"] == token
-    assert creds["source"] == "invoke_jwt"
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
     assert auth_path.read_text() == before_content
     assert auth_path.stat().st_mtime_ns == before_mtime
     assert sync_calls == []
@@ -339,7 +339,7 @@ def test_resolve_nous_runtime_credentials_trusts_invoke_jwt_exp_over_stale_metad
     creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
 
     assert creds["api_key"] == token
-    assert creds["source"] == "invoke_jwt"
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
     payload = json.loads((hermes_home / "auth.json").read_text())
     singleton = payload["providers"]["nous"]
     assert singleton["agent_key"] == token
@@ -372,7 +372,7 @@ def test_resolve_nous_runtime_credentials_does_not_apply_legacy_ttl_to_invoke_jw
     creds = auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=1800)
 
     assert creds["api_key"] == token
-    assert creds["source"] == "invoke_jwt"
+    assert creds["source"] == auth_mod.NOUS_AUTH_PATH_INVOKE_JWT
     payload = json.loads((hermes_home / "auth.json").read_text())
     assert payload["providers"]["nous"]["agent_key"] == token
     assert payload["credential_pool"]["nous"][0]["agent_key"] == token
@@ -403,12 +403,12 @@ def test_legacy_auth_mode_bypasses_usable_invoke_jwt(tmp_path, monkeypatch):
 
     creds = auth_mod.resolve_nous_runtime_credentials(
         min_key_ttl_seconds=300,
-        auth_mode=auth_mod.NOUS_INFERENCE_AUTH_LEGACY,
+        inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY,
     )
 
     assert mint_calls == [token]
     assert creds["api_key"] == "legacy-after-jwt-401"
-    assert creds["auth_path"] == "legacy_session_key_mint"
+    assert creds["auth_path"] == auth_mod.NOUS_AUTH_PATH_LEGACY_SESSION_KEY_MINT
     payload = json.loads((hermes_home / "auth.json").read_text())
     assert payload["providers"]["nous"]["agent_key"] == "legacy-after-jwt-401"
 
@@ -1199,7 +1199,7 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
     providers.nous was empty.
     """
     from hermes_cli.auth import (
-        NOUS_INFERENCE_AUTH_FRESH,
+        NOUS_INFERENCE_AUTH_MODE_FRESH,
         persist_nous_credentials,
         resolve_nous_runtime_credentials,
     )
@@ -1232,7 +1232,7 @@ def test_persist_nous_credentials_allows_recovery_from_401(tmp_path, monkeypatch
 
     creds = resolve_nous_runtime_credentials(
         min_key_ttl_seconds=300,
-        auth_mode=NOUS_INFERENCE_AUTH_FRESH,
+        inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
     )
     assert creds["api_key"] == "new-agent-key"
 
@@ -1698,7 +1698,10 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     def _fake_refresh(state, **kwargs):
         # Simulate portal returning fresh tokens + a new agent_key
         assert kwargs.get("force_refresh") is True
-        assert kwargs.get("auth_mode") == auth_mod.NOUS_INFERENCE_AUTH_FRESH
+        assert (
+            kwargs.get("inference_auth_mode")
+            == auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH
+        )
         return {
             **state,
             "access_token": "fresh-access-tok",
@@ -1826,7 +1829,7 @@ def test_runtime_refresh_uses_newer_shared_token_before_local_stale_token(
 
     creds = auth_mod.resolve_nous_runtime_credentials(
         min_key_ttl_seconds=300,
-        auth_mode=auth_mod.NOUS_INFERENCE_AUTH_FRESH,
+        inference_auth_mode=auth_mod.NOUS_INFERENCE_AUTH_MODE_FRESH,
     )
 
     assert creds["api_key"] == "agent-key-from-shared-token"

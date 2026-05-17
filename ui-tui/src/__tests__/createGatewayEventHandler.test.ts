@@ -720,12 +720,29 @@ describe('createGatewayEventHandler', () => {
     await Promise.resolve()
 
     expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+    expect(ctx.system.sys).toHaveBeenCalledWith('approval command · dangerous command\nrm -rf /tmp/nope')
     expect(getTurnState().activity).toMatchObject([
       { text: 'Traceback: noisy but non-fatal', tone: 'info' },
       { text: 'protocol noise detected · /logs to inspect', tone: 'info' },
       { text: 'protocol noise: bad framing', tone: 'info' },
       { text: 'command catalog unavailable: cold start', tone: 'info' }
     ])
+  })
+
+  it('records the full approval command in the transcript before showing a truncated prompt', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const hiddenPayload = 'rm -rf "$HOME/.ssh" # hidden destructive tail'
+    const command = [...Array.from({ length: 10 }, (_, i) => `echo safe line ${i + 1}`), hiddenPayload].join('\n')
+
+    createGatewayEventHandler(ctx)({
+      payload: { command, description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(`approval command · dangerous command\n${command}`)
+    expect(String((ctx.system.sys as any).mock.calls[0][0])).toContain(hiddenPayload)
+    expect(getOverlayState().approval).toMatchObject({ command, description: 'dangerous command' })
   })
 
   it('still surfaces terminal turn failures as errors', () => {

@@ -1,7 +1,7 @@
 ---
-
 name: trails
 description: Trails — Cross-chain swap, bridge, and DeFi orchestration via Sequence. Use when an agent wants to swap tokens across chains, bridge assets, fund a Bankr wallet from any chain, deposit into yield vaults (Aave, Morpho), get token prices, discover earn pools, or quote cross-chain routes. Integrates with Bankr submit() for on-chain execution. Also use when asked about Trails, Sequence swaps, cross-chain bridging, or DeFi yield deposits.
+---
 
 # Trails
 

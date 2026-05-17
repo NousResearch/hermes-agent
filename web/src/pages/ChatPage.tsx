@@ -70,6 +70,12 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+// Dashboard Chat runs the TUI in inline/primary-buffer mode so the browser
+// xterm owns native scrollback and text selection. Keep enough scrollback for
+// ordinary transcript copy operations, including dragging the selection past
+// the top/bottom viewport edge to auto-scroll and extend it off-screen.
+const DASHBOARD_CHAT_SCROLLBACK = 10_000;
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -286,10 +292,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      // Single-scroll-system experiment:
-      // let the inner Hermes TUI own transcript history/scroll behavior.
-      // The outer browser xterm should act as a display/input bridge only.
-      scrollback: 0,
+      // Dashboard PTY sets HERMES_TUI_INLINE=1, so the TUI renders into the
+      // primary buffer and xterm's native scrollback captures transcript rows
+      // that leave the viewport. This preserves browser-terminal behavior:
+      // wheel scrolls history, and mouse selections auto-scroll when dragged
+      // past the top/bottom edge instead of being limited to the visible page.
+      scrollback: DASHBOARD_CHAT_SCROLLBACK,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -333,7 +341,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -391,40 +399,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
-
-    // Single-scroll-system experiment:
-    // keep browser xterm as a display/input bridge only, and let the inner
-    // Hermes TUI own transcript scrolling.
-    //
-    // In practice, the most reliable path here is NOT terminal mouse-wheel
-    // protocol emulation — that can vary by terminal mode and parser path.
-    // The inner TUI already handles keyboard-driven transcript scrolling
-    // correctly (`Shift+Up` / `Shift+Down`, `PageUp` / `PageDown`), so we
-    // translate browser wheel gestures into those known-good key sequences.
-    term.attachCustomWheelEventHandler((ev) => {
-      if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return false;
-      }
-
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      // Shift+Up / Shift+Down: the TUI maps these to line-by-line
-      // transcript scrolling, which feels much closer to wheel behavior
-      // than PageUp/PageDown's half-page jumps.
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      const seq = delta > 0 ? "\x1b[1;2B" : "\x1b[1;2A";
-
-      for (let i = 0; i < step; i++) {
-        wsRef.current.send(seq);
-      }
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);

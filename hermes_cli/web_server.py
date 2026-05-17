@@ -3205,13 +3205,14 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
-    # Browser-embedded chat should prefer stable wheel-based scrollback over
-    # native terminal mouse tracking. When mouse tracking is enabled, wheel
-    # events are consumed by the TUI and forwarded as terminal input, which
-    # makes browser-side transcript scrolling feel broken. Keep the terminal
-    # build unchanged for native CLI usage; only disable mouse tracking for
-    # the dashboard PTY path.
+    # Browser-embedded chat should behave like a native browser/xterm surface:
+    # xterm owns scrollback, mouse drag selection, drag-to-edge autoscroll, and
+    # context-menu/menu Copy. Keep the native CLI unchanged; only the dashboard
+    # PTY path disables terminal mouse tracking and skips the alternate screen.
+    # Inline/primary-buffer mode is required because xterm's alternate buffer
+    # has no scrollback to extend a selection beyond the visible viewport.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)

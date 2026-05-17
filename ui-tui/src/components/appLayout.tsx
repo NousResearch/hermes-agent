@@ -53,6 +53,83 @@ const PromptPrefix = memo(function PromptPrefix({
   )
 })
 
+const InlineTranscriptPane = memo(function InlineTranscriptPane({
+  composer,
+  progress,
+  transcript
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+  const ui = useStore($uiState)
+
+  // Inline Dashboard Chat renders in the primary terminal buffer so xterm.js
+  // owns native scrollback and drag-to-edge selection. Do not put the
+  // transcript inside ScrollBox or render virtual top/bottom spacers here:
+  // those spacers become literal blank rows in xterm's scrollback on resume,
+  // which can leave a large gap before the prompt and hide the final answer
+  // even though the status bar says "ready".
+  const lastUserIdx = useMemo(() => {
+    const items = transcript.historyItems
+
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].role === 'user') {
+        return i
+      }
+    }
+
+    return -1
+  }, [transcript.historyItems])
+
+  const firstUserIdx = useMemo(
+    () => transcript.historyItems.findIndex(m => m.role === 'user'),
+    [transcript.historyItems]
+  )
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      {transcript.historyItems.map((msg, index) => (
+        <Box flexDirection="column" key={transcript.virtualRows[index]?.key ?? `inline:${index}`}>
+          {msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx && (
+            <Box marginTop={1}>
+              <Text color={ui.theme.color.border}>───</Text>
+            </Box>
+          )}
+
+          {msg.kind === 'intro' ? (
+            <Box flexDirection="column" paddingTop={1}>
+              <Banner t={ui.theme} />
+
+              {msg.info && <SessionPanel info={msg.info} sid={ui.sid} t={ui.theme} />}
+            </Box>
+          ) : msg.kind === 'panel' && msg.panelData ? (
+            <Panel sections={msg.panelData.sections} t={ui.theme} title={msg.panelData.title} />
+          ) : (
+            <MessageLine
+              cols={composer.cols}
+              compact={ui.compact}
+              detailsMode={ui.detailsMode}
+              detailsModeCommandOverride={ui.detailsModeCommandOverride}
+              limitHistoryRender={index < transcript.historyItems.length - FULL_RENDER_TAIL_ITEMS}
+              msg={msg}
+              sections={ui.sections}
+              t={ui.theme}
+            />
+          )}
+
+          {index === lastUserIdx && <LiveTodoPanel />}
+        </Box>
+      ))}
+
+      <StreamingAssistant
+        cols={composer.cols}
+        compact={ui.compact}
+        detailsMode={ui.detailsMode}
+        detailsModeCommandOverride={ui.detailsModeCommandOverride}
+        progress={progress}
+        sections={ui.sections}
+      />
+    </Box>
+  )
+})
+
 const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
@@ -78,7 +155,7 @@ const TranscriptPane = memo(function TranscriptPane({
 
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
-  // turn. -1 when no user message has been sent yet → no separator ever
+  // turn. -1 when no user message exists yet → no separator ever
   // renders.
   const firstUserIdx = useMemo(
     () => transcript.historyItems.findIndex(m => m.role === 'user'),
@@ -382,23 +459,26 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  // Inline mode skips AlternateScreen so the host terminal's native
-  // scrollback captures rows scrolled off the top; composer + progress
-  // stay anchored via normal flex-column flow.
+  // Inline mode skips AlternateScreen so xterm's primary buffer can own native
+  // scrollback and drag-to-edge text selection. In that mode, also skip the
+  // fullscreen ScrollBox transcript: its virtual spacers are real blank rows in
+  // primary-buffer scrollback and can hide the resumed tail behind a large gap.
   const Shell = INLINE_MODE ? Fragment : AlternateScreen
   const shellProps = INLINE_MODE ? {} : { mouseTracking }
+  const TranscriptShell = INLINE_MODE ? InlineTranscriptPane : TranscriptPane
+  const layoutGrow = INLINE_MODE ? 0 : 1
 
   return (
     <Shell {...shellProps}>
-      <Box flexDirection="column" flexGrow={1}>
-        <Box flexDirection="row" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={layoutGrow}>
+        <Box flexDirection="row" flexGrow={layoutGrow}>
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              <TranscriptShell actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
         </Box>

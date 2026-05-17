@@ -727,6 +727,46 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_can_override_session_cwd(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._db = None
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="channel",
+        )
+        current_entry = store.get_or_create_session(source)
+        current_entry.session_cwd = "/old/work"
+
+        switched = store.switch_session(
+            current_entry.session_key,
+            "cli-session-1",
+            session_cwd="/handoff/work",
+        )
+
+        assert switched is not None
+        assert switched.session_id == "cli-session-1"
+        assert switched.session_cwd == "/handoff/work"
+
+    def test_session_entry_session_cwd_roundtrip(self):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry(
+            session_key="k",
+            session_id="s",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            session_cwd="/repo",
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+        assert restored.session_cwd == "/repo"
+
 
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a

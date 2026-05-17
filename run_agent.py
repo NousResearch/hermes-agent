@@ -469,6 +469,15 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
     return Path(os.path.abspath(str(Path.cwd() / expanded)))
 
 
+def _resolve_codex_app_server_cwd(agent: Any) -> str:
+    """Return the cwd used to spawn the Codex app-server subprocess."""
+    return str(
+        getattr(agent, "session_cwd", None)
+        or os.getenv("TERMINAL_CWD")
+        or os.getcwd()
+    )
+
+
 def _paths_overlap(left: Path, right: Path) -> bool:
     """Return True when two paths may refer to the same subtree."""
     left_parts = left.parts
@@ -16116,7 +16125,7 @@ class AIAgent:
         # Spawned on first turn, reused across turns, closed at AIAgent
         # shutdown (see _cleanup hook).
         if not hasattr(self, "_codex_session") or self._codex_session is None:
-            cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            cwd = _resolve_codex_app_server_cwd(self)
             # Approval callback: defer to Hermes' standard prompt flow if a
             # CLI thread has installed one. Gateway / cron contexts get the
             # codex-side fail-closed default.

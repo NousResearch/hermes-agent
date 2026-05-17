@@ -104,6 +104,34 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
 
 
+class TestCodexAppServerCwd:
+    """Codex app-server should start in the handed-off CLI cwd when present."""
+
+    def test_prefers_session_cwd_over_terminal_env(self, monkeypatch, tmp_path) -> None:
+        from run_agent import _resolve_codex_app_server_cwd
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "gateway"))
+        agent = type("Agent", (), {"session_cwd": "/handoff/source"})()
+
+        assert _resolve_codex_app_server_cwd(agent) == "/handoff/source"
+
+    def test_falls_back_to_terminal_cwd(self, monkeypatch, tmp_path) -> None:
+        from run_agent import _resolve_codex_app_server_cwd
+
+        terminal_cwd = tmp_path / "terminal"
+        monkeypatch.setenv("TERMINAL_CWD", str(terminal_cwd))
+
+        assert _resolve_codex_app_server_cwd(object()) == str(terminal_cwd)
+
+    def test_falls_back_to_process_cwd(self, monkeypatch, tmp_path) -> None:
+        from run_agent import _resolve_codex_app_server_cwd
+
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        assert _resolve_codex_app_server_cwd(object()) == str(tmp_path)
+
+
 class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 

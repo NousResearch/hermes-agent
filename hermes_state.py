@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
+    handoff_cwd TEXT,
     handoff_error TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
@@ -2876,7 +2877,12 @@ class SessionDB:
     # The CLI writes "pending" then poll-waits for terminal state. The gateway
     # watcher transitions pending→running→{completed,failed}.
 
-    def request_handoff(self, session_id: str, platform: str) -> bool:
+    def request_handoff(
+        self,
+        session_id: str,
+        platform: str,
+        cwd: Optional[str] = None,
+    ) -> bool:
         """Mark a session as pending handoff to the given platform.
 
         Returns True if the row was found and not already in flight; False if
@@ -2887,10 +2893,11 @@ class SessionDB:
                 "UPDATE sessions "
                 "SET handoff_state = 'pending', "
                 "    handoff_platform = ?, "
+                "    handoff_cwd = ?, "
                 "    handoff_error = NULL "
                 "WHERE id = ? AND (handoff_state IS NULL "
                 "                  OR handoff_state IN ('completed', 'failed'))",
-                (platform, session_id),
+                (platform, cwd, session_id),
             )
             return cur.rowcount > 0
         return self._execute_write(_do)
@@ -2898,12 +2905,12 @@ class SessionDB:
     def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Read the current handoff state for a session.
 
-        Returns ``{"state", "platform", "error"}`` or None if the session has
+        Returns ``{"state", "platform", "cwd", "error"}`` or None if the session has
         no handoff record.
         """
         try:
             cur = self._conn.execute(
-                "SELECT handoff_state, handoff_platform, handoff_error "
+                "SELECT handoff_state, handoff_platform, handoff_cwd, handoff_error "
                 "FROM sessions WHERE id = ?",
                 (session_id,),
             )
@@ -2913,6 +2920,7 @@ class SessionDB:
             return {
                 "state": row["handoff_state"],
                 "platform": row["handoff_platform"],
+                "cwd": row["handoff_cwd"],
                 "error": row["handoff_error"],
             }
         except Exception:
@@ -2963,4 +2971,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

@@ -41,7 +41,7 @@ class TestHandoffStateDB:
 
     def test_columns_exist(self, db):
         db._conn.execute(
-            "SELECT handoff_state, handoff_platform, handoff_error "
+            "SELECT handoff_state, handoff_platform, handoff_cwd, handoff_error "
             "FROM sessions LIMIT 0"
         )
 
@@ -49,12 +49,13 @@ class TestHandoffStateDB:
         sid = "sess-1"
         self._make_session(db, sid)
 
-        assert db.request_handoff(sid, "telegram") is True
+        assert db.request_handoff(sid, "telegram", cwd="/work/source") is True
 
         state = db.get_handoff_state(sid)
         assert state == {
             "state": "pending",
             "platform": "telegram",
+            "cwd": "/work/source",
             "error": None,
         }
 
@@ -73,15 +74,16 @@ class TestHandoffStateDB:
     def test_request_handoff_after_terminal_state_resets_error(self, db):
         sid = "sess-3"
         self._make_session(db, sid)
-        db.request_handoff(sid, "telegram")
+        db.request_handoff(sid, "telegram", cwd="/old/work")
         db.claim_handoff(sid)
         db.fail_handoff(sid, "earlier failure")
 
         # User retries — should be allowed and clear the prior error.
-        assert db.request_handoff(sid, "discord") is True
+        assert db.request_handoff(sid, "discord", cwd="/new/work") is True
         state = db.get_handoff_state(sid)
         assert state["state"] == "pending"
         assert state["platform"] == "discord"
+        assert state["cwd"] == "/new/work"
         assert state["error"] is None
 
     def test_list_pending_handoffs_excludes_running_and_terminal(self, db):
@@ -89,7 +91,7 @@ class TestHandoffStateDB:
         for sid in (a, b, c, d):
             self._make_session(db, sid)
 
-        db.request_handoff(a, "telegram")
+        db.request_handoff(a, "telegram", cwd="/work/a")
         db.request_handoff(b, "discord")
         db.request_handoff(c, "telegram")
         db.claim_handoff(c)  # c is now running, not pending
@@ -100,6 +102,7 @@ class TestHandoffStateDB:
         pending = db.list_pending_handoffs()
         ids = [r["id"] for r in pending]
         assert set(ids) == {a, b}
+        assert {r["id"]: r["handoff_cwd"] for r in pending}[a] == "/work/a"
 
     def test_claim_handoff_is_atomic(self, db):
         sid = "sess-claim"

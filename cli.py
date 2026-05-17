@@ -6087,8 +6087,19 @@ class HermesCLI:
         if not session_title:
             session_title = self.session_id[:8]
 
-        # Mark pending — gateway watcher will pick this up.
-        ok = self._session_db.request_handoff(self.session_id, platform_name)
+        # Mark pending — gateway watcher will pick this up. Capture the CLI
+        # working directory now because the gateway runs in a different process
+        # with its own terminal.cwd.
+        handoff_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        try:
+            handoff_cwd = str(Path(handoff_cwd).expanduser().resolve())
+        except Exception:
+            handoff_cwd = str(handoff_cwd)
+        ok = self._session_db.request_handoff(
+            self.session_id,
+            platform_name,
+            cwd=handoff_cwd,
+        )
         if not ok:
             _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
             return True

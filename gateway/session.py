@@ -440,6 +440,7 @@ class SessionEntry:
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
+    session_cwd: Optional[str] = None
     
     # Token tracking
     input_tokens: int = 0
@@ -500,6 +501,7 @@ class SessionEntry:
             "display_name": self.display_name,
             "platform": self.platform.value if self.platform else None,
             "chat_type": self.chat_type,
+            "session_cwd": self.session_cwd,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
@@ -556,6 +558,7 @@ class SessionEntry:
             display_name=data.get("display_name"),
             platform=platform,
             chat_type=data.get("chat_type", "dm"),
+            session_cwd=data.get("session_cwd"),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
             cache_read_tokens=data.get("cache_read_tokens", 0),
@@ -1154,6 +1157,7 @@ class SessionStore:
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                session_cwd=old_entry.session_cwd,
                 is_fresh_reset=True,
             )
 
@@ -1179,7 +1183,12 @@ class SessionStore:
 
         return new_entry
 
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def switch_session(
+        self,
+        session_key: str,
+        target_session_id: str,
+        session_cwd: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 
         Used by ``/resume`` to restore a previously-named session.
@@ -1201,6 +1210,10 @@ class SessionStore:
 
             # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
+                if session_cwd:
+                    old_entry.session_cwd = session_cwd
+                    old_entry.updated_at = _now()
+                    self._save()
                 return old_entry
 
             db_end_session_id = old_entry.session_id
@@ -1215,6 +1228,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                session_cwd=session_cwd or old_entry.session_cwd,
             )
 
             self._entries[session_key] = new_entry

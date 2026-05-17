@@ -990,6 +990,31 @@ def load_gateway_config() -> GatewayConfig:
                     _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
                     os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
 
+                stock_router_cfg = discord_cfg.get("stock_research_router")
+                if isinstance(stock_router_cfg, dict):
+                    for yaml_key, env_key in (
+                        ("enabled", "DISCORD_STOCK_RESEARCH_ROUTER_ENABLED"),
+                        ("channels", "DISCORD_STOCK_RESEARCH_CHANNELS"),
+                        ("workdir", "DISCORD_STOCK_RESEARCH_WORKDIR"),
+                        ("timeout_seconds", "DISCORD_STOCK_RESEARCH_TIMEOUT_SECONDS"),
+                    ):
+                        value = stock_router_cfg.get(yaml_key)
+                        if value is not None and not os.getenv(env_key):
+                            if isinstance(value, list):
+                                value = ",".join(str(v) for v in value)
+                            os.environ[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
+                for yaml_key, env_key in (
+                    ("stock_research_router_enabled", "DISCORD_STOCK_RESEARCH_ROUTER_ENABLED"),
+                    ("stock_research_router_channels", "DISCORD_STOCK_RESEARCH_CHANNELS"),
+                    ("stock_research_router_workdir", "DISCORD_STOCK_RESEARCH_WORKDIR"),
+                    ("stock_research_router_timeout_seconds", "DISCORD_STOCK_RESEARCH_TIMEOUT_SECONDS"),
+                ):
+                    value = discord_cfg.get(yaml_key)
+                    if value is not None and not os.getenv(env_key):
+                        if isinstance(value, list):
+                            value = ",".join(str(v) for v in value)
+                        os.environ[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
+
             # Bridge top-level require_mention to Telegram when the telegram: section
             # does not already provide one.  Users often write "require_mention: true"
             # at the top level alongside group_sessions_per_user, expecting it to work

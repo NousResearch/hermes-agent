@@ -51,6 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.stock_research_router import maybe_build_injected_text
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -5041,6 +5042,25 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
+
+        if msg_type == MessageType.TEXT and event_text and not _is_dm:
+            try:
+                _router_text = maybe_build_injected_text(
+                    event_text,
+                    channel_ids=[_chan_id, _parent_id or None],
+                    extra=self.config.extra,
+                    is_dm=_is_dm,
+                )
+                if _router_text:
+                    event_text = _router_text
+            except Exception as e:
+                logger.warning(
+                    "[%s] Stock-research packet router skipped message %s: %s",
+                    self.name,
+                    getattr(message, "id", ""),
+                    e,
+                    exc_info=True,
+                )
 
         reply_to_id = None
         reply_to_text = None

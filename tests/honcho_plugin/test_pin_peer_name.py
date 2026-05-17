@@ -210,6 +210,7 @@ class TestPeerResolutionOrder:
         pin_peer_name: bool,
         user_peer_aliases: dict[str, str] | None = None,
         runtime_peer_prefix: str = "",
+        session_peer_prefix: bool = False,
     ) -> HonchoClientConfig:
         # The test doesn't need auth / Honcho — disable the provider so
         # the manager doesn't try to open a real client.
@@ -219,6 +220,7 @@ class TestPeerResolutionOrder:
             pin_peer_name=pin_peer_name,
             user_peer_aliases=user_peer_aliases or {},
             runtime_peer_prefix=runtime_peer_prefix,
+            session_peer_prefix=session_peer_prefix,
             enabled=False,
             write_frequency="turn",  # avoid spawning the async writer thread
         )
@@ -288,6 +290,43 @@ class TestPeerResolutionOrder:
 
         session = mgr.get_or_create("telegram:86701400")
         assert session.user_peer_id == "Alice-Smith-"
+
+    def test_alias_keys_match_raw_runtime_id_before_sanitization(self):
+        """Alias selection is exact on platform IDs before Honcho ID cleanup."""
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name=None,
+                pin_peer_name=False,
+                user_peer_aliases={
+                    "user:42": "raw-match",
+                    "user-42": "sanitized-match",
+                },
+            ),
+            runtime_user_peer_name="user:42",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:user:42")
+        assert session.user_peer_id == "raw-match"
+
+    def test_session_peer_prefix_is_orthogonal_to_runtime_peer_prefix(self):
+        """sessionPeerPrefix scopes session IDs; runtimePeerPrefix scopes user peers."""
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name="Igor",
+                pin_peer_name=False,
+                runtime_peer_prefix="telegram_",
+                session_peer_prefix=True,
+            ),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:86701400")
+        assert session.user_peer_id == "telegram_86701400"
+        assert session.honcho_session_id == "telegram-86701400"
 
     def test_config_wins_when_pin_is_true(self):
         """The #14984 fix: single-user deployments opt into config pinning."""

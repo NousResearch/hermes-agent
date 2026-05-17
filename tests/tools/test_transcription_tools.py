@@ -1264,6 +1264,92 @@ class TestTranscribeXAI:
         data = mock_post.call_args.kwargs.get("data", mock_post.call_args[1].get("data", {}))
         assert data.get("diarize") == "true"
 
+    @pytest.mark.parametrize("xai_config", [{}, {"language": ""}])
+    def test_omits_language_when_not_configured_for_multilingual_auto_detect(
+        self, monkeypatch, sample_ogg, mock_xai_http_module, xai_config
+    ):
+        """Do not force xAI STT to English; Chinese/mixed audio needs auto-detect."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "中文 mixed English", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"xai": xai_config}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "grok-stt")
+
+        data = mock_post.call_args.kwargs.get("data", mock_post.call_args[1].get("data", {}))
+        assert "language" not in data
+        assert "format" not in data
+
+
+# ============================================================================
+# Transcript proper-noun correction
+# ============================================================================
+
+class TestTranscriptProperNounCorrection:
+    def test_configured_terms_fix_common_asr_mishears(self):
+        from tools.transcription_tools import _correct_transcript_proper_nouns
+
+        config = {
+            "corrections": {
+                "terms": {
+                    "Moss": ["Mouse", "Mass", "MOS"],
+                    "JARVIS": ["Java C", "Java See", "Jarvis"],
+                    "OpenClaw": ["Open Cloud", "OpenCloud", "Open Claw"],
+                }
+            }
+        }
+
+        text = "Mouse，去检查一下 Java C 的状态，再看 Open Cloud 系统更新。"
+
+        assert _correct_transcript_proper_nouns(text, config) == (
+            "Moss，去检查一下 JARVIS 的状态，再看 OpenClaw 系统更新。"
+        )
+
+    def test_correction_respects_disabled_config(self):
+        from tools.transcription_tools import _correct_transcript_proper_nouns
+
+        config = {
+            "corrections": {
+                "enabled": False,
+                "terms": {"Moss": ["Mouse"]},
+            }
+        }
+
+        assert _correct_transcript_proper_nouns("Mouse", config) == "Mouse"
+
+    def test_transcribe_audio_applies_corrections_to_xai_dispatch(self, sample_ogg):
+        config = {
+            "provider": "xai",
+            "corrections": {
+                "terms": {
+                    "Moss": ["Mouse"],
+                    "JARVIS": ["Java C"],
+                    "OpenClaw": ["Open Cloud"],
+                }
+            },
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch(
+                 "tools.transcription_tools._transcribe_xai",
+                 return_value={
+                     "success": True,
+                     "transcript": "Mouse 检查 Java C，然后看 Open Cloud 更新。",
+                     "provider": "xai",
+                 },
+             ):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["transcript"] == "Moss 检查 JARVIS，然后看 OpenClaw 更新。"
+        assert result["raw_transcript"] == "Mouse 检查 Java C，然后看 Open Cloud 更新。"
+        assert result["corrections_applied"] is True
+
 
 # ============================================================================
 # _get_provider — xAI

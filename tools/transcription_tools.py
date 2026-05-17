@@ -28,6 +28,7 @@ Usage::
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -125,6 +126,104 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
         stt_config = _load_stt_config()
     enabled = stt_config.get("enabled", True)
     return is_truthy_value(enabled, default=True)
+
+
+def _iter_transcript_correction_terms(stt_config: dict) -> list[tuple[str, list[str]]]:
+    """Return configured transcript correction terms as ``(canonical, variants)`` pairs.
+
+    Supported config shape::
+
+        stt:
+          corrections:
+            enabled: true
+            terms:
+              Moss: [Mouse, Mass, MOS]
+              JARVIS: [Java C, Java See]
+
+    A list form is also accepted for future compatibility::
+
+        terms:
+          - canonical: Moss
+            variants: [Mouse]
+    """
+    corrections_cfg = stt_config.get("corrections", {}) if isinstance(stt_config, dict) else {}
+    if not isinstance(corrections_cfg, dict):
+        return []
+    if not is_truthy_value(corrections_cfg.get("enabled", True), default=True):
+        return []
+
+    terms_cfg = corrections_cfg.get("terms", {})
+    items: list[tuple[str, object]] = []
+    if isinstance(terms_cfg, dict):
+        items = [(str(canonical), variants) for canonical, variants in terms_cfg.items()]
+    elif isinstance(terms_cfg, list):
+        for entry in terms_cfg:
+            if not isinstance(entry, dict):
+                continue
+            canonical = str(entry.get("canonical") or entry.get("term") or "").strip()
+            variants = entry.get("variants", [])
+            if canonical:
+                items.append((canonical, variants))
+
+    normalized: list[tuple[str, list[str]]] = []
+    for canonical, variants in items:
+        canonical = canonical.strip()
+        if not canonical:
+            continue
+        if isinstance(variants, str):
+            raw_variants = [variants]
+        elif isinstance(variants, (list, tuple, set)):
+            raw_variants = [str(v) for v in variants]
+        else:
+            raw_variants = []
+        clean_variants = []
+        for variant in raw_variants:
+            variant = variant.strip()
+            if variant and variant != canonical:
+                clean_variants.append(variant)
+        if clean_variants:
+            normalized.append((canonical, clean_variants))
+    return normalized
+
+
+def _correct_transcript_proper_nouns(text: str, stt_config: Optional[dict] = None) -> str:
+    """Apply configured proper-noun corrections to an STT transcript.
+
+    The replacement is boundary-aware so variants do not rewrite inside longer
+    English identifiers/words. Chinese punctuation and whitespace count as
+    boundaries, which is what ASR output usually needs.
+    """
+    if not text:
+        return text
+    if stt_config is None:
+        stt_config = _load_stt_config()
+
+    corrected = text
+    for canonical, variants in _iter_transcript_correction_terms(stt_config):
+        # Longest variants first prevents partial phrase rewrites from stealing
+        # a longer match such as "Open Cloud" before "OpenCloud" is considered.
+        for variant in sorted(variants, key=len, reverse=True):
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9_]){re.escape(variant)}(?![A-Za-z0-9_])",
+                flags=re.IGNORECASE,
+            )
+            corrected = pattern.sub(canonical, corrected)
+    return corrected
+
+
+def _finalize_transcription_result(result: Dict[str, Any], stt_config: dict) -> Dict[str, Any]:
+    """Apply post-processing shared by all STT providers."""
+    if not result.get("success") or not result.get("transcript"):
+        return result
+    raw_transcript = str(result.get("transcript") or "")
+    corrected = _correct_transcript_proper_nouns(raw_transcript, stt_config)
+    if corrected == raw_transcript:
+        return result
+    updated = dict(result)
+    updated["raw_transcript"] = raw_transcript
+    updated["transcript"] = corrected
+    updated["corrections_applied"] = True
+    return updated
 
 
 def _has_openai_audio_backend() -> bool:
@@ -730,14 +829,21 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
-    language = str(
-        xai_config.get("language")
-        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    ).strip()
+    raw_language = None
+    if "language" in xai_config:
+        raw_language = xai_config.get("language")
+    else:
+        raw_language = os.getenv("HERMES_LOCAL_STT_LANGUAGE")
+    language = str(raw_language or "").strip()
     # .get("format", True) already defaults to True when the key is absent;
     # is_truthy_value only normalizes truthy/falsy strings from config.
     use_format = is_truthy_value(xai_config.get("format", True))
+    if use_format and not language:
+        logger.info(
+            "xAI STT format=true requires a configured language; omitting format "
+            "so multilingual audio can auto-detect language."
+        )
+        use_format = False
     use_diarize = is_truthy_value(xai_config.get("diarize", False))
 
     try:
@@ -851,33 +957,45 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = _normalize_local_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_local(file_path, model_name), stt_config
+        )
 
     if provider == "local_command":
         local_cfg = stt_config.get("local", {})
         model_name = _normalize_local_command_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
-        return _transcribe_local_command(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_local_command(file_path, model_name), stt_config
+        )
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_groq(file_path, model_name), stt_config
+        )
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai", {})
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_openai(file_path, model_name), stt_config
+        )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral", {})
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_mistral(file_path, model_name), stt_config
+        )
 
     if provider == "xai":
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
+        return _finalize_transcription_result(
+            _transcribe_xai(file_path, model_name), stt_config
+        )
 
     # No provider available
     return {

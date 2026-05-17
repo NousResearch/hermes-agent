@@ -11075,7 +11075,29 @@ Examples:
     )
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
 
-    plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+    plugins_list = plugins_subparsers.add_parser(
+        "list", aliases=["ls"], help="List installed plugins"
+    )
+    plugins_list.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help=(
+            "Output format. 'table' (default) renders a Rich human-readable table. "
+            "'json' emits a structured array of {name, version, status, description, source, path} "
+            "objects on stdout — suitable for scripts, CI gates, and agent orchestrators (e.g. "
+            "Hermes hermes-runner-bridge plugin-registration health checks)."
+        ),
+    )
+    plugins_list.add_argument(
+        "--enabled",
+        metavar="NAME",
+        help=(
+            "Check whether a specific plugin is enabled. Exits 0 if NAME is enabled, "
+            "1 otherwise (including if NAME is not installed). Suppresses all output; "
+            "use as a shell gate: `if hermes plugins list --enabled foo; then ... fi`."
+        ),
+    )
 
     plugins_enable = plugins_subparsers.add_parser(
         "enable", help="Enable a disabled plugin"

@@ -790,20 +790,63 @@ def _discover_all_plugins() -> list:
     return list(seen.values())
 
 
-def cmd_list() -> None:
-    """List all plugins (bundled + user) with enabled/disabled state."""
+def cmd_list(output_format: str = "table", enabled_filter: Optional[str] = None) -> None:
+    """List all plugins (bundled + user) with enabled/disabled state.
+
+    Args:
+        output_format: 'table' (default Rich human-readable table) or 'json'
+            (structured array of plugin objects on stdout, for scripts/agents).
+        enabled_filter: If set, check whether this specific plugin name is
+            enabled. Exit 0 if enabled, 1 otherwise (including not installed).
+            Suppresses all stdout output; intended for shell gates and CI.
+    """
+    import json as _json
+    import sys as _sys
+
+    entries = _discover_all_plugins()
+    enabled = _get_enabled_set()
+    disabled = _get_disabled_set()
+
+    def _status(name: str) -> str:
+        if name in disabled:
+            return "disabled"
+        elif name in enabled:
+            return "enabled"
+        return "not_enabled"
+
+    # --enabled <name>: scripting gate, exit 0/1 with no stdout
+    if enabled_filter is not None:
+        for name, _version, _description, _source, _dir in entries:
+            if name == enabled_filter:
+                _sys.exit(0 if _status(name) == "enabled" else 1)
+        # Plugin name not found among installed
+        _sys.exit(1)
+
+    # --format=json: machine-readable
+    if output_format == "json":
+        result = [
+            {
+                "name": name,
+                "version": str(version) if version else None,
+                "status": _status(name),
+                "description": description,
+                "source": source,
+                "path": str(_dir) if _dir else None,
+            }
+            for name, version, description, source, _dir in entries
+        ]
+        print(_json.dumps(result, indent=2))
+        return
+
+    # Default: human-readable Rich table (existing behavior preserved)
     from rich.console import Console
     from rich.table import Table
 
     console = Console()
-    entries = _discover_all_plugins()
     if not entries:
         console.print("[dim]No plugins installed.[/dim]")
         console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
-
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
 
     table = Table(title="Plugins", show_lines=False)
     table.add_column("Name", style="bold")
@@ -813,9 +856,10 @@ def cmd_list() -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir in entries:
-        if name in disabled:
+        status_text = _status(name)
+        if status_text == "disabled":
             status = "[red]disabled[/red]"
-        elif name in enabled:
+        elif status_text == "enabled":
             status = "[green]enabled[/green]"
         else:
             status = "[yellow]not enabled[/yellow]"
@@ -1606,7 +1650,10 @@ def plugins_command(args) -> None:
     elif action == "disable":
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
-        cmd_list()
+        cmd_list(
+            output_format=getattr(args, "format", "table"),
+            enabled_filter=getattr(args, "enabled", None),
+        )
     elif action is None:
         cmd_toggle()
     else:

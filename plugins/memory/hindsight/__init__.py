@@ -1444,6 +1444,8 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("sync_turn: retaining %d turns, total session content %d chars",
                      len(self._session_turns), sum(len(t) for t in self._session_turns))
         content = "[" + ",".join(self._session_turns) + "]"
+        num_turns = len(self._session_turns)
+        self._session_turns = []  # only send new turns next time; append preserves earlier content server-side
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1454,10 +1456,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().
         metadata_snapshot = self._build_metadata(
-            message_count=len(self._session_turns) * 2,
+            message_count=num_turns * 2,
             turn_index=self._turn_index,
         )
-        num_turns = len(self._session_turns)
         document_id, update_mode = self._resolve_retain_target(self._document_id)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async

@@ -311,16 +311,34 @@ async def mixture_of_agents_tool(
         
         # Layer 1: Generate diverse responses from reference models (with failure handling)
         logger.info("Layer 1: Generating reference responses...")
-        model_results = await asyncio.gather(*[
-            _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
-            for model in ref_models
-        ])
-        
+        # `return_exceptions=True` ensures one raising coroutine does not cancel
+        # the other in-flight reference-model calls (gather's default behaviour
+        # propagates the first exception and cancels siblings, defeating the
+        # explicit "graceful failure handling" docstring on
+        # _run_reference_model_safe).
+        model_results = await asyncio.gather(
+            *[
+                _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
+                for model in ref_models
+            ],
+            return_exceptions=True,
+        )
+
         # Separate successful and failed responses
         successful_responses = []
         failed_models = []
-        
-        for model_name, content, success in model_results:
+
+        for ref_model, result in zip(ref_models, model_results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Reference model %s raised %s: %s",
+                    ref_model,
+                    type(result).__name__,
+                    result,
+                )
+                failed_models.append(ref_model)
+                continue
+            model_name, content, success = result
             if success:
                 successful_responses.append(content)
             else:

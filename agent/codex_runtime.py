@@ -25,6 +25,49 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _resolve_codex_approval_callback():
+    """Return the approval callback Codex app-server should use.
+
+    CLI sessions install a prompt-toolkit callback in ``tools.terminal_tool``.
+    Gateway sessions use ``tools.approval``'s blocking queue instead; bridge
+    that queue into Codex's callback shape so server-initiated exec/apply_patch
+    approvals can reach Telegram/Discord/etc.
+    """
+    try:
+        from tools.terminal_tool import _get_approval_callback
+
+        callback = _get_approval_callback()
+        if callback is not None:
+            return callback
+    except Exception:
+        pass
+
+    try:
+        from tools.approval import has_gateway_notify, prompt_gateway_approval
+
+        if has_gateway_notify():
+
+            def _gateway_callback(
+                command: str,
+                description: str,
+                *,
+                allow_permanent: bool = True,
+            ) -> str:
+                return prompt_gateway_approval(
+                    command,
+                    description,
+                    pattern_key="codex_app_server",
+                    pattern_keys=["codex_app_server"],
+                    allow_permanent=allow_permanent,
+                )
+
+            return _gateway_callback
+    except Exception:
+        logger.debug("failed to resolve gateway approval callback", exc_info=True)
+
+    return None
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -48,14 +91,10 @@ def run_codex_app_server_turn(
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         cwd = getattr(agent, "session_cwd", None) or os.getcwd()
-        # Approval callback: defer to Hermes' standard prompt flow if a
-        # CLI thread has installed one. Gateway / cron contexts get the
-        # codex-side fail-closed default.
-        try:
-            from tools.terminal_tool import _get_approval_callback
-            approval_callback = _get_approval_callback()
-        except Exception:
-            approval_callback = None
+        # Approval callback: CLI threads use prompt_toolkit; gateway
+        # sessions bridge Codex requests into tools.approval's blocking
+        # notifier queue; cron/non-interactive contexts still fail closed.
+        approval_callback = _resolve_codex_approval_callback()
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,

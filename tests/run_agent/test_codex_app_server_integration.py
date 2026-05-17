@@ -84,6 +84,44 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_gateway_approval_callback_is_available_for_codex_requests(self):
+        """Gateway sessions do not use the terminal callback slot. Codex
+        app-server approvals still need to reach the gateway approval queue."""
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-approval"
+        seen: dict = {}
+
+        def notify(data):
+            seen.update(data)
+            resolve_gateway_approval(session_key, "once")
+
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            assert (
+                callback(
+                    "rm -rf build",
+                    "Codex requests exec",
+                    allow_permanent=False,
+                )
+                == "once"
+            )
+            assert seen["command"] == "rm -rf build"
+            assert seen["description"] == "Codex requests exec"
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):

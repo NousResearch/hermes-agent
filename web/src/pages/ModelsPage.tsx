@@ -957,6 +957,7 @@ export default function ModelsPage() {
                                   onClick={() => setPickerFallback({ kind: "fallback" })}
                                   disabled={fallbackBusy}
                                   className="text-xs"
+                                  data-testid="fallback-add-button"
                                 >
                                   Add
                                 </Button>
@@ -966,6 +967,7 @@ export default function ModelsPage() {
                                   onClick={saveFallbacks}
                                   disabled={fallbackBusy}
                                   className="text-xs"
+                                  data-testid="fallback-save-button"
                                   prefix={fallbackBusy ? <Spinner /> : null}
                                 >
                                   Save
@@ -1006,6 +1008,7 @@ export default function ModelsPage() {
                                       onClick={() => idx > 0 && moveFallback(idx, idx - 1)}
                                       className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
                                       aria-label="Move up"
+                                      data-testid={`fallback-move-up-${idx}`}
                                     >
                                       ↑
                                     </button>
@@ -1018,6 +1021,7 @@ export default function ModelsPage() {
                                       }
                                       className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
                                       aria-label="Move down"
+                                      data-testid={`fallback-move-down-${idx}`}
                                     >
                                       ↓
                                     </button>
@@ -1026,6 +1030,7 @@ export default function ModelsPage() {
                                       onClick={() => removeFallback(idx)}
                                       className="text-[10px] p-0.5 hover:text-destructive"
                                       aria-label="Remove"
+                                      data-testid={`fallback-remove-${idx}`}
                                     >
                                       ×
                                     </button>

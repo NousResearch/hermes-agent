@@ -201,6 +201,7 @@ export function ModelPickerDialog(props: Props) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-picker-title"
+      data-testid="model-picker-dialog"
     >
       <div className="relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col">
         <Button

@@ -261,16 +261,22 @@ def _read_tail(
     When filters are active, we read more raw lines to find enough matches.
     """
     if has_filters:
-        # Read more lines to ensure we get enough after filtering.
-        # For large files, read last 10K lines and filter down.
-        raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
-        filtered = [
-            l for l in raw_lines
-            if _matches_filters(l, min_level=min_level,
-                                session_filter=session_filter, since=since,
-                                component_prefixes=component_prefixes)
-        ]
-        return filtered[-num_lines:]
+        raw_count = max(num_lines * 20, 2000)
+        previous_raw_count = -1
+        while True:
+            raw_lines = _read_last_n_lines(path, raw_count)
+            filtered = [
+                l for l in raw_lines
+                if _matches_filters(l, min_level=min_level,
+                                    session_filter=session_filter, since=since,
+                                    component_prefixes=component_prefixes)
+            ]
+            if len(filtered) >= num_lines or len(raw_lines) < raw_count:
+                return filtered[-num_lines:]
+            if len(raw_lines) == previous_raw_count:
+                return filtered[-num_lines:]
+            previous_raw_count = len(raw_lines)
+            raw_count *= 2
     else:
         return _read_last_n_lines(path, num_lines)
 

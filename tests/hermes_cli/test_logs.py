@@ -237,6 +237,31 @@ class TestReadTail:
         assert "gw msg" in result[0]
         assert "session msg" in result[1]
 
+    def test_filtered_tail_expands_past_recent_non_matches(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        lines = [
+            "2026-01-01 00:00:00 INFO gateway.run: gw msg 1\n",
+            "2026-01-01 00:00:01 INFO gateway.session: gw msg 2\n",
+            "2026-01-01 00:00:02 INFO gateway.run: gw msg 3\n",
+        ]
+        lines.extend(
+            f"2026-01-01 00:{i // 60:02d}:{i % 60:02d} INFO tools.file: noise {i}\n"
+            for i in range(2100)
+        )
+        log_file.write_text("".join(lines), encoding="utf-8")
+
+        result = _read_tail(
+            log_file,
+            3,
+            has_filters=True,
+            component_prefixes=("gateway",),
+        )
+
+        assert len(result) == 3
+        assert "gw msg 1" in result[0]
+        assert "gw msg 2" in result[1]
+        assert "gw msg 3" in result[2]
+
     def test_empty_file(self, tmp_path):
         log_file = tmp_path / "empty.log"
         log_file.write_text("")

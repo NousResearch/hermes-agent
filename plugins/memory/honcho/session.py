@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import queue
 import re
 import logging
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
+_PEER_ID_HASH_LEN = 8
+_PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
 
 @dataclass
@@ -287,6 +290,41 @@ class HonchoSessionManager:
         chat_id = parts[1] if len(parts) > 1 else key
         return self._sanitize_id(f"user-{channel}-{chat_id}")
 
+    def _explicit_user_peer_ids(self) -> set[str]:
+        """Return sanitized user peer IDs that came from explicit config."""
+        if self._config is None:
+            return set()
+
+        explicit_ids: set[str] = set()
+        peer_name = getattr(self._config, "peer_name", None)
+        if peer_name:
+            explicit_ids.add(self._sanitize_id(str(peer_name).strip()))
+
+        aliases = getattr(self._config, "user_peer_aliases", {})
+        if isinstance(aliases, dict):
+            for alias in aliases.values():
+                if isinstance(alias, str) and alias.strip():
+                    explicit_ids.add(self._sanitize_id(alias.strip()))
+
+        return explicit_ids
+
+    def _generated_runtime_peer_id(self, prefix: str, runtime_id: str) -> str:
+        """Return a stable peer ID for an unknown prefixed runtime user."""
+        raw_peer_id = f"{prefix}{runtime_id}"
+        sanitized_peer_id = self._sanitize_id(raw_peer_id)
+        explicit_ids = self._explicit_user_peer_ids()
+        if (
+            sanitized_peer_id != raw_peer_id
+            or sanitized_peer_id in explicit_ids
+        ):
+            digest = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()
+            for hash_len in _PEER_ID_HASH_ESCALATION_LENGTHS:
+                candidate = f"{sanitized_peer_id}-{digest[:hash_len]}"
+                if candidate not in explicit_ids:
+                    return candidate
+            return f"{sanitized_peer_id}-{digest}"
+        return sanitized_peer_id
+
     def _resolve_user_peer_id(self, key: str) -> str:
         """Resolve the Honcho user peer ID for this manager/session."""
         pin_peer_name = (
@@ -311,7 +349,7 @@ class HonchoSessionManager:
             prefix = getattr(self._config, "runtime_peer_prefix", "") if self._config else ""
             prefix = prefix.strip() if isinstance(prefix, str) else ""
             if prefix:
-                return self._sanitize_id(f"{prefix}{primary_runtime_id}")
+                return self._generated_runtime_peer_id(prefix, primary_runtime_id)
             return self._sanitize_id(primary_runtime_id)
 
         if self._config and self._config.peer_name:

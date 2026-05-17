@@ -19,6 +19,7 @@ Honcho API calls so we can assert the chosen ``user_peer_id`` without
 touching the network.
 """
 
+import hashlib
 import json
 from unittest.mock import MagicMock
 
@@ -275,6 +276,82 @@ class TestPeerResolutionOrder:
 
         session = mgr.get_or_create("telegram:86701400")
         assert session.user_peer_id == "telegram_86701400"
+
+    def test_prefixed_runtime_id_hashes_when_sanitization_is_lossy(self):
+        """Generated prefixed IDs avoid merges caused by lossy sanitization."""
+        raw_peer_id = "telegram_user:42"
+        expected_hash = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()[:8]
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name=None,
+                pin_peer_name=False,
+                runtime_peer_prefix="telegram_",
+            ),
+            runtime_user_peer_name="user:42",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:user:42")
+        assert session.user_peer_id == f"telegram_user-42-{expected_hash}"
+
+    def test_prefixed_runtime_id_hashes_when_it_collides_with_peer_name(self):
+        """Unknown generated peers should not silently merge into peerName."""
+        raw_peer_id = "telegram_86701400"
+        expected_hash = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()[:8]
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name="telegram_86701400",
+                pin_peer_name=False,
+                runtime_peer_prefix="telegram_",
+            ),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:86701400")
+        assert session.user_peer_id == f"telegram_86701400-{expected_hash}"
+
+    def test_prefixed_runtime_id_hashes_when_it_collides_with_alias_target(self):
+        """Unknown generated peers should not silently merge into alias targets."""
+        raw_peer_id = "telegram_86701400"
+        expected_hash = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()[:8]
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name=None,
+                pin_peer_name=False,
+                user_peer_aliases={"known-user": "telegram_86701400"},
+                runtime_peer_prefix="telegram_",
+            ),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:86701400")
+        assert session.user_peer_id == f"telegram_86701400-{expected_hash}"
+
+    def test_prefixed_runtime_id_extends_hash_when_short_hash_collides(self):
+        raw_peer_id = "telegram_86701400"
+        digest = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(
+                peer_name=None,
+                pin_peer_name=False,
+                user_peer_aliases={
+                    "known-user": "telegram_86701400",
+                    "reserved-user": f"telegram_86701400-{digest[:8]}",
+                },
+                runtime_peer_prefix="telegram_",
+            ),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        session = mgr.get_or_create("telegram:86701400")
+        assert session.user_peer_id == f"telegram_86701400-{digest[:12]}"
 
     def test_alias_value_is_sanitized_after_selection(self):
         mgr = HonchoSessionManager(

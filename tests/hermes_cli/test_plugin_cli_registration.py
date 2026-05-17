@@ -99,7 +99,7 @@ class TestMemoryPluginCliDiscovery:
 
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         # Set testplugin as the active provider
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "testplugin")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["testplugin"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -125,7 +125,7 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: [])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -143,7 +143,7 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "noplugin")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["noplugin"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:
@@ -161,7 +161,7 @@ class TestMemoryPluginCliDiscovery:
         import plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "nocli")
+        monkeypatch.setattr(pm, "get_active_memory_providers", lambda: ["nocli"])
         try:
             cmds = pm.discover_plugin_cli_commands()
         finally:

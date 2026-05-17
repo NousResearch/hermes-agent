@@ -1428,6 +1428,16 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("sync_turn: skipped (shutting down)")
             return
 
+        # Skip retain for platforms where the upstream API does not provide
+        # real sender IDs (e.g. iLink Bot API reports bot's own user_id for
+        # all messages).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
+        # exclude platforms whose messages cannot be attributed to real users.
+        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
+        _skip_set = {p.strip().lower() for p in _skip.split(",") if p.strip()} if _skip else set()
+        if self._platform in _skip_set:
+            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
+            return
+
         if session_id:
             self._session_id = str(session_id).strip()
 

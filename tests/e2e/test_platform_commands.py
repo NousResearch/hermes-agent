@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from gateway.session import build_session_key
 from tests.e2e.conftest import make_event, send_and_capture
 
 
@@ -90,13 +91,18 @@ class TestSlashCommands:
 
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
+        expected_session_key = build_session_key(make_event(platform, "restart gateway").source)
 
         send = await send_and_capture(adapter, "restart gateway", platform)
 
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert "restart" in response_text.lower() or "draining" in response_text.lower()
-        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+        runner.request_restart.assert_called_once_with(
+            detached=False,
+            via_service=True,
+            exclude_session_key=expected_session_key,
+        )
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):

@@ -81,7 +81,11 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
     )
 
     await runner._handle_restart_command(event)
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    runner.request_restart.assert_called_once_with(
+        detached=False,
+        via_service=True,
+        exclude_session_key=build_session_key(source),
+    )
 
 
 @pytest.mark.asyncio
@@ -102,7 +106,11 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
     )
 
     await runner._handle_restart_command(event)
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_called_once_with(
+        detached=True,
+        via_service=False,
+        exclude_session_key=build_session_key(source),
+    )
 
 
 @pytest.mark.asyncio

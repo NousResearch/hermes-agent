@@ -113,6 +113,52 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_gateway_restart_does_not_drain_requesting_active_session():
+    runner, adapter = make_restart_runner()
+    disconnect_mock = AsyncMock()
+    adapter.disconnect = disconnect_mock
+
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    running_agent = MagicMock()
+    runner._running_agents = {session_key: running_agent}
+    runner._restart_drain_exclude_session_key = session_key
+    runner._restart_drain_timeout = 30.0
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await asyncio.wait_for(runner.stop(restart=True), timeout=0.5)
+
+    running_agent.interrupt.assert_not_called()
+    disconnect_mock.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+    assert runner._running_agents == {}
+
+
+@pytest.mark.asyncio
+async def test_restart_command_excludes_requesting_session_from_drain(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    runner, _adapter = make_restart_runner()
+    event = MessageEvent(text="/restart", source=make_restart_source(), message_id="restart-1")
+    session_key = build_session_key(event.source)
+    runner._running_agents = {session_key: MagicMock()}
+
+    def _request_restart(**kwargs):
+        runner._restart_drain_exclude_session_key = kwargs.get("exclude_session_key")
+        return True
+
+    runner.request_restart = MagicMock(side_effect=_request_restart)
+
+    result = await runner._handle_restart_command(event)
+
+    runner.request_restart.assert_called_once_with(
+        detached=True,
+        via_service=False,
+        exclude_session_key=session_key,
+    )
+    assert "draining" not in str(result).lower()
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_interrupts_after_drain_timeout():
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05

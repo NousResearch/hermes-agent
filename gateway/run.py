@@ -1191,6 +1191,7 @@ class GatewayRunner:
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _restart_drain_exclude_session_key: Optional[str] = None
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -2012,6 +2013,9 @@ class GatewayRunner:
         self._shutdown_event.set()
 
     def _running_agent_count(self) -> int:
+        excluded = getattr(self, "_restart_drain_exclude_session_key", None)
+        if excluded:
+            return sum(1 for session_key in self._running_agents if session_key != excluded)
         return len(self._running_agents)
 
     def _status_action_label(self) -> str:
@@ -2551,10 +2555,11 @@ class GatewayRunner:
         return None
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
+        excluded = getattr(self, "_restart_drain_exclude_session_key", None)
         return {
             session_key: agent
             for session_key, agent in self._running_agents.items()
-            if agent is not _AGENT_PENDING_SENTINEL
+            if agent is not _AGENT_PENDING_SENTINEL and session_key != excluded
         }
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
@@ -2774,7 +2779,8 @@ class GatewayRunner:
                 last_active_count = active_count
                 last_status_at = now
 
-        if not self._running_agents:
+        active_keys = set(snapshot)
+        if not active_keys:
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -2783,10 +2789,11 @@ class GatewayRunner:
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
-        while self._running_agents and asyncio.get_running_loop().time() < deadline:
+        while active_keys and asyncio.get_running_loop().time() < deadline:
             _maybe_update_status()
             await asyncio.sleep(0.1)
-        timed_out = bool(self._running_agents)
+            active_keys = {key for key in active_keys if key in self._running_agents}
+        timed_out = bool(active_keys)
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
@@ -3200,12 +3207,19 @@ class GatewayRunner:
                 start_new_session=True,
             )
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(
+        self,
+        *,
+        detached: bool = False,
+        via_service: bool = False,
+        exclude_session_key: Optional[str] = None,
+    ) -> bool:
         if self._restart_task_started:
             return False
         self._restart_requested = True
         self._restart_detached = detached
         self._restart_via_service = via_service
+        self._restart_drain_exclude_session_key = exclude_session_key
         self._restart_task_started = True
 
         async def _run_restart() -> None:
@@ -8970,7 +8984,7 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
-        active_agents = self._running_agent_count()
+        restart_session_key = self._session_key_for_source(event.source)
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
         # restarts us.  The detached subprocess approach (setsid + bash)
@@ -8978,9 +8992,18 @@ class GatewayRunner:
         # processes in the cgroup, including the detached helper.
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         if _under_service:
-            self.request_restart(detached=False, via_service=True)
+            self.request_restart(
+                detached=False,
+                via_service=True,
+                exclude_session_key=restart_session_key,
+            )
         else:
-            self.request_restart(detached=True, via_service=False)
+            self.request_restart(
+                detached=True,
+                via_service=False,
+                exclude_session_key=restart_session_key,
+            )
+        active_agents = self._running_agent_count()
         if active_agents:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))

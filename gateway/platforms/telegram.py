@@ -421,7 +421,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
-        self._polling_network_error_count: int = 0
+        self._conflict_window_until: float = 0.0
         self._polling_error_callback_ref = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
@@ -750,171 +750,59 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
-        """Reconnect polling after a transient network interruption.
+        """Log network errors — PTB's internal network_retry_loop handles recovery.
 
-        Triggered by NetworkError/TimedOut in the polling error callback, which
-        happen when the host loses connectivity (Mac sleep, WiFi switch, VPN
-        reconnect, etc.).  The gateway process stays alive but the long-poll
-        connection silently dies; without this handler the bot never recovers.
-
-        Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
-        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
-        the supervisor restarts the gateway process.
+        PTB's network_retry_loop (max_retries=-1) automatically retries
+        get_updates() after any TelegramError.  We intentionally do NOT
+        restart polling here — manual stop()+start_polling() races with
+        PTB's retry and creates 409 Conflicts (see #3173).
         """
         if self.has_fatal_error:
             return
-
-        MAX_NETWORK_RETRIES = 10
-        BASE_DELAY = 5
-        MAX_DELAY = 60
-
-        self._polling_network_error_count += 1
-        attempt = self._polling_network_error_count
-
-        if attempt > MAX_NETWORK_RETRIES:
-            message = (
-                "Telegram polling could not reconnect after %d network error retries. "
-                "Restarting gateway." % MAX_NETWORK_RETRIES
-            )
-            logger.error("[%s] %s Last error: %s", self.name, message, error)
-            self._set_fatal_error("telegram_network_error", message, retryable=True)
-            await self._notify_fatal_error()
-            return
-
-        delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
         logger.warning(
-            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
-            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
+            "[%s] Telegram network error (trusting PTB auto-recovery): %s",
+            self.name, error,
         )
-        await asyncio.sleep(delay)
-
-        try:
-            if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
-        except Exception:
-            pass
-
-        await self._drain_polling_connections()
-
-        try:
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                error_callback=self._polling_error_callback_ref,
-            )
-            logger.info(
-                "[%s] Telegram polling resumed after network error (attempt %d)",
-                self.name, attempt,
-            )
-            self._polling_network_error_count = 0
-            # start_polling() returning is necessary but not sufficient:
-            # PTB's Updater can be left in a state where `running` is True
-            # but the underlying long-poll task is wedged on a stale httpx
-            # connection and never makes progress. No error_callback fires
-            # in that state, so the reconnect ladder won't advance on its
-            # own. Schedule a deferred probe to detect the wedge and
-            # re-enter the ladder if needed.
-            if not self.has_fatal_error:
-                probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
-                self._background_tasks.add(probe)
-                probe.add_done_callback(self._background_tasks.discard)
-        except Exception as retry_err:
-            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # start_polling failed — polling is dead and no further error
-            # callbacks will fire, so schedule the next retry ourselves.
-            if not self.has_fatal_error:
-                task = asyncio.ensure_future(
-                    self._handle_polling_network_error(retry_err)
-                )
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-
-    async def _verify_polling_after_reconnect(self) -> None:
-        """Heartbeat probe scheduled after a successful reconnect.
-
-        PTB's Updater can survive a botched stop()+start_polling() cycle
-        with `running=True` but a wedged consumer task. No error callback
-        fires, so the reconnect ladder doesn't advance on its own. This
-        probe detects the wedge by:
-
-        1. Sleeping HEARTBEAT_PROBE_DELAY so a healthy long-poll has time
-           to complete at least one cycle.
-        2. Verifying `Updater.running` is still True.
-        3. Probing the bot endpoint with a tight asyncio timeout. A
-           wedged httpx pool fails this probe; a healthy one returns
-           well under the timeout.
-
-        On any failure, re-enter the reconnect ladder so the existing
-        MAX_NETWORK_RETRIES path can ultimately escalate to fatal-error.
-        """
-        HEARTBEAT_PROBE_DELAY = 60
-        PROBE_TIMEOUT = 10
-
-        await asyncio.sleep(HEARTBEAT_PROBE_DELAY)
-
-        if self.has_fatal_error:
-            return
-        if not (self._app and self._app.updater and self._app.updater.running):
-            logger.warning(
-                "[%s] Updater not running %ds after reconnect — treating as wedged",
-                self.name, HEARTBEAT_PROBE_DELAY,
-            )
-            await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
-            )
-            return
-
-        try:
-            await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
-        except Exception as probe_err:
-            logger.warning(
-                "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
-                self.name, HEARTBEAT_PROBE_DELAY, probe_err,
-            )
-            await self._handle_polling_network_error(probe_err)
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
+        """Count consecutive 409 Conflicts and escalate to fatal if persistent.
+
+        PTB's internal network_retry_loop (max_retries=-1) automatically retries
+        get_updates() after a TelegramError.  The 409 Conflict kills the old
+        TG-side connection, so PTB's retry usually succeeds on the next attempt.
+
+        We intentionally do NOT restart polling here — doing so creates a
+        self-conflict race (the new start_polling's first getUpdates collides
+        with PTB's auto-retry or the _get_updates_cleanup callback in stop()).
+
+        Only if conflicts keep arriving despite PTB's auto-recovery (suggesting
+        a genuine multi-instance conflict) do we escalate to fatal.
+        """
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
-        # Track consecutive conflicts — transient 409s can occur when a
-        # previous gateway instance hasn't fully released its long-poll
-        # session on Telegram's server (e.g. during --replace handoffs or
-        # systemd Restart=on-failure respawns).  Retry a few times before
-        # giving up, so the old session has time to expire.
+
+        import time
+        now = time.monotonic()
+
+        # If more than 60s passed since the last conflict, treat as fresh wave.
+        # This prevents a conflict after days of stability from being penalized
+        # by a stale counter from a long-past incident.
+        if self._conflict_window_until > 0 and now > self._conflict_window_until:
+            self._polling_conflict_count = 0
+
         self._polling_conflict_count += 1
+        self._conflict_window_until = now + 60.0
 
         MAX_CONFLICT_RETRIES = 3
-        RETRY_DELAY = 10  # seconds
 
-        if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+        if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
             logger.warning(
-                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
-                self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
-                RETRY_DELAY, error,
+                "[%s] Telegram polling conflict (%d/%d) — trusting PTB auto-recovery. Error: %s",
+                self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES, error,
             )
-            try:
-                if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
-            except Exception:
-                pass
-            await asyncio.sleep(RETRY_DELAY)
-            await self._drain_polling_connections()
-            try:
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
-                )
-                logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
-                self._polling_conflict_count = 0  # reset on success
-                return
-            except Exception as retry_err:
-                logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
-                # Don't fall through to fatal yet — wait for the next conflict
-                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
-                return
+            return
 
-        # Exhausted retries — fatal
+        # Exhausted retries within the 60s window — genuine multi-instance conflict
         message = (
             "Another process is already polling this Telegram bot token "
             "(possibly OpenClaw or another Hermes instance). "

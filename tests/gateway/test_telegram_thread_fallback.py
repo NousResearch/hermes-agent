@@ -128,7 +128,6 @@ def _make_adapter():
     adapter._reply_to_mode = "first"
     adapter._fallback_ips = []
     adapter._polling_conflict_count = 0
-    adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
     adapter.platform = Platform.TELEGRAM
     return adapter

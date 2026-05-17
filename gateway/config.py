@@ -899,6 +899,12 @@ class GatewayConfig:
     # different profiles. See gateway/profile_routing.py. Each entry is a
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
+    # ── Multi-agent (single-gateway-multi-agent) ─────────────────────────
+    # Empty defaults preserve legacy single-agent behavior: the runtime
+    # always synthesizes a {"main": AgentProfile()} registry on top of this.
+    agents: Dict[str, Any] = field(default_factory=dict)
+    routes: List[Dict[str, Any]] = field(default_factory=list)
+    default_agent: str = "main"
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
@@ -1023,6 +1029,9 @@ class GatewayConfig:
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
                 for r in self.profile_routes
             ],
+            "agents": self.agents,
+            "routes": self.routes,
+            "default_agent": self.default_agent,
         }
     
     @classmethod
@@ -1128,6 +1137,21 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
         profile_routes = parse_profile_routes(data.get("profile_routes") or [])
 
+        # Multi-agent config (optional; empty defaults preserve legacy
+        # single-agent behavior).
+        agents = data.get("agents") or {}
+        if not isinstance(agents, dict):
+            agents = {}
+        routes_raw = data.get("routes") or []
+        routes: List[Dict[str, Any]] = []
+        if isinstance(routes_raw, list):
+            for r in routes_raw:
+                if isinstance(r, dict):
+                    routes.append(r)
+        default_agent = data.get("default_agent") or "main"
+        if not isinstance(default_agent, str) or not default_agent.strip():
+            default_agent = "main"
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -1152,6 +1176,9 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            agents=agents,
+            routes=routes,
+            default_agent=default_agent.strip(),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1344,6 +1371,15 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["filter_silence_narration"] = gateway_section[
                     "filter_silence_narration"
                 ]
+
+            if "agents" in yaml_cfg:
+                gw_data["agents"] = yaml_cfg["agents"]
+
+            if "routes" in yaml_cfg:
+                gw_data["routes"] = yaml_cfg["routes"]
+
+            if "default_agent" in yaml_cfg:
+                gw_data["default_agent"] = yaml_cfg["default_agent"]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

@@ -5407,3 +5407,21 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+    def test_auto_recall_session_sources_route_through_unified_recall(self):
+        """Regression guard: auto decisions that request session sources must execute them."""
+        import inspect
+        src = inspect.getsource(AIAgent.run_conversation)
+        assert "_src in (\"session_fts\", \"session_summary\")" in src
+        assert "from tools.recall_tool import recall as _recall_tool" in src
+        assert "db=self._session_db" in src
+        assert "self._memory_manager.recall_now_all" in src
+        assert "timeout=float(_router_cfg.get(\"timeout\", 8.0) or 8.0)" in src
+
+    def test_manual_recall_marks_auto_key_for_dedupe(self):
+        """Manual recall should suppress the equivalent auto recall key for a few turns."""
+        import inspect
+        src = inspect.getsource(AIAgent._invoke_tool)
+        assert "auto_recall_key" in src
+        src_sequential = inspect.getsource(AIAgent._execute_tool_calls_sequential)
+        assert "auto_recall_key" in src_sequential

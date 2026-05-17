@@ -880,6 +880,18 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
         },
+        # Memory recall gate — cheap current-turn judge for external memory
+        # prefetch.  It sees only a sanitized current message + bounded recent
+        # window, never full transcripts/tool outputs.  Explicit Codex mini is
+        # cheap when available; failures fall back to local heuristics.
+        "memory_recall": {
+            "provider": "codex",
+            "model": "gpt-5.1-codex-mini",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 8,
+            "extra_body": {},
+        },
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -1134,6 +1146,19 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        "recall_router": {
+            "enabled": True,
+            # heuristic = local rules only. hybrid/llm may send sanitized current
+            # and recent turn text (with platform/session IDs hashed) to the
+            # auxiliary memory_recall model; opt in if you want semantic gating.
+            "strategy": "heuristic",
+            "recent_turns": 6,
+            "max_context_chars": 4000,
+            "timeout": 8.0,
+            "max_depth": "standard",   # automatic recall never goes deep/evidence
+            "max_budget": "small",
+            "dedupe_ttl_turns": 2,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

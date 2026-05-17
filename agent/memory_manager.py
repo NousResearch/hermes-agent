@@ -301,6 +301,44 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
+    def recall_now_all(
+        self,
+        query: str,
+        *,
+        mode: str = "auto",
+        depth: str = "light",
+        sources: Optional[List[str]] = None,
+        budget: str = "tiny",
+        provenance: str = "ids",
+        session_id: str = "",
+    ) -> str:
+        """Collect current-turn recall using explicit strategy metadata.
+
+        ``mode/depth/sources/budget/provenance`` let providers keep automatic
+        recall cheap and separate from manual/deep recall.  Providers that do
+        not implement ``recall_now`` inherit a prefetch-compatible default.
+        """
+        parts = []
+        for provider in self._providers:
+            try:
+                result = provider.recall_now(
+                    query,
+                    mode=mode,
+                    depth=depth,
+                    sources=sources,
+                    budget=budget,
+                    provenance=provenance,
+                    session_id=session_id,
+                )
+                if result and result.strip():
+                    parts.append(result)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' recall_now failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn."""
         for provider in self._providers:

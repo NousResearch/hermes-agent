@@ -1288,43 +1288,42 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
-    def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Append a friendly hint when xAI's OAuth surface returns an
-        entitlement-shaped error.
+    def _is_entitlement_failure(
+        error_context: Optional[Dict[str, Any]],
+        status_code: Optional[int],
+    ) -> bool:
+        """Detect subscription/entitlement 403s that masquerade as auth failures.
 
-        xAI's ``/v1/responses`` endpoint replies to OAuth tokens that lack a
-        SuperGrok / X Premium subscription with HTTP 403 carrying a body like::
+        Returned True only when the body text matches a known entitlement
+        shape AND the status is 401/403.  Refreshing an OAuth token cannot
+        fix an unsubscribed account, so callers should surface the error
+        instead of looping the credential pool.
 
-            {"code": "The caller does not have permission to execute the
-             specified operation", "error": "You have either run out of
-             available resources or do not have an active Grok subscription.
-             Manage subscriptions at https://grok.com/..."}
+        Current matches:
+          * xAI OAuth: "do not have an active Grok subscription" /
+            "out of available resources" / "does not have permission" + "grok"
 
-        The raw text is useful but the action the user needs to take (subscribe
-        on grok.com, or switch providers with ``/model``) isn't obvious from
-        the wire format.  Detect the entitlement shape and append a hint.
-
-        Matched once per detail string — won't double-decorate if the upstream
-        already concatenated the same text.
+        Extend here for new providers as we discover them (Anthropic's
+        Claude Max OAuth entitlement errors look distinct enough today that
+        the existing 1M-context-beta branch handles them; revisit if other
+        subscription tiers start producing the same loop signature).
         """
-        if not detail:
-            return detail
-        lower = detail.lower()
-        is_entitlement = (
-            "do not have an active grok subscription" in lower
-            or ("out of available resources" in lower and "grok" in lower)
-            or ("does not have permission" in lower and "grok" in lower)
-        )
-        if not is_entitlement:
-            return detail
-        hint = (
-            " — xAI OAuth account lacks SuperGrok / X Premium entitlement for "
-            "this model. Subscribe at https://grok.com or run `/model` to "
-            "switch providers."
-        )
-        if hint.strip() in detail:
-            return detail
-        return f"{detail}{hint}"
+        if status_code not in (401, 403, None):
+            return False
+        if not isinstance(error_context, dict):
+            return False
+        message = str(error_context.get("message") or "").lower()
+        reason = str(error_context.get("reason") or "").lower()
+        haystack = f"{message} {reason}"
+        if not haystack.strip():
+            return False
+        if "do not have an active grok subscription" in haystack:
+            return True
+        if "out of available resources" in haystack and "grok" in haystack:
+            return True
+        if "does not have permission" in haystack and "grok" in haystack:
+            return True
+        return False
 
     @staticmethod
     def _summarize_api_error(error: Exception) -> str:
@@ -1359,12 +1358,12 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return f"{prefix}{msg[:300]}"
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return f"{prefix}{raw[:500]}"
 
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:

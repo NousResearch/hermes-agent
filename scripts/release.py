@@ -1096,6 +1096,7 @@ AUTHOR_MAP = {
     "4296245+matthewlai@users.noreply.github.com": "matthewlai",
     "109617724+0xchainer@users.noreply.github.com": "0xchainer",  # PR #27154/27138/27147 salvage
     "201800237+kronexoi@users.noreply.github.com": "kronexoi",  # PR #27167 salvage (Teams port fallback)
+    "283442588+EloquentBrush0x@users.noreply.github.com": "EloquentBrush0x",  # PR #26642 salvage (post_setup parity)
     # batch salvage (May 2026 LHF run, group 2)
     "shellybotmoyer@example.com": "shellybotmoyer",  # PR #26661 (kanban --severity >=)
     "coulson@shellybotmoyer.com": "shellybotmoyer",  # PR #25576 (credential_pool ISO rehydrate)

@@ -499,6 +499,32 @@ You can verify the plist has the correct PATH:
   ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
+#### macOS: Multiple gateway processes accumulate / launchd restart loops
+
+**Cause:** An external launcher (most commonly `hermes-web-ui v0.5.x` on macOS) shells out to `hermes gateway run --replace` every time *it* starts, even when `ai.hermes.gateway` is already running under launchd. Each `--replace` SIGTERMs the launchd-managed gateway, launchd's `KeepAlive` policy respawns it, and the next web-ui restart kills the respawn — accumulating orphaned gateway processes and triggering SIGTERM restart loops (see [#27041](https://github.com/NousResearch/hermes-agent/issues/27041)).
+
+**Symptoms:**
+- `launchctl list | grep hermes` shows multiple gateway entries with status "Running"
+- Each gateway instance consumes ~300 MB+ RAM
+- `gateway.log` shows repeated planned-takeover entries within seconds of each other
+
+**Solution:** Hermes ≥ 0.5.26 hardens `hermes gateway run --replace` to detect this case and exit cleanly without SIGTERMing the supervised PID. No configuration is required — the next time the rogue launcher tries to spawn a gateway it simply becomes a no-op.
+
+To verify the fix is active, look for this line in `~/.hermes/logs/gateway.log` after a web-ui restart:
+
+```
+Existing gateway PID <pid> is supervised by launchd/systemd; refusing to replace it from an unsupervised --replace call.
+```
+
+If you need to override the guard from a maintenance script (e.g. for a controlled takeover), set `HERMES_GATEWAY_REPLACE_FORCE=1` before invoking `hermes gateway run --replace`. Routine restarts should keep using `hermes gateway restart`, which goes through `launchctl kickstart` and is unaffected by the guard.
+
+To clean up the orphaned processes left behind by previous runs:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway
+pkill -f "hermes_cli.main gateway"  # belt-and-braces sweep
+```
+
 ---
 
 ### Performance Issues

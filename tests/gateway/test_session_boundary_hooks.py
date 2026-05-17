@@ -82,7 +82,7 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="sess-old", platform="telegram"
+        "on_session_finalize", session_id="sess-old", platform="telegram", agent_id=None
     )
 
 
@@ -95,7 +95,7 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id="sess-new", platform="telegram"
+        "on_session_reset", session_id="sess-new", platform="telegram", agent_id=None
     )
 
 

@@ -4777,16 +4777,18 @@ class TestAnthropicInterruptHandler:
     def test_interruptible_has_anthropic_branch(self):
         """The interrupt handler must check api_mode == 'anthropic_messages'."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
+        from agent.chat_completion_helpers import interruptible_api_call
+        source = inspect.getsource(interruptible_api_call)
         assert "anthropic_messages" in source, \
-            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
+            "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
     def test_interruptible_rebuilds_anthropic_client(self):
         """After interrupting, the Anthropic client should be rebuilt."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
+        from agent.chat_completion_helpers import interruptible_api_call
+        source = inspect.getsource(interruptible_api_call)
         assert "build_anthropic_client" in source, \
-            "_interruptible_api_call must rebuild Anthropic client after interrupt"
+            "interruptible_api_call must rebuild Anthropic client after interrupt"
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""

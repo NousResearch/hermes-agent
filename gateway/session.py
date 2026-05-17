@@ -1452,9 +1452,9 @@ def build_session_context(
     
     if session_entry:
         origin = session_entry.origin
-        if (not source.chat_topic and origin.chat_topic) or (
+        if origin and ((not source.chat_topic and origin.chat_topic) or (
             not source.workroom_cwd and origin.workroom_cwd
-        ):
+        )):
             source = replace(
                 source,
                 chat_topic=source.chat_topic or origin.chat_topic,

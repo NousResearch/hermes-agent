@@ -54,6 +54,7 @@ _ensure_telegram_mock()
 
 # Now we can safely import
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from telegram.constants import ChatType as _ChatType  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +109,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    msg.forum_topic_created = None
     return msg
 
 
@@ -244,6 +246,34 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert "file text" in event.text
         assert "Please summarize" in event.text
+
+    @pytest.mark.asyncio
+    async def test_configured_group_topic_document_is_not_dropped_by_require_mention(self, adapter):
+        adapter.config.extra.update({
+            "require_mention": True,
+            "group_topics": [
+                {
+                    "chat_id": "-200",
+                    "topics": [{"name": "Documents", "thread_id": 3310}],
+                }
+            ],
+        })
+        doc = _make_document(file_name="task.docx", file_size=1024)
+        msg = _make_message(document=doc, caption="вот тестово тогда выполни задание")
+        msg.chat.id = -200
+        msg.chat.type = _ChatType.SUPERGROUP
+        msg.chat.title = "Work group"
+        msg.message_thread_id = 3310
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.source.thread_id == "3310"
+        assert event.source.chat_topic == "Documents"
+        assert "вот тестово тогда выполни задание" in event.text
 
     @pytest.mark.asyncio
     async def test_zip_document_cached(self, adapter):

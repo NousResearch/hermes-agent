@@ -14,6 +14,7 @@ def _make_adapter(
     group_allow_from=None,
     allowed_chats=None,
     guest_mode=None,
+    group_topics=None,
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -34,6 +35,8 @@ def _make_adapter(
         extra["allowed_chats"] = allowed_chats
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
+    if group_topics is not None:
+        extra["group_topics"] = group_topics
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -154,6 +157,44 @@ def test_free_response_chats_bypass_mention_requirement():
 
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200)) is True
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
+
+
+def test_configured_group_topic_bypasses_mention_requirement():
+    adapter = _make_adapter(
+        require_mention=True,
+        group_topics=[
+            {
+                "chat_id": "-200",
+                "topics": [{"name": "Workroom", "thread_id": "3310"}],
+            }
+        ],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("plain workroom update", chat_id=-200, thread_id=3310)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("same chat, wrong topic", chat_id=-200, thread_id=9999)
+    ) is False
+    assert adapter._should_process_message(
+        _group_message("same topic id, wrong chat", chat_id=-201, thread_id=3310)
+    ) is False
+
+
+def test_configured_group_topic_document_caption_bypasses_mention_requirement():
+    adapter = _make_adapter(
+        require_mention=True,
+        group_topics=[
+            {
+                "chat_id": "-200",
+                "topics": [{"name": "Documents", "thread_id": 3310}],
+            }
+        ],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(text=None, caption="вот тестово тогда выполни задание", chat_id=-200, thread_id=3310)
+    ) is True
 
 
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():

@@ -173,7 +173,7 @@ class TestPruneBasics:
         store._entries["fresh2"] = _entry("fresh2", age_days=2)
 
         save_calls = []
-        store._save = lambda: save_calls.append(1)
+        store._save = lambda **_kwargs: save_calls.append(1)
 
         assert store.prune_old_entries(max_age_days=90) == 0
         assert save_calls == []
@@ -184,7 +184,7 @@ class TestPruneBasics:
         store._entries["fresh"] = _entry("fresh", age_days=1)
 
         save_calls = []
-        store._save = lambda: save_calls.append(1)
+        store._save = lambda **_kwargs: save_calls.append(1)
 
         store.prune_old_entries(max_age_days=90)
         assert save_calls == [1]

@@ -3762,6 +3762,27 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _is_configured_group_topic(self, message: Message) -> bool:
+        """Return True when this message belongs to an explicitly configured forum topic."""
+        chat = getattr(message, "chat", None)
+        chat_id = str(getattr(chat, "id", ""))
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is None and getattr(chat, "is_forum", False):
+            thread_id = self._GENERAL_TOPIC_THREAD_ID
+        if thread_id is None:
+            return False
+        thread_id_str = str(thread_id)
+
+        for chat_entry in self.config.extra.get("group_topics", []) or []:
+            if str(chat_entry.get("chat_id", "")) != chat_id:
+                continue
+            for topic in chat_entry.get("topics", []) or []:
+                configured_thread_id = topic.get("thread_id")
+                if configured_thread_id is not None and str(configured_thread_id) == thread_id_str:
+                    return True
+            return False
+        return False
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
@@ -3936,6 +3957,7 @@ class TelegramAdapter(BasePlatformAdapter):
         - the chat passes the ``allowed_chats`` whitelist (when set), or
           ``guest_mode`` is enabled and the bot is explicitly mentioned
         - the chat is explicitly allowlisted in ``free_response_chats``
+        - the forum topic is explicitly configured in ``group_topics``
         - ``require_mention`` is disabled
         - the message replies to the bot
         - the bot is @mentioned
@@ -3978,6 +4000,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if guest_mention:
             return True
         if chat_id_str in self._telegram_free_response_chats():
+            return True
+        if self._is_configured_group_topic(message):
             return True
         if not self._telegram_require_mention():
             return True

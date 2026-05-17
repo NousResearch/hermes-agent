@@ -115,6 +115,31 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_acp_history_replay_emits_unique_persisted_reasoning_as_thoughts():
+    acp_agent, state, _fake, conn = make_agent_and_state()
+    thought = "**Investigating backup issues**\n\nReasoning summary"
+    state.history = [
+        {"role": "user", "content": "why?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": thought,
+            "reasoning_content": thought,
+            "codex_reasoning_items": [{"summary": [{"type": "summary_text", "text": thought}]}],
+            "tool_calls": [],
+        },
+        {"role": "assistant", "content": "Final answer"},
+    ]
+
+    await acp_agent._replay_session_history(state)
+
+    updates = [update for _sid, update in conn.updates]
+    kinds = [getattr(update, "session_update", None) for update in updates]
+    assert kinds == ["user_message_chunk", "agent_thought_chunk", "agent_message_chunk"]
+    assert updates[1].content.text == thought
+
+
+@pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

@@ -11833,6 +11833,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        checkpoint_callback: Optional[callable] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -11849,6 +11850,10 @@ class AIAgent:
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
                     or queuing follow-up prefetch work.
+            checkpoint_callback: Optional callback invoked with the current
+                message list after durable in-flight milestones such as the
+                user prompt, assistant tool-call message, and completed tool
+                results. Hosts use this for crash/reload recovery.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -11971,6 +11976,14 @@ class AIAgent:
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
+        def _checkpoint_inflight() -> None:
+            if checkpoint_callback is None:
+                return
+            try:
+                checkpoint_callback(messages)
+            except Exception:
+                logger.debug("In-flight checkpoint callback failed", exc_info=True)
+
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)
@@ -12037,6 +12050,7 @@ class AIAgent:
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
+        _checkpoint_inflight()
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
         
@@ -14929,6 +14943,7 @@ class AIAgent:
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
+                    _checkpoint_inflight()
 
                     # Close any open streaming display (response box, reasoning
                     # box) before tool execution begins.  Intermediate turns may
@@ -14943,6 +14958,7 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                    _checkpoint_inflight()
 
                     if self._tool_guardrail_halt_decision is not None:
                         decision = self._tool_guardrail_halt_decision

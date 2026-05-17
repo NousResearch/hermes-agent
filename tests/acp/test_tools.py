@@ -229,6 +229,18 @@ class TestBuildToolStart:
         assert "github-pitfalls" in result.content[0].content.text
         assert result.raw_input is None
 
+    def test_build_tool_start_for_polished_tool_after_generic_fallback(self):
+        """Polished tools should keep using module-level json after fallback import paths."""
+        generic = build_tool_start("tc-generic", "some_tool", {"foo": "bar"})
+        assert generic.kind == "other"
+
+        result = build_tool_start("tc-browser", "browser_navigate", {"url": "https://example.com"})
+
+        assert result.kind == "fetch"
+        assert result.title == "navigate: https://example.com"
+        assert '"url": "https://example.com"' in result.content[0].content.text
+        assert result.raw_input is None
+
     def test_build_tool_start_for_execute_code_shows_code_preview(self):
         result = build_tool_start("tc-code", "execute_code", {"code": "print('hello')"})
         assert result.kind == "execute"

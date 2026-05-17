@@ -8,6 +8,7 @@ import contextvars
 import json
 import logging
 import os
+import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -59,7 +60,6 @@ from acp.schema import (
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.events import (
-    make_message_cb,
     make_step_cb,
     make_thinking_cb,
     make_tool_progress_cb,
@@ -827,6 +827,42 @@ class HermesACPAgent(acp.Agent):
         return None
 
     @staticmethod
+    def _history_thought_texts(message: dict[str, Any]) -> list[str]:
+        """Extract unique persisted reasoning summaries for ACP history replay."""
+        texts: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            texts.append(text)
+
+        add(message.get("reasoning"))
+        add(message.get("reasoning_content"))
+
+        items = message.get("codex_reasoning_items")
+        if isinstance(items, str):
+            try:
+                items = json.loads(items)
+            except Exception:
+                items = None
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                summary = item.get("summary")
+                if isinstance(summary, list):
+                    for block in summary:
+                        if isinstance(block, dict):
+                            add(block.get("text"))
+
+        return texts
+
+    @staticmethod
     def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """Extract function name/arguments from an OpenAI-style tool_call."""
         function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
@@ -880,6 +916,11 @@ class HermesACPAgent(acp.Agent):
 
         for message in state.history:
             role = str(message.get("role") or "")
+
+            if role == "assistant":
+                for thought_text in self._history_thought_texts(message):
+                    if not await _send(acp.update_agent_thought_text(thought_text)):
+                        return
 
             if role in {"user", "assistant"}:
                 text = self._history_message_text(message)
@@ -1151,6 +1192,7 @@ class HermesACPAgent(acp.Agent):
                 return PromptResponse(stop_reason="end_turn")
             state.is_running = True
             state.current_prompt_text = user_text or "[Image attachment]"
+            state.current_prompt_started_at = time.time()
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
 
@@ -1164,20 +1206,19 @@ class HermesACPAgent(acp.Agent):
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
 
-        streamed_message = False
-
         if conn:
             tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
 
-            def stream_delta_cb(text: str) -> None:
-                nonlocal streamed_message
-                if text:
-                    streamed_message = True
-                message_cb(text)
-
+            # Do not expose the generic live text stream to ACP yet. Hermes core
+            # can route provider reasoning or pre-tool commentary through
+            # stream_delta_callback under some tool-generation paths; if ACP maps
+            # that untyped stream to AgentMessageChunk, private reasoning appears
+            # as visible chat/tool activity. Until the backend has typed visible
+            # vs thought delta events, send the final response after the turn and
+            # keep provider reasoning on the dedicated reasoning callback.
+            stream_delta_cb = None
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
         else:
             tool_progress_cb = None
@@ -1244,6 +1285,12 @@ class HermesACPAgent(acp.Agent):
                     conversation_history=state.history,
                     task_id=session_id,
                     persist_user_message=user_text or "[Image attachment]",
+                    checkpoint_callback=lambda messages: self.session_manager.checkpoint_inflight_turn(
+                        session_id,
+                        messages,
+                        current_prompt_text=user_text or "[Image attachment]",
+                        started_at=state.current_prompt_started_at,
+                    ),
                 )
                 return result
             except Exception as e:
@@ -1279,12 +1326,14 @@ class HermesACPAgent(acp.Agent):
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
+                state.current_prompt_started_at = None
             return PromptResponse(stop_reason="end_turn")
 
         if result.get("messages"):
             state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
-            self.session_manager.save_session(session_id)
+            # Persist updated history so sessions survive process restarts, and
+            # clear any incomplete-turn marker set by in-flight checkpoints.
+            self.session_manager.complete_inflight_turn(session_id, state.history)
 
         final_response = result.get("final_response", "")
         if final_response:
@@ -1300,7 +1349,7 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and not streamed_message:
+        if final_response and conn:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
@@ -1310,6 +1359,7 @@ class HermesACPAgent(acp.Agent):
         with state.runtime_lock:
             state.is_running = False
             state.current_prompt_text = ""
+            state.current_prompt_started_at = None
 
         while True:
             with state.runtime_lock:

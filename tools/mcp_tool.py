@@ -1134,14 +1134,32 @@ class MCPServerTask:
         # Keepalive interval in seconds.  Must be shorter than typical
         # LB / NAT idle-timeout (commonly 300-600s).
         _KEEPALIVE_INTERVAL = 180  # 3 minutes
+        try:
+            session_max_age = float(self._config.get("session_max_age", 0) or 0)
+        except (TypeError, ValueError):
+            session_max_age = 0.0
+        reconnect_deadline = (
+            time.monotonic() + session_max_age if session_max_age > 0 else None
+        )
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
             while True:
+                timeout = _KEEPALIVE_INTERVAL
+                if reconnect_deadline is not None:
+                    remaining = reconnect_deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.info(
+                            "MCP server '%s': session_max_age reached, reconnecting",
+                            self.name,
+                        )
+                        self._reconnect_event.set()
+                        break
+                    timeout = min(timeout, remaining)
                 done, _pending = await asyncio.wait(
                     {shutdown_task, reconnect_task},
-                    timeout=_KEEPALIVE_INTERVAL,
+                    timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if done:
@@ -1491,6 +1509,51 @@ class MCPServerTask:
                 # ``await self._task`` completes. See #9930.
                 self.session = None
                 raise
+            except BaseExceptionGroup as exc:
+                # The MCP SDK/anyio can surface stdio EOF from a child process
+                # exit as a BaseExceptionGroup rather than Exception. Treat an
+                # established-session EOF as reconnectable so wrapper-managed
+                # token rotation (e.g. GitHub App installation tokens) can
+                # intentionally recycle the subprocess without killing the MCP
+                # server task. Initial connection failures still use bounded
+                # retry/backoff below.
+                self.session = None
+                if self._shutdown_event.is_set():
+                    logger.debug(
+                        "MCP server '%s' disconnected during shutdown: %s",
+                        self.name, exc,
+                    )
+                    return
+                if self._ready.is_set():
+                    logger.warning(
+                        "MCP server '%s' stdio transport closed, reconnecting: %s",
+                        self.name, exc,
+                    )
+                    continue
+
+                initial_retries += 1
+                if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
+                    logger.warning(
+                        "MCP server '%s' failed initial connection after "
+                        "%d attempts, giving up: %s",
+                        self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
+                    )
+                    self._error = RuntimeError(str(exc))
+                    self._ready.set()
+                    return
+                logger.warning(
+                    "MCP server '%s' initial connection failed "
+                    "(attempt %d/%d), retrying in %.0fs: %s",
+                    self.name, initial_retries,
+                    _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+                if self._shutdown_event.is_set():
+                    self._error = RuntimeError(str(exc))
+                    self._ready.set()
+                    return
+                continue
             except Exception as exc:
                 self.session = None
 

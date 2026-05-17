@@ -181,6 +181,8 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    incomplete_turn: bool = False
+    current_prompt_started_at: float | None = None
 
 
 class SessionManager:
@@ -288,10 +290,14 @@ class SessionManager:
 
         if db is not None:
             try:
-                for row in db.list_sessions_rich(source="acp", limit=1000):
+                # Surface the user's real Hermes session history, not just
+                # sessions that were originally created through ACP. Resuming a
+                # CLI/TUI/gateway session through ACP restores it into an
+                # ACP-managed AIAgent while preserving the existing DB row.
+                for row in db.list_sessions_rich(source=None, limit=1000):
                     persisted_rows[str(row["id"])] = dict(row)
             except Exception:
-                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+                logger.debug("Failed to load Hermes sessions from DB", exc_info=True)
 
         # Collect in-memory sessions first.
         with self._lock:
@@ -396,6 +402,48 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def checkpoint_inflight_turn(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        current_prompt_text: str = "",
+        started_at: float | None = None,
+    ) -> None:
+        """Persist a best-effort snapshot for an active ACP turn.
+
+        This is intentionally a full-history checkpoint rather than a separate
+        append-only transcript. It keeps DB restore semantics simple and lets
+        the normal final save/rewrite path reconcile the canonical transcript
+        when the turn completes.
+        """
+        with self._lock:
+            state = self._sessions.get(session_id)
+        if state is None:
+            return
+        with state.runtime_lock:
+            state.history = copy.deepcopy(messages)
+            state.incomplete_turn = True
+            state.current_prompt_text = str(current_prompt_text or state.current_prompt_text or "")
+            if started_at is not None:
+                state.current_prompt_started_at = float(started_at)
+            elif state.current_prompt_started_at is None:
+                state.current_prompt_started_at = time.time()
+        self._persist(state)
+
+    def complete_inflight_turn(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Persist the completed ACP turn and clear incomplete-turn metadata."""
+        with self._lock:
+            state = self._sessions.get(session_id)
+        if state is None:
+            return
+        with state.runtime_lock:
+            state.history = copy.deepcopy(messages)
+            state.incomplete_turn = False
+            state.current_prompt_text = ""
+            state.current_prompt_started_at = None
+        self._persist(state)
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _get_db(self):
@@ -432,7 +480,13 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta: Dict[str, Any] = {"cwd": state.cwd}
+        if state.incomplete_turn:
+            session_meta["incomplete_turn"] = True
+            if state.current_prompt_text:
+                session_meta["current_prompt_text"] = state.current_prompt_text
+            if state.current_prompt_started_at is not None:
+                session_meta["current_prompt_started_at"] = state.current_prompt_started_at
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -490,12 +544,15 @@ class SessionManager:
         if row is None:
             return None
 
-        # Only restore ACP sessions.
-        if row.get("source") != "acp":
-            return None
+        # ACP can resume any Hermes session stored in SessionDB. Sessions that
+        # originated in the CLI/TUI/gateway are restored into an ACP-managed
+        # AIAgent for future turns; the original DB source is left unchanged.
 
         # Extract cwd from model_config.
         cwd = "."
+        incomplete_turn = False
+        current_prompt_text = ""
+        current_prompt_started_at: float | None = None
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
@@ -508,6 +565,14 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    incomplete_turn = bool(meta.get("incomplete_turn"))
+                    current_prompt_text = str(meta.get("current_prompt_text") or "")
+                    started = meta.get("current_prompt_started_at")
+                    if started is not None:
+                        try:
+                            current_prompt_started_at = float(started)
+                        except (TypeError, ValueError):
+                            current_prompt_started_at = None
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -540,6 +605,9 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            incomplete_turn=incomplete_turn,
+            current_prompt_text=current_prompt_text if incomplete_turn else "",
+            current_prompt_started_at=current_prompt_started_at if incomplete_turn else None,
         )
         with self._lock:
             self._sessions[session_id] = state

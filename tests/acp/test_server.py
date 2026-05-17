@@ -681,7 +681,7 @@ class TestPrompt:
         state.agent.run_conversation.assert_called_once()
         assert state.agent.tool_progress_callback is not None
         assert state.agent.step_callback is not None
-        assert state.agent.stream_delta_callback is not None
+        assert state.agent.stream_delta_callback is None
         assert state.agent.reasoning_callback is not None
         assert state.agent.thinking_callback is None
 
@@ -736,14 +736,14 @@ class TestPrompt:
         assert any(update.session_update == "agent_message_chunk" for update in updates)
 
     @pytest.mark.asyncio
-    async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
-        """If ACP already streamed response chunks, final_response should not be sent again."""
+    async def test_prompt_sends_final_response_when_live_streaming_disabled(self, agent):
+        """ACP should not expose generic live text streaming until deltas are typed safely."""
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
         def mock_run(*args, **kwargs):
-            state.agent.stream_delta_callback("streamed answer")
-            return {"final_response": "streamed answer", "messages": []}
+            assert state.agent.stream_delta_callback is None
+            return {"final_response": "final answer", "messages": []}
 
         state.agent.run_conversation = mock_run
 
@@ -760,7 +760,7 @@ class TestPrompt:
         ]
         agent_chunks = [update for update in updates if update.session_update == "agent_message_chunk"]
         assert len(agent_chunks) == 1
-        assert agent_chunks[0].content.text == "streamed answer"
+        assert agent_chunks[0].content.text == "final answer"
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):

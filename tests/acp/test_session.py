@@ -352,6 +352,36 @@ class TestPersistence:
         ids = {s["session_id"] for s in listing}
         assert sid in ids
 
+    def test_list_sessions_includes_non_acp_db_sessions(self, manager):
+        """The ACP sidebar should surface the user's real Hermes history."""
+        db = manager._get_db()
+        sid = "cli-session-1"
+        db.create_session(session_id=sid, source="cli", model_config={"cwd": "/cli-work"})
+        db.replace_messages(sid, [{"role": "user", "content": "from the classic CLI"}])
+
+        listing = manager.list_sessions()
+
+        item = next(s for s in listing if s["session_id"] == sid)
+        assert item["title"] == "from the classic CLI"
+        assert item["cwd"] == "/cli-work"
+
+    def test_get_session_restores_non_acp_db_session(self, manager):
+        """Clicking a CLI/TUI session in an ACP client should be resumable."""
+        db = manager._get_db()
+        sid = "tui-session-1"
+        db.create_session(session_id=sid, source="tui", model="test-model", model_config={"cwd": "/tui-work"})
+        db.replace_messages(sid, [
+            {"role": "user", "content": "resume me from TUI"},
+            {"role": "assistant", "content": "ok"},
+        ])
+
+        restored = manager.get_session(sid)
+
+        assert restored is not None
+        assert restored.session_id == sid
+        assert restored.cwd == "/tui-work"
+        assert restored.history[0]["content"] == "resume me from TUI"
+
     def test_list_sessions_filters_by_cwd(self, manager):
         keep = manager.create_session(cwd="/keep")
         drop = manager.create_session(cwd="/drop")
@@ -432,13 +462,16 @@ class TestPersistence:
         mc = json.loads(row["model_config"])
         assert mc["cwd"] == "/new"
 
-    def test_only_restores_acp_sessions(self, manager):
-        """get_session should not restore non-ACP sessions from DB."""
+    def test_restores_non_acp_sessions(self, manager):
+        """ACP should be able to resume normal Hermes sessions from DB."""
         db = manager._get_db()
-        # Manually create a CLI session in the DB.
         db.create_session(session_id="cli-session-123", source="cli", model="test")
-        # Should not be found via ACP SessionManager.
-        assert manager.get_session("cli-session-123") is None
+        db.replace_messages("cli-session-123", [{"role": "user", "content": "hello from cli"}])
+
+        restored = manager.get_session("cli-session-123")
+
+        assert restored is not None
+        assert restored.history[0]["content"] == "hello from cli"
 
     def test_sessions_searchable_via_fts(self, manager):
         """ACP sessions stored in SessionDB are searchable via FTS5."""

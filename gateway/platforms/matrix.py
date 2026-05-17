@@ -348,6 +348,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task: Optional[asyncio.Task] = None
         self._closing = False
         self._startup_ts: float = 0.0
+        # Clock-skew detection: count grace-check drops that happen well
+        # after startup (i.e. not initial-sync backfill).  If the host's
+        # system clock is set ahead of real time, the startup grace check
+        # `event_ts < startup_ts - 5` silently drops every live message.
+        # See #12614 — the symptom is "bot joins rooms but never replies".
+        # Drops only count when their skew matches the first sampled drop
+        # (within 60s), so varied-age backfill from freshly-invited rooms
+        # doesn't trip the heuristic.
+        self._late_grace_drops: int = 0
+        self._late_grace_skew: float = 0.0
+        self._clock_skew_warned: bool = False
 
         # Cache: room_id → bool (is DM)
         self._dm_rooms: Dict[str, bool] = {}
@@ -842,6 +853,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Initial sync to catch up, then start background sync.
         self._startup_ts = time.time()
+        # Reset clock-skew detector for each connect cycle so a reconnect
+        # after the user fixes NTP doesn't inherit stale counters.
+        self._late_grace_drops = 0
+        self._late_grace_skew = 0.0
+        self._clock_skew_warned = False
         self._closing = False
 
         try:
@@ -1542,6 +1558,49 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         event_ts = raw_ts / 1000.0 if raw_ts else 0.0
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            # If we are well past startup but events are still being dropped
+            # by the grace check, the host clock is probably set ahead of
+            # real time — every live event then looks "older than startup".
+            # Warn once so users can fix NTP instead of chasing a ghost.
+            # See #12614 (Schnurzel700, April 2026).
+            #
+            # Filter out backfill (events legitimately old) by requiring:
+            #  - we are >30s past startup (initial-sync replay window closed)
+            #  - the skew is *consistent* across consecutive drops, which is
+            #    the signature of a constant clock offset rather than a
+            #    variable-age room history.  Backfill from a freshly invited
+            #    room can deliver events spanning hours/days — those skews
+            #    will be all over the place and reset the counter.
+            if not self._clock_skew_warned and (
+                time.time() - self._startup_ts > 30
+            ):
+                skew = self._startup_ts - event_ts
+                # Sanity bound: malformed events with negative or absurd
+                # timestamps shouldn't count.
+                if 5 < skew < 86400:
+                    if self._late_grace_drops == 0:
+                        self._late_grace_skew = skew
+                        self._late_grace_drops = 1
+                    elif abs(skew - self._late_grace_skew) < 60:
+                        # Consistent offset → likely real clock skew.
+                        self._late_grace_drops += 1
+                    else:
+                        # Varied skew → likely backfill, restart sampling.
+                        self._late_grace_skew = skew
+                        self._late_grace_drops = 1
+                    if self._late_grace_drops >= 3:
+                        logger.warning(
+                            "Matrix: dropped %d consecutive live events as "
+                            "'too old' more than 30s after startup (skew "
+                            "≈ %.0fs). The host system clock is likely set "
+                            "ahead of real time, which causes the startup "
+                            "grace filter to silently discard every incoming "
+                            "message. Run `timedatectl set-ntp true` (or "
+                            "sync NTP) and restart the bot.",
+                            self._late_grace_drops,
+                            skew,
+                        )
+                        self._clock_skew_warned = True
             return
 
         # Extract content from the event.

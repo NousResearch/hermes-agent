@@ -160,6 +160,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -1771,7 +1772,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = await self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1825,7 +1826,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payload = await self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -4231,15 +4232,106 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+    async def _upload_image_for_post(self, image_url: str) -> Optional[str]:
+        """Download remote image and upload to Feishu, returning an image_key.
+
+        Returns None if download or upload fails so the caller can fall back
+        to showing the alt text / URL as plain text instead of silently losing
+        the image.
+        """
+        try:
+            image_path = await self._download_remote_image(image_url)
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to download markdown image %s", image_url,
+                exc_info=True,
+            )
+            return None
+
+        try:
+            import io as _io
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            image_file = _io.BytesIO(image_bytes)
+            image_file.name = os.path.basename(image_path)
+            body = self._build_image_upload_body(
+                image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+                image=image_file,
+            )
+            request = self._build_image_upload_request(body)
+            upload_response = await asyncio.to_thread(
+                self._client.im.v1.image.create, request,
+            )
+            image_key = self._extract_response_field(upload_response, "image_key")
+            if image_key:
+                return image_key
+            logger.warning(
+                "[Feishu] Image upload for %s returned no image_key", image_url,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to upload markdown image %s", image_url,
+                exc_info=True,
+            )
+            return None
+
+    async def _build_markdown_post_payload_with_images(self, content: str) -> str:
+        """Build a Feishu post payload, converting ``![](url)`` to native img tags.
+
+        Falls through to :func:`_build_markdown_post_payload` when no
+        markdown images are detected.
+        """
+        matches = list(_MARKDOWN_IMAGE_RE.finditer(content))
+        if not matches:
+            return _build_markdown_post_payload(content)
+
+        rows: List[List[Dict[str, str]]] = []
+        last_end = 0
+
+        for m in matches:
+            # Text before this image
+            text_before = content[last_end:m.start()]
+            if text_before.strip():
+                rows.extend(_build_markdown_post_rows(text_before))
+
+            # Download + upload the image
+            image_url = m.group(2)
+            image_key = await self._upload_image_for_post(image_url)
+            if image_key:
+                rows.append([{"tag": "img", "image_key": image_key}])
+            else:
+                # Preserve alt text + URL so the image is not silently lost
+                alt = m.group(1).strip() or "图片"
+                rows.append([{"tag": "md", "text": f"[{alt}]({image_url})"}])
+
+            last_end = m.end()
+
+        # Text after the last image
+        text_after = content[last_end:]
+        if text_after.strip():
+            rows.extend(_build_markdown_post_rows(text_after))
+
+        if not rows:
+            rows = _build_markdown_post_rows(content)
+
+        return json.dumps(
+            {"zh_cn": {"content": rows}},
+            ensure_ascii=False,
+        )
+
+    async def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        """Build the outbound message payload.
+
+        For post-type messages this method now downloads and uploads
+        markdown images (``![](url)``) so they render as native Feishu
+        images instead of being silently discarded by the post ``md`` tag.
+        """
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "post", await self._build_markdown_post_payload_with_images(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

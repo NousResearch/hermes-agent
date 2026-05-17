@@ -249,6 +249,35 @@ async def test_send_home_channel_startup_notification_to_configured_home(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_uses_lifecycle_channel_when_configured(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_notification_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="sys-42",
+        name="System",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="sys"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "sys-42", None)}
+    adapter.send.assert_called_once_with(
+        "sys-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     tmp_path, monkeypatch
 ):
@@ -544,6 +573,35 @@ async def test_send_home_channel_startup_notification_default_flag_true(
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_reroutes_to_lifecycle_channel(
+    tmp_path, monkeypatch
+):
+    """When lifecycle channel is configured, startup ping goes there instead of home."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_notification_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="sys-42",
+        name="System",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="sys"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {("telegram", "sys-42", None)}
+    adapter.send.assert_called_once_with(
+        "sys-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+@pytest.mark.asyncio
 async def test_send_restart_notification_skipped_when_flag_disabled(
     tmp_path, monkeypatch
 ):
@@ -601,6 +659,37 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
     assert success_lines, (
         "Expected INFO 'Sent restart notification' when send succeeded; "
         f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_reroutes_to_lifecycle_channel(
+    tmp_path, monkeypatch
+):
+    """Restart completion notice follows lifecycle channel when configured."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_notification_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="sys-42",
+        name="System",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "sys-42", None)
+    adapter.send.assert_called_once_with(
+        "sys-42",
+        "♻ Gateway restarted successfully. Your session continues.",
     )
     assert not notify_path.exists()
 

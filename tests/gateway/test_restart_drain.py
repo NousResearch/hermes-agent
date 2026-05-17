@@ -211,6 +211,29 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_routes_to_lifecycle_channel_when_configured():
+    """Lifecycle channel overrides active-chat/home destinations for shutdown notices."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+    runner.config.platforms[Platform.TELEGRAM].lifecycle_notification_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="sys-42",
+        name="System",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    test_adapter = adapter
+    assert len(test_adapter.sent_calls) == 1
+    chat_id, content, metadata = test_adapter.sent_calls[0]
+    assert chat_id == "sys-42"
+    assert "Gateway shutting down" in content
+    assert metadata is None
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_deduplicates_per_chat():
     """Multiple sessions in the same chat only get one notification."""
     runner, adapter = make_restart_runner()

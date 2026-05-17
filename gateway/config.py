@@ -284,7 +284,12 @@ class PlatformConfig:
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
-    
+
+    # Optional dedicated destination for gateway lifecycle notices
+    # (shutdown/restart/startup). When set, these notices are routed here
+    # instead of active/home chats on the same platform.
+    lifecycle_notification_channel: Optional[HomeChannel] = None
+
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
@@ -314,6 +319,10 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.lifecycle_notification_channel:
+            result["lifecycle_notification_channel"] = (
+                self.lifecycle_notification_channel.to_dict()
+            )
         return result
 
     @classmethod
@@ -322,11 +331,18 @@ class PlatformConfig:
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
+        lifecycle_notification_channel = None
+        if "lifecycle_notification_channel" in data:
+            lifecycle_notification_channel = HomeChannel.from_dict(
+                data["lifecycle_notification_channel"]
+            )
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
+            lifecycle_notification_channel=lifecycle_notification_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(
                 data.get("gateway_restart_notification"), True
@@ -535,6 +551,13 @@ class GatewayConfig:
         config = self.platforms.get(platform)
         if config:
             return config.home_channel
+        return None
+
+    def get_lifecycle_notification_channel(self, platform: Platform) -> Optional[HomeChannel]:
+        """Get dedicated lifecycle-notification channel for a platform, if any."""
+        config = self.platforms.get(platform)
+        if config:
+            return config.lifecycle_notification_channel
         return None
     
     def get_reset_policy(
@@ -1286,6 +1309,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=discord_home,
             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
             thread_id=os.getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
+    discord_lifecycle = os.getenv("DISCORD_LIFECYCLE_CHANNEL")
+    if discord_lifecycle and Platform.DISCORD in config.platforms:
+        config.platforms[Platform.DISCORD].lifecycle_notification_channel = HomeChannel(
+            platform=Platform.DISCORD,
+            chat_id=discord_lifecycle,
+            name=os.getenv("DISCORD_LIFECYCLE_CHANNEL_NAME", "System"),
+            thread_id=os.getenv("DISCORD_LIFECYCLE_CHANNEL_THREAD_ID") or None,
         )
     
     # Reply threading mode for Discord (off/first/all)

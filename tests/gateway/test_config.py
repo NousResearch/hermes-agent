@@ -70,6 +70,22 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_lifecycle_notification_channel_roundtrip(self):
+        pc = PlatformConfig(
+            enabled=True,
+            lifecycle_notification_channel=HomeChannel(
+                platform=Platform.DISCORD,
+                chat_id="1504054464678596618",
+                name="system",
+                thread_id="topic-7",
+            ),
+        )
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.lifecycle_notification_channel is not None
+        assert restored.lifecycle_notification_channel.chat_id == "1504054464678596618"
+        assert restored.lifecycle_notification_channel.name == "system"
+        assert restored.lifecycle_notification_channel.thread_id == "topic-7"
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -679,3 +695,21 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+    def test_discord_lifecycle_channel_env_override(self):
+        config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True)})
+        env = {
+            "DISCORD_BOT_TOKEN": "token",
+            "DISCORD_LIFECYCLE_CHANNEL": "1504054464678596618",
+            "DISCORD_LIFECYCLE_CHANNEL_NAME": "system",
+            "DISCORD_LIFECYCLE_CHANNEL_THREAD_ID": "topic-7",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            _apply_env_overrides(config)
+
+        lifecycle = config.platforms[Platform.DISCORD].lifecycle_notification_channel
+        assert lifecycle is not None
+        assert lifecycle.chat_id == "1504054464678596618"
+        assert lifecycle.name == "system"
+        assert lifecycle.thread_id == "topic-7"

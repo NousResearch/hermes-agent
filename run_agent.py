@@ -14313,16 +14313,26 @@ class AIAgent:
                     is_rate_limited = classified.reason in {
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
+                        FailoverReason.overloaded,
                     }
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  See _pool_may_recover_from_rate_limit
                         # for the single-credential-pool and CloudCode-quota
                         # exceptions.  Fixes #11314 and #13636.
-                        pool_may_recover = _pool_may_recover_from_rate_limit(
-                            self._credential_pool,
-                            provider=self.provider,
-                            base_url=getattr(self, "base_url", None),
+                        #
+                        # Important: credential rotation is useless when the
+                        # provider itself is overloaded (503/529) — a different
+                        # API key hits the same overloaded backend.  Skip the
+                        # pool-recovery gate so we fall back immediately instead
+                        # of burning all retries on an unrecoverable state.
+                        pool_may_recover = (
+                            classified.reason != FailoverReason.overloaded
+                            and _pool_may_recover_from_rate_limit(
+                                self._credential_pool,
+                                provider=self.provider,
+                                base_url=getattr(self, "base_url", None),
+                            )
                         )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")

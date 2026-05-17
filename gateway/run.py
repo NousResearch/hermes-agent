@@ -629,6 +629,42 @@ from gateway.config import (
     PlatformConfig,
     load_gateway_config,
 )
+
+
+def _target_tuple(
+    platform_value: str,
+    chat_id: str,
+    thread_id: Optional[str],
+) -> tuple[str, str, Optional[str]]:
+    return (
+        platform_value,
+        str(chat_id),
+        str(thread_id) if thread_id else None,
+    )
+
+
+def _resolve_lifecycle_target(
+    config: GatewayConfig,
+    platform: Platform,
+    *,
+    fallback_chat_id: str,
+    fallback_thread_id: Optional[str],
+) -> tuple[str, Optional[dict[str, str]], tuple[str, str, Optional[str]], bool]:
+    """Resolve destination for lifecycle notices on a platform.
+
+    Returns:
+      (chat_id_to_send, metadata, dedup_target, rerouted)
+    where rerouted=True means a dedicated lifecycle channel was used.
+    """
+    channel = config.get_lifecycle_notification_channel(platform)
+    if channel and channel.chat_id:
+        target = _target_tuple(platform.value, str(channel.chat_id), channel.thread_id)
+        metadata = {"thread_id": channel.thread_id} if channel.thread_id else None
+        return str(channel.chat_id), metadata, target, True
+
+    target = _target_tuple(platform.value, fallback_chat_id, fallback_thread_id)
+    metadata = {"thread_id": fallback_thread_id} if fallback_thread_id else None
+    return str(fallback_chat_id), metadata, target, False
 from gateway.session import (
     SessionStore,
     SessionSource,
@@ -2850,13 +2886,6 @@ class GatewayRunner:
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
-            # Deduplicate only identical delivery targets. Thread/topic-aware
-            # platforms can share a parent chat while still routing to distinct
-            # destinations via metadata.
-            dedup_key = (platform_str, chat_id, str(thread_id) if thread_id else None)
-            if dedup_key in notified:
-                continue
-
             try:
                 platform = Platform(platform_str)
                 adapter = self.adapters.get(platform)
@@ -2871,29 +2900,44 @@ class GatewayRunner:
                     )
                     continue
 
-                # Include thread_id if present so the message lands in the
-                # correct forum topic / thread.
-                metadata = {"thread_id": thread_id} if thread_id else None
+                resolved_chat_id, metadata, dedup_key, rerouted = _resolve_lifecycle_target(
+                    self.config,
+                    platform,
+                    fallback_chat_id=chat_id,
+                    fallback_thread_id=thread_id,
+                )
+                if dedup_key in notified:
+                    continue
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter.send(resolved_chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
                         platform_str,
-                        chat_id,
+                        resolved_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
 
                 notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to active chat %s:%s",
-                    platform_str, chat_id,
-                )
+                if rerouted:
+                    logger.info(
+                        "Sent shutdown notification to lifecycle channel %s:%s",
+                        platform_str,
+                        resolved_chat_id,
+                    )
+                else:
+                    logger.info(
+                        "Sent shutdown notification to active chat %s:%s",
+                        platform_str,
+                        resolved_chat_id,
+                    )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to %s:%s: %s",
-                    platform_str, chat_id, e,
+                    platform_str,
+                    chat_id,
+                    e,
                 )
 
         # Snapshot adapters up front: adapter.send() can hit a fatal error
@@ -2914,36 +2958,47 @@ class GatewayRunner:
                 )
                 continue
 
-            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            resolved_chat_id, metadata, dedup_key, rerouted = _resolve_lifecycle_target(
+                self.config,
+                platform,
+                fallback_chat_id=str(home.chat_id),
+                fallback_thread_id=home.thread_id,
+            )
             if dedup_key in notified:
                 continue
 
             try:
-                metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(resolved_chat_id, msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(resolved_chat_id, msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        resolved_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
 
                 notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
+                if rerouted:
+                    logger.info(
+                        "Sent shutdown notification to lifecycle channel %s:%s",
+                        platform.value,
+                        resolved_chat_id,
+                    )
+                else:
+                    logger.info(
+                        "Sent shutdown notification to home channel %s:%s",
+                        platform.value,
+                        resolved_chat_id,
+                    )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to home channel %s:%s: %s",
                     platform.value,
-                    home.chat_id,
+                    resolved_chat_id,
                     e,
                 )
 
@@ -13200,12 +13255,23 @@ class GatewayRunner:
                 )
                 return None
 
-            metadata = {"thread_id": thread_id} if thread_id else None
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=metadata,
+            resolved_chat_id, metadata, delivered_target, rerouted = _resolve_lifecycle_target(
+                self.config,
+                platform,
+                fallback_chat_id=str(chat_id),
+                fallback_thread_id=thread_id,
             )
+            if metadata:
+                result = await adapter.send(
+                    resolved_chat_id,
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=metadata,
+                )
+            else:
+                result = await adapter.send(
+                    resolved_chat_id,
+                    "♻ Gateway restarted successfully. Your session continues.",
+                )
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise
@@ -13214,17 +13280,24 @@ class GatewayRunner:
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
-                    chat_id,
+                    resolved_chat_id,
                     getattr(result, "error", "send returned success=False"),
                 )
                 return None
 
-            logger.info(
-                "Sent restart notification to %s:%s",
-                platform_str,
-                chat_id,
-            )
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
+            if rerouted:
+                logger.info(
+                    "Sent restart notification to lifecycle channel %s:%s",
+                    platform_str,
+                    resolved_chat_id,
+                )
+            else:
+                logger.info(
+                    "Sent restart notification to %s:%s",
+                    platform_str,
+                    resolved_chat_id,
+                )
+            return delivered_target
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
@@ -13259,36 +13332,47 @@ class GatewayRunner:
                 )
                 continue
 
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            resolved_chat_id, metadata, target, rerouted = _resolve_lifecycle_target(
+                self.config,
+                platform,
+                fallback_chat_id=str(home.chat_id),
+                fallback_thread_id=home.thread_id,
+            )
             if target in skipped or target in delivered:
                 continue
 
             try:
-                metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    result = await adapter.send(resolved_chat_id, message, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), message)
+                    result = await adapter.send(resolved_chat_id, message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,
-                        home.chat_id,
+                        resolved_chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
 
                 delivered.add(target)
-                logger.info(
-                    "Sent home-channel startup notification to %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
+                if rerouted:
+                    logger.info(
+                        "Sent startup notification to lifecycle channel %s:%s",
+                        platform.value,
+                        resolved_chat_id,
+                    )
+                else:
+                    logger.info(
+                        "Sent home-channel startup notification to %s:%s",
+                        platform.value,
+                        resolved_chat_id,
+                    )
             except Exception as exc:
                 logger.warning(
                     "Home-channel startup notification failed for %s:%s: %s",
                     platform.value,
-                    home.chat_id,
+                    resolved_chat_id,
                     exc,
                 )
 

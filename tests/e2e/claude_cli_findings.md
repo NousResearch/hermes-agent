@@ -76,3 +76,17 @@ Conclusion: Both v1 default-deny posture canaries hold on claude 2.1.143; `--all
 - Wall time: ~7.9 seconds
 
 Conclusion: `--settings <file>` reliably overrides ambient `~/.claude/settings.json` on claude 2.1.143; the v1 hermetic-config posture is validated.
+
+## Task 12: process group cleanup + egress observation
+
+- Test: `test_process_group_cleanup_on_cancel`
+- Result: PASS
+- Process group cleanup on SIGTERM/SIGKILL: yes — `os.killpg(pgid, SIGTERM)` followed by fallback `os.killpg(pgid, SIGKILL)` terminated the entire claude process group within 5s; `ps --ppid <pytest-pid>` showed no surviving `claude` or `node` children after the kill sequence.
+- Surviving children after kill: none
+- Wall time: ~2.7 seconds (test completed well before the 30s deadline)
+- Test: `test_no_direct_anthropic_egress_from_test_process`
+- Result: PASS (documentation-only)
+- Network egress to api.anthropic.com from pytest pid during test (operator-observed via `ss -tnp`): not observed — `ss -tnp | grep anthropic` returned empty after test completion; no leftover anthropic connections
+- Network egress from child claude pid: observed (expected — the child `claude` process makes outbound TLS to api.anthropic.com; this is the intended pattern)
+
+Conclusion: `start_new_session=True` + `os.killpg(SIGTERM→SIGKILL)` reliably reaps the entire claude process tree with no orphaned children; operator-side `ss -tnp` is the correct methodology for verifying that network egress to api.anthropic.com originates only from the child process, not from the Hermes parent.

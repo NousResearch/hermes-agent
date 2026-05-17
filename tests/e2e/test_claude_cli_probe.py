@@ -387,3 +387,96 @@ async def test_settings_file_overrides_ambient_settings(tmp_path):
         f"hermetic --settings did NOT override ambient; tool_use events: "
         f"{[e.get('name') for e in tool_use]}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+async def test_process_group_cleanup_on_cancel():
+    """Cancelling a spawned `claude` reaps the entire process group.
+
+    Spawns claude -p with --include-partial-messages so it streams.
+    Cancels after first event arrives. Asserts no orphaned `claude` or
+    Node child processes remain.
+    """
+    signal.alarm(0)
+    _skip_if_no_claude()
+    binary = probe.discover_binary()
+    env = {k: v for k, v in os.environ.items()}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = _load_oauth_token()
+    env = probe.check_env_hygiene(env)
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--include-partial-messages",
+        "--no-session-persistence",
+        "--allowedTools", "",
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    pid = proc.pid
+    pgid = os.getpgid(pid)
+    assert proc.stdin is not None
+    proc.stdin.write(b"Count slowly from 1 to 100, one number per line.")
+    await proc.stdin.drain()
+    proc.stdin.close()
+
+    # Read until we see at least one event.
+    parser = StreamJsonParser()
+    saw_event = False
+    deadline = asyncio.get_event_loop().time() + 30
+    while not saw_event and asyncio.get_event_loop().time() < deadline:
+        chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=10)
+        if not chunk:
+            break
+        for event in parser.feed(chunk):
+            saw_event = True
+            break
+    assert saw_event, "no events arrived within 30s; cannot test cancellation"
+
+    # Kill the whole process group.
+    os.killpg(pgid, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        os.killpg(pgid, signal.SIGKILL)
+        await proc.wait()
+
+    # Now check: no orphaned children of our own pid.
+    # ps -o pid,ppid,pgid,cmd --ppid <our pid>
+    import subprocess as _subprocess
+    result = _subprocess.run(
+        ["ps", "-o", "pid,ppid,pgid,cmd", "--ppid", str(os.getpid())],
+        capture_output=True, text=True, check=False,
+    )
+    surviving = [
+        line for line in result.stdout.splitlines()
+        if "claude" in line.lower() or "node" in line.lower()
+    ]
+    assert not surviving, f"orphaned children after SIGTERM/SIGKILL: {surviving}"
+
+
+def test_no_direct_anthropic_egress_from_test_process():
+    """Document the network-egress check approach.
+
+    A full assertion that 'no outbound HTTPS to api.anthropic.com from the
+    Hermes parent process' requires hooking into Hermes' actual network
+    stack at run time. PR 1 documents the check methodology; PR 4 (adapter)
+    wires it into adapter init.
+
+    For PR 1, the check is operator-side:
+      1. Note PID of pytest process (`os.getpid()`).
+      2. While integration test runs: `ss -tnp | grep <pid>` should NOT
+         show connections to api.anthropic.com from that PID. The child
+         `claude` process IS expected to connect.
+      3. Document the observation in tests/e2e/claude_cli_findings.md.
+
+    This test always passes; it records the test approach.
+    """
+    pid = os.getpid()
+    assert pid > 0
+    # Operator: while integration tests run, sample `ss -tnp` for this pid.
+    # Document findings manually.

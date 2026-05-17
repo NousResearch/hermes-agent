@@ -91,6 +91,7 @@ from toolsets import get_toolset_names
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -1245,6 +1246,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    initial_status: str = "running",
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1269,10 +1271,19 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``initial_status`` controls whether the task enters the usual
+    dispatch path (``"running"``; default, preserving existing
+    ready/todo/triage inference) or is created directly in ``"blocked"``
+    for immediate human-ops review.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if initial_status not in VALID_INITIAL_STATUSES:
+        raise ValueError(
+            f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+        )
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -1347,12 +1358,18 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
-                # Determine initial status from parent status, unless the
-                # caller is parking this task in triage for a specifier.
-                if triage:
-                    initial_status = "triage"
+                # Determine task status from parent status, unless the caller
+                # parks it directly in blocked for human-ops review.
+                if initial_status == "blocked":
+                    task_status = "blocked"
+                    if parents:
+                        missing = _find_missing_parents(conn, parents)
+                        if missing:
+                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                elif triage:
+                    task_status = "triage"
                 else:
-                    initial_status = "ready"
+                    task_status = "ready"
                     if parents:
                         missing = _find_missing_parents(conn, parents)
                         if missing:
@@ -1364,7 +1381,7 @@ def create_task(
                             parents,
                         ).fetchall()
                         if any(r["status"] != "done" for r in rows):
-                            initial_status = "todo"
+                            task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
                 if triage and parents:
@@ -1386,7 +1403,7 @@ def create_task(
                         title.strip(),
                         body,
                         assignee,
-                        initial_status,
+                        task_status,
                         priority,
                         created_by,
                         now,
@@ -1410,7 +1427,7 @@ def create_task(
                     "created",
                     {
                         "assignee": assignee,
-                        "status": initial_status,
+                        "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
                         "skills": list(skills_list) if skills_list else None,
@@ -3157,6 +3174,10 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    if not hasattr(os, "WIFEXITED"):
+        if raw == 0:
+            return ("clean_exit", 0)
+        return ("nonzero_exit", int(raw))
     try:
         if os.WIFEXITED(raw):
             code = os.WEXITSTATUS(raw)

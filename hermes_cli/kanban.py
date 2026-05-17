@@ -258,7 +258,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_rename.add_argument("name", help="New display name")
 
     # --- create ---
-    p_create = sub.add_parser("create", help="Create a new task")
+    p_create = sub.add_parser("create", aliases=["add"], help="Create a new task")
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
@@ -294,6 +294,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--initial-status",
+                          choices=sorted(kb.VALID_INITIAL_STATUSES),
+                          default="running",
+                          help="Initial card status. Use 'blocked' for cards "
+                               "that require immediate human ops (R3 gate) "
+                               "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -746,6 +752,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "add":      _cmd_create,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -1115,6 +1122,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -2342,7 +2350,11 @@ def run_slash(rest: str) -> str:
     kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
     for _action in kanban_parser._actions:
         if isinstance(_action, argparse._SubParsersAction):
+            _seen_subparsers: set[int] = set()
             for _name, _choice in _action.choices.items():
+                if id(_choice) in _seen_subparsers:
+                    continue
+                _seen_subparsers.add(id(_choice))
                 _choice.prog = f"/kanban {_name}"
                 _choice.exit_on_error = False  # type: ignore[attr-defined]
 
@@ -2363,7 +2375,16 @@ def run_slash(rest: str) -> str:
         body = err or out
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"⚠ /kanban usage error: {exc}"
+        usage = ""
+        if tokens:
+            for _action in kanban_parser._actions:
+                if isinstance(_action, argparse._SubParsersAction):
+                    _choice = _action.choices.get(tokens[0])
+                    if _choice is not None:
+                        usage = _choice.format_usage().rstrip()
+                    break
+        body = f"{usage}\n{exc}" if usage else str(exc)
+        return f"⚠ /kanban usage error\n{body}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

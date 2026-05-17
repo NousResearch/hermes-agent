@@ -119,6 +119,30 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_initial_status_default_running(kanban_home):
+    out = kc.run_slash("add 'normal dispatch' --assignee alice --json")
+    payload = json.loads(out)
+    assert payload["title"] == "normal dispatch"
+    assert payload["assignee"] == "alice"
+    assert payload["status"] == "ready"
+
+
+def test_run_slash_initial_status_blocked(kanban_home):
+    out = kc.run_slash(
+        "add 'needs human ops' --assignee alice --initial-status blocked --json"
+    )
+    payload = json.loads(out)
+    assert payload["title"] == "needs human ops"
+    assert payload["assignee"] == "alice"
+    assert payload["status"] == "blocked"
+
+
+def test_run_slash_initial_status_invalid(kanban_home):
+    out = kc.run_slash("add 'bad status' --initial-status foo")
+    assert "usage error" in out.lower()
+    assert "invalid choice" in out
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

@@ -83,6 +83,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
+_DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
@@ -515,10 +516,12 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     if event == "pre_tool_call":
         if data.get("action") == "block":
-            message = data.get("message") or data.get("reason") or "Blocked by shell hook."
+            raw = data.get("message") or data.get("reason")
+            message = raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
             return {"action": "block", "message": message}
         if data.get("decision") == "block":
-            message = data.get("reason") or data.get("message") or "Blocked by shell hook."
+            raw = data.get("reason") or data.get("message")
+            message = raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
             return {"action": "block", "message": message}
         return None
 

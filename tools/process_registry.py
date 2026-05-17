@@ -168,7 +168,7 @@ class ProcessRegistry:
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
         # Track sessions whose completion was already consumed by the agent
-        # via wait/poll/log.  Drain loops skip notifications for these.
+        # via wait/log.  Drain loops skip notifications for these.
         self._completion_consumed: set = set()
 
         # Global watch-match circuit breaker — across all sessions.
@@ -871,7 +871,7 @@ class ProcessRegistry:
     # ----- Query Methods -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/poll/log."""
+        """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
 
     def mark_completion_consumed(self, session_id: str) -> None:
@@ -882,7 +882,7 @@ class ProcessRegistry:
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
-        Skips completion events that were already consumed via wait/poll/log.
+        Skips completion events that were already consumed via wait/log.
         """
         results = []
         while not self.completion_queue.empty():

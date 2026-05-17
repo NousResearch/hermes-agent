@@ -1132,6 +1132,188 @@ async def set_model_assignment(body: ModelAssignment):
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
 
 
+# ── Dashboard model configuration endpoints ───────────────────────────
+
+class _FallbackBody(BaseModel):
+    fallbacks: list[dict[str, str]]
+
+
+class _RegisterBody(BaseModel):
+    provider: str
+    model: str
+    capabilities: dict[str, Any] = {}
+
+
+@app.get("/api/model/configured")
+def get_configured_models():
+    """Return the full configured model chain: main, fallbacks, auxiliary.
+
+    Uses ``agent.model_registry.ModelRegistry`` for resolution so the
+    response is consistent with what the gateway actually uses.
+    """
+    try:
+        from agent.model_registry import ModelRegistry
+
+        cfg = load_config()
+        reg = ModelRegistry(cfg)
+
+        # Main model
+        try:
+            main = reg.main()
+            main_data = {
+                "id": main.id,
+                "provider": main.provider,
+                "model": main.model,
+                "base_url": main.base_url,
+                "capabilities": main.capabilities,
+            }
+        except ValueError:
+            main_data = None
+
+        # Fallback chain
+        fallbacks = [
+            {
+                "id": m.id,
+                "provider": m.provider,
+                "model": m.model,
+                "base_url": m.base_url,
+            }
+            for m in reg.fallback_chain()
+        ]
+
+        # Auxiliary assignments — resolve each slot
+        aux_tasks = []
+        for slot in _AUX_TASK_SLOTS:
+            try:
+                resolved = reg.auxiliary(slot)
+                aux_tasks.append({
+                    "task": slot,
+                    "provider": resolved.provider,
+                    "model": resolved.model,
+                    "base_url": resolved.base_url,
+                })
+            except ValueError:
+                aux_tasks.append({
+                    "task": slot,
+                    "provider": "",
+                    "model": "",
+                    "base_url": "",
+                })
+
+        return {
+            "main": main_data,
+            "fallbacks": fallbacks,
+            "auxiliary": aux_tasks,
+        }
+    except Exception:
+        _log.exception("GET /api/model/configured failed")
+        raise HTTPException(status_code=500, detail="Failed to read model config")
+
+
+@app.put("/api/model/fallbacks")
+def set_fallback_chain(body: _FallbackBody):
+    """Persist the exact ordered fallback chain to config.yaml.
+
+    Writes to ``fallback_providers`` and clears the legacy
+    ``fallback_model`` key.  Applies to new sessions only.
+    """
+    try:
+        cfg = load_config()
+        chain = []
+        for entry in body.fallbacks:
+            provider = str(entry.get("provider", "")).strip()
+            model = str(entry.get("model", "")).strip()
+            if not provider or not model:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Each fallback entry must have non-empty provider and model",
+                )
+            chain.append({"provider": provider, "model": model})
+            if entry.get("base_url"):
+                chain[-1]["base_url"] = entry["base_url"]
+
+        cfg["fallback_providers"] = chain
+        cfg.pop("fallback_model", None)
+        save_config(cfg)
+
+        # Return resolved chain
+        from agent.model_registry import ModelRegistry
+        reg = ModelRegistry(cfg)
+        resolved = [
+            {"id": m.id, "provider": m.provider, "model": m.model, "base_url": m.base_url}
+            for m in reg.fallback_chain()
+        ]
+        return {"ok": True, "fallbacks": resolved}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to save fallback chain")
+
+
+@app.post("/api/model/register")
+def register_model(body: _RegisterBody):
+    """Register a new model in the model registry.
+
+    Adds the model to ``model_registry.providers[<provider>].models``
+    if it's not already registered.  Does not automatically assign
+    it to main or fallback — use ``/api/model/set`` or
+    ``/api/model/fallbacks`` for that.
+    """
+    try:
+        cfg = load_config()
+        reg_cfg = cfg.get("model_registry") or {}
+        if not isinstance(reg_cfg, dict):
+            reg_cfg = {}
+            cfg["model_registry"] = reg_cfg
+
+        providers = reg_cfg.get("providers") or {}
+        if not isinstance(providers, dict):
+            providers = {}
+            reg_cfg["providers"] = providers
+
+        provider_name = body.provider.strip()
+        model_name = body.model.strip()
+        model_id = f"{provider_name}/{model_name}"
+
+        if provider_name not in providers:
+            providers[provider_name] = {"models": []}
+
+        prov = providers[provider_name]
+        if not isinstance(prov, dict):
+            prov = {"models": []}
+            providers[provider_name] = prov
+
+        models_list = prov.get("models") or []
+        if not isinstance(models_list, list):
+            models_list = []
+            prov["models"] = models_list
+
+        # Check for conflict
+        for existing in models_list:
+            if isinstance(existing, dict) and existing.get("id") == model_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Model {model_id!r} is already registered",
+                )
+
+        # Add the new model entry
+        entry = {"id": model_id}
+        if body.capabilities:
+            entry["capabilities"] = body.capabilities
+        models_list.append(entry)
+        reg_cfg["providers"] = providers
+        cfg["model_registry"] = reg_cfg
+        save_config(cfg)
+
+        return {"ok": True, "id": model_id}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/register failed")
+        raise HTTPException(status_code=500, detail="Failed to register model")
+
+
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:

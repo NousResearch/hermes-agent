@@ -515,13 +515,11 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     if event == "pre_tool_call":
         if data.get("action") == "block":
-            message = data.get("message") or data.get("reason") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            message = data.get("message") or data.get("reason") or "Blocked by shell hook."
+            return {"action": "block", "message": message}
         if data.get("decision") == "block":
-            message = data.get("reason") or data.get("message") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            message = data.get("reason") or data.get("message") or "Blocked by shell hook."
+            return {"action": "block", "message": message}
         return None
 
     context = data.get("context")

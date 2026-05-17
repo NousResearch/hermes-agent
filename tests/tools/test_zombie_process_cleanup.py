@@ -120,6 +120,29 @@ class TestAgentCloseMethod:
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
 
+    def test_per_turn_cleanup_preserves_camofox_browser(self):
+        """Per-turn cleanup should not close Camofox between user turns."""
+        from unittest.mock import patch
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+
+            agent = AIAgent.__new__(AIAgent)
+            agent.verbose_logging = False
+
+            with (
+                patch("run_agent.is_persistent_env", return_value=False),
+                patch("run_agent.cleanup_vm") as mock_cleanup_vm,
+                patch("run_agent.cleanup_browser") as mock_cleanup_browser,
+            ):
+                agent._cleanup_task_resources("test-turn-cleanup")
+
+            mock_cleanup_vm.assert_called_once_with("test-turn-cleanup")
+            mock_cleanup_browser.assert_called_once_with(
+                "test-turn-cleanup",
+                preserve_camofox=True,
+            )
+
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""
         from unittest.mock import patch

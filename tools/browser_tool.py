@@ -3211,7 +3211,11 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(
+    task_id: Optional[str] = None,
+    *,
+    preserve_camofox: bool = False,
+) -> None:
     """
     Clean up browser session(s) for a task.
 
@@ -3226,6 +3230,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     Args:
         task_id: Task identifier (or explicit session key)
+        preserve_camofox: When true, leave Camofox server-side sessions and
+            local Camofox tracking intact. Per-turn agent cleanup uses this so
+            browser state can continue across user turns; shutdown and idle
+            reaping use the default close behavior.
     """
     if task_id is None:
         task_id = "default"
@@ -3244,7 +3252,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         bare_task_id = task_id
 
     for session_key in session_keys:
-        _cleanup_single_browser_session(session_key)
+        _cleanup_single_browser_session(
+            session_key,
+            preserve_camofox=preserve_camofox,
+        )
 
     # Drop the last-active pointer only when the bare task is being cleaned
     # (i.e. not when we're only reaping a sidecar mid-task).
@@ -3252,7 +3263,11 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         _last_active_session_key.pop(bare_task_id, None)
 
 
-def _cleanup_single_browser_session(task_id: str) -> None:
+def _cleanup_single_browser_session(
+    task_id: str,
+    *,
+    preserve_camofox: bool = False,
+) -> None:
     """Internal: reap a single browser session by its exact session key."""
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.
@@ -3263,12 +3278,15 @@ def _cleanup_single_browser_session(task_id: str) -> None:
     # profile (and its session cookies) must survive across agent tasks.
     # The inactivity reaper still frees idle resources.
     if _is_camofox_mode():
-        try:
-            from tools.browser_camofox import camofox_close, camofox_soft_cleanup
-            if not camofox_soft_cleanup(task_id):
-                camofox_close(task_id)
-        except Exception as e:
-            logger.debug("Camofox cleanup for task %s: %s", task_id, e)
+        if preserve_camofox:
+            logger.debug("Preserving Camofox session for task %s", task_id)
+        else:
+            try:
+                from tools.browser_camofox import camofox_close, camofox_soft_cleanup
+                if not camofox_soft_cleanup(task_id):
+                    camofox_close(task_id)
+            except Exception as e:
+                logger.debug("Camofox cleanup for task %s: %s", task_id, e)
 
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))

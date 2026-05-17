@@ -577,6 +577,50 @@ class TestPreflightCompression:
         mock_compress.assert_not_called()
         assert result["completed"] is True
 
+    def test_preflight_triggers_on_few_huge_messages(self, agent):
+        """Issue #27405: few messages but huge content must still trigger preflight.
+
+        Previously the gate was message-count only — a 5-message session
+        with one giant message (e.g. prior failed compression output)
+        slipped past and caused silent context overflow.
+        """
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 1000
+        # Defaults: protect_first_n=3, protect_last_n=20 → count-gate needs >24.
+        # 5 messages is well under that.
+        huge_content = "x" * (4 * 5000)  # ~5000 tokens, well above 1000 threshold
+        small_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": huge_content},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "sure"},
+        ]
+
+        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "new system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=small_history)
+
+        assert mock_compress.call_count >= 1, (
+            "Preflight must trigger via token-gate fallback when message "
+            "count is low but content is huge"
+        )
+        assert result["completed"] is True
+
 
 class TestToolResultPreflightCompression:
     """Compression should trigger when tool results push context past the threshold."""

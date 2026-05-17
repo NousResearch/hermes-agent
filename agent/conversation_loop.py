@@ -502,11 +502,39 @@ def run_conversation(
     # while having a large existing session — compress proactively rather
     # than waiting for an API error (which might be caught as a non-retryable
     # 4xx and abort the request entirely).
-    if (
-        agent.compression_enabled
-        and len(messages) > agent.context_compressor.protect_first_n
-                            + agent.context_compressor.protect_last_n + 1
-    ):
+    if agent.compression_enabled:
+        _msg_count_gate = (
+            len(messages)
+            > agent.context_compressor.protect_first_n
+            + agent.context_compressor.protect_last_n
+            + 1
+        )
+        # Fallback gate: even with few messages, a single huge message
+        # (e.g. failed prior compression output, large file read) can blow
+        # the token threshold.  Use a cheap char-based approximation to
+        # decide whether to run the (more expensive) full rough estimator.
+        # See issue #27405.
+        if not _msg_count_gate:
+            _approx_chars = 0
+            for _m in messages:
+                _c = _m.get("content") if isinstance(_m, dict) else None
+                if isinstance(_c, str):
+                    _approx_chars += len(_c)
+                elif isinstance(_c, list):
+                    for _part in _c:
+                        if isinstance(_part, dict):
+                            _t = _part.get("text")
+                            if isinstance(_t, str):
+                                _approx_chars += len(_t)
+            _approx_tokens = _approx_chars // 4
+            _token_gate = _approx_tokens >= agent.context_compressor.threshold_tokens
+        else:
+            _token_gate = True
+    else:
+        _msg_count_gate = False
+        _token_gate = False
+
+    if agent.compression_enabled and (_msg_count_gate or _token_gate):
         # Include tool schema tokens — with many tools these can add
         # 20-30K+ tokens that the old sys+msg estimate missed entirely.
         _preflight_tokens = estimate_request_tokens_rough(

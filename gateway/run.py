@@ -2343,7 +2343,10 @@ def _get_channel_override(
     Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
     ``parent_id`` (forum threads / child channels inherit the parent entry).
     """
-    platform_config = config.platforms.get(platform)
+    platforms = getattr(config, "platforms", None)
+    if not platforms:
+        return None
+    platform_config = platforms.get(platform)
     if not platform_config or not platform_config.channel_overrides:
         return None
     overrides = platform_config.channel_overrides

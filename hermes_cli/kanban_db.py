@@ -4028,14 +4028,23 @@ def dispatch_once(
             title_text = row["title"] or ""
             auto_profile, match_type = _pick_assignee_for_task(title_text, skills_list)
             if auto_profile:
-                conn.execute(
-                    "UPDATE tasks SET assignee = ? WHERE id = ?",
-                    (auto_profile, row["id"]),
-                )
-                _append_event(conn, row["id"], "assigned",
-                              {"assignee": auto_profile, "auto": True})
-                row["assignee"] = auto_profile
-                result.auto_assigned.append((row["id"], auto_profile, match_type))
+                # Prevent task-stuck: verify profile exists before writing to DB
+                try:
+                    from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+                except Exception:
+                    profile_exists = lambda _: True  # allow on import failure
+                if profile_exists(auto_profile):
+                    conn.execute(
+                        "UPDATE tasks SET assignee = ? WHERE id = ?",
+                        (auto_profile, row["id"]),
+                    )
+                    _append_event(conn, row["id"], "assigned",
+                                  {"assignee": auto_profile, "auto": True})
+                    row["assignee"] = auto_profile
+                    result.auto_assigned.append((row["id"], auto_profile, match_type))
+                else:
+                    result.skipped_nonspawnable.append(row["id"])
+                    continue
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue

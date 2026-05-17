@@ -228,7 +228,7 @@ def init_agent(
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
-    elif agent.provider == "xai":
+    elif agent.provider in {"xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
     elif (provider_name is None) and (
         agent._base_url_hostname == "chatgpt.com"

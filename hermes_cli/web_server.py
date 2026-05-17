@@ -507,6 +507,12 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class FallbackProvidersUpdate(BaseModel):
+    """Payload for PUT /api/model/fallbacks."""
+
+    fallbacks: List[Dict[str, Any]]
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -1181,6 +1187,50 @@ async def set_model_assignment(body: ModelAssignment):
         _log.exception("POST /api/model/set failed")
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
 
+
+@app.get("/api/model/fallbacks")
+def get_model_fallbacks():
+    """Return the configured fallback provider chain."""
+    try:
+        from hermes_cli.fallback_cmd import _read_chain
+
+        cfg = load_config()
+        return {"fallbacks": _read_chain(cfg)}
+    except Exception:
+        _log.exception("GET /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to read fallback providers")
+
+
+@app.put("/api/model/fallbacks")
+def set_model_fallbacks(body: FallbackProvidersUpdate):
+    """Persist fallback providers in config.yaml order."""
+    cleaned: List[Dict[str, Any]] = []
+    for entry in body.fallbacks:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or not model:
+            raise HTTPException(status_code=400, detail="fallback provider and model are required")
+        item: Dict[str, Any] = {"provider": provider, "model": model}
+        for key in ("base_url", "api_mode"):
+            value = str(entry.get(key) or "").strip()
+            if value:
+                item[key] = value
+        cleaned.append(item)
+
+    try:
+        from hermes_cli.fallback_cmd import _write_chain
+
+        cfg = load_config()
+        _write_chain(cfg, cleaned)
+        save_config(cfg)
+        return {"ok": True, "fallbacks": cleaned}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to save fallback providers")
 
 
 

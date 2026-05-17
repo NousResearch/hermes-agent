@@ -256,6 +256,13 @@ export const api = {
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getFallbackProviders: () => fetchJSON<FallbackProvidersResponse>("/api/model/fallbacks"),
+  saveFallbackProviders: (fallbacks: FallbackProviderEntry[]) =>
+    fetchJSON<FallbackProvidersSaveResponse>("/api/model/fallbacks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fallbacks }),
+    }),
   setModelAssignment: (body: ModelAssignmentRequest) =>
     fetchJSON<ModelAssignmentResponse>("/api/model/set", {
       method: "POST",
@@ -844,6 +851,22 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
   main: { provider: string; model: string };
+}
+
+export interface FallbackProviderEntry {
+  provider: string;
+  model: string;
+  base_url?: string;
+  api_mode?: string;
+}
+
+export interface FallbackProvidersResponse {
+  fallbacks: FallbackProviderEntry[];
+}
+
+export interface FallbackProvidersSaveResponse {
+  ok: boolean;
+  fallbacks: FallbackProviderEntry[];
 }
 
 export interface ModelAssignmentRequest {

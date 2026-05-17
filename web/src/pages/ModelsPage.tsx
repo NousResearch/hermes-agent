@@ -16,6 +16,7 @@ import { api } from "@/lib/api";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
+  FallbackProviderEntry,
   ModelsAnalyticsModelEntry,
   ModelsAnalyticsResponse,
 } from "@/lib/api";
@@ -634,6 +635,133 @@ function AuxiliaryTasksModal({
   );
 }
 
+function FallbackProvidersPanel({ refreshKey }: { refreshKey: number }) {
+  const [fallbacks, setFallbacks] = useState<FallbackProviderEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const loadFallbacks = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    api
+      .getFallbackProviders()
+      .then((res) => setFallbacks(res.fallbacks ?? []))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadFallbacks();
+  }, [loadFallbacks, refreshKey]);
+
+  const persist = async (next: FallbackProviderEntry[]) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api.saveFallbackProviders(next);
+      setFallbacks(res.fallbacks ?? next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const move = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= fallbacks.length) return;
+    const next = [...fallbacks];
+    [next[index], next[target]] = [next[target], next[index]];
+    void persist(next);
+  };
+
+  return (
+    <div className="space-y-2" data-testid="fallback-providers-panel">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wider">Fallback providers</div>
+          <div className="text-[10px] text-muted-foreground">
+            Tried in order when the primary model fails.
+          </div>
+        </div>
+        <Button
+          size="sm"
+          outlined
+          onClick={() => setPickerOpen(true)}
+          disabled={saving}
+          className="text-xs"
+          data-testid="add-fallback-provider"
+        >
+          Add fallback
+        </Button>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Spinner /> Loading fallback providers…
+        </div>
+      ) : fallbacks.length === 0 ? (
+        <div className="border border-dashed border-border/70 px-3 py-3 text-xs text-muted-foreground">
+          No fallback providers configured.
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {fallbacks.map((fb, index) => (
+            <div
+              key={`${fb.provider}:${fb.model}:${index}`}
+              className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2"
+              data-testid="fallback-provider-row"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-mono truncate" data-testid="fallback-provider-model">
+                  {fb.provider} · {fb.model}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  #{index + 1} fallback{fb.base_url ? ` · ${fb.base_url}` : ""}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button size="sm" outlined disabled={saving || index === 0} onClick={() => move(index, -1)}>
+                  Up
+                </Button>
+                <Button size="sm" outlined disabled={saving || index === fallbacks.length - 1} onClick={() => move(index, 1)}>
+                  Down
+                </Button>
+                <Button
+                  size="sm"
+                  outlined
+                  disabled={saving}
+                  onClick={() => void persist(fallbacks.filter((_, i) => i !== index))}
+                >
+                  Remove
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {saving && <div className="text-[10px] text-muted-foreground">Saving…</div>}
+      {error && <div className="text-[10px] text-destructive">{error}</div>}
+
+      {pickerOpen && (
+        <ModelPickerDialog
+          key={`fallback-picker-${refreshKey}-${fallbacks.length}`}
+          loader={api.getModelOptions}
+          alwaysGlobal
+          title="Add Fallback Provider"
+          onApply={async ({ provider, model }) => {
+            await persist([...fallbacks, { provider, model }]);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
 function ModelSettingsPanel({
   aux,
   refreshKey,
@@ -730,6 +858,8 @@ function ModelSettingsPanel({
             Configure
           </Button>
         </div>
+
+        <FallbackProvidersPanel refreshKey={refreshKey} />
 
         {picker && (
           <ModelPickerDialog

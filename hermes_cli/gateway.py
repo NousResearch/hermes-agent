@@ -1234,9 +1234,17 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
     PowerShell/CMD. Detached service-style launches opt in via
     ``HERMES_GATEWAY_DETACHED=1``; older wrappers without the env marker are
     treated as detached when no interactive stdin is attached.
+
+    ``HERMES_FORCE_ABSORB_CONSOLE=1`` is an unconditional override used by
+    Electron sidecar spawns where neither env var propagation nor stdio
+    detection can be trusted (Windows venv stub re-exec quirks).
     """
     if not is_windows():
         return False
+
+    force = os.getenv("HERMES_FORCE_ABSORB_CONSOLE", "").strip().lower()
+    if force in {"1", "true", "yes", "on"}:
+        return True
 
     detached = os.getenv("HERMES_GATEWAY_DETACHED", "").strip().lower()
     if detached in {"1", "true", "yes", "on"}:
@@ -3227,6 +3235,10 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         argv=sys.argv,
         stdin_is_tty=_stdin_is_tty,
         absorb_windows_console_controls=_absorb_windows_console_controls,
+        env_hermes_gateway_detached=os.environ.get("HERMES_GATEWAY_DETACHED", ""),
+        env_hermes_force_absorb_console=os.environ.get("HERMES_FORCE_ABSORB_CONSOLE", ""),
+        sys_executable=sys.executable,
+        sys_prefix=sys.prefix,
     )
 
     def _atexit_hook() -> None:

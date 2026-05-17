@@ -165,6 +165,41 @@ def test_run_gateway_windows_detached_absorbs_console_controls(monkeypatch):
     assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
 
 
+def test_run_gateway_windows_force_absorb_overrides_isatty(monkeypatch):
+    """HERMES_FORCE_ABSORB_CONSOLE=1 must enable the absorber even when
+    isatty()==True AND HERMES_GATEWAY_DETACHED is unset — covers the case
+    where Electron's spawn env+stdio don't propagate through the venv
+    Scripts/python.exe stub on Windows."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    class _TTY:
+        def isatty(self):
+            return True
+
+    signal_calls = []
+
+    def fake_signal(sig, handler):
+        signal_calls.append((sig, handler))
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway.sys, "stdin", _TTY())
+    monkeypatch.delenv("HERMES_GATEWAY_DETACHED", raising=False)
+    monkeypatch.setenv("HERMES_FORCE_ABSORB_CONSOLE", "1")
+    monkeypatch.setattr(gateway.signal, "signal", fake_signal)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+    assert (gateway.signal.SIGINT, gateway.signal.SIG_IGN) in signal_calls
+
+
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)

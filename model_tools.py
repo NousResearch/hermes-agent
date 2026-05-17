@@ -603,6 +603,11 @@ def _apply_mcp_tool_search(
         if ts_entry is not None:
             other_tools.append({"type": "function", "function": ts_entry.schema})
 
+    logger.info(
+        "MCP tool_search active: parked %d MCP tool(s) (~%d chars saved); "
+        "%d promoted",
+        len(mcp_tools), total_chars, len(promoted),
+    )
     if not quiet_mode:
         print(
             f"🔍 MCP tool_search active: parked {len(mcp_tools)} MCP tool(s) "

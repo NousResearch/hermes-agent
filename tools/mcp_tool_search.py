@@ -143,7 +143,12 @@ def _promote_to_session(entries: List[Dict[str, Any]]) -> None:
         pool.remove(entry["name"])
 
 
-def _handle_tool_search(query: str, max_results: int = 5) -> str:
+def _handle_tool_search(args: Dict[str, Any], **_kwargs: Any) -> str:
+    query = str(args.get("query", "") or "")
+    try:
+        max_results = int(args.get("max_results", 5) or 5)
+    except (TypeError, ValueError):
+        max_results = 5
     pool = get_pool()
     if len(pool) == 0:
         return "<functions></functions>\n(no deferred tools registered)"

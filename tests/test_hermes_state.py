@@ -2542,6 +2542,51 @@ class TestConcurrentWriteSafety:
 
 
 # =========================================================================
+# Session summary export
+# =========================================================================
+
+class TestSessionSummaryExport:
+    def test_export_session_summaries_distills_metadata_without_raw_transcript(self, db):
+        db.create_session(session_id="sess-summary", source="cron")
+        db.set_session_title("sess-summary", "WAT-1374 ingest summaries")
+        db.append_message(
+            session_id="sess-summary",
+            role="user",
+            content="Please investigate WAT-1374 and https://linear.app/watsiai/issue/WAT-1374.",
+        )
+        db.append_message(
+            session_id="sess-summary",
+            role="tool",
+            content="done",
+            tool_name="terminal",
+        )
+        db.end_session("sess-summary", end_reason="completed")
+
+        summaries = db.export_session_summaries(limit=10)
+
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert summary["session_id"] == "sess-summary"
+        assert "WAT-1374" in summary["text"]
+        assert "https://linear.app/watsiai/issue/WAT-1374" in summary["text"]
+        assert "terminal" in summary["text"]
+        assert "Transcript body intentionally omitted" in summary["text"]
+        assert "Please investigate" not in summary["text"]
+
+    def test_export_session_summaries_updates_when_title_changes(self, db):
+        db.create_session(session_id="sess-update", source="cli")
+        db.set_session_title("sess-update", "Initial title")
+
+        first = db.export_session_summaries(limit=10)[0]
+        db.set_session_title("sess-update", "Updated title")
+        second = db.export_session_summaries(limit=10)[0]
+
+        assert "Initial title" in first["text"]
+        assert "Updated title" in second["text"]
+        assert first["text"] != second["text"]
+
+
+# =========================================================================
 # Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
 # =========================================================================
 

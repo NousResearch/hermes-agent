@@ -22,6 +22,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
@@ -877,6 +878,81 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return row["title"] if row else None
+
+    def export_session_summaries(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return distilled session summaries safe for semantic indexing."""
+        sessions = self.search_sessions(limit=limit)
+        summaries: list[dict[str, Any]] = []
+        token_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]{2,}")
+        link_re = re.compile(r"https?://\S+|\b[A-Z]{2,10}-\d+\b")
+        stopwords = {"the", "and", "for", "with", "from", "into", "this", "that", "ticket", "issue", "auto"}
+
+        for session in sessions:
+            session_id = session["id"]
+            title = (session.get("title") or session_id or "").strip()
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT content, tool_name FROM messages WHERE session_id = ? ORDER BY timestamp ASC, id ASC",
+                    (session_id,),
+                )
+                rows = cursor.fetchall()
+
+            links_and_ids: set[str] = set()
+            tools: set[str] = set()
+            for row in rows:
+                content = row["content"] or ""
+                for match in link_re.finditer(content):
+                    links_and_ids.add(match.group(0).rstrip(").,"))
+                tool_name = (row["tool_name"] or "").strip()
+                if tool_name:
+                    tools.add(tool_name)
+
+            topics: list[str] = []
+            seen_topics: set[str] = set()
+            for token in [tok.lower() for tok in token_re.findall(title)]:
+                if token in stopwords or token.isdigit() or len(token) < 3:
+                    continue
+                if token not in seen_topics:
+                    seen_topics.add(token)
+                    topics.append(token)
+                if len(topics) >= 8:
+                    break
+
+            lines = [f"Session title: {title or 'Untitled session'}"]
+            if topics:
+                lines.append(f"Key topics: {', '.join(topics)}")
+            if links_and_ids:
+                lines.append(f"Linked IDs/URLs: {', '.join(sorted(links_and_ids)[:8])}")
+            if tools:
+                lines.append(f"Tools used: {', '.join(sorted(tools)[:8])}")
+            end_reason = (session.get("end_reason") or "").strip()
+            if end_reason:
+                lines.append(f"Final resolution: session ended with reason `{end_reason}`")
+            lines.append("Transcript body intentionally omitted; this summary only stores distilled metadata.")
+
+            started_at = session.get("started_at")
+            updated_at = session.get("last_active") or started_at
+            created_iso = (
+                datetime.fromtimestamp(float(started_at), tz=timezone.utc).isoformat()
+                if started_at is not None else None
+            )
+            updated_iso = (
+                datetime.fromtimestamp(float(updated_at), tz=timezone.utc).isoformat()
+                if updated_at is not None else created_iso
+            )
+            summaries.append(
+                {
+                    "session_id": session_id,
+                    "title": title or session_id,
+                    "text": "\n".join(lines),
+                    "created_at": created_iso,
+                    "updated_at": updated_iso,
+                    "source_path": f"session://{session_id}",
+                    "scope": "global",
+                    "tags": tuple(sorted({"session_search", session.get("source") or "session"})),
+                }
+            )
+        return summaries
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""

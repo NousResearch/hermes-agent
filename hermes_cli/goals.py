@@ -681,9 +681,8 @@ class GoalManager:
         # Auto-pause when the judge model can't produce the expected JSON
         # verdict N turns in a row. Points the user at the goal_judge config
         # so they can route this side task to a model that follows the
-        # contract (e.g. google/gemini-3-flash-preview). Without this guard,
-        # weak judge models burn the entire turn budget returning prose or
-        # empty strings.
+        # JSON contract. Without this guard, weak judge models burn the
+        # entire turn budget returning prose or empty strings.
         if state.consecutive_parse_failures >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             state.status = "paused"
             state.paused_reason = (
@@ -698,13 +697,10 @@ class GoalManager:
                 "reason": reason,
                 "message": (
                     f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
-                    "isn't returning the required JSON verdict. Route the judge to a stricter "
-                    "model in ~/.hermes/config.yaml:\n"
-                    "  auxiliary:\n"
-                    "    goal_judge:\n"
-                    "      provider: openrouter\n"
-                    "      model: google/gemini-3-flash-preview\n"
-                    "Then /goal resume to continue."
+                    "isn't returning the required JSON verdict. Route the goal judge to a stricter "
+                    "model via the dashboard Models page (http://127.0.0.1:9119/models) or in "
+                    "~/.hermes/config.yaml under auxiliary.goal_judge to use a strict "
+                    "JSON-capable model. Then /goal resume to continue."
                 ),
             }
 

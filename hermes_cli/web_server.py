@@ -980,6 +980,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "approval",
     "mcp",
     "title_generation",
+    "goal_judge",
     "curator",
 )
 

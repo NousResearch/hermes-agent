@@ -925,6 +925,14 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
         },
+        "goal_judge": {
+            "provider": "auto",
+            "model": "",           # cheap/fast model recommended (e.g. gemini-flash); must produce valid JSON
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat

@@ -2388,6 +2388,143 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5007, str(e))
 
 
+# ---------------------------------------------------------------------------
+# sessions.patch — partial session update (issue #27455)
+# ---------------------------------------------------------------------------
+# Hermes Desktop expects a single "PATCH-style" RPC that can update one or
+# more session fields in one round-trip (title, system_prompt, …) instead of
+# fanning out across the per-field session.title / session.steer / etc.
+# handlers.  Without this method, Desktop v0.4.3 over SSH Tunnel surfaces
+# "Custom runtime does not implement sessions.patch" because our gateway
+# replied with the JSON-RPC ``-32601 unknown method`` envelope.
+#
+# Method name is the *plural* form on purpose — matches the resource-style
+# convention already used by ``agents.list`` / ``commands.catalog`` /
+# ``toolsets.list`` / ``spawn_tree.*``.  An alias under the singular
+# ``session.patch`` is also registered below for callers that prefer the
+# topic-prefix convention.
+_SESSION_PATCH_SUPPORTED_FIELDS: frozenset = frozenset({"title", "system_prompt"})
+
+
+def _coerce_session_patch(params: dict) -> tuple[dict, list[str]]:
+    """Extract the patch payload from ``params``.
+
+    Accepts either:
+      * ``params["patch"] = {"title": "...", "system_prompt": "..."}`` (object form),
+        or
+      * flat keys on ``params`` itself (``params["title"]``, ``params["system_prompt"]``).
+
+    The flat form is provided so Desktop / Ink can use whichever shape its
+    runtime adapter happens to produce without needing to wrap.
+
+    Returns ``(patch, unknown_keys)`` where ``unknown_keys`` is a list of
+    keys supplied by the caller that are NOT in
+    :data:`_SESSION_PATCH_SUPPORTED_FIELDS`.  Unknown keys are reported but
+    do NOT fail the call -- a newer client adding fields must remain
+    forward-compatible with an older gateway.
+    """
+    patch_obj = params.get("patch")
+    if isinstance(patch_obj, dict):
+        supplied = dict(patch_obj)
+    else:
+        supplied = {
+            k: v
+            for k, v in params.items()
+            if k in _SESSION_PATCH_SUPPORTED_FIELDS
+        }
+    patch = {k: v for k, v in supplied.items() if k in _SESSION_PATCH_SUPPORTED_FIELDS}
+    unknown = sorted(k for k in supplied.keys() if k not in _SESSION_PATCH_SUPPORTED_FIELDS)
+    return patch, unknown
+
+
+def _sessions_patch_handler(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
+    key = session["session_key"]
+
+    patch, unknown_keys = _coerce_session_patch(params)
+    if not patch:
+        return _err(
+            rid,
+            4025,
+            "no patchable fields supplied "
+            f"(supported: {sorted(_SESSION_PATCH_SUPPORTED_FIELDS)})",
+        )
+
+    applied: dict[str, Any] = {}
+
+    # title ----------------------------------------------------------------
+    if "title" in patch:
+        raw_title = patch["title"]
+        title = (raw_title or "").strip() if isinstance(raw_title, str) else ""
+        if not title:
+            return _err(rid, 4021, "title must be a non-empty string")
+        try:
+            if db.set_session_title(key, title):
+                session["pending_title"] = None
+                applied["title"] = title
+            else:
+                existing_row = db.get_session(key)
+                if existing_row:
+                    session["pending_title"] = None
+                    applied["title"] = (existing_row.get("title") or title)
+                else:
+                    # Row doesn't exist yet (lazy build hasn't flushed) -- defer.
+                    session["pending_title"] = title
+                    applied["title"] = title
+        except ValueError as e:
+            return _err(rid, 4022, str(e))
+        except Exception as e:
+            return _err(rid, 5007, f"title update failed: {e}")
+
+    # system_prompt --------------------------------------------------------
+    if "system_prompt" in patch:
+        raw_sp = patch["system_prompt"]
+        if raw_sp is None:
+            return _err(rid, 4027, "system_prompt cannot be null; pass '' to clear")
+        if not isinstance(raw_sp, str):
+            return _err(rid, 4027, "system_prompt must be a string")
+        try:
+            db.update_system_prompt(key, raw_sp)
+        except Exception as e:
+            return _err(rid, 5007, f"system_prompt update failed: {e}")
+        # Keep the in-memory agent in sync: invalidate the cached prompt so
+        # the next conversation_loop iteration rebuilds it from the DB.  If
+        # the agent hasn't been built yet (lazy build still pending), the
+        # next build will read the updated row.
+        agent = session.get("agent")
+        if agent is not None:
+            try:
+                agent._cached_system_prompt = raw_sp
+            except Exception:
+                # Worst case the next loop turn re-derives from the DB.
+                pass
+        applied["system_prompt"] = raw_sp
+
+    return _ok(
+        rid,
+        {
+            "session_id": params.get("session_id"),
+            "session_key": key,
+            "patched": applied,
+            "skipped": unknown_keys,
+        },
+    )
+
+
+# Register under both the plural (Desktop / resource-style) and singular
+# (topic-prefix) namespaces so neither client convention surfaces a
+# "unknown method" / "Custom runtime does not implement sessions.patch"
+# error.  Both names point at the same handler so behaviour can never
+# diverge.
+method("sessions.patch")(_sessions_patch_handler)
+method("session.patch")(_sessions_patch_handler)
+
+
 @method("session.usage")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

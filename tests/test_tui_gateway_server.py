@@ -4804,3 +4804,404 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+# ---------------------------------------------------------------------------
+# sessions.patch (issue #27455)
+# ---------------------------------------------------------------------------
+# Hermes Desktop v0.4.3 sends ``sessions.patch`` (plural namespace, PATCH
+# verb) when the user edits a session's title or system prompt.  Before
+# the fix the gateway responded with the JSON-RPC ``-32601 unknown method``
+# envelope which the Desktop's runtime layer surfaced as
+# "Custom runtime does not implement sessions.patch".
+#
+# These tests pin:
+#   * both method names (plural + singular alias) hit the same handler
+#   * partial updates work for each supported field (title, system_prompt)
+#   * combined updates apply atomically
+#   * malformed payloads return predictable error codes
+#   * the in-memory agent's cached system prompt is invalidated/updated
+#     so the next conversation_loop turn sees the new value
+#   * unknown fields are reported in ``skipped`` (forward-compat) rather
+#     than failing the whole call
+
+
+class _PatchFakeDB:
+    """Minimal SessionDB stand-in for sessions.patch tests."""
+
+    def __init__(self, *, title: str | None = "old", row_exists: bool = True):
+        self.title = title
+        self.system_prompt: str | None = None
+        self.row_exists = row_exists
+        self.title_writes: list[str] = []
+        self.system_prompt_writes: list[str] = []
+
+    def get_session_title(self, _key):
+        return self.title
+
+    def get_session(self, _key):
+        if not self.row_exists:
+            return None
+        return {"id": _key, "title": self.title, "system_prompt": self.system_prompt}
+
+    def set_session_title(self, _key, title):
+        if not self.row_exists:
+            return False
+        self.title = title
+        self.title_writes.append(title)
+        return True
+
+    def update_system_prompt(self, _key, system_prompt):
+        self.system_prompt = system_prompt
+        self.system_prompt_writes.append(system_prompt)
+
+
+def test_sessions_patch_unknown_session_returns_4001(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "sessions.patch",
+            "params": {"session_id": "missing", "patch": {"title": "x"}},
+        }
+    )
+    assert resp["error"]["code"] == 4001
+
+
+def test_sessions_patch_empty_patch_returns_4025(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid"},
+            }
+        )
+        assert resp["error"]["code"] == 4025
+        assert "no patchable fields" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_title_only(monkeypatch):
+    db = _PatchFakeDB(title="old")
+    server._sessions["sid"] = _session(pending_title="stale")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"title": "fresh"}},
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "fresh"}
+        assert resp["result"]["skipped"] == []
+        assert resp["result"]["session_key"] == "session-key"
+        assert resp["result"]["session_id"] == "sid"
+        assert db.title_writes == ["fresh"]
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_flat_keys_also_accepted(monkeypatch):
+    """Accept the flat shape ``{session_id, title}`` as well as ``{session_id, patch: {...}}``."""
+    db = _PatchFakeDB()
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "title": "flat"},
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "flat"}
+        assert db.title_writes == ["flat"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_title_empty_string_returns_4021(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"title": "   "}},
+            }
+        )
+        assert resp["error"]["code"] == 4021
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_title_conflict_propagated(monkeypatch):
+    class _ConflictDB(_PatchFakeDB):
+        def set_session_title(self, _key, _title):
+            raise ValueError("Title 'x' is already in use by session abc")
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _ConflictDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"title": "x"}},
+            }
+        )
+        assert resp["error"]["code"] == 4022
+        assert "already in use" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_title_queued_when_row_not_ready(monkeypatch):
+    db = _PatchFakeDB(row_exists=False)
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"title": "queued"}},
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "queued"}
+        assert server._sessions["sid"]["pending_title"] == "queued"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_system_prompt_updates_db_and_agent(monkeypatch):
+    db = _PatchFakeDB()
+    agent = types.SimpleNamespace(_cached_system_prompt="old prompt")
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {
+                    "session_id": "sid",
+                    "patch": {"system_prompt": "You are a helpful coder."},
+                },
+            }
+        )
+        assert resp["result"]["patched"] == {"system_prompt": "You are a helpful coder."}
+        assert db.system_prompt_writes == ["You are a helpful coder."]
+        assert agent._cached_system_prompt == "You are a helpful coder."
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_system_prompt_works_without_built_agent(monkeypatch):
+    """Pre-build sessions (agent still None) must still accept the patch."""
+    db = _PatchFakeDB()
+    server._sessions["sid"] = _session(agent=None)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"system_prompt": "hello"}},
+            }
+        )
+        assert resp["result"]["patched"] == {"system_prompt": "hello"}
+        assert db.system_prompt_writes == ["hello"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_system_prompt_empty_string_clears(monkeypatch):
+    db = _PatchFakeDB()
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"system_prompt": ""}},
+            }
+        )
+        assert resp["result"]["patched"] == {"system_prompt": ""}
+        assert db.system_prompt_writes == [""]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_system_prompt_null_returns_4027(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"system_prompt": None}},
+            }
+        )
+        assert resp["error"]["code"] == 4027
+        assert "cannot be null" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_system_prompt_non_string_returns_4027(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"system_prompt": 123}},
+            }
+        )
+        assert resp["error"]["code"] == 4027
+        assert "must be a string" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_combined_title_and_system_prompt(monkeypatch):
+    db = _PatchFakeDB()
+    agent = types.SimpleNamespace(_cached_system_prompt="old")
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {
+                    "session_id": "sid",
+                    "patch": {"title": "T", "system_prompt": "S"},
+                },
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "T", "system_prompt": "S"}
+        assert db.title_writes == ["T"]
+        assert db.system_prompt_writes == ["S"]
+        assert agent._cached_system_prompt == "S"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_unknown_fields_skipped_not_failed(monkeypatch):
+    """Forward-compat: a newer Desktop adding fields must not break older gateways."""
+    db = _PatchFakeDB()
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {
+                    "session_id": "sid",
+                    "patch": {
+                        "title": "T",
+                        "future_field": "ignored",
+                        "another_unknown": 42,
+                    },
+                },
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "T"}
+        assert sorted(resp["result"]["skipped"]) == ["another_unknown", "future_field"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_only_unknown_fields_returns_4025(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _PatchFakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"future_field": "x"}},
+            }
+        )
+        assert resp["error"]["code"] == 4025
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_patch_singular_alias_routes_to_same_handler(monkeypatch):
+    """Both ``sessions.patch`` and ``session.patch`` must produce identical output."""
+    db = _PatchFakeDB()
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.patch",
+                "params": {"session_id": "sid", "patch": {"title": "via-alias"}},
+            }
+        )
+        assert resp["result"]["patched"] == {"title": "via-alias"}
+        assert db.title_writes == ["via-alias"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_method_is_registered():
+    """Both names must show up in the dispatcher table -- regression guard."""
+    assert "sessions.patch" in server._methods
+    assert "session.patch" in server._methods
+    assert server._methods["sessions.patch"] is server._methods["session.patch"]
+
+
+def test_sessions_patch_db_unavailable_returns_5007(monkeypatch):
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"title": "x"}},
+            }
+        )
+        assert resp["error"]["code"] == 5007
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_does_not_crash_when_cached_prompt_assign_fails(monkeypatch):
+    """A read-only/property-protected agent must NOT propagate AttributeError."""
+    db = _PatchFakeDB()
+
+    class _StrictAgent:
+        __slots__ = ()  # No attribute writes allowed.
+
+    server._sessions["sid"] = _session(agent=_StrictAgent())
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {"session_id": "sid", "patch": {"system_prompt": "x"}},
+            }
+        )
+        # DB still updated; agent cache failure swallowed.
+        assert resp["result"]["patched"] == {"system_prompt": "x"}
+        assert db.system_prompt_writes == ["x"]
+    finally:
+        server._sessions.pop("sid", None)

@@ -1632,6 +1632,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _is_conn_err = isinstance(
                         e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                     )
+                    _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,
@@ -1671,7 +1672,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                     for phrase in _SSE_PREVIEW_PHRASES
                                 )
                         _is_transient = (
-                            _is_timeout or _is_conn_err or _is_sse_conn_err_preview
+                            _is_timeout
+                            or _is_conn_err
+                            or _is_sse_conn_err_preview
+                            or _is_stream_parse_err
                         )
                         _can_silent_retry = (
                             _partial_tool_in_flight
@@ -1769,7 +1773,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 for phrase in _SSE_CONN_PHRASES
                             )
 
-                    if _is_timeout or _is_conn_err or _is_sse_conn_err:
+                    if _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err:
                         # Transient network / timeout error. Retry the
                         # streaming request with a fresh connection first.
                         if _stream_attempt < _max_stream_retries:
@@ -1811,6 +1815,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             diag=request_client_holder.get("diag"),
                         )
                         agent._emit_status(
+                            "❌ Provider returned malformed streaming data after "
+                            f"{_max_stream_retries + 1} attempts. "
+                            "The provider may be experiencing issues — "
+                            "try again in a moment."
+                            if _is_stream_parse_err else
                             "❌ Connection to provider failed after "
                             f"{_max_stream_retries + 1} attempts. "
                             "The provider may be experiencing issues — "

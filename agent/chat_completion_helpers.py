@@ -33,7 +33,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -1272,15 +1272,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     agent.base_url, _stream_read_timeout,
                 )
+        # Cap connect/pool at 60s even when provider timeout is higher.
+        # connect/pool cover TCP handshake, not model inference.
+        _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
         stream_kwargs = {
             **api_kwargs,
             "stream": True,
             "stream_options": {"include_usage": True},
             "timeout": _httpx.Timeout(
-                connect=30.0,
+                connect=_conn_cap,
                 read=_stream_read_timeout,
                 write=_base_timeout,
-                pool=30.0,
+                pool=_conn_cap,
             ),
         }
         request_client_holder["client"] = agent._create_request_openai_client(
@@ -1868,7 +1871,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if request_client is not None:
                 agent._close_request_openai_client(request_client, reason="stream_request_complete")
 
-    _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+    # Provider-configured stale timeout takes priority over env default.
+    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    if _cfg_stale is not None:
+        _stream_stale_timeout_base = _cfg_stale
+    else:
+        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.

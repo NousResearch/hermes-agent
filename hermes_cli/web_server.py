@@ -2553,7 +2553,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
 
 
 @app.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(request: Request, profile: Optional[str] = None):
     status_scope = None
     requested_profile = (profile or "").strip()
     # Plain /api/status stays the machine-level public liveness probe. The
@@ -2756,10 +2756,10 @@ async def get_status(profile: Optional[str] = None):
         # contradicts the allowlist's own contract ("version, gateway state,
         # active session count, and the dashboard auth-gate shape. No bodies, no
         # session content, no secrets"). Surface this detail only on a loopback
-        # / ``--insecure`` bind, where the dashboard is local-only and the
-        # caller is already inside the trust envelope — the same loopback/gated
-        # split ``should_require_auth`` draws.
-        if not auth_required:
+        # bind, where the dashboard is local-only, or to a gated caller whose
+        # cookie session was verified by the auth middleware.
+        # Unauthenticated gated liveness probes keep the public payload.
+        if not auth_required or getattr(request.state, "session", None) is not None:
             status.update({
                 "hermes_home": str(get_hermes_home()),
                 "config_path": str(get_config_path()),

@@ -54,6 +54,12 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/fonts-terminal/",
 )
 
+# Public endpoints that expose additional fields to an authenticated dashboard
+# caller. With no cookies they remain public; with session cookies they pass
+# through the normal verify/refresh flow so request.state.session and rotated
+# cookies have exactly the same semantics as protected API routes.
+_OPTIONAL_SESSION_PUBLIC_PATHS: frozenset[str] = frozenset({"/api/status"})
+
 
 def _path_is_public(path: str) -> bool:
     """True if ``path`` bypasses the OAuth auth gate.
@@ -272,11 +278,14 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     path = request.url.path
-    if _path_is_public(path):
+    is_public = _path_is_public(path)
+    if is_public and path not in _OPTIONAL_SESSION_PUBLIC_PATHS:
         return await call_next(request)
 
     at, _rt = read_session_cookies(request)
     if not at and not _rt:
+        if is_public:
+            return await call_next(request)
         # Neither token present — no session at all. Nothing to verify or
         # refresh. Before falling back to the /login interstitial, try to
         # silently bounce the user through the portal OAuth flow: the portal

@@ -38,6 +38,14 @@ Recommended evidence fields:
 - `runner_config_network_detected`
 - `workflow_dispatch_invoked: false` unless a separate CI rerun approval exists
 
+## Execution pitfalls
+
+- The recovery helper defaults to inspect mode. Passing `--approval-phrase` alone is not execution; approved live repair must include `--execute --approval-phrase "..."`. If the result JSON says `"mode": "inspect"` and `"steps": []`, no runtime mutation happened.
+- After recovery, run a fresh `--inspect` and require both the dedicated image label and `runner_config_network_detected: true` before treating the runner as healthy.
+- For DNS/network validation, a direct probe from the dedicated CI job image on `crypto-bot-gitea-net` is good evidence: resolve `crypto-bot-gitea` and run a read-only `git ls-remote` for the S006 branch. Redact/avoid credential-bearing URLs; local unauthenticated read-only Gitea probes are acceptable when the repo is locally readable.
+- If a control-plane preflight fails on source/runtime skill parity, repair and commit the skill/reference sync before runner or CI actions. Do not bypass parity failures just because the runtime action was approved.
+- If a command pipeline fails after writing JSON evidence, inspect the evidence file before retrying. This prevents repeating the same failed command shape and catches cases where the helper ran in inspect mode by mistake.
+
 ## Governance
 
 Runner networking repair approval is separate from S006 CI rerun approval. Do not dispatch workflows, mutate PR/check/status state, merge, push product branches, or begin S007A until the relevant approval explicitly covers that action.

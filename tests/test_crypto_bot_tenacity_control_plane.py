@@ -279,6 +279,12 @@ def test_runner_recovery_dedicated_ci_image_dockerfile_contains_node_python_and_
     assert "FROM python:3.13-slim-bookworm" in dockerfile
     assert "/usr/local/bin/node" in dockerfile
     assert "golang-go" in dockerfile
+    assert "ripgrep" in dockerfile
+    assert "rg --version" in dockerfile
+    assert "AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache" in dockerfile
+    assert "RUNNER_TOOL_CACHE=/opt/hostedtoolcache" in dockerfile
+    assert "/opt/hostedtoolcache/Python/${python_full_version}/arm64" in dockerfile
+    assert "arm64.complete" in dockerfile
 
 
 def test_runner_recovery_config_sets_job_container_network() -> None:

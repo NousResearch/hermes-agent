@@ -200,7 +200,7 @@ registered successfully, and token/instance empty loops are absent, consume the
 approval conservatively: do not run `--execute`, recreate the container, or
 otherwise mutate runtime state just because approval was granted. Report the
 healthy runner state and continue only with read-only CI evidence checks.
-Execution requires the helper's exact approval phrase and may recreate only the
+Execution requires the helper's exact approval phrase and the explicit CLI execution flag (`--execute --approval-phrase "..."`); `--approval-phrase` without `--execute` is only inspect/default mode and must not be reported as runtime recovery. It may recreate only the
 `crypto-bot-linux-runner` container with the correct act_runner image contract:
 `GITEA_RUNNER_REGISTRATION_TOKEN`, `/data/.runner`, `crypto-bot-gitea-net`, and
 labels `linux,crypto-bot-python-313,ubuntu-latest:docker://crypto-bot-ci-runner:python313-node20-go`, using the dedicated CI job image `crypto-bot-ci-runner:python313-node20-go`. See `references/dedicated-ci-runner-image.md` for the durable runner-image pattern and fail-closed inspection requirements. It must not dispatch workflows, update PR
@@ -327,7 +327,11 @@ inspection-first pattern and runner-label mismatch triage. See
 act_runner job-container network requirement, rerun evidence sequence, and
 temporary-token hygiene. See `references/runner-networking-ci-recovery.md` for
 fail-closed repair/inspection of `actions/checkout` DNS failures caused by job
-containers not joining `crypto-bot-gitea-net`.
+containers not joining `crypto-bot-gitea-net`. See
+`references/local-gitea-actions-toolcache-hardening.md` when CI gets past Node
+and checkout but fails because local act_runner job images/toolcache lack
+GitHub-hosted-runner assumptions such as Python 3.13 arm64 toolcache metadata or
+`ripgrep`.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

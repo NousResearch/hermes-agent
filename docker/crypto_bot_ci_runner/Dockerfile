@@ -25,17 +25,27 @@ RUN set -eux; \
       golang-go \
       jq \
       openssh-client \
+      ripgrep \
       rsync \
       unzip \
       xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
+    python_full_version="$(python -c 'import platform; print(platform.python_version())')"; \
+    python_toolcache="/opt/hostedtoolcache/Python/${python_full_version}/arm64"; \
+    mkdir -p "${python_toolcache}"; \
+    cp -a /usr/local/. "${python_toolcache}/"; \
+    touch "/opt/hostedtoolcache/Python/${python_full_version}/arm64.complete"; \
     python --version; \
+    "${python_toolcache}/bin/python" --version; \
     node --version; \
     npm --version; \
     git --version; \
+    rg --version; \
     go version
 
 ENV PATH="/usr/local/bin:${PATH}" \
+    AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache \
+    RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

@@ -1688,7 +1688,11 @@ def list_authenticated_providers(
                 continue
             # Live model discovery from custom provider endpoints (matches
             # Section 3 behavior for user ``providers:`` entries).
-            if api_url and api_key:
+            # Also probes when no api_key is set (e.g. local llama.cpp /
+            # Ollama servers) — the /models endpoint often works without
+            # auth.  The CLI's _model_flow_named_custom always probes, so
+            # the Telegram/Discord picker should do the same for parity.
+            if api_url:
                 try:
                     from hermes_cli.models import fetch_api_models
 

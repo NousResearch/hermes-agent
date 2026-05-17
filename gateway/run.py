@@ -11808,6 +11808,13 @@ class GatewayRunner:
         if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
             return
 
+        # Operator can fully disable per-topic auto-rename via
+        # extra.disable_topic_auto_rename. Useful when topics are managed
+        # by the user (ad-hoc Threaded Mode) and auto-rename would
+        # overwrite their chosen names every time the auto-title fires.
+        if self._telegram_topic_auto_rename_disabled(source):
+            return
+
         # Skip rename when the topic is operator-declared via
         # extra.dm_topics. Those topics have fixed names chosen by the
         # operator (plus optional skill binding); auto-renaming would
@@ -11876,6 +11883,29 @@ class GatewayRunner:
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 
+    def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
+        """Return True when operator disabled per-topic auto-rename for this Telegram chat.
+
+        Controlled via ``gateway.platforms.telegram.extra.disable_topic_auto_rename``.
+        Default is False (auto-rename enabled, preserves prior behaviour).
+        """
+        platform_cfg = (
+            self.config.platforms.get(source.platform)
+            if getattr(self, "config", None) and getattr(self.config, "platforms", None)
+            else None
+        )
+        if platform_cfg is None:
+            return False
+        extra = getattr(platform_cfg, "extra", None) or {}
+        value = extra.get("disable_topic_auto_rename")
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     def _schedule_telegram_topic_title_rename(
         self,
         source: SessionSource,
@@ -11884,6 +11914,8 @@ class GatewayRunner:
     ) -> None:
         """Schedule a topic rename from the auto-title background thread."""
         if not title or not self._is_telegram_topic_lane(source):
+            return
+        if self._telegram_topic_auto_rename_disabled(source):
             return
         try:
             loop = asyncio.get_running_loop()

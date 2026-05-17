@@ -191,6 +191,19 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
+/**
+ * Strip a trailing React Router glob/param segment from a tab path so it can
+ * be used as a sidebar navigation target. A manifest's `tab.path` like
+ * `/dashboard/*` or `/foo/:id` is a route PATTERN, not a navigable URL —
+ * navigating literally to `/dashboard/*` lands the IIFE plugin with
+ * spec="*" and produces a fake "spec not found: *.md" 404. The route
+ * registration below MUST keep the glob (React Router needs it to match
+ * `/dashboard/specA`), but the nav link target must be trimmed.
+ */
+function navTargetFromTabPath(p: string): string {
+  return p.replace(/\/[:*][^/]*$/, "").replace(/\/+$/, "") || "/";
+}
+
 function buildNavItems(
   builtIn: NavItem[],
   manifests: PluginManifest[],
@@ -202,7 +215,7 @@ function buildNavItems(
     if (manifest.tab.hidden) continue;
 
     const pluginItem: NavItem = {
-      path: manifest.tab.path,
+      path: navTargetFromTabPath(manifest.tab.path),
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
     };

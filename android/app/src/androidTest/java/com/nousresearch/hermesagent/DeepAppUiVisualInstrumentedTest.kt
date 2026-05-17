@@ -6,6 +6,7 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Environment
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -32,7 +33,10 @@ import com.nousresearch.hermesagent.data.StoredConversationAttachment
 import com.nousresearch.hermesagent.data.StoredConversationMessage
 import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
 import com.nousresearch.hermesagent.ui.boot.BootUiState
+import com.nousresearch.hermesagent.ui.settings.LocalModelDownloadsSection
+import com.nousresearch.hermesagent.ui.settings.LocalModelDownloadsViewModel
 import com.nousresearch.hermesagent.ui.shell.AppShellScreen
+import com.nousresearch.hermesagent.ui.theme.HermesTheme
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -132,6 +136,78 @@ class DeepAppUiVisualInstrumentedTest {
         composeRule.onNodeWithTag("HermesNavNousPortal").performClick()
         composeRule.onAllNodesWithText("Nous Portal")[0].assertIsDisplayed()
         capture("08-portal-spanish")
+    }
+
+    @Test
+    fun localModelImportButtonImportsPhoneFileAndMarksPreferredModel() {
+        val sourceFile = File(app.cacheDir, "hermes-import-button-test.gguf").apply {
+            writeText("HERMES_IMPORT_BUTTON_TEST")
+        }
+        val importedFile = File(
+            app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            "models/${sourceFile.name}",
+        ).apply { delete() }
+        LocalModelDownloadStore(app).apply {
+            saveDownloads(emptyList())
+            setPreferredDownloadId("")
+        }
+
+        val viewModel = LocalModelDownloadsViewModel(app)
+        composeRule.setContent {
+            HermesTheme {
+                LocalModelDownloadsSection(
+                    dataSaverMode = false,
+                    offlineAirplaneMode = true,
+                    onDataSaverModeChange = {},
+                    selectedBackend = BackendKind.LLAMA_CPP.persistedValue,
+                    onRuntimeFlavorSelected = {},
+                    onCompletedDownloadReady = {},
+                    viewModel = viewModel,
+                )
+            }
+        }
+
+        val openDocumentLaunched = AtomicBoolean(false)
+        val openDocumentIntent = object : TypeSafeMatcher<Intent>() {
+            override fun describeTo(description: Description) {
+                description.appendText("local model import ACTION_OPEN_DOCUMENT intent")
+            }
+
+            override fun matchesSafely(intent: Intent): Boolean {
+                val matches = intent.action == Intent.ACTION_OPEN_DOCUMENT
+                if (matches) {
+                    openDocumentLaunched.set(true)
+                }
+                return matches
+            }
+        }
+
+        Intents.init()
+        try {
+            val resultIntent = Intent()
+                .setData(Uri.fromFile(sourceFile))
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intending(openDocumentIntent).respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, resultIntent))
+
+            composeRule.onNodeWithText("Import model from phone files").assertIsDisplayed().performClick()
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                val store = LocalModelDownloadStore(app)
+                openDocumentLaunched.get() &&
+                    store.loadDownloads().firstOrNull { it.id == store.preferredDownloadId() }?.destinationFileName == sourceFile.name
+            }
+
+            val store = LocalModelDownloadStore(app)
+            val preferred = store.loadDownloads().firstOrNull { it.id == store.preferredDownloadId() }
+            assertEquals(sourceFile.name, preferred?.destinationFileName)
+            assertEquals("GGUF", preferred?.runtimeFlavor)
+            assertEquals(sourceFile.length(), preferred?.totalBytes)
+            assertTrue("Expected imported model copy at ${importedFile.absolutePath}", importedFile.isFile)
+            assertEquals(sourceFile.readText(), importedFile.readText())
+        } finally {
+            Intents.release()
+            importedFile.delete()
+            sourceFile.delete()
+        }
     }
 
     @Test

@@ -31,6 +31,13 @@
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <package android:name="com.google.android.gm" />
+        <package android:name="com.zhiliaoapp.musically" />
+        <package android:name="com.instagram.android" />
     </queries>
 
     <application

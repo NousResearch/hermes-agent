@@ -720,6 +720,16 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _API_SESSION_KEY_PREFIX = "api-server"
+
+    def _api_session_scope_key(self, raw: str) -> str:
+        """Return a deterministic API-server-only memory scope key."""
+        scope_digest = hmac.new(
+            self._api_key.encode("utf-8"),
+            raw.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"{self._API_SESSION_KEY_PREFIX}-{scope_digest}"
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -736,9 +746,10 @@ class APIServerAdapter(BasePlatformAdapter):
         on validation failure.
 
         Security: like session continuation, accepting a caller-supplied
-        memory scope requires API-key authentication so that an
-        unauthenticated client on a local-only server can't inject itself
-        into another user's long-term memory scope by guessing a key.
+        memory scope requires API-key authentication.  The caller's key is
+        then converted to an API-server namespace bound to the configured
+        bearer key, so API clients cannot impersonate deterministic native
+        gateway session keys (for example Telegram/Slack memory scopes).
         """
         raw = request.headers.get("X-Hermes-Session-Key", "").strip()
         if not raw:
@@ -771,7 +782,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        return raw, None
+        return self._api_session_scope_key(raw), None
 
     # ------------------------------------------------------------------
     # Session DB helper

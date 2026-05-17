@@ -63,8 +63,14 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getSessions: (limit = 20, offset = 0, projectId?: string | null) => {
+    const qs = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (projectId) qs.set("project_id", projectId);
+    return fetchJSON<PaginatedSessions>(`/api/sessions?${qs.toString()}`);
+  },
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
@@ -75,6 +81,21 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  getSessionOrganization: () =>
+    fetchJSON<SessionOrganizationResponse>("/api/session-organization"),
+  uploadDashboardFile: (file: File) => {
+    const qs = new URLSearchParams({ filename: file.name });
+    const headers: Record<string, string> = {};
+    if (file.type) headers["Content-Type"] = file.type;
+    return fetchJSON<DashboardFileUploadResponse>(
+      `/api/media/file?${qs.toString()}`,
+      {
+        method: "POST",
+        headers,
+        body: file,
+      },
+    );
+  },
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -396,6 +417,7 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  project_id?: string | null;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -410,6 +432,35 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface SessionProject {
+  id: string;
+  name: string;
+  description?: string;
+  default_model?: string | null;
+  default_skills?: string[];
+  workspace_path?: string | null;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface SessionOrganizationResponse {
+  version: number;
+  updated_at: number;
+  projects: SessionProject[];
+  assignments: Record<string, { project_id: string; updated_at?: number }>;
+}
+
+export interface DashboardFileUploadResponse {
+  ok: boolean;
+  filename: string;
+  size: number;
+  kind: string;
+  content_type: string;
+  stored_path: string;
+  agent_path: string;
+  suggested_prompt: string;
 }
 
 export interface EnvVarInfo {

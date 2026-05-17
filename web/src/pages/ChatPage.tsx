@@ -25,11 +25,12 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Copy, FileUp, Loader2, PanelRight, SendHorizontal, X } from "lucide-react";
+import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
+import { ChatModelControl } from "@/components/ChatModelControl";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -70,6 +71,86 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+const FILE_UPLOAD_ACCEPT = [
+  ".mp4",
+  ".mov",
+  ".m4v",
+  ".mkv",
+  ".webm",
+  ".avi",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".flac",
+  ".ogg",
+  ".opus",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".svg",
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ods",
+  ".odp",
+  ".csv",
+  ".tsv",
+  ".txt",
+  ".md",
+  ".json",
+  ".jsonl",
+  ".yaml",
+  ".yml",
+  ".xml",
+  ".html",
+  ".htm",
+  ".rtf",
+  ".log",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".tgz",
+  ".7z",
+].join(",");
+const FILE_UPLOAD_EXTENSIONS = new Set(
+  FILE_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim()),
+);
+const FILE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+type FileUploadState =
+  | { status: "idle"; message: string | null }
+  | { status: "uploading"; message: string }
+  | { status: "ready"; message: string }
+  | { status: "error"; message: string };
+
+function isAllowedDashboardFile(file: File): boolean {
+  const suffix = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  return FILE_UPLOAD_EXTENSIONS.has(suffix);
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -105,6 +186,7 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -121,6 +203,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const [fileUploadState, setFileUploadState] = useState<FileUploadState>({
+    status: "idle",
+    message: null,
+  });
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
@@ -135,10 +222,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
-  const modelToolsLabel = useMemo(
-    () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
-    [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
-  );
+  const modelToolsLabel = "Sessions and tools";
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
@@ -155,7 +239,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(
+    () => `${generateChannelId()}-${resumeParam ? "resume" : "new"}`,
+    [resumeParam],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -264,6 +351,131 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const handleSendCurrentInput = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setFileUploadState({
+        status: "error",
+        message: "Chat is not connected. Reload /chat and try again.",
+      });
+      return;
+    }
+    ws.send("\r");
+    termRef.current?.focus();
+  }, []);
+
+  const waitForOpenChatSocket = useCallback(async (timeoutMs = 10000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) return ws;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    }
+    const ws = wsRef.current;
+    return ws?.readyState === WebSocket.OPEN ? ws : null;
+  }, []);
+
+  const sendPromptToHermes = useCallback(
+    async (
+      prompt: string,
+      disconnectedMessage =
+        "Chat is not connected. Reload /chat and try again.",
+    ) => {
+      const ws = await waitForOpenChatSocket();
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setFileUploadState({
+          status: "error",
+          message: disconnectedMessage,
+        });
+        return false;
+      }
+      ws.send(prompt);
+      setTimeout(() => {
+        const current = wsRef.current;
+        if (current && current.readyState === WebSocket.OPEN) current.send("\r");
+      }, 100);
+      termRef.current?.focus();
+      return true;
+    },
+    [waitForOpenChatSocket],
+  );
+
+  const handleDashboardFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      if (!isAllowedDashboardFile(file)) {
+        setFileUploadState({
+          status: "error",
+          message:
+            "Unsupported file type. Use media, images, PDF, Office, text/data files, or archives.",
+        });
+        return;
+      }
+      if (file.size <= 0) {
+        setFileUploadState({
+          status: "error",
+          message: "That file is empty.",
+        });
+        return;
+      }
+      if (file.size > FILE_UPLOAD_MAX_BYTES) {
+        setFileUploadState({
+          status: "error",
+          message: `File is too large (${formatFileSize(file.size)}). Limit: 2 GB.`,
+        });
+        return;
+      }
+
+      setFileUploadState({
+        status: "uploading",
+        message: `Uploading ${file.name} (${formatFileSize(file.size)})...`,
+      });
+
+      try {
+        const uploaded = await api.uploadDashboardFile(file);
+        setFileUploadState({
+          status: "uploading",
+          message: "File saved. Waiting for chat connection...",
+        });
+        const injected = await sendPromptToHermes(uploaded.suggested_prompt);
+        setFileUploadState({
+          status: injected ? "ready" : "error",
+          message: injected
+            ? `File saved and prompt sent: ${uploaded.agent_path}`
+            : `File saved, but prompt could not be sent: ${uploaded.agent_path}`,
+        });
+      } catch (err) {
+        setFileUploadState({
+          status: "error",
+          message: err instanceof Error ? err.message : "File upload failed.",
+        });
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    },
+    [sendPromptToHermes],
+  );
+
+  const handleFileDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setFileDragActive(false);
+      void handleDashboardFile(event.dataTransfer.files?.[0] ?? null);
+    },
+    [handleDashboardFile],
+  );
+
+  const handleFileDrag = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type === "dragenter" || event.type === "dragover") {
+      setFileDragActive(true);
+    } else if (event.type === "dragleave") {
+      setFileDragActive(false);
+    }
+  }, []);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -333,7 +545,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -766,9 +978,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
               style={{ mixBlendMode: "plus-lighter" }}
             >
-              {t.app.modelToolsSheetTitle}
+              Sessions
               <br />
-              {t.app.modelToolsSheetSubtitle}
+              Tools
             </Typography>
 
             <Button
@@ -788,7 +1000,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar channel={channel} activeSessionId={resumeParam} />
           </div>
         </div>
       </>,
@@ -810,41 +1022,162 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         <div
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            "border border-transparent p-2 sm:p-3",
+            fileDragActive && "border-current/70 bg-white/[0.04]",
           )}
+          onDragEnter={handleFileDrag}
+          onDragLeave={handleFileDrag}
+          onDragOver={handleFileDrag}
+          onDrop={handleFileDrop}
           style={{
             backgroundColor: TERMINAL_THEME.background,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_UPLOAD_ACCEPT}
+            className="hidden"
+            onChange={(event) => {
+              void handleDashboardFile(event.target.files?.[0] ?? null);
+            }}
+          />
+
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+          <div
             className={cn(
-              "absolute z-10",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150 normal-case font-normal tracking-normal",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
-              "lg:bottom-4 lg:right-4",
+              "mt-2 flex h-8 shrink-0 items-center justify-between gap-2",
+              "border-t border-current/15 px-0.5 pt-2",
+              "text-[0.65rem] sm:h-9 sm:text-xs",
             )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                ghost
+                onClick={() => fileInputRef.current?.click()}
+                title="Upload a file, save it locally, and send Hermes an analysis prompt with the file path"
+                aria-label="Upload file for Hermes analysis"
+                disabled={fileUploadState.status === "uploading"}
+                className={cn(
+                  "h-6 min-w-0 rounded border border-current/30 px-2 py-1",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-75 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "text-[0.65rem] sm:h-7 sm:px-2.5 sm:text-xs",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  {fileUploadState.status === "uploading" ? (
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                  ) : (
+                    <FileUp className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="hidden min-[420px]:inline truncate tracking-wide">
+                    {fileUploadState.status === "uploading"
+                      ? "uploading file"
+                      : "upload file"}
+                  </span>
+                </span>
+              </Button>
+
+              <ChatModelControl
+                className="min-w-0"
+                buttonClassName="text-current"
+                onSlashCommand={(slashCommand) => {
+                  void sendPromptToHermes(slashCommand);
+                }}
+              />
+            </div>
+
+            <div className="ml-auto flex min-w-0 items-center gap-2">
+              <Button
+                ghost
+                onClick={handleSendCurrentInput}
+                title="Send current message"
+                aria-label="Send current message"
+                className={cn(
+                  "h-6 min-w-0 rounded border border-current/45 px-2 py-1",
+                  "bg-black/25 backdrop-blur-sm",
+                  "opacity-90 hover:opacity-100 hover:border-current/75",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "text-[0.65rem] sm:h-7 sm:px-2.5 sm:text-xs",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <SendHorizontal className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[360px]:inline truncate tracking-wide">
+                    send
+                  </span>
+                </span>
+              </Button>
+
+              <Button
+                ghost
+                onClick={handleCopyLast}
+                title="Copy last assistant response as raw markdown"
+                aria-label="Copy last assistant response"
+                className={cn(
+                  "h-6 min-w-0 rounded border border-current/30 px-2 py-1",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-65 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150 normal-case font-normal tracking-normal",
+                  "text-[0.65rem] sm:h-7 sm:px-2.5 sm:text-xs",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <Copy className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[480px]:inline truncate tracking-wide">
+                    {copyState === "copied" ? "copied" : "copy last response"}
+                  </span>
+                </span>
+              </Button>
+            </div>
+          </div>
+
+          {fileDragActive && (
+            <div
+              aria-hidden="true"
+              className={cn(
+                "pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-lg",
+                "border border-dashed border-current/60 bg-black/35 text-center",
+                "text-xs tracking-wide",
+              )}
+              style={{ color: TERMINAL_THEME.foreground }}
+            >
+              Drop file to save it and send Hermes the file path
+            </div>
+          )}
+
+          {fileUploadState.message && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={cn(
+                "pointer-events-none absolute left-2 right-2 top-2 z-10 rounded border px-2 py-1",
+                "bg-black/40 text-[0.65rem] tracking-wide backdrop-blur-sm sm:left-3 sm:right-3 sm:top-3 sm:text-xs",
+                fileUploadState.status === "error"
+                  ? "border-red-300/40 text-red-200"
+                  : "border-current/25",
+              )}
+              style={{
+                color:
+                  fileUploadState.status === "error"
+                    ? undefined
+                    : TERMINAL_THEME.foreground,
+              }}
+            >
+              {fileUploadState.message}
+            </div>
+          )}
         </div>
 
         {!narrow && (
@@ -852,10 +1185,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-72"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar channel={channel} activeSessionId={resumeParam} />
             </div>
           </div>
         )}

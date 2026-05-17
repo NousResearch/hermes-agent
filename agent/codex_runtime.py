@@ -356,6 +356,35 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if not event_type and isinstance(event, dict):
                 event_type = event.get("type")
 
+            # ``error`` SSE frames carry the provider's real failure
+            # reason (subscription / quota / model-not-available /
+            # rejected-reasoning-replay) but never appear in the
+            # ``{completed, incomplete, failed}`` terminal set, so the
+            # raw loop below would silently consume them and end with
+            # "did not emit a terminal response".  xAI in particular
+            # emits ``type=error`` as the FIRST frame for OAuth
+            # accounts whose Grok subscription is missing/exhausted —
+            # the SDK's stream helper raises ``RuntimeError(Expected
+            # to have received response.created before error)`` which
+            # the caller catches and routes here, expecting this
+            # fallback to surface the message.  Synthesize an
+            # APIError-shaped exception so ``_summarize_api_error``
+            # and the credential-pool entitlement detector see the
+            # real text instead of a generic RuntimeError.
+            if event_type == "error":
+                err_message = getattr(event, "message", None)
+                if not err_message and isinstance(event, dict):
+                    err_message = event.get("message")
+                err_code = getattr(event, "code", None)
+                if not err_code and isinstance(event, dict):
+                    err_code = event.get("code")
+                err_param = getattr(event, "param", None)
+                if not err_param and isinstance(event, dict):
+                    err_param = event.get("param")
+                err_message = (err_message or "stream emitted error event").strip()
+                from run_agent import _StreamErrorEvent
+                raise _StreamErrorEvent(err_message, code=err_code, param=err_param)
+
             # Collect output items and text deltas for backfill
             if event_type == "response.output_item.done":
                 done_item = getattr(event, "item", None)

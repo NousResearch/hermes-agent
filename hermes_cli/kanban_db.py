@@ -98,6 +98,8 @@ except Exception:  # pragma: no cover - PyYAML is part of Hermes runtime deps
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+KANBAN_REVIEW_LANES = ("FASTLANE_KANBAN", "STANDARD_REVIEW", "CRITICAL_REVIEW")
+KANBAN_FASTLANE_DEFAULT = "FASTLANE_KANBAN"
 _IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes; after that the next
@@ -2890,6 +2892,140 @@ def _body_requires_scope_attestation(body: Optional[str]) -> bool:
     return False
 
 
+def _selected_policy_value(body: Optional[str], key: str) -> Any:
+    """Return the last parser-backed policy value for ``key`` in a task body."""
+    selected = None
+    for mapping in _iter_task_policy_mappings(body):
+        if key in mapping:
+            selected = mapping.get(key)
+    return selected
+
+
+def _review_lane_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _normalized_review_lane(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    lane = str(value).strip().upper().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "FASTLANE": "FASTLANE_KANBAN",
+        "KANBAN_FASTLANE": "FASTLANE_KANBAN",
+        "STANDARD": "STANDARD_REVIEW",
+        "CRITICAL": "CRITICAL_REVIEW",
+    }
+    lane = aliases.get(lane, lane)
+    return lane if lane in KANBAN_REVIEW_LANES else None
+
+
+def _without_scope_negative_declarations(text: str, contract: dict[str, Any]) -> str:
+    """Remove negative scope declarations before free-text risk matching."""
+    sanitized = text
+    for key in ("forbidden_systems", "forbidden_paths", "anti_scope"):
+        for item in _review_lane_string_list(contract.get(key)):
+            value = str(item).strip().casefold()
+            if value:
+                sanitized = sanitized.replace(value, "")
+                sanitized = sanitized.replace(_normalize_forbidden_system_name(value), "")
+    return sanitized
+
+
+def classify_kanban_review_lane(
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    changed_paths: Optional[Iterable[str]] = None,
+    requested_lane: Optional[str] = None,
+) -> dict[str, Any]:
+    """Classify the cheapest safe Kanban review lane for a task."""
+    text_parts = [title or "", body or ""]
+    paths = [str(p) for p in (changed_paths or []) if str(p).strip()]
+    text_haystack = "\n".join(text_parts).casefold()
+    contract = _selected_scope_contract(body) or {}
+    lane_value = _selected_policy_value(body, "review_lane")
+    explicit_lane = _normalized_review_lane(requested_lane) or _normalized_review_lane(lane_value)
+    allowed_systems = {
+        _normalize_forbidden_system_name(item)
+        for item in _review_lane_string_list(contract.get("allowed_systems"))
+    }
+
+    critical_terms = {
+        "gateway-runtime", "dispatcher-runtime-activation", "live-profile-config-mutation",
+        "openclaw", "mission-control", "atlas", "telegram", "systemd",
+        "cron-runtime", "secrets-credentials", "restart", "deploy", "runtime-activation",
+        "profile-config", "config-mutation", "broad-db", "state-operation",
+    }
+    critical_text_markers = {
+        "gateway-runtime", "dispatcher-runtime-activation", "live-profile-config-mutation",
+        "runtime-activation", "profile-config", "config-mutation", "broad-db",
+        "state-operation", "secrets-credentials", "systemd", "cron-runtime",
+        "openclaw-gateway", "mission-control", "atlas executor", "atlas call",
+        "restart atlas", "telegram bot", "telegram notification", "systemctl restart",
+        "restart service", "restart .service", ".service restart", "deploy runtime",
+    }
+    critical_path_markers = (
+        "/.hermes/auth.json", "/.hermes/.env", "/.hermes/profiles/", "/.openclaw/",
+        "systemd/", "cron/", "gateway/", "plugins/kanban/systemd/",
+    )
+    standard_terms = {
+        "dispatcher", "lifecycle", "task-lifecycle", "completion-semantics",
+        "review-required", "recompute-ready", "task-links", "claim-task",
+        "block-task", "complete-task", "kanban-db-semantics",
+    }
+
+    reasons: list[str] = []
+    triggers: list[str] = []
+    critical_text_haystack = _without_scope_negative_declarations(text_haystack, contract)
+    if allowed_systems.intersection(critical_terms) or any(
+        marker in critical_text_haystack for marker in critical_text_markers
+    ):
+        triggers.append("critical_allowed_system_or_text")
+    if any(marker in p.casefold() for p in paths for marker in critical_path_markers):
+        triggers.append("critical_changed_path")
+    if explicit_lane == "CRITICAL_REVIEW":
+        triggers.append("explicit_critical_review")
+
+    if triggers:
+        lane = "CRITICAL_REVIEW"
+        reasons.append("critical trigger requires Reviewer-A + Reviewer-B and explicit activation Go")
+    else:
+        standard_hit = any(term in text_haystack for term in standard_terms) or explicit_lane == "STANDARD_REVIEW"
+        if standard_hit:
+            lane = "STANDARD_REVIEW"
+            if explicit_lane == "STANDARD_REVIEW":
+                triggers.append("explicit_standard_review")
+                reasons.append("explicit/policy STANDARD_REVIEW request requires one Reviewer-B")
+            else:
+                reasons.append("lifecycle/dispatcher/non-trivial Kanban semantics require one Reviewer-B")
+        else:
+            lane = KANBAN_FASTLANE_DEFAULT
+            reasons.append("low-risk Kanban-only/default path: Hub plan check + Coder + Hub/Coordinator evidence check")
+
+    if explicit_lane and KANBAN_REVIEW_LANES.index(explicit_lane) > KANBAN_REVIEW_LANES.index(lane):
+        lane = explicit_lane
+        triggers.append(f"explicit_{explicit_lane.lower()}")
+
+    risk_map = {"FASTLANE_KANBAN": "low", "STANDARD_REVIEW": "medium", "CRITICAL_REVIEW": "high"}
+    risk = risk_map.get(lane, "low")
+    return {
+        "lane": lane,
+        "risk": risk,
+        "reviewer_a_required": lane == "CRITICAL_REVIEW",
+        "reviewer_b_required": lane in {"STANDARD_REVIEW", "CRITICAL_REVIEW"},
+        "hub_coordinator_evidence_check_required": lane == "FASTLANE_KANBAN",
+        "fastlane_default": lane == "FASTLANE_KANBAN",
+        "reasons": reasons,
+        "escalation_triggers": triggers,
+    }
+
+
 def _metadata_truthy(metadata: Optional[dict], key: str) -> bool:
     if not isinstance(metadata, dict) or key not in metadata:
         return False
@@ -3791,6 +3927,10 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    auto_continued: list[str] = field(default_factory=list)
+    """Blocked task ids the dispatcher autonomously reopened after iteration-budget exhaustion."""
+    continuation_capped: list[str] = field(default_factory=list)
+    """Blocked task ids left parked because the iteration-budget continuation cap was reached."""
     preflight_blocked: list[str] = field(default_factory=list)
     """Task ids blocked before claim/spawn because they failed dispatcher preflight."""
 
@@ -5240,6 +5380,11 @@ def dispatch_once(
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
+    if not dry_run:
+        auto_continued, continuation_capped = _auto_continue_iteration_budget_blocks(conn)
+        result.auto_continued.extend(auto_continued)
+        result.continuation_capped.extend(continuation_capped)
+        _dispatch_review_required_handoffs(conn)
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather

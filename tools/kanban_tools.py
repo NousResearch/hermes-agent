@@ -473,6 +473,23 @@ def _handle_validate_created_cards(args: dict, **kw) -> str:
         return tool_error(f"kanban_validate_created_cards: {e}")
 
 
+def _handle_review_lane(args: dict, **kw) -> str:
+    """Return the no-mutation review lane decision for a planned Kanban task."""
+    try:
+        from hermes_cli import kanban_db as kb
+
+        decision = kb.classify_kanban_review_lane(
+            title=args.get("title"),
+            body=args.get("body"),
+            changed_paths=args.get("changed_paths") or [],
+            requested_lane=args.get("requested_lane"),
+        )
+        return _ok(**decision)
+    except Exception as e:
+        logger.exception("kanban_review_lane failed")
+        return tool_error(f"kanban_review_lane: {e}")
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     tid = _default_task_id(args.get("task_id"))
@@ -1368,6 +1385,42 @@ KANBAN_LINK_SCHEMA = {
 }
 
 
+KANBAN_REVIEW_LANE_SCHEMA = {
+    "name": "kanban_review_lane",
+    "description": (
+        "Classify a Kanban task into FASTLANE_KANBAN, STANDARD_REVIEW, or "
+        "CRITICAL_REVIEW without mutating the board. Use before creating "
+        "reviewer tasks: Fastlane requires Hub/Coordinator evidence check "
+        "only, Standard requires one Reviewer-B, Critical requires "
+        "Reviewer-A + Reviewer-B plus explicit operator Go."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Task title or goal."},
+            "body": {
+                "type": "string",
+                "description": "Task body / scope_contract / policy text.",
+            },
+            "changed_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Planned or actual changed file paths for escalation checks.",
+            },
+            "requested_lane": {
+                "type": "string",
+                "description": (
+                    "Optional explicit lane request (FASTLANE_KANBAN / "
+                    "STANDARD_REVIEW / CRITICAL_REVIEW). Can raise but not "
+                    "lower the computed risk-based lane."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -1487,4 +1540,13 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_review_lane",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_LANE_SCHEMA,
+    handler=_handle_review_lane,
+    check_fn=_check_kanban_mode,
+    emoji="🚦",
 )

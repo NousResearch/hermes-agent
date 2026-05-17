@@ -225,6 +225,35 @@ If you need tools to run against your **local** workspace today, run Hermes loca
 With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
 :::
 
+## Image / Photo Uploads
+
+Open WebUI sends uploaded photos as `image_url` content parts on `/v1/chat/completions` (typically base64-encoded `data:image/...` URLs). Hermes Agent routes those images through the same vision pipeline used by the TUI gateway:
+
+| Active main model | `auxiliary.vision.provider` | What happens to the image |
+|-------------------|------------------------------|---------------------------|
+| Supports vision (e.g. `gpt-5`, `gpt-4o`, `claude-sonnet-4.5`, `gemini-3-pro`) | `auto` / unset | Image part is forwarded **natively** so the model sees the pixels directly. |
+| Any model | An explicit provider (e.g. `openrouter`) | Image is **pre-analysed via `vision_analyze`** and the description is prepended to the user turn as text. |
+| Non-vision model (e.g. `deepseek-chat`, `mistral-large`) | `auto` / unset | Same as the explicit-override row — image is described as text. |
+
+The routing decision matches the table in [`agent/image_routing.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/image_routing.py) so the API server and the TUI gateway behave identically.
+
+To force the text-mode path on every model (e.g. when you want descriptions logged for audit), set:
+
+```yaml
+# ~/.hermes/config.yaml
+agent:
+  image_input_mode: text
+```
+
+To always send pixels (useful when you've upgraded to a vision-capable main model that Hermes doesn't yet recognise):
+
+```yaml
+agent:
+  image_input_mode: native
+```
+
+If `vision_analyze` itself fails (vision provider down, transient API error), the user turn still reaches the agent with a `[The user sent an image but I couldn't quite see it this time]` placeholder so the conversation isn't silently dropped.
+
 ## Configuration Reference
 
 ### Hermes Agent (API server)

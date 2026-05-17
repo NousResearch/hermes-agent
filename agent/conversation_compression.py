@@ -404,8 +404,12 @@ def compress_context(
                 except (ValueError, Exception) as e:
                     logger.debug("Could not propagate title on compression: %s", e)
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
-            agent._last_flushed_db_idx = 0
+            # Reset flush cursor — new session starts fresh.  Set to the
+            # number of compressed messages so _flush_messages_to_session_db
+            # does not re-append the entire compressed history as new
+            # messages (which would cause them to appear as live history
+            # in the new session's transcript — see #20293).
+            agent._last_flushed_db_idx = len(compressed)
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

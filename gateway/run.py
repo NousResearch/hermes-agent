@@ -8435,6 +8435,7 @@ class GatewayRunner:
                                     # Reset stored token count — transcript was rewritten
                                     session_entry.last_prompt_tokens = 0
                                     history = _compressed
+                                    session_entry._prewritten_msg_count = len(_compressed)
                                     _new_count = len(_compressed)
                                     _new_tokens = estimate_messages_tokens_rough(
                                         _compressed
@@ -8614,6 +8615,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                _prewritten_msg_count=session_entry._prewritten_msg_count,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -12116,6 +12118,10 @@ class GatewayRunner:
                     self.session_store._save()
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Track prewritten messages so next turn's agent doesn't
+                # re-flush the compressed history via _flush_messages_to_session_db (#20293).
+                session_entry._prewritten_msg_count = len(compressed)
+                self.session_store._save()
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
@@ -15622,6 +15628,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        _prewritten_msg_count: int = 0,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16528,6 +16535,15 @@ class GatewayRunner:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # When hygiene compression ran before this agent was created,
+            # rewrite_transcript already wrote _prewritten_msg_count messages
+            # to the session DB.  Advance the flush cursor so
+            # _flush_messages_to_session_db does not re-append them as new
+            # messages (which would inject the compressed history as live
+            # conversation in the transcript — see #20293).
+            if _prewritten_msg_count > 0:
+                agent._last_flushed_db_idx = _prewritten_msg_count
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

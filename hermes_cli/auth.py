@@ -3616,6 +3616,63 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     return payload
 
 
+def _clear_shared_nous_state(reason: str) -> None:
+    """Remove the shared Nous OAuth store after a terminal token failure."""
+    try:
+        with _nous_shared_store_lock():
+            path = _nous_shared_store_path()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        _oauth_trace("nous_shared_store_cleared", reason=reason)
+    except Exception as exc:
+        logger.debug("Failed to clear shared Nous auth store: %s", exc)
+
+
+def _is_terminal_nous_refresh_error(exc: Exception) -> bool:
+    """True when retrying the same Nous refresh token cannot succeed."""
+    return (
+        isinstance(exc, AuthError)
+        and exc.provider == "nous"
+        and exc.code in {"invalid_grant", "invalid_token"}
+        and bool(exc.relogin_required)
+    )
+
+
+def _quarantine_nous_oauth_state(
+    state: Dict[str, Any],
+    error: AuthError,
+    *,
+    reason: str,
+) -> None:
+    """Keep routing metadata but remove dead OAuth material so it is not replayed."""
+    for key in (
+        "access_token",
+        "refresh_token",
+        "expires_at",
+        "expires_in",
+        "obtained_at",
+        "agent_key",
+        "agent_key_id",
+        "agent_key_expires_at",
+        "agent_key_expires_in",
+        "agent_key_reused",
+        "agent_key_obtained_at",
+    ):
+        state.pop(key, None)
+    state["last_auth_error"] = {
+        "provider": "nous",
+        "code": error.code,
+        "message": str(error),
+        "reason": reason,
+        "relogin_required": True,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    _clear_shared_nous_state(reason)
+    invalidate_nous_auth_status_cache()
+
+
 def _try_import_shared_nous_state(
     *,
     timeout_seconds: float = 15.0,
@@ -3671,6 +3728,8 @@ def _try_import_shared_nous_state(
             error_type=type(exc).__name__,
             error_code=getattr(exc, "code", None),
         )
+        if _is_terminal_nous_refresh_error(exc):
+            _clear_shared_nous_state("shared_import_terminal_refresh_failure")
         logger.debug("Shared Nous import failed: %s", exc)
         return None
     except Exception as exc:
@@ -3896,12 +3955,23 @@ def resolve_nous_access_token(
                 headers={"Accept": "application/json"},
                 verify=verify,
             ) as client:
-                refreshed = _refresh_access_token(
-                    client=client,
-                    portal_base_url=portal_base_url,
-                    client_id=client_id,
-                    refresh_token=refresh_token,
-                )
+                try:
+                    refreshed = _refresh_access_token(
+                        client=client,
+                        portal_base_url=portal_base_url,
+                        client_id=client_id,
+                        refresh_token=refresh_token,
+                    )
+                except AuthError as exc:
+                    if _is_terminal_nous_refresh_error(exc):
+                        _quarantine_nous_oauth_state(
+                            state,
+                            exc,
+                            reason="managed_access_token_refresh_failure",
+                        )
+                        _save_provider_state(auth_store, "nous", state)
+                        _save_auth_store(auth_store)
+                    raise
 
             now = datetime.now(timezone.utc)
             access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
@@ -4209,10 +4279,20 @@ def resolve_nous_runtime_credentials(
                             reason="access_expiring",
                             refresh_token_fp=_token_fingerprint(refresh_token),
                         )
-                        refreshed = _refresh_access_token(
-                            client=client, portal_base_url=portal_base_url,
-                            client_id=client_id, refresh_token=refresh_token,
-                        )
+                        try:
+                            refreshed = _refresh_access_token(
+                                client=client, portal_base_url=portal_base_url,
+                                client_id=client_id, refresh_token=refresh_token,
+                            )
+                        except AuthError as exc:
+                            if _is_terminal_nous_refresh_error(exc):
+                                _quarantine_nous_oauth_state(
+                                    state,
+                                    exc,
+                                    reason="runtime_access_refresh_failure",
+                                )
+                                _persist_state("terminal_runtime_access_refresh_failure")
+                            raise
                         now = datetime.now(timezone.utc)
                         access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
                         previous_refresh_token = refresh_token
@@ -4283,10 +4363,20 @@ def resolve_nous_runtime_credentials(
                                     reason="mint_retry_after_invalid_token",
                                     refresh_token_fp=_token_fingerprint(latest_refresh_token),
                                 )
-                                refreshed = _refresh_access_token(
-                                    client=client, portal_base_url=portal_base_url,
-                                    client_id=client_id, refresh_token=latest_refresh_token,
-                                )
+                                try:
+                                    refreshed = _refresh_access_token(
+                                        client=client, portal_base_url=portal_base_url,
+                                        client_id=client_id, refresh_token=latest_refresh_token,
+                                    )
+                                except AuthError as exc:
+                                    if _is_terminal_nous_refresh_error(exc):
+                                        _quarantine_nous_oauth_state(
+                                            state,
+                                            exc,
+                                            reason="runtime_mint_retry_refresh_failure",
+                                        )
+                                        _persist_state("terminal_runtime_mint_retry_refresh_failure")
+                                    raise
                                 now = datetime.now(timezone.utc)
                                 access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
                                 state["access_token"] = refreshed["access_token"]

@@ -373,6 +373,89 @@ def test_refresh_token_persisted_when_mint_times_out(tmp_path, monkeypatch):
     assert state_after_failure["access_token"] == "access-1"
 
 
+def test_terminal_refresh_failure_quarantines_tokens(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    """A revoked/invalid Nous refresh token must not be replayed forever."""
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    shared_state = _full_state_fixture()
+    shared_state["access_token"] = "access-old"
+    shared_state["refresh_token"] = "refresh-old"
+    shared_state["expires_at"] = "2026-02-01T00:00:00+00:00"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    refresh_calls: list[str] = []
+
+    def _terminal_refresh_failure(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
+
+    with pytest.raises(AuthError, match="Refresh session has been revoked"):
+        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    state_after_failure = auth_mod.get_provider_auth_state("nous")
+    assert state_after_failure is not None
+    assert not state_after_failure.get("refresh_token")
+    assert not state_after_failure.get("access_token")
+    assert not state_after_failure.get("agent_key")
+    assert state_after_failure["last_auth_error"]["code"] == "invalid_grant"
+    assert auth_mod._read_shared_nous_state() is None
+
+    with pytest.raises(AuthError, match="No access token found"):
+        auth_mod.resolve_nous_runtime_credentials(min_key_ttl_seconds=300)
+
+    assert refresh_calls == ["refresh-old"]
+
+
+def test_managed_access_token_refresh_failure_quarantines_tokens(
+    tmp_path, monkeypatch, shared_store_env,
+):
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    refresh_calls: list[str] = []
+
+    def _terminal_refresh_failure(*, client, portal_base_url, client_id, refresh_token):
+        refresh_calls.append(refresh_token)
+        raise AuthError(
+            "Invalid refresh token",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _terminal_refresh_failure)
+
+    with pytest.raises(AuthError, match="Invalid refresh token"):
+        auth_mod.resolve_nous_access_token()
+
+    state_after_failure = auth_mod.get_provider_auth_state("nous")
+    assert state_after_failure is not None
+    assert not state_after_failure.get("refresh_token")
+    assert not state_after_failure.get("access_token")
+    assert state_after_failure["last_auth_error"]["message"] == "Invalid refresh token"
+
+    with pytest.raises(AuthError, match="No access token found"):
+        auth_mod.resolve_nous_access_token()
+
+    assert refresh_calls == ["refresh-old"]
+
+
 def test_mint_retry_uses_latest_rotated_refresh_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")
@@ -1118,6 +1201,7 @@ def test_try_import_shared_returns_none_on_refresh_failure(
     monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _boom)
 
     assert auth_mod._try_import_shared_nous_state() is None
+    assert auth_mod._read_shared_nous_state() is None
 
 
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):

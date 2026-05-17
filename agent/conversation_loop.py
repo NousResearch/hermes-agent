@@ -862,6 +862,7 @@ def run_conversation(
         has_retried_429 = False
         restart_with_compressed_messages = False
         restart_with_length_continuation = False
+        restart_with_truncated_tool_hint = False
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -1417,6 +1418,27 @@ def run_conversation(
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
                                 continue
+                            if truncated_tool_call_retries < 2:
+                                truncated_tool_call_retries += 1
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Truncated tool call detected again — retrying with concise-args hint...",
+                                    force=True,
+                                )
+                                retry_hint = {
+                                    "role": "user",
+                                    "content": (
+                                        "[System: Your previous tool call arguments were truncated by the output "
+                                        "length limit. Retry the same tool call with complete, valid JSON "
+                                        "arguments. Keep arguments concise. If the payload is large, split it "
+                                        "into smaller tool calls or write a shorter chunk first. Return only the "
+                                        "next complete tool call.]"
+                                    ),
+                                }
+                                messages.append(retry_hint)
+                                agent._session_messages = messages
+                                agent._save_session_log(messages)
+                                restart_with_truncated_tool_hint = True
+                                break
                             agent._vprint(
                                 f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
                                 force=True,
@@ -2832,6 +2854,9 @@ def run_conversation(
             _boost_base = agent.max_tokens if agent.max_tokens else 4096
             _boost = _boost_base * (length_continue_retries + 1)
             agent._ephemeral_max_output_tokens = min(_boost, 32768)
+            continue
+
+        if restart_with_truncated_tool_hint:
             continue
 
         # Guard: if all retries exhausted without a successful response

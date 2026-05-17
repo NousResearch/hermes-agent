@@ -3399,6 +3399,116 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_truncated_tool_call_second_retry_adds_concise_args_hint(self, agent):
+        """A second truncated tool call should get one more retry with a concise-args hint."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+
+        bad_tc_1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        bad_tc_2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"still partial',
+            call_id="c2",
+        )
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c3",
+        )
+
+        first_truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc_1],
+        )
+        second_truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc_2],
+        )
+        recovered_tool_call = _mock_response(
+            content="", finish_reason="stop", tool_calls=[good_tc],
+        )
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                first_truncated,
+                second_truncated,
+                recovered_tool_call,
+                final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
+        third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert third_call_messages[-1]["role"] == "user"
+        assert "tool call arguments were truncated" in third_call_messages[-1]["content"]
+        assert "Keep arguments concise" in third_call_messages[-1]["content"]
+        assert "Return only the next complete tool call" in third_call_messages[-1]["content"]
+
+    def test_truncated_tool_call_refuses_after_concise_args_retry(self, agent):
+        """The agent should still refuse after a third truncated tool-call response."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+
+        bad_tc_1 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        bad_tc_2 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"still partial',
+            call_id="c2",
+        )
+        bad_tc_3 = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"yet again partial',
+            call_id="c3",
+        )
+
+        first_truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc_1],
+        )
+        second_truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc_2],
+        )
+        third_truncated = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc_3],
+        )
+
+        with (
+            patch("run_agent.handle_function_call") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_session_log"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                first_truncated,
+                second_truncated,
+                third_truncated,
+            ]
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "truncated due to output length limit" in result["error"]
+        mock_hfc.assert_not_called()
+
+        third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
+        assert third_call_messages[-1]["role"] == "user"
+        assert "Keep arguments concise" in third_call_messages[-1]["content"]
+
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must call kanban_block when iteration
         budget is exhausted, otherwise the dispatcher sees a protocol

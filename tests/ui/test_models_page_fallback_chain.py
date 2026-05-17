@@ -23,11 +23,11 @@ from tests.ui.conftest import MODELS_PAGE_URL
 
 
 async def _go_to_fallback_chain(page: Page):
-    """Navigate to Models page and switch to the Fallback Chain inner tab."""
+    """Navigate to Models page and switch to the Fallback Chain outer tab."""
     await page.goto(MODELS_PAGE_URL)
     await page.wait_for_timeout(2000)  # Wait for data to load
-    # Click the "Fallback Chain" inner tab
-    await page.locator("button:has-text('Fallback Chain')").click()
+    # Click the "Fallback Chain" outer tab
+    await page.locator("[data-testid='models-fallback-chain-tab']").click()
     # Wait for React to render the new tab content
     await page.wait_for_timeout(1000)
 
@@ -40,8 +40,8 @@ class TestFallbackChainBasicUI:
         """The fallback chain section should be visible on the ModelsPage."""
         await _go_to_fallback_chain(page)
 
-        # The fallback chain section should be present
-        fallback_chain = page.locator("[data-testid='fallback-chain']")
+        # The fallback chain card should be present
+        fallback_chain = page.locator("[data-testid='fallback-chain-card']")
         await expect(fallback_chain).to_be_visible()
 
     @pytest.mark.asyncio
@@ -49,8 +49,8 @@ class TestFallbackChainBasicUI:
         """The 'Add' button should be visible in the fallback chain section."""
         await _go_to_fallback_chain(page)
 
-        # Find the Add button within the fallback chain section
-        add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
+        # Find the Add button within the fallback chain card
+        add_button = page.locator("[data-testid='fallback-chain-card'] [data-testid='fallback-add-button']")
         await expect(add_button).to_be_visible()
 
     @pytest.mark.asyncio
@@ -58,8 +58,8 @@ class TestFallbackChainBasicUI:
         """The 'Save' button should be visible in the fallback chain section."""
         await _go_to_fallback_chain(page)
 
-        # Find the Save button within the fallback chain section
-        save_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Save")
+        # Find the Save button within the fallback chain card
+        save_button = page.locator("[data-testid='fallback-chain-card'] [data-testid='fallback-save-button']")
         await expect(save_button).to_be_visible()
 
 
@@ -72,7 +72,7 @@ class TestAddFallbackProvider:
         await _go_to_fallback_chain(page)
 
         # Click the Add button
-        add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
+        add_button = page.locator("[data-testid='fallback-add-button']")
         await add_button.click()
 
         # Wait for the picker dialog to appear
@@ -89,7 +89,7 @@ class TestAddFallbackProvider:
         await _go_to_fallback_chain(page)
 
         # Click the Add button
-        add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
+        add_button = page.locator("[data-testid='fallback-add-button']")
         await add_button.click()
 
         # Wait for picker to appear — check for the dialog title text
@@ -168,7 +168,7 @@ class TestSaveFallbackChain:
         await _go_to_fallback_chain(page)
 
         # Find the Save button
-        save_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Save")
+        save_button = page.locator("[data-testid='fallback-save-button']")
         await expect(save_button).to_be_visible()
 
         # Click the Save button

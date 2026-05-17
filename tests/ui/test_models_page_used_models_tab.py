@@ -30,12 +30,13 @@ async def test_used_models_tab_renders_analytics_surface(page: Page):
 
 @pytest.mark.asyncio
 async def test_used_models_tab_hides_settings_inner_tabs(page: Page):
-    """Switching to Used Models should hide Settings-only inner tabs."""
+    """Switching to Used Models should not show Settings inner tab triggers."""
     await _go_to_used_models(page)
 
-    await expect(page.get_by_role("button", name="Main Model", exact=True)).to_have_count(0)
-    await expect(page.get_by_role("button", name="Fallback Chain", exact=True)).to_have_count(0)
-    await expect(page.get_by_role("button", name="Auxiliary Tasks", exact=True)).to_have_count(0)
+    # The Settings inner tab list (role='tablist' inside settings panel) should be gone
+    inner_tablist = page.locator("[data-testid='settings-tab-panel'] [role='tablist']")
+    count = await inner_tablist.count()
+    assert count == 0, "Settings inner tablist should not exist"
 
 
 @pytest.mark.asyncio

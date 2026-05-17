@@ -9,7 +9,6 @@ import {
   Settings2,
   Star,
   Wrench,
-  X,
   Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -27,7 +26,6 @@ import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -482,21 +480,22 @@ type PickerTarget =
   | { kind: "aux"; task: string }
   | { kind: "fallback" };
 
-function AuxiliaryTasksModal({
+/* ──────────────────────────────────────────────────────────────────── */
+/*  AuxiliaryTasksPanel (inline card, no modal)                         */
+/* ──────────────────────────────────────────────────────────────────── */
+
+function AuxiliaryTasksPanel({
   aux,
   refreshKey,
   onSaved,
-  onClose,
 }: {
   aux: AuxiliaryModelsResponse | null;
   refreshKey: number;
   onSaved(): void;
-  onClose(): void;
 }) {
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const modalRef = useModalBehavior({ open: true, onClose });
 
   const resetAllAux = async () => {
     setConfirmReset(false);
@@ -515,121 +514,104 @@ function AuxiliaryTasksModal({
   };
 
   return (
-    <div
-      ref={modalRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="aux-modal-title"
-    >
-      <div className="relative w-full max-w-2xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col">
-        <Button
-          ghost
-          size="icon"
-          onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
-        >
-          <X />
-        </Button>
-
-        <header className="p-5 pb-3 border-b border-border">
-          <div className="flex items-center justify-between gap-3 pr-8">
-            <h2
-              id="aux-modal-title"
-              className="font-display text-base tracking-wider uppercase"
-            >
-              Auxiliary Tasks
-            </h2>
-            <Button
-              size="sm"
-              outlined
-              onClick={() => setConfirmReset(true)}
-              disabled={resetBusy}
-              className="text-[10px] h-6"
-              prefix={resetBusy ? <Spinner /> : null}
-            >
-              Reset all to auto
-            </Button>
-          </div>
-          <p className="text-[10px] text-muted-foreground/80 mt-2">
-            Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
-          </p>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((t) => {
-            const cur = aux?.tasks.find((a) => a.task === t.key);
-            const isAuto =
-              !cur || cur.provider === "auto" || !cur.provider;
-            return (
-              <div
-                key={t.key}
-                className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
+    <>
+      <Card>
+        <CardContent className="py-4 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs font-medium uppercase tracking-wider">
+                Auxiliary Tasks
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">
+                {aux?.tasks.length ?? AUX_TASKS.length} tasks
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                outlined
+                onClick={() => setConfirmReset(true)}
+                disabled={resetBusy}
+                className="text-[10px] h-6"
+                prefix={resetBusy ? <Spinner /> : null}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{t.label}</span>
-                    <span className="text-[10px] text-muted-foreground/60">
-                      {t.hint}
-                    </span>
-                  </div>
-                  <div className="text-[10px] font-mono text-muted-foreground truncate">
-                    {isAuto
-                      ? "auto (use main model)"
-                      : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  outlined
-                  onClick={() => setPicker({ kind: "aux", task: t.key })}
-                  className="text-[10px] h-6"
-                >
-                  Change
-                </Button>
-              </div>
-            );
-          })}
-        </div>
+                Reset all to auto
+              </Button>
+            </div>
+          </div>
 
-        {picker && picker.kind === "aux" && (
-          <ModelPickerDialog
-            key={`picker-${refreshKey}`}
-            loader={api.getModelOptions}
-            alwaysGlobal
-            title={`Set Auxiliary: ${
-              AUX_TASKS.find((t) => t.key === picker.task)?.label ??
-              picker.task
-            }`}
-            onApply={async ({ provider, model }) => {
-              await api.setModelAssignment({
-                scope: "auxiliary",
-                task: picker.task,
-                provider,
-                model,
-              });
-              onSaved();
-            }}
-            onClose={() => setPicker(null)}
-          />
-        )}
-        <ConfirmDialog
-          open={confirmReset}
-          onCancel={() => setConfirmReset(false)}
-          onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
-          description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
-          destructive
-          confirmLabel="Reset all"
-          loading={resetBusy}
+          <div className="space-y-1 mt-3">
+            {AUX_TASKS.map((t) => {
+              const cur = aux?.tasks.find((a) => a.task === t.key);
+              const isAuto =
+                !cur || cur.provider === "auto" || !cur.provider;
+              return (
+                <div
+                  key={t.key}
+                  data-testid="auxiliary-task-item"
+                  className="flex items-center justify-between gap-3 px-3 py-1.5 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-xs font-medium">{t.label}</span>
+                      <span className="text-[10px] text-muted-foreground/60">
+                        {t.hint}
+                      </span>
+                    </div>
+                    <div className="text-[10px] font-mono text-muted-foreground truncate">
+                      {isAuto
+                        ? "auto (use main model)"
+                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={() => setPicker({ kind: "aux", task: t.key })}
+                    className="text-[10px] h-6"
+                  >
+                    Change
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {picker && picker.kind === "aux" && (
+        <ModelPickerDialog
+          key={`picker-${refreshKey}`}
+          loader={api.getModelOptions}
+          alwaysGlobal
+          title={`Set Auxiliary: ${
+            AUX_TASKS.find((t) => t.key === picker.task)?.label ??
+            picker.task
+          }`}
+          onApply={async ({ provider, model }) => {
+            await api.setModelAssignment({
+              scope: "auxiliary",
+              task: picker.task,
+              provider,
+              model,
+            });
+            onSaved();
+          }}
+          onClose={() => setPicker(null)}
         />
-      </div>
-    </div>
+      )}
+      <ConfirmDialog
+        open={confirmReset}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={() => void resetAllAux()}
+        title="Reset auxiliary models"
+        description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
+        destructive
+        confirmLabel="Reset all"
+        loading={resetBusy}
+      />
+    </>
   );
 }
 
@@ -651,8 +633,7 @@ export default function ModelsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
-  // Settings panel state (inlined from old ModelSettingsPanel)
-  const [auxModalOpen, setAuxModalOpen] = useState(false);
+  // Settings panel state
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [fallbacks, setFallbacks] = useState<
     { provider: string; model: string; base_url?: string }[]
@@ -693,10 +674,6 @@ export default function ModelsPage() {
     await api.setModelAssignment({ scope, task, provider, model });
     setSaveKey((k) => k + 1);
   };
-
-  const auxOverrideCount = aux?.tasks.filter(
-    (a) => a.provider && a.provider !== "auto",
-  ).length ?? 0;
 
   const moveFallback = (from: number, to: number) => {
     setFallbacks((prev) => {
@@ -837,6 +814,22 @@ export default function ModelsPage() {
                 Settings
               </TabsTrigger>
               <TabsTrigger
+                value="fallback-chain"
+                active={activeTab === "fallback-chain"}
+                onClick={() => setActiveTab("fallback-chain")}
+                data-testid="models-fallback-chain-tab"
+              >
+                Fallback Chain
+              </TabsTrigger>
+              <TabsTrigger
+                value="auxiliary-tasks"
+                active={activeTab === "auxiliary-tasks"}
+                onClick={() => setActiveTab("auxiliary-tasks")}
+                data-testid="models-auxiliary-tasks-tab"
+              >
+                Auxiliary Tasks
+              </TabsTrigger>
+              <TabsTrigger
                 value="used-models"
                 active={activeTab === "used-models"}
                 onClick={() => setActiveTab("used-models")}
@@ -846,278 +839,66 @@ export default function ModelsPage() {
               </TabsTrigger>
             </TabsList>
 
+            {/* ── Settings tab ─────────────────────────────────── */}
             {activeTab === "settings" && (
-              <div className="grid gap-6 lg:grid-cols-2">
-                <Tabs defaultValue="main-model">
-                  {(_active, setInner) => (
-                    <>
-                      <TabsList className="mb-2">
-                        <TabsTrigger
-                          value="main-model"
-                          active={_active === "main-model"}
-                          onClick={() => setInner("main-model")}
-                        >
-                          Main Model
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="fallback-chain"
-                          active={_active === "fallback-chain"}
-                          onClick={() => setInner("fallback-chain")}
-                        >
-                          Fallback Chain
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="auxiliary-tasks"
-                          active={_active === "auxiliary-tasks"}
-                          onClick={() => setInner("auxiliary-tasks")}
-                        >
-                          Auxiliary Tasks
-                        </TabsTrigger>
-                      </TabsList>
+              <div className="grid gap-6 lg:grid-cols-2" data-testid="settings-tab-panel">
+                {/* Main Model card */}
+                <Card data-testid="main-model-card">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <Settings2 className="h-4 w-4 text-muted-foreground" />
+                        <CardTitle className="text-sm">Main Model</CardTitle>
+                        <span className="text-[10px] text-muted-foreground">
+                          primary model for new sessions
+                        </span>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3 pt-3">
+                    <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <Star className="h-3 w-3 text-primary" />
+                          <span className="text-xs font-medium uppercase tracking-wider">
+                            Main model
+                          </span>
+                        </div>
+                        <div className="text-xs font-mono text-muted-foreground truncate">
+                          {mainProv || "(unset)"}
+                          {mainProv && mainModel && " · "}
+                          {mainModel || "(unset)"}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => setPicker({ kind: "main" })}
+                        className="text-xs"
+                      >
+                        Change
+                      </Button>
+                    </div>
+                    {picker && picker.kind === "main" && (
+                      <ModelPickerDialog
+                        key={`picker-${saveKey}`}
+                        loader={api.getModelOptions}
+                        alwaysGlobal
+                        title="Set Main Model"
+                        onApply={async ({ provider, model }) => {
+                          await applyAssignment({
+                            scope: "main",
+                            task: "",
+                            provider,
+                            model,
+                          });
+                        }}
+                        onClose={() => setPicker(null)}
+                      />
+                    )}
+                  </CardContent>
+                </Card>
 
-                      {(_active === "main-model") && (
-                        <Card>
-                          <CardHeader className="pb-3">
-                            <div className="flex items-center justify-between gap-3 flex-wrap">
-                              <div className="flex items-center gap-2">
-                                <Settings2 className="h-4 w-4 text-muted-foreground" />
-                                <CardTitle className="text-sm">Main Model</CardTitle>
-                                <span className="text-[10px] text-muted-foreground">
-                                  primary model for new sessions
-                                </span>
-                              </div>
-                            </div>
-                          </CardHeader>
-                          <CardContent className="space-y-3 pt-3">
-                            <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2 mb-0.5">
-                                  <Star className="h-3 w-3 text-primary" />
-                                  <span className="text-xs font-medium uppercase tracking-wider">
-                                    Main model
-                                  </span>
-                                </div>
-                                <div className="text-xs font-mono text-muted-foreground truncate">
-                                  {mainProv || "(unset)"}
-                                  {mainProv && mainModel && " · "}
-                                  {mainModel || "(unset)"}
-                                </div>
-                              </div>
-                              <Button
-                                size="sm"
-                                onClick={() => setPicker({ kind: "main" })}
-                                className="text-xs"
-                              >
-                                Change
-                              </Button>
-                            </div>
-                            {picker && (
-                              <ModelPickerDialog
-                                key={`picker-${saveKey}`}
-                                loader={api.getModelOptions}
-                                alwaysGlobal
-                                title="Set Main Model"
-                                onApply={async ({ provider, model }) => {
-                                  await applyAssignment({
-                                    scope: "main",
-                                    task: "",
-                                    provider,
-                                    model,
-                                  });
-                                }}
-                                onClose={() => setPicker(null)}
-                              />
-                            )}
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      {(_active === "fallback-chain") && (
-                        <Card data-testid="fallback-chain">
-                          <CardHeader className="pb-3">
-                            <div className="flex items-center justify-between gap-3 flex-wrap">
-                              <div className="flex items-center gap-2">
-                                <Settings2 className="h-4 w-4 text-muted-foreground" />
-                                <CardTitle className="text-sm">Fallback Chain</CardTitle>
-                                <span className="text-[10px] text-muted-foreground">
-                                  providers tried in order when main fails
-                                </span>
-                              </div>
-                            </div>
-                          </CardHeader>
-                          <CardContent className="space-y-3 pt-3">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <RefreshCw className="h-3 w-3 text-muted-foreground" />
-                                <span className="text-xs font-medium uppercase tracking-wider">
-                                  Fallback chain
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <Button
-                                  size="sm"
-                                  outlined
-                                  onClick={() => setPickerFallback({ kind: "fallback" })}
-                                  disabled={fallbackBusy}
-                                  className="text-xs"
-                                  data-testid="fallback-add-button"
-                                >
-                                  Add
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  outlined
-                                  onClick={saveFallbacks}
-                                  disabled={fallbackBusy}
-                                  className="text-xs"
-                                  data-testid="fallback-save-button"
-                                  prefix={fallbackBusy ? <Spinner /> : null}
-                                >
-                                  Save
-                                </Button>
-                              </div>
-                            </div>
-
-                            {fallbackLoading && (
-                              <div className="flex items-center justify-center py-4">
-                                <Spinner className="text-xs text-muted-foreground" />
-                              </div>
-                            )}
-
-                            {!fallbackLoading && fallbacks.length === 0 && (
-                              <div className="text-[10px] text-muted-foreground/60 italic py-2">
-                                No fallback providers configured. Add one to continue when the
-                                main model fails.
-                              </div>
-                            )}
-
-                            {!fallbackLoading && fallbacks.length > 0 && (
-                              <div className="space-y-1">
-                                {fallbacks.map((fb, idx) => (
-                                  <div
-                                    key={idx}
-                                    className="flex items-center gap-2 bg-muted/30 border border-border/50 px-2 py-1.5 rounded"
-                                    data-testid={`fallback-item-${idx}`}
-                                  >
-                                    <span className="text-[10px] text-muted-foreground/50 w-4">
-                                      {idx + 1}
-                                    </span>
-                                    <span className="text-xs font-mono flex-1 truncate">
-                                      {fb.provider} · {fb.model}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      disabled={idx === 0}
-                                      onClick={() => idx > 0 && moveFallback(idx, idx - 1)}
-                                      className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
-                                      aria-label="Move up"
-                                      data-testid={`fallback-move-up-${idx}`}
-                                    >
-                                      ↑
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={idx === fallbacks.length - 1}
-                                      onClick={() =>
-                                        idx < fallbacks.length - 1 &&
-                                        moveFallback(idx, idx + 1)
-                                      }
-                                      className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
-                                      aria-label="Move down"
-                                      data-testid={`fallback-move-down-${idx}`}
-                                    >
-                                      ↓
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => removeFallback(idx)}
-                                      className="text-[10px] p-0.5 hover:text-destructive"
-                                      aria-label="Remove"
-                                      data-testid={`fallback-remove-${idx}`}
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-
-                            {fallbackError && (
-                              <div className="text-[10px] text-destructive" data-testid="fallback-error">
-                                {fallbackError}
-                              </div>
-                            )}
-
-                            {pickerFallback && (
-                              <ModelPickerDialog
-                                key={`picker-fallback-${saveKey}`}
-                                loader={api.getModelOptions}
-                                alwaysGlobal
-                                title="Add Fallback Provider"
-                                onApply={async ({ provider, model }) => {
-                                  addFallback({ provider, model });
-                                }}
-                                onClose={() => setPickerFallback(null)}
-                              />
-                            )}
-                          </CardContent>
-                        </Card>
-                      )}
-
-                      {(_active === "auxiliary-tasks") && (
-                        <>
-                          <Card>
-                            <CardHeader className="pb-3">
-                              <div className="flex items-center justify-between gap-3 flex-wrap">
-                                <div className="flex items-center gap-2">
-                                  <Settings2 className="h-4 w-4 text-muted-foreground" />
-                                  <CardTitle className="text-sm">Auxiliary Tasks</CardTitle>
-                                  <span className="text-[10px] text-muted-foreground">
-                                    side-jobs: vision, compression, search, …
-                                  </span>
-                                </div>
-                              </div>
-                            </CardHeader>
-                            <CardContent className="space-y-3 pt-3">
-                              <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2 mb-0.5">
-                                    <Cpu className="h-3 w-3 text-muted-foreground" />
-                                    <span className="text-xs font-medium uppercase tracking-wider">
-                                      Auxiliary tasks
-                                    </span>
-                                  </div>
-                                  <div className="text-xs font-mono text-muted-foreground truncate">
-                                    {auxOverrideCount > 0
-                                      ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${AUX_TASKS.length - auxOverrideCount} auto`
-                                      : `${AUX_TASKS.length} tasks · all auto`}
-                                  </div>
-                                </div>
-                                <Button
-                                  size="sm"
-                                  outlined
-                                  onClick={() => setAuxModalOpen(true)}
-                                  className="text-xs"
-                                >
-                                  Configure
-                                </Button>
-                              </div>
-                            </CardContent>
-                          </Card>
-                          {auxModalOpen && (
-                            <AuxiliaryTasksModal
-                              aux={aux}
-                              refreshKey={saveKey}
-                              onSaved={onAssigned}
-                              onClose={() => setAuxModalOpen(false)}
-                            />
-                          )}
-                        </>
-                      )}
-                    </>
-                  )}
-                </Tabs>
-
+                {/* Stats card (right column) */}
                 {data && (
                   <Card>
                     <CardContent className="py-6">
@@ -1181,6 +962,153 @@ export default function ModelsPage() {
               </div>
             )}
 
+            {/* ── Fallback Chain tab ───────────────────────────── */}
+            {activeTab === "fallback-chain" && (
+              <div data-testid="fallback-chain-tab-panel">
+              <Card data-testid="fallback-chain-card">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <Settings2 className="h-4 w-4 text-muted-foreground" />
+                      <CardTitle className="text-sm">Fallback Chain</CardTitle>
+                      <span className="text-[10px] text-muted-foreground">
+                        providers tried in order when main fails
+                      </span>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="h-3 w-3 text-muted-foreground" />
+                      <span className="text-xs font-medium uppercase tracking-wider">
+                        Fallback chain
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        outlined
+                        onClick={() => setPickerFallback({ kind: "fallback" })}
+                        disabled={fallbackBusy}
+                        className="text-xs"
+                        data-testid="fallback-add-button"
+                      >
+                        Add
+                      </Button>
+                      <Button
+                        size="sm"
+                        outlined
+                        onClick={saveFallbacks}
+                        disabled={fallbackBusy}
+                        className="text-xs"
+                        data-testid="fallback-save-button"
+                        prefix={fallbackBusy ? <Spinner /> : null}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+
+                  {fallbackLoading && (
+                    <div className="flex items-center justify-center py-4">
+                      <Spinner className="text-xs text-muted-foreground" />
+                    </div>
+                  )}
+
+                  {!fallbackLoading && fallbacks.length === 0 && (
+                    <div className="text-[10px] text-muted-foreground/60 italic py-2">
+                      No fallback providers configured. Add one to continue when the
+                      main model fails.
+                    </div>
+                  )}
+
+                  {!fallbackLoading && fallbacks.length > 0 && (
+                    <div className="space-y-1">
+                      {fallbacks.map((fb, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-2 bg-muted/30 border border-border/50 px-2 py-1.5 rounded"
+                          data-testid={`fallback-item-${idx}`}
+                        >
+                          <span className="text-[10px] text-muted-foreground/50 w-4">
+                            {idx + 1}
+                          </span>
+                          <span className="text-xs font-mono flex-1 truncate">
+                            {fb.provider} · {fb.model}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => idx > 0 && moveFallback(idx, idx - 1)}
+                            className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                            aria-label="Move up"
+                            data-testid={`fallback-move-up-${idx}`}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === fallbacks.length - 1}
+                            onClick={() =>
+                              idx < fallbacks.length - 1 &&
+                              moveFallback(idx, idx + 1)
+                            }
+                            className="text-[10px] p-0.5 hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed"
+                            aria-label="Move down"
+                            data-testid={`fallback-move-down-${idx}`}
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeFallback(idx)}
+                            className="text-[10px] p-0.5 hover:text-destructive"
+                            aria-label="Remove"
+                            data-testid={`fallback-remove-${idx}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {fallbackError && (
+                    <div className="text-[10px] text-destructive" data-testid="fallback-error">
+                      {fallbackError}
+                    </div>
+                  )}
+
+                  {pickerFallback && (
+                    <ModelPickerDialog
+                      key={`picker-fallback-${saveKey}`}
+                      loader={api.getModelOptions}
+                      alwaysGlobal
+                      title="Add Fallback Provider"
+                      onApply={async ({ provider, model }) => {
+                        addFallback({ provider, model });
+                      }}
+                      onClose={() => setPickerFallback(null)}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+              </div>
+            )}
+
+            {/* ── Auxiliary Tasks tab ──────────────────────────── */}
+            {activeTab === "auxiliary-tasks" && (
+              <div data-testid="auxiliary-tasks-tab-panel">
+              <AuxiliaryTasksPanel
+                aux={aux}
+                refreshKey={saveKey}
+                onSaved={onAssigned}
+              />
+              </div>
+            )}
+
+            {/* ── Used Models tab ──────────────────────────────── */}
             {activeTab === "used-models" && (
               <div data-testid="used-models-tab-panel" className="contents">
                 <div className="flex items-center justify-between gap-2">

@@ -1,7 +1,7 @@
 # Terminal Test Environment -- Default Configuration
 #
 # Simple file-creation tasks for validating the full Atropos + hermes-agent stack.
-# Uses Modal terminal backend and OpenRouter (Claude) for inference.
+# Uses Modal terminal backend and OpenRouter () for inference.
 # API keys loaded from ~/hermes-agent/.env
 #
 # Usage:
@@ -28,7 +28,7 @@ env:
 
 openai:
   base_url: "https://openrouter.ai/api/v1"
-  model_name: "anthropic/claude-opus-4.6"
+  model_name: "anthropic/-opus-4.6"
   server_type: "openai"
   health_check: false
   # api_key loaded from OPENROUTER_API_KEY in .env

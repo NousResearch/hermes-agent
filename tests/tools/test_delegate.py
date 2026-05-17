@@ -30,7 +30,7 @@ def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
-    parent.model = "anthropic/claude-sonnet-4"
+    parent.model = "anthropic/-sonnet-4"
     parent.platform = "cli"
     parent.providers_allowed = None
     parent.providers_ignored = None

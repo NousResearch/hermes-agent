@@ -7,9 +7,9 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
-    ("anthropic/claude-opus-4.6",       "recommended"),
-    ("anthropic/claude-sonnet-4.5",     ""),
-    ("anthropic/claude-opus-4.5",       ""),
+    ("anthropic/-opus-4.6",       "recommended"),
+    ("anthropic/-sonnet-4.5",     ""),
+    ("anthropic/-opus-4.5",       ""),
     ("openai/gpt-5.2",                  ""),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
@@ -26,7 +26,7 @@ def model_ids() -> list[str]:
 
 
 def menu_labels() -> list[str]:
-    """Return display labels like 'anthropic/claude-opus-4.6 (recommended)'."""
+    """Return display labels like 'anthropic/-opus-4.6 (recommended)'."""
     labels = []
     for mid, desc in OPENROUTER_MODELS:
         labels.append(f"{mid} ({desc})" if desc else mid)

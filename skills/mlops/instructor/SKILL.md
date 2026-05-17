@@ -32,7 +32,7 @@ Use Instructor when you need to:
 pip install instructor
 
 # With specific providers
-pip install "instructor[anthropic]"  # Anthropic Claude
+pip install "instructor[anthropic]"  # Anthropic 
 pip install "instructor[openai]"     # OpenAI
 pip install "instructor[all]"        # All providers
 ```
@@ -57,7 +57,7 @@ client = instructor.from_anthropic(Anthropic())
 
 # Extract structured data
 user = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -103,7 +103,7 @@ class Article(BaseModel):
     tags: list[str] = Field(description="List of relevant tags")
 
 article = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -133,7 +133,7 @@ class Person(BaseModel):
     address: Address  # Nested model
 
 person = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -174,7 +174,7 @@ class Review(BaseModel):
     sentiment: Sentiment  # Only these 3 values allowed
 
 review = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -258,7 +258,7 @@ Instructor retries automatically when validation fails, providing error feedback
 ```python
 # Retries up to 3 times if validation fails
 user = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -296,7 +296,7 @@ class Story(BaseModel):
 
 # Stream partial updates as LLM generates
 for partial_story in client.messages.create_partial(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -318,7 +318,7 @@ class Task(BaseModel):
 
 # Stream list items as they're generated
 tasks = client.messages.create_iterable(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -334,7 +334,7 @@ for task in tasks:
 
 ## Provider Configuration
 
-### Anthropic Claude
+### Anthropic 
 
 ```python
 import instructor
@@ -344,9 +344,9 @@ client = instructor.from_anthropic(
     Anthropic(api_key="your-api-key")
 )
 
-# Use with Claude models
+# Use with  models
 response = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[...],
     response_model=YourModel
@@ -409,7 +409,7 @@ in Austin, Texas.
 """
 
 company = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -435,7 +435,7 @@ class ArticleClassification(BaseModel):
     keywords: list[str]
 
 classification = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -464,7 +464,7 @@ class Entities(BaseModel):
 text = "Tim Cook, CEO of Apple, announced at the event in Cupertino..."
 
 entities = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -490,7 +490,7 @@ class SentimentAnalysis(BaseModel):
 review = "The product works well but setup was confusing..."
 
 analysis = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{
         "role": "user",
@@ -505,7 +505,7 @@ analysis = client.messages.create(
 ```python
 def extract_person(text: str) -> Person:
     return client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="-sonnet-4-5-20250929",
         max_tokens=1024,
         messages=[{
             "role": "user",
@@ -560,7 +560,7 @@ DynamicUser = create_model(
 )
 
 user = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[...],
     response_model=DynamicUser
@@ -577,7 +577,7 @@ client = instructor.from_anthropic(
 )
 
 # Available modes:
-# - Mode.ANTHROPIC_TOOLS (recommended for Claude)
+# - Mode.ANTHROPIC_TOOLS (recommended for )
 # - Mode.JSON (fallback)
 # - Mode.TOOLS (OpenAI tools)
 ```
@@ -588,7 +588,7 @@ client = instructor.from_anthropic(
 # Single-use client
 with instructor.from_anthropic(Anthropic()) as client:
     result = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="-sonnet-4-5-20250929",
         max_tokens=1024,
         messages=[...],
         response_model=YourModel
@@ -605,7 +605,7 @@ from pydantic import ValidationError
 
 try:
     user = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="-sonnet-4-5-20250929",
         max_tokens=1024,
         messages=[...],
         response_model=User,

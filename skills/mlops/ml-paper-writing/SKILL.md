@@ -17,9 +17,9 @@ Expert-level guidance for writing publication-ready papers targeting **NeurIPS, 
 
 ## Core Philosophy: Collaborative Writing
 
-**Paper writing is collaborative, but Claude should be proactive in delivering drafts.**
+**Paper writing is collaborative, but  should be proactive in delivering drafts.**
 
-The typical workflow starts with a research repository containing code, results, and experimental artifacts. Claude's role is to:
+The typical workflow starts with a research repository containing code, results, and experimental artifacts. 's role is to:
 
 1. **Understand the project** by exploring the repo, results, and existing documentation
 2. **Deliver a complete first draft** when confident about the contribution
@@ -62,9 +62,9 @@ If you cannot programmatically verify a citation, you MUST:
 
 For the best paper search experience, install **Exa MCP** which provides real-time academic search:
 
-**Claude Code:**
+** Code:**
 ```bash
-claude mcp add exa -- npx -y mcp-remote "https://mcp.exa.ai/mcp"
+ mcp add exa -- npx -y mcp-remote "https://mcp.exa.ai/mcp"
 ```
 
 **Cursor / VS Code** (add to MCP settings):

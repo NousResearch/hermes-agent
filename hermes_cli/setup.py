@@ -743,7 +743,7 @@ def run_setup_wizard(args):
 
         base_url = prompt("  API base URL (e.g., https://api.example.com/v1)", current_url)
         api_key = prompt("  API key", password=True)
-        model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
+        model_name = prompt("  Model name (e.g., gpt-4, -3-opus)", current_model)
 
         if base_url:
             save_env_value("OPENAI_BASE_URL", base_url)
@@ -780,7 +780,7 @@ def run_setup_wizard(args):
     if selected_provider != "custom":  # Custom already prompted for model name
         print_header("Default Model")
 
-        current_model = config.get('model', 'anthropic/claude-opus-4.6')
+        current_model = config.get('model', 'anthropic/-opus-4.6')
         print_info(f"Current: {current_model}")
 
         if selected_provider == "nous" and nous_models:
@@ -823,7 +823,7 @@ def run_setup_wizard(args):
                 config['model'] = ids[model_idx]
                 save_env_value("LLM_MODEL", ids[model_idx])
             elif model_idx == len(ids):  # Custom
-                custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
+                custom = prompt("Enter model name (e.g., anthropic/-opus-4.6)")
                 if custom:
                     config['model'] = custom
                     save_env_value("LLM_MODEL", custom)

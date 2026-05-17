@@ -7,7 +7,7 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
-  default: "anthropic/claude-opus-4.6"
+  default: "anthropic/-opus-4.6"
   
   # Inference provider selection:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)

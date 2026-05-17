@@ -72,7 +72,7 @@ from tools.rl_training_tool import check_rl_api_keys, get_missing_keys
 
 from hermes_constants import OPENROUTER_BASE_URL
 
-DEFAULT_MODEL = "anthropic/claude-opus-4.5"
+DEFAULT_MODEL = "anthropic/-opus-4.5"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
 
 

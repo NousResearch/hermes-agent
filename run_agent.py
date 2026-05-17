@@ -16,7 +16,7 @@ Features:
 Usage:
     from run_agent import AIAgent
     
-    agent = AIAgent(base_url="http://localhost:30000/v1", model="claude-opus-4-20250514")
+    agent = AIAgent(base_url="http://localhost:30000/v1", model="-opus-4-20250514")
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
@@ -106,7 +106,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
-        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
+        model: str = "anthropic/-opus-4.6",  # OpenRouter format
         max_iterations: int = 60,  # Default tool-calling iterations
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -138,7 +138,7 @@ class AIAgent:
         Args:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
-            model (str): Model name to use (default: "anthropic/claude-opus-4.6")
+            model (str): Model name to use (default: "anthropic/-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 60)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
@@ -210,12 +210,12 @@ class AIAgent:
         self.reasoning_config = reasoning_config  # None = use default (xhigh for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
-        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
+        # Anthropic prompt caching: auto-enabled for  models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
         is_openrouter = "openrouter" in self.base_url.lower()
-        is_claude = "claude" in self.model.lower()
-        self._use_prompt_caching = is_openrouter and is_claude
+        is_ = "" in self.model.lower()
+        self._use_prompt_caching = is_openrouter and is_
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Configure logging
@@ -347,7 +347,7 @@ class AIAgent:
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
-            print(f"💾 Prompt caching: ENABLED (Claude via OpenRouter, {self._cache_ttl} TTL)")
+            print(f"💾 Prompt caching: ENABLED ( via OpenRouter, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
         self.session_start = datetime.now()
@@ -1850,8 +1850,8 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
             
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
+            # Apply Anthropic prompt caching for  models via OpenRouter.
+            # Auto-detected: if model name contains "" and base_url is OpenRouter,
             # inject cache_control breakpoints (system + last 3 messages) to reduce
             # input token costs by ~75% on multi-turn conversations.
             if self._use_prompt_caching:
@@ -2537,7 +2537,7 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "anthropic/claude-opus-4.6",
+    model: str = "anthropic/-opus-4.6",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
@@ -2554,7 +2554,7 @@ def main(
 
     Args:
         query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4-20250514.
+        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/-sonnet-4-20250514.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
         max_turns (int): Maximum number of API call iterations. Defaults to 10.

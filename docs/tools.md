@@ -402,7 +402,7 @@ The `skill_manage` tool lets the agent create, update, and delete its own skills
 
 The Skills Hub enables searching, installing, and managing skills from online registries. It is **user-driven only** — the model cannot search for or install skills.
 
-**Sources:** GitHub repos (openai/skills, anthropics/skills, custom taps), ClawHub, Claude Code marketplaces, LobeHub.
+**Sources:** GitHub repos (openai/skills, anthropics/skills, custom taps), ClawHub,  Code marketplaces, LobeHub.
 
 **Security:** Every downloaded skill is scanned by `tools/skills_guard.py` (regex patterns + optional LLM audit) before installation. Trust levels: `builtin` (ships with Hermes), `trusted` (openai/skills, anthropics/skills), `community` (everything else — any findings = blocked unless `--force`).
 

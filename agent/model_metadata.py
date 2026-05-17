@@ -19,12 +19,12 @@ _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
 
 DEFAULT_CONTEXT_LENGTHS = {
-    "anthropic/claude-opus-4": 200000,
-    "anthropic/claude-opus-4.5": 200000,
-    "anthropic/claude-opus-4.6": 200000,
-    "anthropic/claude-sonnet-4": 200000,
-    "anthropic/claude-sonnet-4-20250514": 200000,
-    "anthropic/claude-haiku-4.5": 200000,
+    "anthropic/-opus-4": 200000,
+    "anthropic/-opus-4.5": 200000,
+    "anthropic/-opus-4.6": 200000,
+    "anthropic/-sonnet-4": 200000,
+    "anthropic/-sonnet-4-20250514": 200000,
+    "anthropic/-haiku-4.5": 200000,
     "openai/gpt-4o": 128000,
     "openai/gpt-4-turbo": 128000,
     "openai/gpt-4o-mini": 128000,

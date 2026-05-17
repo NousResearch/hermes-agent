@@ -57,7 +57,7 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-opus-4.6",
+    "model": "anthropic/-opus-4.6",
     "toolsets": ["hermes-cli"],
     "max_turns": 100,
     
@@ -852,7 +852,7 @@ def config_command(args):
             print("Usage: hermes config set KEY VALUE")
             print()
             print("Examples:")
-            print("  hermes config set model anthropic/claude-sonnet-4")
+            print("  hermes config set model anthropic/-sonnet-4")
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)

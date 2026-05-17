@@ -40,7 +40,7 @@ mcporter call <server.tool> key=value
 
 ## Discovering MCP Servers
 
-mcporter auto-discovers servers configured by other MCP clients (Claude Desktop, Cursor, etc.) on the machine. To find new servers to use, browse registries like [mcpfinder.dev](https://mcpfinder.dev) or [mcp.so](https://mcp.so), then connect ad-hoc:
+mcporter auto-discovers servers configured by other MCP clients ( Desktop, Cursor, etc.) on the machine. To find new servers to use, browse registries like [mcpfinder.dev](https://mcpfinder.dev) or [mcp.so](https://mcp.so), then connect ad-hoc:
 
 ```bash
 # Connect to any MCP server by URL (no config needed)

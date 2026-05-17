@@ -9,7 +9,7 @@ The Hermes Agent CLI provides an interactive terminal interface for working with
 hermes
 
 # With specific model
-hermes --model "anthropic/claude-sonnet-4"
+hermes --model "anthropic/-sonnet-4"
 
 # With specific provider
 hermes --provider nous        # Use Nous Portal (requires: hermes login)
@@ -38,7 +38,7 @@ The CLI is implemented in `cli.py` and uses:
 ┌─────────────────────────────────────────────────┐
 │  HERMES-AGENT ASCII Logo                        │
 │  ┌─────────────┐ ┌────────────────────────────┐ │
-│  │  Caduceus   │ │ Model: claude-opus-4.5     │ │
+│  │  Caduceus   │ │ Model: -opus-4.5     │ │
 │  │  ASCII Art  │ │ Terminal: local            │ │
 │  │             │ │ Working Dir: /home/user    │ │
 │  │             │ │ Available Tools: 19        │ │
@@ -87,7 +87,7 @@ cp cli-config.yaml.example cli-config.yaml
 
 ```yaml
 model:
-  default: "anthropic/claude-opus-4.6"
+  default: "anthropic/-opus-4.6"
   base_url: "https://openrouter.ai/api/v1"
   provider: "auto"  # "auto" | "openrouter" | "nous"
 ```

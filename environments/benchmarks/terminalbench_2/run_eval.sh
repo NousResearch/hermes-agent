@@ -7,7 +7,7 @@
 #
 # Override model:
 #   bash environments/benchmarks/terminalbench_2/run_eval.sh \
-#       --openai.model_name anthropic/claude-sonnet-4
+#       --openai.model_name anthropic/-sonnet-4
 #
 # Run a subset:
 #   bash environments/benchmarks/terminalbench_2/run_eval.sh \

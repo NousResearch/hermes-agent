@@ -11,7 +11,7 @@
 #   # Override model:
 #   python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
 #       --config environments/benchmarks/terminalbench_2/default.yaml \
-#       --openai.model_name anthropic/claude-sonnet-4
+#       --openai.model_name anthropic/-sonnet-4
 
 env:
   enabled_toolsets: ["terminal", "file"]
@@ -32,7 +32,7 @@ env:
 
 openai:
   base_url: "https://openrouter.ai/api/v1"
-  model_name: "anthropic/claude-opus-4.6"
+  model_name: "anthropic/-opus-4.6"
   server_type: "openai"
   health_check: false
   # api_key loaded from OPENROUTER_API_KEY in .env

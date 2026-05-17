@@ -2,7 +2,7 @@
 
 Guide to using Instructor with different LLM providers.
 
-## Anthropic Claude
+## Anthropic 
 
 ```python
 import instructor
@@ -24,7 +24,7 @@ client = instructor.from_anthropic(
 
 # Usage
 result = client.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="-sonnet-4-5-20250929",
     max_tokens=1024,
     messages=[{"role": "user", "content": "..."}],
     response_model=YourModel
@@ -65,6 +65,6 @@ result = client.chat.completions.create(
 
 ## Modes
 
-- `Mode.ANTHROPIC_TOOLS`: Recommended for Claude
+- `Mode.ANTHROPIC_TOOLS`: Recommended for 
 - `Mode.TOOLS`: OpenAI function calling
 - `Mode.JSON`: Fallback for unsupported providers

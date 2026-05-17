@@ -471,7 +471,7 @@ class BatchRunner:
         max_iterations: int = 10,
         base_url: str = None,
         api_key: str = None,
-        model: str = "claude-opus-4-20250514",
+        model: str = "-opus-4-20250514",
         num_workers: int = 4,
         verbose: bool = False,
         ephemeral_system_prompt: str = None,
@@ -1032,7 +1032,7 @@ def main(
     batch_size: int = None,
     run_name: str = None,
     distribution: str = "default",
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str = "anthropic/-sonnet-4-20250514",
     api_key: str = None,
     base_url: str = "https://openrouter.ai/api/v1",
     max_turns: int = 10,
@@ -1060,7 +1060,7 @@ def main(
         batch_size (int): Number of prompts per batch
         run_name (str): Name for this run (used for output and checkpointing)
         distribution (str): Toolset distribution to use (default: "default")
-        model (str): Model name to use (default: "claude-opus-4-20250514")
+        model (str): Model name to use (default: "-opus-4-20250514")
         api_key (str): API key for model authentication
         base_url (str): Base URL for model API
         max_turns (int): Maximum number of tool calling iterations per prompt (default: 10)

@@ -2,7 +2,7 @@
 """
 Hermes Agent CLI - Interactive Terminal Interface
 
-A beautiful command-line interface for the Hermes Agent, inspired by Claude Code.
+A beautiful command-line interface for the Hermes Agent, inspired by  Code.
 Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
 
 Usage:
@@ -145,7 +145,7 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4.6",
+            "default": "anthropic/-opus-4.6",
             "base_url": OPENROUTER_BASE_URL,
             "provider": "auto",
         },
@@ -491,11 +491,11 @@ def _get_available_skills() -> Dict[str, List[str]]:
 
 def build_welcome_banner(console: Console, model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None, session_id: str = None):
     """
-    Build and print a Claude Code-style welcome banner with caduceus on left and info on right.
+    Build and print a  Code-style welcome banner with caduceus on left and info on right.
     
     Args:
         console: Rich Console instance for printing
-        model: The current model name (e.g., "anthropic/claude-opus-4")
+        model: The current model name (e.g., "anthropic/-opus-4")
         cwd: Current working directory
         tools: List of tool definitions
         enabled_toolsets: List of enabled toolset names
@@ -774,7 +774,7 @@ class HermesCLI:
         Initialize the Hermes CLI.
 
         Args:
-            model: Model to use (default: from env or claude-sonnet)
+            model: Model to use (default: from env or -sonnet)
             toolsets: List of toolsets to enable (default: all)
             provider: Inference provider ("auto", "openrouter", "nous")
             api_key: API key (default: from environment)
@@ -990,7 +990,7 @@ class HermesCLI:
             return False
     
     def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
+        """Display the welcome banner in  Code style."""
         self.console.clear()
         
         if self.compact:
@@ -1646,7 +1646,7 @@ class HermesCLI:
         elif cmd_lower in ("/reset", "/new"):
             self.reset_conversation()
         elif cmd_lower.startswith("/model"):
-            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
+            # Use original case so model names like "Anthropic/-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 new_model = parts[1]
@@ -1970,7 +1970,7 @@ class HermesCLI:
             return None
     
     def _print_exit_summary(self):
-        """Print session resume info on exit, similar to Claude Code."""
+        """Print session resume info on exit, similar to  Code."""
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -2689,7 +2689,7 @@ def main(
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
-        model: Model to use (default: anthropic/claude-opus-4-20250514)
+        model: Model to use (default: anthropic/-opus-4-20250514)
         provider: Inference provider ("auto", "openrouter", "nous")
         api_key: API key for authentication
         base_url: Base URL for the API

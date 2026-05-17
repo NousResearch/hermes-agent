@@ -181,7 +181,7 @@ lm_eval --model hf \
 **Interpretation**:
 - Measures: Instruction adherence (not quality)
 - GPT-4: 86% instruction following
-- Claude 2: 84%
+-  2: 84%
 
 **Good for**: Evaluating chat/instruct models.
 

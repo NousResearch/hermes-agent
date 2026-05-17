@@ -172,7 +172,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
-        model = os.getenv("HERMES_MODEL", "anthropic/claude-opus-4.6")
+        model = os.getenv("HERMES_MODEL", "anthropic/-opus-4.6")
         # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
         api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
         base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")

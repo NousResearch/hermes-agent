@@ -62,7 +62,7 @@ class SkillMeta:
     """Minimal metadata returned by search results."""
     name: str
     description: str
-    source: str           # "github", "clawhub", "claude-marketplace", "lobehub"
+    source: str           # "github", "clawhub", "-marketplace", "lobehub"
     identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
     trust_level: str      # "builtin" | "trusted" | "community"
     repo: Optional[str] = None
@@ -609,13 +609,13 @@ class ClawHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
-# Claude Code marketplace source adapter
+#  Code marketplace source adapter
 # ---------------------------------------------------------------------------
 
-class ClaudeMarketplaceSource(SkillSource):
+class MarketplaceSource(SkillSource):
     """
-    Discover skills from Claude Code marketplace repos.
-    Marketplace repos contain .claude-plugin/marketplace.json with plugin listings.
+    Discover skills from  Code marketplace repos.
+    Marketplace repos contain .-plugin/marketplace.json with plugin listings.
     """
 
     KNOWN_MARKETPLACES = [
@@ -627,7 +627,7 @@ class ClaudeMarketplaceSource(SkillSource):
         self.auth = auth
 
     def source_id(self) -> str:
-        return "claude-marketplace"
+        return "-marketplace"
 
     def trust_level_for(self, identifier: str) -> str:
         parts = identifier.split("/", 2)
@@ -657,7 +657,7 @@ class ClaudeMarketplaceSource(SkillSource):
                     results.append(SkillMeta(
                         name=plugin.get("name", ""),
                         description=plugin.get("description", ""),
-                        source="claude-marketplace",
+                        source="-marketplace",
                         identifier=identifier,
                         trust_level=self.trust_level_for(identifier),
                         repo=marketplace_repo,
@@ -670,25 +670,25 @@ class ClaudeMarketplaceSource(SkillSource):
         gh = GitHubSource(auth=self.auth)
         bundle = gh.fetch(identifier)
         if bundle:
-            bundle.source = "claude-marketplace"
+            bundle.source = "-marketplace"
         return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         gh = GitHubSource(auth=self.auth)
         meta = gh.inspect(identifier)
         if meta:
-            meta.source = "claude-marketplace"
+            meta.source = "-marketplace"
             meta.trust_level = self.trust_level_for(identifier)
         return meta
 
     def _fetch_marketplace_index(self, repo: str) -> List[dict]:
-        """Fetch and parse .claude-plugin/marketplace.json from a repo."""
-        cache_key = f"claude_marketplace_{repo.replace('/', '_')}"
+        """Fetch and parse .-plugin/marketplace.json from a repo."""
+        cache_key = f"_marketplace_{repo.replace('/', '_')}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
             return cached
 
-        url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
+        url = f"https://api.github.com/repos/{repo}/contents/.-plugin/marketplace.json"
         try:
             resp = httpx.get(
                 url,
@@ -1146,7 +1146,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     sources: List[SkillSource] = [
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
-        ClaudeMarketplaceSource(auth=auth),
+        MarketplaceSource(auth=auth),
         LobeHubSource(),
     ]
 

@@ -19,8 +19,8 @@ Any model available on [OpenRouter](https://openrouter.ai/models):
 
 ```python
 # Anthropic
-model = "anthropic/claude-sonnet-4"
-model = "anthropic/claude-opus-4"
+model = "anthropic/-sonnet-4"
+model = "anthropic/-opus-4"
 
 # OpenAI
 model = "openai/gpt-4o"

@@ -10,7 +10,7 @@ The main agent is implemented in `run_agent.py`:
 class AIAgent:
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4",
+        model: str = "anthropic/-sonnet-4",
         api_key: str = None,
         base_url: str = "https://openrouter.ai/api/v1",
         max_turns: int = 20,

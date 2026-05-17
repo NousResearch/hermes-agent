@@ -156,7 +156,7 @@ hermes config check        # Check for missing options (after updates)
 hermes config migrate      # Interactively add missing options
 
 # Examples:
-hermes config set model anthropic/claude-opus-4
+hermes config set model anthropic/-opus-4
 hermes config set terminal.backend docker
 hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
@@ -442,7 +442,7 @@ hermes tools
 
 The terminal tool can execute commands in different environments, with full background process management via the `process` tool:
 
-**Background processes:** Start with `terminal(command="...", background=true)`, then use `process(action="poll/wait/log/kill/write")` to monitor, wait for completion, read output, terminate, or send input. The `wait` action blocks until the process finishes -- no polling loops needed. PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
+**Background processes:** Start with `terminal(command="...", background=true)`, then use `process(action="poll/wait/log/kill/write")` to monitor, wait for completion, read output, terminate, or send input. The `wait` action blocks until the process finishes -- no polling loops needed. PTY mode (`pty=true`) enables interactive CLI tools like Codex and  Code.
 
 **Execution environments:**
 
@@ -968,7 +968,7 @@ Agent: I'll set up an RL training run on the GSM8k environment...
 For extended RL workflows with longer timeouts:
 
 ```bash
-python rl_cli.py --model "anthropic/claude-sonnet-4-20250514"
+python rl_cli.py --model "anthropic/-sonnet-4-20250514"
 ```
 
 ### 🧪 Atropos RL Environments
@@ -1437,7 +1437,7 @@ Features:
 from run_agent import AIAgent
 
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/-sonnet-4",
     enabled_toolsets=["web", "terminal"]
 )
 

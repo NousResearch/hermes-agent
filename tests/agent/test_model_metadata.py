@@ -62,9 +62,9 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_200k(self):
+    def test__models_200k(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" in key:
+            if "" in key:
                 assert value == 200000, f"{key} should be 200000"
 
     def test_gpt4_models_128k(self):
@@ -97,7 +97,7 @@ class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_fallback_to_defaults(self, mock_fetch):
         mock_fetch.return_value = {}  # API returns nothing
-        result = get_model_context_length("anthropic/claude-sonnet-4")
+        result = get_model_context_length("anthropic/-sonnet-4")
         assert result == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")

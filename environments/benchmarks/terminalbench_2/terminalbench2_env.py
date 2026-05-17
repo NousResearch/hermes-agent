@@ -182,7 +182,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
           - group_size=1 (one rollout per group, each task is expensive)
 
         Uses Modal terminal backend (cloud-isolated sandbox per task) and
-        OpenRouter with Claude for inference.
+        OpenRouter with  for inference.
         """
         env_config = TerminalBench2EvalConfig(
             # Terminal + file tools only (the agent interacts via shell commands)
@@ -222,11 +222,11 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
             ensure_scores_are_not_same=False,  # Binary rewards may all be 0 or 1
         )
 
-        # OpenRouter with Claude -- API key loaded from .env
+        # OpenRouter with  -- API key loaded from .env
         server_configs = [
             APIServerConfig(
                 base_url="https://openrouter.ai/api/v1",
-                model_name="anthropic/claude-sonnet-4",
+                model_name="anthropic/-sonnet-4",
                 server_type="openai",
                 api_key=os.getenv("OPENROUTER_API_KEY", ""),
                 health_check=False,

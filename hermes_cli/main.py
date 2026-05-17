@@ -849,7 +849,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "-m", "--model",
-        help="Model to use (e.g., anthropic/claude-sonnet-4)"
+        help="Model to use (e.g., anthropic/-sonnet-4)"
     )
     chat_parser.add_argument(
         "-t", "--toolsets",

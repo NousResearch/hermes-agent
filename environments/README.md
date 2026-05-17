@@ -239,16 +239,16 @@ Follows the standard Atropos eval pattern (like GPQA, MMLU, etc.):
 ```bash
 # Run full benchmark
 python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
-    --openai.model_name anthropic/claude-opus-4.6
+    --openai.model_name anthropic/-opus-4.6
 
 # Run subset of tasks
 python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
-    --openai.model_name anthropic/claude-opus-4.6 \
+    --openai.model_name anthropic/-opus-4.6 \
     --env.task_filter fix-git,git-multibranch
 
 # Skip specific tasks
 python environments/benchmarks/terminalbench_2/terminalbench2_env.py evaluate \
-    --openai.model_name anthropic/claude-opus-4.6 \
+    --openai.model_name anthropic/-opus-4.6 \
     --env.skip_tasks heavy-task,slow-task
 ```
 

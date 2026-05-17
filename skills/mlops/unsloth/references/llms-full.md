@@ -5700,7 +5700,7 @@ _ = model.generate(
 
 Performance of Unsloth Dynamic GGUFs on Aider Polyglot Benchmarks
 
-We’re excited to share that Unsloth Dynamic GGUFs shows how it's possible to quantize LLMs like [DeepSeek-V3.1](https://docs.unsloth.ai/models/deepseek-v3.1-how-to-run-locally) (671B) down to just **1-bit** or **3-bit**, and still be able to outperform SOTA models like **GPT-4.5, GPT-4.1** (April 2025) and **Claude-4-Opus** (May 2025).
+We’re excited to share that Unsloth Dynamic GGUFs shows how it's possible to quantize LLMs like [DeepSeek-V3.1](https://docs.unsloth.ai/models/deepseek-v3.1-how-to-run-locally) (671B) down to just **1-bit** or **3-bit**, and still be able to outperform SOTA models like **GPT-4.5, GPT-4.1** (April 2025) and **-4-Opus** (May 2025).
 
 Previously, [we demonstrated](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs) how Unsloth Dynamic GGUFs outperform other quantization methods on 5-shot MMLU and KL Divergence. Now, we’re showcasing their performance on independent third-party evaluations using the **Aider Polyglot** **benchmark.**
 
@@ -5709,8 +5709,8 @@ Previously, [we demonstrated](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0
 ### ⭐**Key results**
 
 * Our **1-bit** Unsloth Dynamic GGUF shrinks DeepSeek-V3.1 from **671GB → 192GB (-75% size)** and no-thinking mode greatly outperforms GPT-4.1 (Apr 2025), GPT-4.5, and DeepSeek-V3-0324.
-* **3-bit** Unsloth DeepSeek-V3.1 (thinking) GGUF: Outperforms Claude-4-Opus-20250514 (thinking).
-* **5-bit** Unsloth DeepSeek-V3.1 (non-thinking) GGUF: Matches Claude-4-Opus-20250514 (non-thinking) performance.
+* **3-bit** Unsloth DeepSeek-V3.1 (thinking) GGUF: Outperforms -4-Opus-20250514 (thinking).
+* **5-bit** Unsloth DeepSeek-V3.1 (non-thinking) GGUF: Matches -4-Opus-20250514 (non-thinking) performance.
 * Unsloth Dynamic GGUFs perform consistently better than other non-Unsloth Dynamic imatrix GGUFs
 * Other non-Unsloth 1-bit and 2-bit DeepSeek-V3.1 quantizations, as well as standard 1-bit quantization without selective layer quantization, either failed to load or produced gibberish and looping outputs. This highlights how Unsloth Dynamic GGUFs are able to largely retain accuracy whereas other methods do not even function.
 
@@ -5762,7 +5762,7 @@ We also showed dynamic benchmarks in <https://docs.unsloth.ai/basics/unsloth-dyn
 
 For our DeepSeek-V3.1 experiments, we compared different bits of **Unsloth Dynamic GGUFs** against:
 
-* **Full-precision, unquantized LLMs** including GPT 4.5, 4.1, Claude-4-Opus, DeepSeek-V3-0324 etc.
+* **Full-precision, unquantized LLMs** including GPT 4.5, 4.1, -4-Opus, DeepSeek-V3-0324 etc.
 * ***Other*****&#x20;dynamic imatrix V3.1 GGUFs**
 * ***Semi-*****dynamic** (some selective layer quantization) imatrix V3.1 GGUFs for **ablation purposes**.
 
@@ -5779,11 +5779,11 @@ Benchmark experiments were mainly conducted by [David Sluys](https://www.linkedi
 | o3                                | 76.9     |
 | DeepSeek V3.1                     | 76.1     |
 | **(3 bit) DeepSeek V3.1 Unsloth** | **75.6** |
-| Claude-4-Opus (May)               | 72       |
+| -4-Opus (May)               | 72       |
 | o4-mini (High)                    | 72       |
 | DeepSeek R1 0528                  | 71.4     |
 | **(2 bit) DeepSeek V3.1 Unsloth** | **66.7** |
-| Claude-3.7-Sonnet (Feb)           | 64.9     |
+| -3.7-Sonnet (Feb)           | 64.9     |
 | **(1 bit) DeepSeek V3.1 Unsloth** | **57.8** |
 | DeepSeek R1                       | 56.9     |
 
@@ -5796,7 +5796,7 @@ Benchmark experiments were mainly conducted by [David Sluys](https://www.linkedi
 | Model                             | Accuracy |
 | --------------------------------- | -------- |
 | DeepSeek V3.1                     | 71.6     |
-| Claude-4-Opus (May)               | 70.7     |
+| -4-Opus (May)               | 70.7     |
 | **(5 bit) DeepSeek V3.1 Unsloth** | **70.7** |
 | **(4 bit) DeepSeek V3.1 Unsloth** | **69.7** |
 | **(3 bit) DeepSeek V3.1 Unsloth** | **68.4** |
@@ -8283,7 +8283,7 @@ You can also quantize the V cache, but you will need to **compile llama.cpp with
 
 Run Qwen3-Coder-30B-A3B-Instruct and 480B-A35B locally with Unsloth Dynamic quants.
 
-Qwen3-Coder is Qwen’s new series of coding agent models, available in 30B (**Qwen3-Coder-Flash**) and 480B parameters. **Qwen3-480B-A35B-Instruct** achieves SOTA coding performance rivalling Claude Sonnet-4, GPT-4.1, and [Kimi K2](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms/kimi-k2-how-to-run-locally), with 61.8% on Aider Polygot and support for 256K (extendable to 1M) token context.
+Qwen3-Coder is Qwen’s new series of coding agent models, available in 30B (**Qwen3-Coder-Flash**) and 480B parameters. **Qwen3-480B-A35B-Instruct** achieves SOTA coding performance rivalling  Sonnet-4, GPT-4.1, and [Kimi K2](https://docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms/kimi-k2-how-to-run-locally), with 61.8% on Aider Polygot and support for 256K (extendable to 1M) token context.
 
 We also uploaded Qwen3-Coder with native <mark style="background-color:purple;">**1M context length**</mark> extended by YaRN and full-precision 8bit and 16bit versions. [Unsloth](https://github.com/unslothai/unsloth) also now supports fine-tuning and [RL](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide) of Qwen3-Coder.
 
@@ -8617,15 +8617,15 @@ Here are the benchmarks for the 480B model:
 
 #### Agentic Coding
 
-<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3-0324</th><th>Claude 4 Sonnet</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>Terminal‑Bench</td><td><strong>37.5</strong></td><td>30.0</td><td>2.5</td><td>35.5</td><td>25.3</td></tr><tr><td>SWE‑bench Verified w/ OpenHands (500 turns)</td><td><strong>69.6</strong></td><td>–</td><td>–</td><td>70.4</td><td>–</td></tr><tr><td>SWE‑bench Verified w/ OpenHands (100 turns)</td><td><strong>67.0</strong></td><td>65.4</td><td>38.8</td><td>68.0</td><td>48.6</td></tr><tr><td>SWE‑bench Verified w/ Private Scaffolding</td><td>–</td><td>65.8</td><td>–</td><td>72.7</td><td>63.8</td></tr><tr><td>SWE‑bench Live</td><td><strong>26.3</strong></td><td>22.3</td><td>13.0</td><td>27.7</td><td>–</td></tr><tr><td>SWE‑bench Multilingual</td><td><strong>54.7</strong></td><td>47.3</td><td>13.0</td><td>53.3</td><td>31.5</td></tr><tr><td>Multi‑SWE‑bench mini</td><td><strong>25.8</strong></td><td>19.8</td><td>7.5</td><td>24.8</td><td>–</td></tr><tr><td>Multi‑SWE‑bench flash</td><td><strong>27.0</strong></td><td>20.7</td><td>–</td><td>25.0</td><td>–</td></tr><tr><td>Aider‑Polyglot</td><td><strong>61.8</strong></td><td>60.0</td><td>56.9</td><td>56.4</td><td>52.4</td></tr><tr><td>Spider2</td><td><strong>31.1</strong></td><td>25.2</td><td>12.8</td><td>31.1</td><td>16.5</td></tr></tbody></table>
+<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3-0324</th><th> 4 Sonnet</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>Terminal‑Bench</td><td><strong>37.5</strong></td><td>30.0</td><td>2.5</td><td>35.5</td><td>25.3</td></tr><tr><td>SWE‑bench Verified w/ OpenHands (500 turns)</td><td><strong>69.6</strong></td><td>–</td><td>–</td><td>70.4</td><td>–</td></tr><tr><td>SWE‑bench Verified w/ OpenHands (100 turns)</td><td><strong>67.0</strong></td><td>65.4</td><td>38.8</td><td>68.0</td><td>48.6</td></tr><tr><td>SWE‑bench Verified w/ Private Scaffolding</td><td>–</td><td>65.8</td><td>–</td><td>72.7</td><td>63.8</td></tr><tr><td>SWE‑bench Live</td><td><strong>26.3</strong></td><td>22.3</td><td>13.0</td><td>27.7</td><td>–</td></tr><tr><td>SWE‑bench Multilingual</td><td><strong>54.7</strong></td><td>47.3</td><td>13.0</td><td>53.3</td><td>31.5</td></tr><tr><td>Multi‑SWE‑bench mini</td><td><strong>25.8</strong></td><td>19.8</td><td>7.5</td><td>24.8</td><td>–</td></tr><tr><td>Multi‑SWE‑bench flash</td><td><strong>27.0</strong></td><td>20.7</td><td>–</td><td>25.0</td><td>–</td></tr><tr><td>Aider‑Polyglot</td><td><strong>61.8</strong></td><td>60.0</td><td>56.9</td><td>56.4</td><td>52.4</td></tr><tr><td>Spider2</td><td><strong>31.1</strong></td><td>25.2</td><td>12.8</td><td>31.1</td><td>16.5</td></tr></tbody></table>
 
 #### Agentic Browser Use
 
-<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3 0324</th><th>Claude Sonnet‑4</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>WebArena</td><td><strong>49.9</strong></td><td>47.4</td><td>40.0</td><td>51.1</td><td>44.3</td></tr><tr><td>Mind2Web</td><td><strong>55.8</strong></td><td>42.7</td><td>36.0</td><td>47.4</td><td>49.6</td></tr></tbody></table>
+<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3 0324</th><th> Sonnet‑4</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>WebArena</td><td><strong>49.9</strong></td><td>47.4</td><td>40.0</td><td>51.1</td><td>44.3</td></tr><tr><td>Mind2Web</td><td><strong>55.8</strong></td><td>42.7</td><td>36.0</td><td>47.4</td><td>49.6</td></tr></tbody></table>
 
 #### Agentic Tool -Use
 
-<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3 0324</th><th>Claude Sonnet‑4</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>BFCL‑v3</td><td><strong>68.7</strong></td><td>65.2</td><td>56.9</td><td>73.3</td><td>62.9</td></tr><tr><td>TAU‑Bench Retail</td><td><strong>77.5</strong></td><td>70.7</td><td>59.1</td><td>80.5</td><td>–</td></tr><tr><td>TAU‑Bench Airline</td><td><strong>60.0</strong></td><td>53.5</td><td>40.0</td><td>60.0</td><td>–</td></tr></tbody></table>
+<table data-full-width="true"><thead><tr><th>Benchmark</th><th>Qwen3‑Coder 480B‑A35B‑Instruct</th><th>Kimi‑K2</th><th>DeepSeek‑V3 0324</th><th> Sonnet‑4</th><th>GPT‑4.1</th></tr></thead><tbody><tr><td>BFCL‑v3</td><td><strong>68.7</strong></td><td>65.2</td><td>56.9</td><td>73.3</td><td>62.9</td></tr><tr><td>TAU‑Bench Retail</td><td><strong>77.5</strong></td><td>70.7</td><td>59.1</td><td>80.5</td><td>–</td></tr><tr><td>TAU‑Bench Airline</td><td><strong>60.0</strong></td><td>53.5</td><td>40.0</td><td>60.0</td><td>–</td></tr></tbody></table>
 
 
 # Gemma 3: How to Run & Fine-tune
@@ -12391,7 +12391,7 @@ Please see <https://docs.unsloth.ai/basics/deepseek-r1-0528-how-to-run-locally> 
 
 DeepSeek is at it again! After releasing V3, R1 Zero and R1 back in December 2024 and January 2025, DeepSeek updated their checkpoints / models for V3, and released a March update!
 
-According to DeepSeek, MMLU-Pro jumped +5.3% to 81.2%. **GPQA +9.3% points**. AIME + 19.8% and LiveCodeBench + 10.0%! They provided a plot showing how they compared to the previous V3 checkpoint and other models like GPT 4.5 and Claude Sonnet 3.7. <mark style="background-color:blue;">**But how do we run a 671 billion parameter model locally?**</mark>
+According to DeepSeek, MMLU-Pro jumped +5.3% to 81.2%. **GPQA +9.3% points**. AIME + 19.8% and LiveCodeBench + 10.0%! They provided a plot showing how they compared to the previous V3 checkpoint and other models like GPT 4.5 and  Sonnet 3.7. <mark style="background-color:blue;">**But how do we run a 671 billion parameter model locally?**</mark>
 
 <table data-full-width="true"><thead><tr><th>MoE Bits</th><th>Type</th><th>Disk Size</th><th>Accuracy</th><th>Link</th><th>Details</th></tr></thead><tbody><tr><td>1.78bit</td><td>IQ1_S</td><td><strong>173GB</strong></td><td>Ok</td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-IQ1_S">Link</a></td><td>2.06/1.56bit</td></tr><tr><td>1.93bit</td><td>IQ1_M</td><td><strong>183GB</strong></td><td>Fair</td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-IQ1_M">Link</a></td><td>2.5/2.06/1.56</td></tr><tr><td>2.42bit</td><td>IQ2_XXS</td><td><strong>203GB</strong></td><td><mark style="background-color:blue;"><strong>Suggested</strong></mark></td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-IQ2_XXS">Link</a></td><td>2.5/2.06bit</td></tr><tr><td>2.71bit</td><td>Q2_K_XL</td><td><strong>231GB</strong></td><td><mark style="background-color:purple;"><strong>Suggested</strong></mark></td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-Q2_K_XL">Link</a></td><td> 3.5/2.5bit</td></tr><tr><td>3.5bit</td><td>Q3_K_XL</td><td><strong>320GB</strong></td><td>Great</td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-Q3_K_XL">Link</a></td><td> 4.5/3.5bit</td></tr><tr><td>4.5bit</td><td>Q4_K_XL</td><td><strong>406GB</strong></td><td>Best</td><td><a href="https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/UD-Q4_K_XL">Link</a></td><td> 5.5/4.5bit</td></tr></tbody></table>
 

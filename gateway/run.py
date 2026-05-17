@@ -180,7 +180,7 @@ class GatewayRunner:
             from run_agent import AIAgent
             _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
             _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+            _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/-opus-4.6")
 
             if not _flush_api_key:
                 return
@@ -874,7 +874,7 @@ class GatewayRunner:
                     # Resolve credentials so the flush agent can reach the LLM
                     _flush_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
                     _flush_base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/claude-opus-4.6")
+                    _flush_model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL", "anthropic/-opus-4.6")
                     def _do_flush():
                         tmp_agent = AIAgent(
                             model=_flush_model,
@@ -989,7 +989,7 @@ class GatewayRunner:
                         current = _model_cfg.get("default")
             except Exception:
                 pass
-        current = current or "anthropic/claude-opus-4.6"
+        current = current or "anthropic/-opus-4.6"
 
         if not args:
             return f"🤖 **Current model:** `{current}`\n\nTo change: `/model provider/model-name`"
@@ -998,7 +998,7 @@ class GatewayRunner:
             return (
                 f"🤖 Invalid model format: `{args}`\n\n"
                 f"Use `provider/model-name` format, e.g.:\n"
-                f"• `anthropic/claude-sonnet-4`\n"
+                f"• `anthropic/-sonnet-4`\n"
                 f"• `google/gemini-2.5-pro`\n"
                 f"• `openai/gpt-4o`"
             )
@@ -1529,7 +1529,7 @@ class GatewayRunner:
             # Custom endpoint (OPENAI_*) takes precedence, matching CLI behavior
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
             base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+            model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/-opus-4.6"
 
             try:
                 import yaml as _y

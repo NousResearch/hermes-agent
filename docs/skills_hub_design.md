@@ -2,9 +2,9 @@
 
 ## Vision
 
-Turn Hermes Agent into the first **universal skills client** — not locked to any single ecosystem, but capable of pulling skills from ClawHub, GitHub, Claude Code plugin marketplaces, the Codex skills catalog, LobeHub, AI Skill Store, Vercel skills.sh, local directories, and eventually a Nous-hosted registry. Think of it like how Homebrew taps work: multiple sources, one interface, local-first with optional remotes.
+Turn Hermes Agent into the first **universal skills client** — not locked to any single ecosystem, but capable of pulling skills from ClawHub, GitHub,  Code plugin marketplaces, the Codex skills catalog, LobeHub, AI Skill Store, Vercel skills.sh, local directories, and eventually a Nous-hosted registry. Think of it like how Homebrew taps work: multiple sources, one interface, local-first with optional remotes.
 
-The key insight: there is now an **official open standard** for agent skills at [agentskills.io](https://agentskills.io/specification), jointly adopted by OpenAI (Codex), Anthropic (Claude Code), Cursor, Cline, OpenCode, Pi, and 35+ other agents. The format is essentially identical to what Hermes already uses (SKILL.md + supporting files). We should fully adopt this standard and build a **polyglot skills client** that treats all of these as valid sources, with a security-first approach that none of the existing registries have nailed.
+The key insight: there is now an **official open standard** for agent skills at [agentskills.io](https://agentskills.io/specification), jointly adopted by OpenAI (Codex), Anthropic ( Code), Cursor, Cline, OpenCode, Pi, and 35+ other agents. The format is essentially identical to what Hermes already uses (SKILL.md + supporting files). We should fully adopt this standard and build a **polyglot skills client** that treats all of these as valid sources, with a security-first approach that none of the existing registries have nailed.
 
 ---
 
@@ -32,7 +32,7 @@ This is already 95% compatible with Hermes's existing `skills_tool.py`. Main gap
 | **ClawHub** (clawhub.ai) | Centralized registry | 3,000+ curated (5,700 total) | `clawhub install <slug>` (npm CLI) or HTTP API | VirusTotal + LLM scan, but had 341 malicious skills incident | OpenClaw/Moltbot ecosystem. Convex backend, vector search via OpenAI embeddings |
 | **OpenAI Skills Catalog** (github.com/openai/skills) | Official GitHub repo | .system (auto-installed), .curated, .experimental tiers | `$skill-installer` inside Codex | Curated by OpenAI | 8.8k stars. Skills auto-discovered from `$HOME/.agents/skills/`, `/etc/codex/skills/`, repo `.agents/skills/` |
 | **Anthropic Skills** (github.com/anthropics/skills) | Official GitHub repo | Document skills (docx, pdf, pptx, xlsx) + examples | `/plugin marketplace add anthropics/skills` | Curated by Anthropic | Source-available (not open source) for production doc skills |
-| **Claude Code Plugin Marketplaces** | Distributed (any GitHub repo) | 2,748+ marketplace repos indexed | `/plugin marketplace add owner/repo` | Per-marketplace. 3+ reports auto-hides | Schema: `.claude-plugin/marketplace.json`. Supports GitHub, Git URL, npm, pip sources |
+| ** Code Plugin Marketplaces** | Distributed (any GitHub repo) | 2,748+ marketplace repos indexed | `/plugin marketplace add owner/repo` | Per-marketplace. 3+ reports auto-hides | Schema: `.-plugin/marketplace.json`. Supports GitHub, Git URL, npm, pip sources |
 | **Vercel skills.sh** (github.com/vercel-labs/skills) | Universal CLI | Aggregator (installs from GitHub) | `npx skills add owner/repo` | Trust scores via installagentskills.com | Detects 35+ agents, auto-installs to correct paths. Symlink or copy modes |
 | **LobeHub Skills Marketplace** (lobehub.com/skills) | Web marketplace | 14,500+ skills | Browse/download | Quality checks + community feedback | Huge searchable index. Categories: Developer (10.8k), Productivity (781), Science (553), etc. |
 | **AI Skill Store** (skillstore.io) | Curated marketplace | Growing | ZIP or `$skill-installer` | Automated security analysis (eval, exec, network, secrets, obfuscation checks) + admin review | Follows agentskills.io spec. Submission at skillstore.io/submit |
@@ -42,12 +42,12 @@ This is already 95% compatible with Hermes's existing `skills_tool.py`. Main gap
 
 | Repo | Stars | Skills | Focus |
 |------|-------|--------|-------|
-| **VoltAgent/awesome-agent-skills** | 7.3k | 300+ | Cross-platform (Claude Code, Codex, Cursor, Gemini CLI, etc.) |
+| **VoltAgent/awesome-agent-skills** | 7.3k | 300+ | Cross-platform ( Code, Codex, Cursor, Gemini CLI, etc.) |
 | **VoltAgent/awesome-openclaw-skills** | 16.3k | 3,002 curated | OpenClaw/Moltbot ecosystem |
 | **jdrhyne/agent-skills** | — | 35 | Cross-platform. 34/35 AgentVerus-certified. Quality over quantity |
-| **ComposioHQ/awesome-claude-skills** | — | 107 | Claude.ai and API |
-| **claudemarketplaces.com** | — | 2,748 marketplace repos | Claude Code plugin marketplace directory |
-| **majiayu000/claude-skill-registry** | — | 1,001+ | Web search at skills-registry-web.vercel.app |
+| **ComposioHQ/awesome--skills** | — | 107 | .ai and API |
+| **marketplaces.com** | — | 2,748 marketplace repos |  Code plugin marketplace directory |
+| **majiayu000/-skill-registry** | — | 1,001+ | Web search at skills-registry-web.vercel.app |
 
 ### Agent Codebases (Local Analysis)
 
@@ -58,14 +58,14 @@ This is already 95% compatible with Hermes's existing `skills_tool.py`. Main gap
 | **Cline** (~/agent-codebases/cline) | `.cline/skills/` | SKILL.md (minimal) | — | Simple SkillMetadata interface: {name, description, path, source: "global"\|"project"} |
 | **Pi** (~/agent-codebases/pi-mono) | `.agents/skills/` | SKILL.md (agentskills.io standard) | — | Follows the standard. Tests for collision handling, validation |
 | **OpenCode** (~/agent-codebases/opencode) | `.opencode/skill/` | SKILL.md | — | Minimal implementation |
-| **Composio** (~/agent-codebases/composio) | `.claude/skills/` | SKILL.md (Claude-format) | Composio SDK for tool integrations | Different focus: SDK for integrating with external services (HackerNews, GitHub, etc.) |
-| **Cursor** | `.cursor/skills/`, `~/.cursor/skills/` | SKILL.md + `disable-model-invocation` option | Remote Rules from GitHub | Also reads `.claude/skills/` and `.codex/skills/` for compatibility |
+| **Composio** (~/agent-codebases/composio) | `./skills/` | SKILL.md (-format) | Composio SDK for tool integrations | Different focus: SDK for integrating with external services (HackerNews, GitHub, etc.) |
+| **Cursor** | `.cursor/skills/`, `~/.cursor/skills/` | SKILL.md + `disable-model-invocation` option | Remote Rules from GitHub | Also reads `./skills/` and `.codex/skills/` for compatibility |
 
 ### Tools & Utilities
 
 | Tool | Purpose | Notes |
 |------|---------|-------|
-| **Skrills** (Rust) | MCP server + CLI for managing local SKILL.md files | Validates, syncs between Claude Code and Codex, minimal token overhead |
+| **Skrills** (Rust) | MCP server + CLI for managing local SKILL.md files | Validates, syncs between  Code and Codex, minimal token overhead |
 | **AgentVerus** | Open source security scanner | Detects prompt injection, data exfiltration, hidden threats in skills |
 | **skills-ref** | Validation library | From the agentskills.io spec. Validates naming, frontmatter |
 | **installagentskills.com** | Trust scoring directory | Trust score (0-100), risk levels, freshness/stars/safety signals |
@@ -181,21 +181,21 @@ class OpenAISkillsSource(SkillSource):
         ...
 ```
 
-### Source 4: Claude Code Plugin Marketplaces
+### Source 4:  Code Plugin Marketplaces
 
-Claude Code has a distributed marketplace system. Any GitHub repo with a `.claude-plugin/marketplace.json` is a marketplace. The schema supports GitHub repos, Git URLs, npm packages, and pip packages as plugin sources.
+ Code has a distributed marketplace system. Any GitHub repo with a `.-plugin/marketplace.json` is a marketplace. The schema supports GitHub repos, Git URLs, npm packages, and pip packages as plugin sources.
 
 This is powerful because there are already 2,748+ marketplace repos. We could:
-- Index the known marketplaces from claudemarketplaces.com
+- Index the known marketplaces from marketplaces.com
 - Parse their `marketplace.json` to discover available skills
 - Download skills from the source repos they point to
 
 ```python
-class ClaudeMarketplaceSource(SkillSource):
+class MarketplaceSource(SkillSource):
     # Known marketplace repos
     KNOWN_MARKETPLACES = [
         "anthropics/skills",          # Official Anthropic
-        "anthropics/claude-code",     # Bundled plugins
+        "anthropics/-code",     # Bundled plugins
         "aiskillstore/marketplace",   # Security-audited
     ]
     
@@ -530,7 +530,7 @@ Plus optional `agents/openai.yaml` sidecar with:
 - `dependencies.tools`: MCP servers, CLI tools
 - `policy.allow_implicit_invocation`: boolean
 
-### Claude Code / Cursor Format
+###  Code / Cursor Format
 ```yaml
 ---
 name: my-skill  
@@ -538,7 +538,7 @@ description: Does something
 disable-model-invocation: false  # Cursor extension
 ---
 ```
-Simpler. Claude Code uses `.claude-plugin/marketplace.json` for distribution metadata.
+Simpler.  Code uses `.-plugin/marketplace.json` for distribution metadata.
 
 ### Cline Format (from local codebase analysis)
 ```typescript
@@ -694,7 +694,7 @@ Fix any issues (likely just the `tags` and `related_skills` fields, which should
 
 ### Phase 2: Registry Sources — 1-2 days
 - [ ] ClawHub HTTP API adapter (search + install)
-- [ ] Claude Code marketplace.json parser
+- [ ]  Code marketplace.json parser
 - [ ] Tap system (add/remove/list custom repos)
 - [ ] `hermes skills explore` (trending skills)
 - [ ] `hermes skills update` and `hermes skills uninstall`
@@ -710,7 +710,7 @@ Fix any issues (likely just the `tags` and `related_skills` fields, which should
 ### Phase 4: Ecosystem Integration — 1-2 days
 - [ ] Register Hermes with Vercel skills.sh as a supported agent
 - [ ] Publish Hermes skills to ClawHub / Anthropic marketplace
-- [ ] Create a Hermes-specific marketplace.json for Claude Code compatibility
+- [ ] Create a Hermes-specific marketplace.json for  Code compatibility
 - [ ] Build a `hermes skills publish` command for community contributions
 
 ### Phase 5: Nous Registry — Future
@@ -781,7 +781,7 @@ This makes Hermes a first-class citizen in the broader agent skills ecosystem ra
 
 ### 6. npx skills Compatibility
 
-Register Hermes as a supported agent in the Vercel skills.sh ecosystem. This means anyone running `npx skills add owner/repo` will see Hermes as an install target alongside Claude Code, Codex, Cursor, etc. The table would look like:
+Register Hermes as a supported agent in the Vercel skills.sh ecosystem. This means anyone running `npx skills add owner/repo` will see Hermes as an install target alongside  Code, Codex, Cursor, etc. The table would look like:
 
 | Agent | CLI Flag | Project Path | Global Path |
 |-------|----------|-------------|-------------|
@@ -791,7 +791,7 @@ This is probably a PR to vercel-labs/skills — they already support 35+ agents 
 
 ### 7. Marketplace.json for Hermes Skills
 
-Create a `.claude-plugin/marketplace.json` in the Hermes-Agent repo so Hermes's built-in skills (axolotl, vllm, etc.) are installable by Claude Code users too:
+Create a `.-plugin/marketplace.json` in the Hermes-Agent repo so Hermes's built-in skills (axolotl, vllm, etc.) are installable by  Code users too:
 
 ```json
 {
@@ -804,7 +804,7 @@ Create a `.claude-plugin/marketplace.json` in the Hermes-Agent repo so Hermes's 
 }
 ```
 
-This is zero-effort marketing — anyone who runs `/plugin marketplace add NousResearch/Hermes-Agent` in Claude Code gets access to our curated ML skills.
+This is zero-effort marketing — anyone who runs `/plugin marketplace add NousResearch/Hermes-Agent` in  Code gets access to our curated ML skills.
 
 ### 8. Trust-Aware Skill Loading
 

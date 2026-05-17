@@ -156,7 +156,7 @@ def test_current_implementation():
             run_name=run_name,
             distribution="default",
             max_iterations=3,  # Keep it short
-            model="claude-opus-4-20250514",
+            model="-opus-4-20250514",
             num_workers=2,
             verbose=False
         )
@@ -249,7 +249,7 @@ def test_interruption_and_resume():
             run_name=run_name,
             distribution="default",
             max_iterations=3,
-            model="claude-opus-4-20250514",
+            model="-opus-4-20250514",
             num_workers=1,
             verbose=False
         )
@@ -276,7 +276,7 @@ def test_interruption_and_resume():
             run_name=run_name,
             distribution="default",
             max_iterations=3,
-            model="claude-opus-4-20250514",
+            model="-opus-4-20250514",
             num_workers=1,
             verbose=False
         )

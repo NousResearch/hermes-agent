@@ -96,7 +96,7 @@ The main agent is implemented in `run_agent.py`:
 class AIAgent:
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4",
+        model: str = "anthropic/-sonnet-4",
         api_key: str = None,
         base_url: str = "https://openrouter.ai/api/v1",
         max_iterations: int = 60,        # Max tool-calling loops
@@ -472,7 +472,7 @@ terminal(command="pytest -v tests/", background=true)
 **Key behaviors:**
 - Background processes execute through the configured terminal backend (local/Docker/Modal/SSH/Singularity) -- never directly on the host unless `TERMINAL_ENV=local`
 - The `wait` action blocks the tool call until the process finishes, times out, or is interrupted by a new user message
-- PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex, Claude Code)
+- PTY mode (`pty=true` on terminal) enables interactive CLI tools (Codex,  Code)
 - In RL training, background processes are auto-killed when the episode ends (`tool_context.cleanup()`)
 - In the gateway, sessions with active background processes are exempt from idle reset
 - The process registry checkpoints to `~/.hermes/processes.json` for crash recovery
@@ -636,12 +636,12 @@ metadata:
 # Skill Content...
 ```
 
-**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub, Claude marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
+**Skills Hub** — user-driven skill search/install from online registries (GitHub, ClawHub,  marketplaces, LobeHub). Not exposed as an agent tool — the model cannot search for or install skills. Users manage skills via `hermes skills ...` CLI commands or the `/skills` slash command in chat.
 
 Key files:
 - `tools/skills_tool.py` — Agent-facing skill list/view (progressive disclosure)
 - `tools/skills_guard.py` — Security scanner (regex + LLM audit, trust-aware install policy)
-- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub, Claude marketplace, LobeHub), lock file, auth
+- `tools/skills_hub.py` — Source adapters (GitHub, ClawHub,  marketplace, LobeHub), lock file, auth
 - `hermes_cli/skills_hub.py` — CLI subcommands + `/skills` slash command handler
 
 ---

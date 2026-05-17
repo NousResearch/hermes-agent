@@ -6,7 +6,7 @@ Each task asks the model to create a file at a known path with specific content.
 The reward verifier cats the file and checks if the content matches.
 
 Enables only terminal + file toolsets. Uses Modal terminal backend with
-OpenRouter (Claude) by default.
+OpenRouter () by default.
 
 Training tasks (3):
     1. Create ~/greeting.txt with "Hello from Hermes Agent"
@@ -112,7 +112,7 @@ class TerminalTestEnv(HermesAgentBaseEnv):
         Default configuration for the terminal test environment.
 
         Uses Modal terminal backend for cloud isolation and OpenRouter with
-        Claude for inference. API keys loaded from ~/hermes-agent/.env.
+         for inference. API keys loaded from ~/hermes-agent/.env.
         """
         env_config = TerminalTestEnvConfig(
             # Terminal + file tools only
@@ -143,11 +143,11 @@ class TerminalTestEnv(HermesAgentBaseEnv):
             dataset_name=None,
         )
 
-        # OpenRouter with Claude -- API key loaded from .env (OPENROUTER_API_KEY)
+        # OpenRouter with  -- API key loaded from .env (OPENROUTER_API_KEY)
         server_configs = [
             APIServerConfig(
                 base_url="https://openrouter.ai/api/v1",
-                model_name="anthropic/claude-opus-4.6",
+                model_name="anthropic/-opus-4.6",
                 server_type="openai",
                 api_key=os.getenv("OPENROUTER_API_KEY", ""),
                 health_check=False,  # OpenRouter doesn't have a /health endpoint

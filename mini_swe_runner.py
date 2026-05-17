@@ -149,7 +149,7 @@ class MiniSWERunner:
     
     def __init__(
         self,
-        model: str = "anthropic/claude-sonnet-4-20250514",
+        model: str = "anthropic/-sonnet-4-20250514",
         base_url: str = None,
         api_key: str = None,
         env_type: str = "local",
@@ -614,7 +614,7 @@ def main(
     task: str = None,
     prompts_file: str = None,
     output_file: str = "mini-swe-agent-test1.jsonl",
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "-sonnet-4-20250514",
     base_url: str = None,
     api_key: str = None,
     env: str = "local",
@@ -631,7 +631,7 @@ def main(
         task: Single task to run (use this OR prompts_file)
         prompts_file: JSONL file with prompts (each line: {"prompt": "..."})
         output_file: Output JSONL file for trajectories
-        model: Model name (default: claude-sonnet-4-20250514)
+        model: Model name (default: -sonnet-4-20250514)
         base_url: API base URL (optional)
         api_key: API key (optional, uses env vars)
         env: Environment type - "local", "docker", or "modal"

@@ -462,7 +462,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="model", description="Show or change the model")
-        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
+        @discord.app_commands.describe(name="Model name (e.g. anthropic/-sonnet-4). Leave empty to see current.")
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/model {name}".strip())

@@ -6,7 +6,7 @@ Guide to evaluating OpenAI, Anthropic, and other API-based language models.
 
 The lm-evaluation-harness supports evaluating API-based models through a unified `TemplateAPI` interface. This allows benchmarking of:
 - OpenAI models (GPT-4, GPT-3.5, etc.)
-- Anthropic models (Claude 3, Claude 2, etc.)
+- Anthropic models ( 3,  2, etc.)
 - Local OpenAI-compatible APIs
 - Custom API endpoints
 
@@ -125,18 +125,18 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ```bash
 lm_eval --model anthropic-completions \
-  --model_args model=claude-2.1 \
+  --model_args model=-2.1 \
   --tasks lambada_openai,hellaswag \
   --batch_size auto
 ```
 
 ### Chat Models (Recommended)
 
-**Available models**: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `claude-3-haiku-20240307`
+**Available models**: `-3-5-sonnet-20241022`, `-3-opus-20240229`, `-3-sonnet-20240229`, `-3-haiku-20240307`
 
 ```bash
 lm_eval --model anthropic-chat \
-  --model_args model=claude-3-5-sonnet-20241022 \
+  --model_args model=-3-5-sonnet-20241022 \
   --tasks mmlu,gsm8k,humaneval \
   --num_fewshot 5 \
   --batch_size auto
@@ -149,7 +149,7 @@ lm_eval --model anthropic-chat \
 ```bash
 lm_eval --model anthropic-chat \
   --model_args \
-    model=claude-3-5-sonnet-20241022,\
+    model=-3-5-sonnet-20241022,\
     base_url=https://api.anthropic.com,\
     num_concurrent=5,\
     max_retries=3,\
@@ -159,21 +159,21 @@ lm_eval --model anthropic-chat \
 ### Cost Management
 
 Anthropic pricing (as of 2024):
-- Claude 3.5 Sonnet: $3.00 / 1M input, $15.00 / 1M output
-- Claude 3 Opus: $15.00 / 1M input, $75.00 / 1M output
-- Claude 3 Haiku: $0.25 / 1M input, $1.25 / 1M output
+-  3.5 Sonnet: $3.00 / 1M input, $15.00 / 1M output
+-  3 Opus: $15.00 / 1M input, $75.00 / 1M output
+-  3 Haiku: $0.25 / 1M input, $1.25 / 1M output
 
 **Budget-friendly strategy**:
 ```bash
 # Test on small sample first
 lm_eval --model anthropic-chat \
-  --model_args model=claude-3-haiku-20240307 \
+  --model_args model=-3-haiku-20240307 \
   --tasks mmlu \
   --limit 100
 
 # Then run full eval on best model
 lm_eval --model anthropic-chat \
-  --model_args model=claude-3-5-sonnet-20241022 \
+  --model_args model=-3-5-sonnet-20241022 \
   --tasks mmlu \
   --num_fewshot 5
 ```
@@ -340,7 +340,7 @@ python scripts/compare_results.py \
 | Model | MMLU | GSM8K | HumanEval | Cost |
 |-------|------|-------|-----------|------|
 | GPT-4 Turbo | 86.4% | 92.0% | 67.0% | $$$$ |
-| Claude 3 Opus | 86.8% | 95.0% | 84.9% | $$$$ |
+|  3 Opus | 86.8% | 95.0% | 84.9% | $$$$ |
 | GPT-3.5 Turbo | 70.0% | 57.1% | 48.1% | $$ |
 | Llama 2 70B | 68.9% | 56.8% | 29.9% | Free (self-host) |
 | Mixtral 8x7B | 70.6% | 58.4% | 40.2% | Free (self-host) |
@@ -372,7 +372,7 @@ lm_eval --model openai-chat-completions \
 Or use `seed` for sampling:
 ```bash
 lm_eval --model anthropic-chat \
-  --model_args model=claude-3-5-sonnet-20241022 \
+  --model_args model=-3-5-sonnet-20241022 \
   --tasks gsm8k \
   --gen_kwargs temperature=0.7,seed=42
 ```
@@ -484,7 +484,7 @@ lm_eval --model openai-chat-completions \
 ## References
 
 - OpenAI API: https://platform.openai.com/docs/api-reference
-- Anthropic API: https://docs.anthropic.com/claude/reference
+- Anthropic API: https://docs.anthropic.com//reference
 - TemplateAPI: `lm_eval/models/api_models.py`
 - OpenAI models: `lm_eval/models/openai_completions.py`
 - Anthropic models: `lm_eval/models/anthropic_llms.py`

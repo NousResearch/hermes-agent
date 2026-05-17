@@ -278,8 +278,8 @@ class TestMaskApiKey:
 
 
 class TestInit:
-    def test_prompt_caching_claude_openrouter(self):
-        """Claude model via OpenRouter should enable prompt caching."""
+    def test_prompt_caching__openrouter(self):
+        """ model via OpenRouter should enable prompt caching."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -287,15 +287,15 @@ class TestInit:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
-                model="anthropic/claude-sonnet-4-20250514",
+                model="anthropic/-sonnet-4-20250514",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
             assert a._use_prompt_caching is True
 
-    def test_prompt_caching_non_claude(self):
-        """Non-Claude model should disable prompt caching."""
+    def test_prompt_caching_non_(self):
+        """Non- model should disable prompt caching."""
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -319,7 +319,7 @@ class TestInit:
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
-                model="anthropic/claude-sonnet-4-20250514",
+                model="anthropic/-sonnet-4-20250514",
                 base_url="http://localhost:8080/v1",
                 quiet_mode=True,
                 skip_context_files=True,

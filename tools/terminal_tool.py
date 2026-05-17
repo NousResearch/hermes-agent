@@ -348,7 +348,7 @@ Reserve terminal for: builds, installs, git, processes, scripts, network, packag
 
 Background processes: Set background=true to get a session_id, then use the 'process' tool to poll/wait/kill/write.
 Working directory: Use 'workdir' for per-command cwd.
-PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+PTY mode: Set pty=true for interactive CLI tools (Codex,  Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
@@ -1165,7 +1165,7 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex,  Code, or Python REPL. Only works with local and SSH backends. Default: false.",
                 "default": False
             }
         },

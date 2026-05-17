@@ -4708,11 +4708,12 @@ class HermesCLI:
             )
         else:
             accent_color = _accent_hex()
+            safe_session_id = _escape(self.session_id)
             self._console_print(
-                f"[{accent_color}]Session {self.session_id} has no prior "
+                f"[{accent_color}]Session {safe_session_id} has no prior "
                 f"messages — resuming as an empty session. "
                 f"[dim](To remove it instead, run "
-                f"`hermes sessions delete {self.session_id}`.)[/][/]"
+                f"`hermes sessions delete {safe_session_id}`.)[/][/]"
             )
             return False
 

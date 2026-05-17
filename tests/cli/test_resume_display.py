@@ -643,6 +643,47 @@ class TestInitAgentSkipsPreloaded:
         # get_messages_as_conversation should NOT have been called
         mock_db.get_messages_as_conversation.assert_not_called()
 
+    def test_init_agent_empty_session_shows_new_wording(self):
+        """When _preload_resumed_session is bypassed and _init_agent itself
+        hits an empty-but-existing session, the same #27168 wording (no
+        misleading "Starting fresh") must surface so both copies stay in sync.
+        """
+        cli = _make_cli(resume="empty_session_init")
+        # conversation_history left empty to exercise the in-_init_agent branch
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "empty_session_init", "title": None}
+        mock_db.resolve_resume_session_id.return_value = "empty_session_init"
+        mock_db.get_messages_as_conversation.return_value = []
+        mock_db._conn = MagicMock()
+        cli._session_db = mock_db
+
+        # _init_agent prints through ChatConsole(), which routes to _cprint
+        # instead of cli.console — patch _cprint to capture the rendered output.
+        # Credentials must succeed so we actually reach the resume branch; the
+        # rest of _init_agent (AIAgent construction, etc.) is allowed to raise
+        # because the message is already printed by that point.
+        captured = []
+
+        def _capture(text):
+            captured.append(text)
+
+        with (
+            patch.object(cli_mod, "_cprint", side_effect=_capture),
+            patch.object(cli, "_ensure_runtime_credentials", return_value=True),
+        ):
+            try:
+                cli._init_agent()
+            except Exception:
+                pass
+
+        output = "\n".join(captured)
+        # Same regression guard as _preload_resumed_session — keep both paths
+        # aligned so the user sees the same message regardless of entry point.
+        assert "no prior messages" in output
+        assert "empty session" in output
+        assert "Starting fresh" not in output
+        assert "hermes sessions delete empty_session_init" in output
+
 
 # ── Config default tests ─────────────────────────────────────────────
 

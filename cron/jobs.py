@@ -101,6 +101,38 @@ _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+# Backwards-compatible module-level paths.
+# Tests monkeypatch these; production code should use _get_cron_dir().
+HERMES_DIR = get_hermes_home().resolve()
+CRON_DIR = HERMES_DIR / "cron"
+JOBS_FILE = CRON_DIR / "jobs.json"
+OUTPUT_DIR = CRON_DIR / "output"
+
+
+def _get_cron_dir() -> Path:
+    """Resolve cron directory dynamically via get_hermes_home so per-agent
+    ContextVar overrides are honoured.
+
+    Falls back to the module-level CRON_DIR constant when it has been
+    monkey-patched by tests (detected by mismatch with the default).
+    """
+    try:
+        if CRON_DIR != get_hermes_home() / "cron":
+            return CRON_DIR
+    except Exception:
+        pass
+    return get_hermes_home() / "cron"
+
+
+def _get_jobs_file() -> Path:
+    """Resolve jobs.json path dynamically."""
+    return _get_cron_dir() / "jobs.json"
+
+
+def _get_output_dir() -> Path:
+    """Resolve cron output directory dynamically."""
+    return _get_cron_dir() / "output"
+
 
 @dataclass(frozen=True)
 class _CronStorePaths:
@@ -132,11 +164,15 @@ def _current_cron_store() -> _CronStorePaths:
        OUTPUT_DIR no longer match their import-time values, someone chose
        the documented process-wide compatibility surface; honor it;
     3. the ACTIVE profile home, resolved fresh via get_hermes_home()
-       (context-local override, then the HERMES_HOME env var) — so a test
-       or embedder that re-points HERMES_HOME after this module was
-       imported reads/writes ITS OWN store, not whatever jobs.json the
-       import happened to freeze (the filed incident: fixtures that patched
-       the env too late silently rewrote the user's real jobs file);
+       (active ``AgentProfile`` ContextVar, then the context-local override,
+       then the HERMES_HOME env var) — so a test or embedder that re-points
+       HERMES_HOME after this module was imported reads/writes ITS OWN
+       store, not whatever jobs.json the import happened to freeze (the
+       filed incident: fixtures that patched the env too late silently
+       rewrote the user's real jobs file).  This also makes the multi-agent
+       ticker — which fires each job inside ``use_profile(profile)`` rather
+       than ``use_cron_store`` — resolve to the job's own profile store for
+       ``load_jobs``/``save_jobs``/``mark_job_run`` and lock paths;
     4. the import-time constants (home unchanged since import — the common
        path, returned unchanged).
     """
@@ -2234,6 +2270,74 @@ def save_job_output(job_id: str, output: str):
     _prune_job_output(job_output_dir, _cron_output_keep())
 
     return output_file
+
+
+# =============================================================================
+# Multi-agent job loading (gateway-wide tick)
+# =============================================================================
+
+def load_all_jobs(registry: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Load jobs from ALL agent profiles for a gateway-wide tick.
+
+    When the gateway runs multiple agents, each profile has its own
+    cron/jobs.json.  This function visits every profile directory,
+    temporarily switches the ContextVar, loads that profile's jobs,
+    stamps each with its agent_id, and returns the combined list.
+
+    Args:
+        registry: Optional agent registry (Dict[str, AgentProfile]).
+                  If omitted, falls back to loading from the current
+                  profile only (backward-compatible single-agent mode).
+
+    Returns:
+        Combined list of job dicts, each with an ``agent_id`` key.
+    """
+    if registry is None:
+        # Backward-compatible single-profile path
+        jobs = load_jobs()
+        for j in jobs:
+            if "agent_id" not in j:
+                j["agent_id"] = "main"
+        return jobs
+
+    all_jobs: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                jobs = load_jobs()
+                for j in jobs:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_jobs.extend(jobs)
+        except Exception as e:
+            logger.warning("Failed to load cron jobs for agent '%s': %s", agent_id, e)
+    return all_jobs
+
+
+def get_all_due_jobs(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Get due jobs from ALL agent profiles.
+
+    Iterates every profile, switches the ContextVar, and calls
+    ``get_due_jobs()`` (which handles grace windows, fast-forward,
+    and file-locking) inside that profile's context.  Returns the
+    combined list of due jobs with ``agent_id`` already stamped.
+
+    This is the multi-agent equivalent of ``get_due_jobs()``.
+    """
+    all_due: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                due = get_due_jobs()
+                for j in due:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_due.extend(due)
+        except Exception as e:
+            logger.warning("Failed to get due jobs for agent '%s': %s", agent_id, e)
+    return all_due
 
 
 # =============================================================================

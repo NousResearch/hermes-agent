@@ -151,6 +151,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+            "agent_id": None,
         }
 
     @pytest.mark.parametrize(
@@ -195,6 +196,7 @@ class TestResolveDeliveryTarget:
             "platform": platform,
             "chat_id": chat_id,
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_bare_matrix_delivery_uses_matrix_home_room(self, monkeypatch):
@@ -205,6 +207,7 @@ class TestResolveDeliveryTarget:
             "platform": "matrix",
             "chat_id": "!room123:example.org",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_bare_platform_delivery_preserves_home_thread_id(self, monkeypatch):
@@ -215,6 +218,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "parent-42",
             "thread_id": "topic-7",
+            "agent_id": None,
         }
 
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
@@ -273,6 +277,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": "17",
+            "agent_id": None,
         }
 
     def test_explicit_telegram_topic_thread_survives_bare_directory_match(self):
@@ -289,6 +294,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": "17",
+            "agent_id": None,
         }
 
     def test_explicit_telegram_chat_id_without_thread_id(self):
@@ -300,6 +306,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_human_friendly_label_resolved_via_channel_directory(self):
@@ -315,6 +322,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345678901234@lid",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_human_friendly_label_without_suffix_resolved(self):
@@ -329,6 +337,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1009999",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_human_friendly_topic_label_preserves_thread_id(self):
@@ -343,6 +352,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1009999",
             "thread_id": "17585",
+            "agent_id": None,
         }
 
     def test_raw_id_not_mangled_when_directory_returns_none(self):
@@ -357,6 +367,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345@lid",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_bare_platform_uses_matching_origin_chat(self):
@@ -373,6 +384,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+            "agent_id": None,
         }
 
     def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):
@@ -389,6 +401,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-2002",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_explicit_discord_topic_target_with_thread_id(self):
@@ -400,6 +413,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "-1001234567890",
             "thread_id": "17585",
+            "agent_id": None,
         }
 
     def test_explicit_discord_chat_id_without_thread_id(self):
@@ -411,6 +425,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "9876543210",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_explicit_discord_channel_without_thread(self):
@@ -423,6 +438,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "1001234567890",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_list_form_deliver_is_normalized(self, monkeypatch):
@@ -443,6 +459,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-4004",
             "thread_id": None,
+            "agent_id": None,
         }
 
     def test_list_form_multiple_platforms_normalized(self, monkeypatch):

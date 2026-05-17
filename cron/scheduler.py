@@ -1141,12 +1141,15 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
+    _agent_id = job.get("agent_id")
+
     if deliver_value == "origin":
         if origin:
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
+                "agent_id": _agent_id or origin.get("agent_id"),
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -1162,6 +1165,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                     "platform": platform_name,
                     "chat_id": chat_id,
                     "thread_id": _get_home_target_thread_id(platform_name),
+                    "agent_id": _agent_id,
                 }
         return None
 
@@ -1196,6 +1200,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            "agent_id": _agent_id,
         }
 
     platform_name = deliver_value
@@ -1204,6 +1209,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
             "thread_id": origin.get("thread_id"),
+            "agent_id": _agent_id,
         }
 
     if not _is_known_delivery_platform(platform_name):
@@ -1216,6 +1222,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         "platform": platform_name,
         "chat_id": chat_id,
         "thread_id": _get_home_target_thread_id(platform_name),
+        "agent_id": _agent_id,
     }
 
 
@@ -3892,19 +3899,23 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
-):
+    registry=None,
+) -> int:
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
+        registry: Optional agent registry (Dict[str, AgentProfile]) for multi-
+                  agent gateway mode. When provided, jobs are loaded from ALL
+                  agent profiles and each job runs under its profile's context.
 
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -3931,22 +3942,34 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
-        due_jobs = get_due_jobs()
+        if registry is not None:
+            from cron.jobs import get_all_due_jobs
+            all_jobs = get_all_due_jobs(registry)
+        else:
+            all_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
+        if verbose and not all_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
             return 0
 
         if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(all_jobs))
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
         # For parallel jobs that are already running, advance_next_run keeps
         # bumping next_run_at forward so the grace window never expires.
         # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
+        # For multi-agent mode, advance_next_run must run in the job's profile
+        # context so it writes back to the correct jobs.json.
+        for job in all_jobs:
+            _job_agent_id = job.get("agent_id", "main")
+            if registry and _job_agent_id in registry:
+                from agent.profile import use_profile
+                with use_profile(registry[_job_agent_id]):
+                    advance_next_run(job["id"])
+            else:
+                advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -3971,7 +3994,7 @@ def tick(
         if verbose:
             logger.info(
                 "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
+                len(all_jobs),
                 _max_workers if _max_workers else "unbounded",
             )
 
@@ -3979,7 +4002,16 @@ def tick(
             """Run one due job end-to-end. Thin wrapper around the shared
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
-            body."""
+            body.  In multi-agent mode the whole body runs inside the job's
+            ``AgentProfile`` context so ``run_one_job``'s internal path getters,
+            secret scope, output save, delivery, and ``mark_job_run`` all
+            resolve to the correct agent's home dir / jobs.json."""
+            _job_agent_id = job.get("agent_id", "main")
+            _profile = registry.get(_job_agent_id) if registry else None
+            if _profile is not None:
+                from agent.profile import use_profile
+                with use_profile(_profile):
+                    return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
         # Partition due jobs: those with a per-job workdir mutate
@@ -3988,8 +4020,8 @@ def tick(
         # That alone only keeps workdir jobs from overlapping EACH OTHER;
         # run_job's _terminal_cwd_lock is what additionally stops a concurrently
         # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        sequential_jobs = [j for j in all_jobs if (j.get("workdir") or "").strip()]
+        parallel_jobs = [j for j in all_jobs if not (j.get("workdir") or "").strip()]
 
         _results: list = []
         _all_futures: list = []

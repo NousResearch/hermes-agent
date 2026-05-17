@@ -142,7 +142,7 @@ def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
 class DeliveryTarget:
     """
     A single delivery target.
-    
+
     Represents where a message should be sent:
     - "origin" → back to source
     - "local" → save to local files
@@ -154,6 +154,7 @@ class DeliveryTarget:
     thread_id: Optional[str] = None
     is_origin: bool = False
     is_explicit: bool = False  # True if chat_id was explicitly specified
+    agent_id: Optional[str] = None  # Agent profile for delivery context
     
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -176,6 +177,7 @@ class DeliveryTarget:
                     chat_id=origin.chat_id,
                     thread_id=origin.thread_id,
                     is_origin=True,
+                    agent_id=origin.agent_id,
                 )
             else:
                 # Fallback to local if no origin
@@ -222,26 +224,28 @@ class DeliveryTarget:
 class DeliveryRouter:
     """
     Routes messages to appropriate destinations.
-    
+
     Handles the logic of resolving delivery targets and dispatching
     messages to the right platform adapters.
     """
-    
+
     def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None,
-                 dead_targets: Optional[DeadTargetRegistry] = None):
+                 dead_targets: Optional[DeadTargetRegistry] = None, registry=None):
         """
         Initialize the delivery router.
-        
+
         Args:
             config: Gateway configuration
             adapters: Dict mapping platforms to their adapter instances
             dead_targets: Optional shared registry of confirmed-unreachable
                 targets.  When omitted, a profile-local registry is created.
+            registry: Optional Dict[str, AgentProfile] for multi-agent context.
         """
         self.config = config
         self.adapters = adapters or {}
         self.output_dir = get_hermes_home() / "cron" / "output"
         self.dead_targets = dead_targets or DeadTargetRegistry()
+        self._registry = registry or {}
     
     async def deliver(
         self,
@@ -289,14 +293,24 @@ class DeliveryRouter:
                 }
                 continue
             try:
-                if target.platform == Platform.LOCAL:
-                    result = self._deliver_local(content, job_id, job_name, metadata)
+                # Set the active profile for this delivery target so path getters
+                # and adapter context resolve to the correct agent's home dir.
+                _profile = self._registry.get(target.agent_id or "main")
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    _ctx = use_profile(_profile)
                 else:
-                    result = await self._deliver_to_platform(target, content, metadata)
-                    # Successful platform delivery — clear any stale dead flag.
-                    if target.chat_id and not _send_result_failed(result):
-                        self.dead_targets.clear(target.platform.value, target.chat_id)
-                
+                    from contextlib import nullcontext
+                    _ctx = nullcontext()
+                with _ctx:
+                    if target.platform == Platform.LOCAL:
+                        result = self._deliver_local(content, job_id, job_name, metadata)
+                    else:
+                        result = await self._deliver_to_platform(target, content, metadata)
+                        # Successful platform delivery — clear any stale dead flag.
+                        if target.chat_id and not _send_result_failed(result):
+                            self.dead_targets.clear(target.platform.value, target.chat_id)
+
                 results[target.to_string()] = {
                     "success": True,
                     "result": result

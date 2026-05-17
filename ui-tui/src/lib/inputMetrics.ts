@@ -115,8 +115,8 @@ function widthBetween(value: string, start: number, end: number) {
  * IMPORTANT: this MUST stay in lock-step with how Ink's `<Text wrap="wrap">`
  * lays the value out (which uses `wrap-ansi`). Any divergence parks the
  * hardware cursor several cells off the last rendered character — see the
- * "cursor drift past blank cells" bug. visualLinesFromWrappedOutput is
- * sourced directly from wrap-ansi to enforce that invariant.
+ * "cursor drift past blank cells" bug. `visualLines` is sourced directly
+ * from wrap-ansi to enforce that invariant.
  */
 export function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -137,9 +137,9 @@ export function cursorLayout(value: string, cursor: number, cols: number) {
 
   // NOTE: the previous implementation forced an extra line break when
   // `column >= w` (the "trailing cursor-cell overflows" rule). With
-  // visualLinesFromWrappedOutput sourcing breaks from wrap-ansi, the line
-  // wrapping above already matches what Ink will actually render. Pushing
-  // the cursor onto a phantom next line here would re-introduce the same
+  // `visualLines` sourcing breaks from wrap-ansi, the line wrapping
+  // above already matches what Ink will actually render. Pushing the
+  // cursor onto a phantom next line here would re-introduce the same
   // drift we're fixing, so we don't.
   return { column, line: lineIndex }
 }

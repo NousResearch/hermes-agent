@@ -464,7 +464,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
-    truncated_response_prefix = ""
+    truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -1357,7 +1357,7 @@ def run_conversation(
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
                             if assistant_message.content:
-                                truncated_response_prefix += assistant_message.content
+                                truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 3:
                                 agent._vprint(
@@ -1378,7 +1378,7 @@ def run_conversation(
                                 restart_with_length_continuation = True
                                 break
 
-                            partial_response = agent._strip_think_blocks(truncated_response_prefix).strip()
+                            partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -3582,9 +3582,9 @@ def run_conversation(
 
                 codex_ack_continuations = 0
 
-                if truncated_response_prefix:
-                    final_response = truncated_response_prefix + final_response
-                    truncated_response_prefix = ""
+                if truncated_response_parts:
+                    final_response = "".join(truncated_response_parts) + final_response
+                    truncated_response_parts = []
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()

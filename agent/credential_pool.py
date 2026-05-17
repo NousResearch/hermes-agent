@@ -166,6 +166,8 @@ class PooledCredential:
     @property
     def runtime_api_key(self) -> str:
         if self.provider == "nous":
+            # Nous stores the runtime inference credential in agent_key for
+            # compatibility. It may be a NAS invoke JWT or legacy opaque key.
             return str(self.agent_key or self.access_token or "")
         return str(self.access_token or "")
 

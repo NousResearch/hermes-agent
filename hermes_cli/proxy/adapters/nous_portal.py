@@ -1,12 +1,13 @@
 """Nous Portal upstream adapter.
 
 Reads the user's Nous OAuth state from ``~/.hermes/auth.json``, refreshes
-the access token and mints a fresh agent key when needed, and exposes the
-upstream base URL plus minted bearer for the proxy server to forward to.
+the access token and resolves the ``agent_key`` compatibility credential
+when needed, then exposes the upstream base URL plus bearer for the proxy
+server to forward to.
 
-The minted ``agent_key`` (not the OAuth ``access_token``) is what
-``inference-api.nousresearch.com`` accepts as a bearer. The refresh helper
-already handles both — see :func:`hermes_cli.auth.refresh_nous_oauth_from_state`.
+The ``agent_key`` field may hold either a NAS invoke JWT or the legacy
+opaque session key. The refresh helper handles both — see
+:func:`hermes_cli.auth.refresh_nous_oauth_from_state`.
 """
 
 from __future__ import annotations

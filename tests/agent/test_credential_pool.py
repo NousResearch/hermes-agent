@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -12,6 +14,14 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _jwt_with_claims(claims: dict) -> str:
+    def _part(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):
@@ -508,6 +518,52 @@ def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
     assert entry.source == "device_code"
     assert entry.portal_base_url == "https://portal.example.com"
     assert entry.agent_key == "agent-key"
+
+
+def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
+    token = _jwt_with_claims({
+        "sub": "test-user",
+        "scope": ["inference:invoke", "inference:mint_agent_key"],
+        "exp": int(time.time() + 3600),
+    })
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:invoke inference:mint_agent_key",
+                    "access_token": token,
+                    "refresh_token": "refresh-token",
+                    "expires_at": expires_at,
+                    "agent_key": token,
+                    "agent_key_expires_at": expires_at,
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "device_code"
+    assert entry.agent_key == token
+    assert entry.runtime_api_key == token
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    pool_entry = auth_payload["credential_pool"]["nous"][0]
+    assert pool_entry["agent_key"] == token
+    assert pool_entry["agent_key_expires_at"] == expires_at
 
 
 def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):

@@ -1355,3 +1355,116 @@ class TestRewriteTranscriptPreservesReasoning:
             "before user",
             "before assistant",
         ]
+
+
+class TestBuildSessionKeyAgentId:
+    """build_session_key must prefix with agent:<id> when source.agent_id is set."""
+
+    def test_default_agent_id_is_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        key = build_session_key(source)
+        assert key.startswith("agent:main:")
+
+    def test_explicit_agent_id(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:dm:123"
+
+    def test_agent_id_none_defaults_to_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = None
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:123"
+
+    def test_agent_id_empty_string_defaults_to_main(self):
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        source.agent_id = ""
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:123"
+
+    def test_dm_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+        )
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:dm:99:topic-1"
+
+    def test_group_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        source.agent_id = "research"
+        key = build_session_key(source)
+        assert key == "agent:research:discord:group:guild-123:alice"
+
+    def test_group_thread_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+        )
+        source.agent_id = "coder"
+        key = build_session_key(source)
+        assert key == "agent:coder:telegram:group:-1002285219667:17585"
+
+    def test_whatsapp_dm_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+        )
+        source.agent_id = "wecom-agent"
+        key = build_session_key(source)
+        assert key == "agent:wecom-agent:whatsapp:dm:15551234567"
+
+    def test_shared_group_with_agent_id(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+        )
+        source.agent_id = "main"
+        key = build_session_key(source, group_sessions_per_user=False)
+        assert key == "agent:main:discord:group:guild-123"
+
+    def test_distinct_agents_same_chat_get_distinct_keys(self):
+        """Same chat, different agent_id → different session keys."""
+        base = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+        base.agent_id = "coder"
+        key_coder = build_session_key(base)
+
+        base.agent_id = "research"
+        key_research = build_session_key(base)
+
+        assert key_coder == "agent:coder:telegram:dm:123"
+        assert key_research == "agent:research:telegram:dm:123"
+        assert key_coder != key_research
+
+    def test_session_source_roundtrip_with_agent_id(self):
+        """agent_id should survive to_dict/from_dict roundtrip."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            agent_id="coder",
+        )
+        d = source.to_dict()
+        assert d["agent_id"] == "coder"
+        restored = SessionSource.from_dict(d)
+        assert restored.agent_id == "coder"
+
+    def test_session_source_roundtrip_without_agent_id(self):
+        """agent_id omitted from dict → restored as None."""
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123")
+        d = source.to_dict()
+        assert "agent_id" not in d
+        restored = SessionSource.from_dict(d)
+        assert restored.agent_id is None

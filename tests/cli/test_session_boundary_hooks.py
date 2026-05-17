@@ -25,11 +25,11 @@ def test_session_finalize_on_reset(mock_invoke_hook):
 
     # Check if on_session_finalize was called for the old session
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="test-session-id", platform="cli"
+        "on_session_finalize", session_id="test-session-id", platform="cli", agent_id=None,
     )
     # Check if on_session_reset was called for the new session
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id=cli.session_id, platform="cli"
+        "on_session_reset", session_id=cli.session_id, platform="cli", agent_id=None,
     )
 
 
@@ -46,7 +46,7 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
     cli_mod._run_cleanup()
 
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="cleanup-session-id", platform="cli"
+        "on_session_finalize", session_id="cleanup-session-id", platform="cli", agent_id=None,
     )
 
 

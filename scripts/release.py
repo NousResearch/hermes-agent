@@ -1138,6 +1138,18 @@ AUTHOR_MAP = {
     "sp_ps@Mac-mini.lan": "phoenixshen",  # PR #26768 (respect user-configured vision model)
     "1594534+phoenixshen@users.noreply.github.com": "phoenixshen",
     "147827411+AhmetArif0@users.noreply.github.com": "AhmetArif0",  # PR #26635 (line proxy env vars)
+    # batch salvage (May 2026 LHF run, group 5)
+    "hari@Hariharans-MacBook-Air-8.local": "haran2001",  # PR #27070 (i18n catalog test)
+    "hariharan15151@gmail.com": "haran2001",  # PR #27068 (qwen3.6-plus 1M context)
+    "56040092+haran2001@users.noreply.github.com": "haran2001",
+    "1472110+ms-alan@users.noreply.github.com": "ms-alan",  # PR #26443 (reload-skills tab completion)
+    "ganlinbupt@gmail.com": "godlin-gh",  # PR #26118 (ACP polished tools)
+    "wesley.simplicio.ext@siemens-energy.com": "wesleysimplicio",  # PR #25777 (xterm.js native selection)
+    "6108320+wesleysimplicio@users.noreply.github.com": "wesleysimplicio",
+    "carryzuo00@gmail.com": "Carry00",  # PR #26851 (doctor SSH env vars)
+    "alaamohanad169-ship-it@users.noreply.github.com": "alaamohanad169-ship-it",  # PR #26036 (telegram typing after send)
+    "vigo@hermes": "hawknewton",  # PR #26294 (bedrock boto3 lazy_deps)
+    "211668+hawknewton@users.noreply.github.com": "hawknewton",
 }
 
 

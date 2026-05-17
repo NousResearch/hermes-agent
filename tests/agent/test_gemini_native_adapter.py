@@ -326,3 +326,19 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_extract_multimodal_parts_accepts_video_url_data_urls():
+    from agent.gemini_native_adapter import _extract_multimodal_parts
+
+    parts = _extract_multimodal_parts([
+        {"type": "text", "text": "describe this video"},
+        {
+            "type": "video_url",
+            "video_url": {"url": "data:video/mp4;base64,QUJD"},
+        },
+    ])
+
+    assert parts[0] == {"text": "describe this video"}
+    assert parts[1]["inlineData"]["mimeType"] == "video/mp4"
+    assert parts[1]["inlineData"]["data"] == "QUJD"

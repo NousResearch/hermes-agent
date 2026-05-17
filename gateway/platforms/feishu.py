@@ -3114,6 +3114,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        # Stamp agent_id before batching so batch keys reflect the routed
+        # agent (idempotent — handle_message will skip re-stamping).
+        self._attach_agent_id(event)
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return

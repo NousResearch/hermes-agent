@@ -12,20 +12,30 @@ const ESC = String.fromCharCode(27)
 const BEL = String.fromCharCode(7)
 const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
+const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
 const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
-const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]/g
+const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
 
 export const stripAnsi = (s: string) =>
-  s.replace(ANSI_OSC_RE, '').replace(ANSI_STRING_RE, '').replace(ANSI_CSI_RE, '').replace(ANSI_STRAY_ESC_RE, '').replace(CONTROL_RE, '')
+  s
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_CSI_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, '')
+    .replace(CONTROL_RE, '')
 
 export const sanitizeAnsiForRender = (s: string) =>
   s
     .replace(ANSI_OSC_RE, '')
     .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_STRAY_ESC_RE, '')
     .replace(CONTROL_RE, '')
 

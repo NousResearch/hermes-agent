@@ -3500,6 +3500,18 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
+def _orphan_reap_sleep(seconds: float) -> None:
+    """Indirection over ``time.sleep`` for the orphan-reap SIGTERM→SIGKILL gap.
+
+    Tests patch this symbol instead of ``time.sleep`` so unrelated background
+    sleepers (pytest-xdist workers, MCP heartbeat threads, etc.) don't pollute
+    the mock's call list — patching ``time.sleep`` (or ``tools.mcp_tool.time.sleep``,
+    which resolves to the same module attribute) intercepts every thread in the
+    process.
+    """
+    time.sleep(seconds)
+
+
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 
@@ -3542,7 +3554,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             pass
 
     # Phase 2: Wait for graceful exit
-    time.sleep(2)
+    _orphan_reap_sleep(2)
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)

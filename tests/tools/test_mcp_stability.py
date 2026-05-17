@@ -135,7 +135,7 @@ class TestStdioPidTracking:
         # bpo-14484). Return True so the SIGKILL escalation fires.
         with patch("tools.mcp_tool.os.kill") as mock_kill, \
              patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.mcp_tool.time.sleep") as mock_sleep:
+             patch("tools.mcp_tool._orphan_reap_sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
         # SIGTERM then SIGKILL; the alive check no longer touches os.kill.
@@ -163,12 +163,12 @@ class TestStdioPidTracking:
         monkeypatch.delattr(signal, "SIGKILL", raising=False)
 
         with patch("tools.mcp_tool.os.kill") as mock_kill, \
-             patch("tools.mcp_tool.time.sleep") as mock_sleep:
+             patch("tools.mcp_tool._orphan_reap_sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
 
         # SIGTERM phase, alive check raises (process gone), no escalation
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
-        assert mock_sleep.called
+        mock_sleep.assert_called_once_with(2)
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids

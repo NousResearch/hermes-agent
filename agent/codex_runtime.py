@@ -284,18 +284,48 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
-            if missing_completed and attempt < max_stream_retries:
+            # The OpenAI SDK's Responses streaming state machine raises
+            # ``RuntimeError("Expected to have received `response.created`
+            # before `<event-type>`")`` when the first SSE event from the
+            # server is anything other than ``response.created`` — and it
+            # discards the event's payload before we can read it.  Three
+            # real-world backends emit a different first frame:
+            #
+            #   * xAI on grok-4.x OAuth — sends ``error`` (issues
+            #     reported around the May 2026 SuperGrok rollout when
+            #     multi-turn conversations replay encrypted reasoning
+            #     content the OAuth tier rejects)
+            #   * codex-lb relays — send ``codex.rate_limits`` (#14634)
+            #   * custom Responses relays — send ``response.in_progress``
+            #     (#8133)
+            #
+            # In all three cases the underlying byte stream is still
+            # readable: a non-stream ``responses.create(stream=True)``
+            # fallback succeeds and surfaces the real provider error as
+            # a normal exception with body+status_code attached, which
+            # ``_summarize_api_error`` can then translate into a useful
+            # user-facing line.  Treat ``response.created`` prelude
+            # errors the same way we already treat ``response.completed``
+            # postlude errors.
+            prelude_error = (
+                "Expected to have received `response.created`" in err_text
+                or "Expected to have received \"response.created\"" in err_text
+            )
+            if (missing_completed or prelude_error) and attempt < max_stream_retries:
                 logger.debug(
-                    "Responses stream closed before completion (attempt %s/%s); retrying. %s",
+                    "Responses stream %s (attempt %s/%s); retrying. %s",
+                    "prelude rejected" if prelude_error else "closed before completion",
                     attempt + 1,
                     max_stream_retries + 1,
                     agent._client_log_context(),
                 )
                 continue
-            if missing_completed:
+            if missing_completed or prelude_error:
                 logger.debug(
-                    "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
+                    "Responses stream %s; falling back to create(stream=True). %s err=%s",
+                    "rejected before response.created" if prelude_error else "did not emit response.completed",
                     agent._client_log_context(),
+                    err_text,
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise

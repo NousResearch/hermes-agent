@@ -331,6 +331,17 @@ def test_pr_ci_audit_falls_back_to_branch_target_pr_when_head_changed() -> None:
     assert payload["matched_by"] == "branch_target_fallback"
 
 
+def test_pr_ci_audit_remote_lifecycle_reports_stale_head_mismatch() -> None:
+    assert (
+        pr_ci_audit.remote_lifecycle_state(
+            pr_exists=True,
+            ci_state="stale",
+            ready_for_merge=False,
+        )
+        == "pr_created_ci_stale_head_mismatch"
+    )
+
+
 def test_runner_recovery_labels_match_existing_gitea_workflow_runs_on() -> None:
     labels = runner_recovery.RUNNER_LABELS.split(",")
 

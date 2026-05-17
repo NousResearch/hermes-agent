@@ -414,6 +414,8 @@ def remote_lifecycle_state(
         return "pr_created_ci_passed_merge_pending"
     if ci_state == "failed":
         return "pr_created_ci_failed"
+    if ci_state == "stale":
+        return "pr_created_ci_stale_head_mismatch"
     return "pr_created_ci_pending"
 
 

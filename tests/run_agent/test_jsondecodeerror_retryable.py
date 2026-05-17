@@ -73,15 +73,20 @@ class TestAgentLoopSourceStillHasCarveOut:
     revert that happens to leave the test file intact."""
 
     def test_run_agent_excludes_jsondecodeerror_from_local_validation(self):
-        import run_agent
         import inspect
-        src = inspect.getsource(run_agent)
+        from agent import conversation_loop
+        # The agent loop body lives in agent/conversation_loop.py after
+        # the run_agent.py refactor.  Assert the carve-out is present in
+        # the extracted module specifically — if it ever moves back or
+        # disappears, this fails loudly rather than silently passing
+        # against a non-existent inline replica.
+        src = inspect.getsource(conversation_loop)
         # The predicate we care about must reference json.JSONDecodeError
         # in its exclusion tuple. We check for the specific co-occurrence
         # rather than the literal string so harmless reformatting doesn't
         # break us.
         assert "is_local_validation_error" in src
         assert "JSONDecodeError" in src, (
-            "run_agent.py must carve out json.JSONDecodeError from the "
-            "is_local_validation_error classification — see #14782."
+            "agent/conversation_loop.py must carve out json.JSONDecodeError "
+            "from the is_local_validation_error classification — see #14782."
         )

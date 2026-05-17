@@ -1155,6 +1155,10 @@ AUTHOR_MAP = {
     "262945885+Mind-Dragon@users.noreply.github.com": "Mind-Dragon",  # PR #26966 salvage
     "soynchuux@gmail.com": "soynchux",  # PR #27060 salvage
     "209694554+soynchux@users.noreply.github.com": "soynchux",
+    # batch salvage (May 2026 LHF run, group 6 — final)
+    "6666242+bird@users.noreply.github.com": "bird",  # PR #25219 (gateway docker exit-75 restart)
+    "david@loadmagic.ai": "davidcampbelldc",  # PR #26834 (web_server proxy_headers=False)
+    "165905879+davidcampbelldc@users.noreply.github.com": "davidcampbelldc",
 }
 
 

@@ -163,11 +163,18 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
-# Interactive card hints: JSON objects with "elements" or "config" keys
-_CARD_JSON_HINT_RE = re.compile(r'^\s*\{\s*"(?:config|elements|header)"')
-# Card image placeholder — "img_url" signals that the image should be
-# downloaded, uploaded to Feishu, and replaced with a real "img_key".
-_CARD_IMAGE_URL_RE = re.compile(r'"img_url"\s*:\s*"(https?://[^"]+)"')
+# Interactive card hints: card payloads are JSON objects; the final decision is
+# made by parsing and checking Feishu card-ish top-level keys.
+_CARD_JSON_HINT_RE = re.compile(r"^\s*\{")
+_CARD_TOP_LEVEL_KEYS = frozenset({
+    "config",
+    "elements",
+    "header",
+    "schema",
+    "i18n_elements",
+    "i18n_header",
+    "card_link",
+})
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -545,6 +552,26 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+# ---------------------------------------------------------------------------
+# Interactive card payload helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_interactive_card_payload(content: str) -> Optional[Dict[str, Any]]:
+    """Return parsed Feishu card JSON when *content* looks like a card."""
+    if not _CARD_JSON_HINT_RE.search(content):
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not (_CARD_TOP_LEVEL_KEYS & set(payload.keys())):
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -4338,61 +4365,33 @@ class FeishuAdapter(BasePlatformAdapter):
             ensure_ascii=False,
         )
 
-    async def _process_card_images(self, card_json: str) -> str:
-        """Download and upload images referenced by ``img_url`` in card JSON.
+    async def _process_card_images(self, card_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace card ``img_url`` placeholders with uploaded Feishu ``img_key``.
 
-        Replaces each ``{"tag": "image", "img_url": "<url>", ...}`` with
-        ``{"tag": "image", "img_key": "<uploaded_key>", ...}``.  Falls
-        back to removing the ``img_url`` key and keeping the ``alt`` text
-        when upload fails — the card still renders without the image.
+        The card is parsed JSON by this point.  Walking the object avoids the
+        invalid-comma failure mode that string replacement can hit when image
+        upload fails and the ``img_url`` field must be removed.
         """
-        matches = list(_CARD_IMAGE_URL_RE.finditer(card_json))
-        if not matches:
-            return card_json
 
-        result = []
-        last_end = 0
+        async def walk(value: Any) -> Any:
+            if isinstance(value, list):
+                return [await walk(item) for item in value]
+            if not isinstance(value, dict):
+                return value
 
-        for m in matches:
-            result.append(card_json[last_end : m.start()])
-            url = m.group(1)
+            processed = dict(value)
+            img_url = processed.get("img_url")
+            if isinstance(img_url, str) and img_url.startswith(("http://", "https://")):
+                image_key = await self._upload_image_for_post(img_url)
+                processed.pop("img_url", None)
+                if image_key:
+                    processed["img_key"] = image_key
 
-            image_key = None
-            try:
-                image_path = await self._download_remote_image(url)
-                if image_path:
-                    import io as _io
-                    with open(image_path, "rb") as f:
-                        image_bytes = f.read()
-                    image_file = _io.BytesIO(image_bytes)
-                    image_file.name = os.path.basename(image_path)
-                    body = self._build_image_upload_body(
-                        image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
-                        image=image_file,
-                    )
-                    request = self._build_image_upload_request(body)
-                    upload_response = await asyncio.to_thread(
-                        self._client.im.v1.image.create, request,
-                    )
-                    image_key = self._extract_response_field(
-                        upload_response, "image_key")
-            except Exception:
-                logger.warning(
-                    "[Feishu] Card image upload failed for %s", url,
-                    exc_info=True,
-                )
+            for key, child in list(processed.items()):
+                processed[key] = await walk(child)
+            return processed
 
-            if image_key:
-                # Replace "img_url":"<url>" with "img_key":"<key>"
-                result.append(f'"img_key":"{image_key}"')
-            else:
-                # Drop img_url entirely; card renders without image
-                pass
-
-            last_end = m.end()
-
-        result.append(card_json[last_end:])
-        return "".join(result)
+        return await walk(card_payload)
 
     async def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         """Build the outbound message payload.
@@ -4408,9 +4407,10 @@ class FeishuAdapter(BasePlatformAdapter):
           ``md`` tags do not render tables).
         """
         # Interactive card JSON detection (before markdown hints)
-        if _CARD_JSON_HINT_RE.search(content):
-            processed = await self._process_card_images(content)
-            return "interactive", processed
+        card_payload = _load_interactive_card_payload(content)
+        if card_payload is not None:
+            processed = await self._process_card_images(card_payload)
+            return "interactive", json.dumps(processed, ensure_ascii=False)
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)

@@ -390,6 +390,7 @@ def _run_review_in_thread(
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
                 skip_memory=True,
+                reasoning_config=getattr(agent, "reasoning_config", None),
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"

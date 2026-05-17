@@ -21,6 +21,7 @@ def _bare_agent() -> AIAgent:
     agent._memory_enabled = True
     agent._user_profile_enabled = False
     agent._cached_system_prompt = "test-cached-system-prompt"
+    agent.reasoning_config = None
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
@@ -240,4 +241,57 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "external plugins (honcho, mem0, supermemory, ...).  Without this "
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
+    )
+
+
+import pytest
+
+
+@pytest.mark.parametrize("reasoning_cfg", [
+    None,
+    {"effort": "xhigh"},
+    {"enabled": False},
+])
+def test_background_review_inherits_reasoning_config(monkeypatch, reasoning_cfg):
+    """The review fork must forward reasoning_config from the parent agent.
+
+    Without this, a session configured for e.g. ``agent.reasoning_effort:
+    xhigh`` would silently fall back to the transport default (``medium``
+    effort) for every background review request — wasting budget and
+    ignoring the user's explicit preference.  Symmetric with api_mode,
+    base_url, and api_key which are already forwarded on the same fork path.
+    """
+    captured_kwargs: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.reasoning_config = reasoning_cfg
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured_kwargs.get("reasoning_config") == reasoning_cfg, (
+        f"Background review fork did not inherit reasoning_config={reasoning_cfg!r} "
+        "from the parent agent.  The fork uses the transport default instead, "
+        "which ignores the user's explicit reasoning_effort / reasoning_config "
+        "preference (fixes #18871)."
     )

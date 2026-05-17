@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -342,11 +342,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'compressing') {
           sys(p.text)
+
           return
         }
 
         if (p.kind === 'goal') {
           sys(p.text)
+
           return
         }
 
@@ -572,7 +574,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
-
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line
@@ -580,6 +581,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // flash. Python-side already formats it as "💾 Self-improvement
         // review: …".
         const text = String(ev.payload?.text ?? '').trim()
+
         if (text) {
           sys(text)
         }

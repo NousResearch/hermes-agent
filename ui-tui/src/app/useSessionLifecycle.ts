@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { useCallback, type RefObject } from 'react'
+import { type RefObject, useCallback } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -109,6 +109,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     (info: null | SessionInfo = null) => {
       turnController.idle()
       turnController.clearReasoning()
+      // eslint-disable-next-line react-compiler/react-compiler -- turnController is an external mutable controller used outside React state.
       turnController.turnTools = []
       turnController.persistedToolLabels.clear()
 

@@ -1,10 +1,11 @@
 import { EventEmitter } from 'events'
+
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import Text from './components/Text.js'
 import Ink from './ink.js'
-import { CURSOR_HOME, ERASE_SCREEN } from './termio/csi.js'
+import { CURSOR_HOME, ERASE_SCREEN, ERASE_SCROLLBACK } from './termio/csi.js'
 
 class FakeTty extends EventEmitter {
   chunks: string[] = []
@@ -15,6 +16,7 @@ class FakeTty extends EventEmitter {
   write(chunk: string | Uint8Array, cb?: (err?: Error | null) => void): boolean {
     this.chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
     cb?.()
+
     return true
   }
 }
@@ -26,6 +28,7 @@ describe('Ink resize healing', () => {
     const stdout = new FakeTty()
     const stdin = new FakeTty()
     const stderr = new FakeTty()
+
     const ink = new Ink({
       exitOnCtrlC: false,
       patchConsole: false,
@@ -43,7 +46,7 @@ describe('Ink resize healing', () => {
     ink.onRender()
     await tick()
 
-    expect(stdout.chunks.join('')).toContain(ERASE_SCREEN + CURSOR_HOME)
+    expect(stdout.chunks.join('')).toContain(ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME)
 
     ink.unmount()
   })

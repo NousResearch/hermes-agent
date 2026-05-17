@@ -104,6 +104,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         patchUiState({ busy: true, status: 'running…' })
+        // eslint-disable-next-line react-compiler/react-compiler -- turnController is an external mutable controller used outside React state.
         turnController.bufRef = ''
         turnController.interrupted = false
 

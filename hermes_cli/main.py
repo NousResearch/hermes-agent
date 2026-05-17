@@ -1187,6 +1187,7 @@ def _launch_tui(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
+    inline: bool = False,
     accept_hooks: bool = False,
 ):
     """Replace current process with the TUI."""
@@ -1265,6 +1266,10 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "verbose"
     elif quiet:
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
+    if inline:
+        env["HERMES_TUI_INLINE"] = "1"
+    else:
+        env.pop("HERMES_TUI_INLINE", None)
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
@@ -1326,9 +1331,62 @@ def _pin_kanban_board_env() -> None:
         pass
 
 
+def _load_tui_display_preference() -> str:
+    """Return persisted terminal renderer preference from config.yaml.
+
+    Values:
+    - ``fullscreen``: launch the Ink alternate-screen TUI by default.
+    - ``inline``: launch the TUI in primary-buffer/native-scrollback mode.
+    - ``classic``: keep the prompt_toolkit CLI unless explicitly overridden.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        display = cfg.get("display") if isinstance(cfg, dict) else {}
+        raw = display.get("tui") if isinstance(display, dict) else None
+        value = str(raw or "").strip().lower()
+    except Exception:
+        return "classic"
+
+    if value in {"fullscreen", "inline", "classic"}:
+        return value
+    if value in {"1", "true", "yes", "on", "tui"}:
+        return "fullscreen"
+    if value in {"0", "false", "no", "off", "cli"}:
+        return "classic"
+    return "classic"
+
+
+def _resolve_tui_launch_mode(args) -> tuple[bool, bool]:
+    """Resolve whether chat should launch TUI and whether it should be inline.
+
+    Precedence is explicit CLI flag, explicit HERMES_TUI env, then persisted
+    ``display.tui``. ``HERMES_TUI_INLINE=1`` is an explicit renderer override
+    whenever the TUI is active.
+    """
+    inline_env = os.environ.get("HERMES_TUI_INLINE") == "1"
+
+    if getattr(args, "tui", False):
+        return True, inline_env
+
+    tui_env = os.environ.get("HERMES_TUI")
+    if tui_env == "1":
+        return True, inline_env
+    if tui_env is not None:
+        return False, False
+
+    pref = _load_tui_display_preference()
+    if pref == "inline":
+        return True, True
+    if pref == "fullscreen":
+        return True, inline_env
+    return False, False
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    use_tui, tui_inline = _resolve_tui_launch_mode(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -1452,6 +1510,7 @@ def cmd_chat(args):
             checkpoints=getattr(args, "checkpoints", False),
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
+            inline=tui_inline,
             accept_hooks=getattr(args, "accept_hooks", False),
         )
 

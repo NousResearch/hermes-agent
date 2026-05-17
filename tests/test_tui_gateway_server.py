@@ -3977,7 +3977,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         == "Chrome isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No Chrome/Chromium executable was found" in line
+        "Start Chrome with remote debugging" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -4422,6 +4422,37 @@ def test_config_get_indicator_falls_back_when_unset(monkeypatch):
         {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
     )
     assert resp["result"] == {"value": "kaomoji"}
+
+
+def test_config_set_tui_accepts_renderer_preference(monkeypatch):
+    written: dict = {}
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda k, v: written.update({k: v}),
+    )
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "tui", "value": "INLINE"},
+        }
+    )
+    assert resp["result"] == {"key": "tui", "value": "inline"}
+    assert written == {"display.tui": "inline"}
+
+
+def test_config_set_tui_rejects_unknown_renderer_preference(monkeypatch):
+    monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "tui", "value": "sideways"},
+        }
+    )
+    assert "error" in resp
+    assert "unknown tui renderer" in resp["error"]["message"]
 
 
 # ── config.set indicator validation ──────────────────────────────────

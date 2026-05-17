@@ -68,6 +68,7 @@ export function startMemoryMonitor({
 
     if (level === 'normal') {
       dumped.clear()
+
       return
     }
 
@@ -93,6 +94,7 @@ export function startMemoryMonitor({
 
       dumped.add(level)
       const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
+
       const snap: MemorySnapshot = { heapUsed, level, rss }
 
       ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)

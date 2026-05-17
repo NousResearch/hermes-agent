@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
@@ -359,6 +359,10 @@ type PasteResult = { cursor: number; value: string } | null
 const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
+
+function publishMouseApi(ref: MutableRefObject<null | TextInputMouseApi>, api: TextInputMouseApi) {
+  ref.current = api
+}
 
 export function TextInput({
   columns = 80,
@@ -734,13 +738,13 @@ export function TextInput({
     curRef.current = c
   }
 
-  const selRange = () => {
+  const selRange = useCallback(() => {
     const range = selRef.current
 
     return range && range.start !== range.end
       ? { end: Math.max(range.start, range.end), start: Math.min(range.start, range.end) }
       : null
-  }
+  }, [])
 
   const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
 
@@ -762,7 +766,7 @@ export function TextInput({
     commit(nextValue, nextCursor)
   }
 
-  const startMouseSelection = (next: number) => {
+  const startMouseSelection = useCallback((next: number) => {
     const c = snapPos(vRef.current, next)
 
     mouseAnchorRef.current = c
@@ -770,9 +774,9 @@ export function TextInput({
     setSel(null)
     setCur(c)
     curRef.current = c
-  }
+  }, [])
 
-  const dragMouseSelection = (next: number) => {
+  const dragMouseSelection = useCallback((next: number) => {
     if (mouseAnchorRef.current === null) {
       return
     }
@@ -783,9 +787,9 @@ export function TextInput({
     setSel(range.start === range.end ? null : range)
     setCur(c)
     curRef.current = c
-  }
+  }, [])
 
-  const endMouseSelection = () => {
+  const endMouseSelection = useCallback(() => {
     mouseAnchorRef.current = null
 
     const range = selRef.current
@@ -802,7 +806,7 @@ export function TextInput({
     if (isMac && normalized) {
       void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
-  }
+  }, [selRange])
 
   const offsetAt = (e: { localCol?: number; localRow?: number }) =>
     offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
@@ -815,13 +819,22 @@ export function TextInput({
     return now - last.at < MULTI_CLICK_MS && offset === last.offset
   }
 
-  if (mouseApiRef) {
-    mouseApiRef.current = {
-      dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
+  const mouseApi = useMemo(
+    () => ({
+      dragAt: (row: number, col: number) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
       end: endMouseSelection,
       startAtBeginning: () => startMouseSelection(0)
+    }),
+    [columns, display, dragMouseSelection, endMouseSelection, startMouseSelection]
+  )
+
+  useEffect(() => {
+    if (!mouseApiRef) {
+      return
     }
-  }
+
+    publishMouseApi(mouseApiRef, mouseApi)
+  }, [mouseApi, mouseApiRef])
 
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
@@ -1108,11 +1121,13 @@ export function TextInput({
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
           const decision = decideRightClickAction(vRef.current, selRange())
+
           if (decision.action === 'copy') {
             void writeClipboardText(decision.text)
 
             return
           }
+
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1205,10 +1220,12 @@ export function decideRightClickAction(
 ): RightClickDecision {
   if (range && range.end > range.start) {
     const text = value.slice(range.start, range.end)
+
     if (text) {
       return { action: 'copy', text }
     }
   }
+
   return { action: 'paste' }
 }
 

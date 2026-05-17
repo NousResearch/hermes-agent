@@ -5,9 +5,9 @@
 // Heuristic on inter-event gap + direction flips:
 //
 //   gap < 5ms                 → same-batch burst → 1 row/event
-//   gap < 40ms (native)       → ramp +0.3, cap 6
-//   gap 80-500ms (xterm.js)   → mult = 1 + (mult-1)·0.5^(gap/150) + 5·decay
-//                               cap 3 slow / 6 fast
+//   gap < 40ms (native)       → ramp +0.2, cap 4
+//   gap 80-500ms (xterm.js)   → mult = 1 + (mult-1)·0.5^(gap/150) + 3·decay
+//                               cap 2 slow / 4 fast
 //   gap > 500ms               → reset (deliberate click stays responsive)
 //   flip + flip-back ≤200ms   → encoder bounce → engage wheel-mode (sticky cap)
 //   5 consecutive <5ms events → trackpad flick → disengage wheel-mode
@@ -19,23 +19,23 @@ import { isXtermJs } from '@hermes/ink'
 
 // ── Native (ghostty, iTerm2, WezTerm, …) ───────────────────────────────
 const WHEEL_ACCEL_WINDOW_MS = 40
-const WHEEL_ACCEL_STEP = 0.3
-const WHEEL_ACCEL_MAX = 6
+const WHEEL_ACCEL_STEP = 0.2
+const WHEEL_ACCEL_MAX = 4
 
 // ── Encoder bounce / wheel-mode (mechanical wheels) ────────────────────
 const WHEEL_BOUNCE_GAP_MAX_MS = 200
-const WHEEL_MODE_STEP = 15
-const WHEEL_MODE_CAP = 15
-const WHEEL_MODE_RAMP = 3
+const WHEEL_MODE_STEP = 6
+const WHEEL_MODE_CAP = 8
+const WHEEL_MODE_RAMP = 1.5
 const WHEEL_MODE_IDLE_DISENGAGE_MS = 1500
 
 // ── xterm.js (VS Code / Cursor / browser terminals) ────────────────────
 const WHEEL_DECAY_HALFLIFE_MS = 150
-const WHEEL_DECAY_STEP = 5
+const WHEEL_DECAY_STEP = 3
 const WHEEL_BURST_MS = 5
 const WHEEL_DECAY_GAP_MS = 80
-const WHEEL_DECAY_CAP_SLOW = 3
-const WHEEL_DECAY_CAP_FAST = 6
+const WHEEL_DECAY_CAP_SLOW = 2
+const WHEEL_DECAY_CAP_FAST = 4
 const WHEEL_DECAY_IDLE_MS = 500
 
 export type WheelAccelState = {

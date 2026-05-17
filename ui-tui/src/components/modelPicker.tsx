@@ -366,6 +366,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       (p, i) => {
         const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
         const modelCount = p.total_models ?? p.models?.length ?? 0
+
         const suffix = p.authenticated === false
           ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)')
           : `${modelCount} models`

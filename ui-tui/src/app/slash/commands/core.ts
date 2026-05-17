@@ -3,7 +3,8 @@ import { forceRedraw } from '@hermes/ink'
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { exportTranscriptJson, formatTranscript, searchTranscript, visibleConversationItems } from '../../../domain/transcript.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -51,8 +52,34 @@ const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
+const TUI_USAGE = 'usage: /tui [status|fullscreen|inline|classic|default]'
+
+const truthyEnv = (value?: string) => /^(?:1|true|yes|on)$/i.test((value ?? '').trim())
+
+const relaunchCommand = (env: string, hasSession: boolean) => `${env} hermes${hasSession ? ' -c' : ''}`
+
+const tuiStatusText = (hasSession: boolean) => {
+  const tuiDefault = truthyEnv(process.env.HERMES_TUI)
+  const inline = truthyEnv(process.env.HERMES_TUI_INLINE)
+  const renderer = inline ? 'inline' : 'fullscreen'
+
+  const detail = inline
+    ? 'native terminal scrollback captures transcript rows; no alternate-screen isolation'
+    : 'alternate-screen no-flicker renderer; transcript scrollback is app-managed'
+
+  return [
+    `TUI renderer: ${renderer}`,
+    `mode detail: ${detail}`,
+    `default terminal launch: ${tuiDefault ? 'TUI on (HERMES_TUI=1)' : 'classic unless launched with --tui or HERMES_TUI=1'}`,
+    `fullscreen restart: ${relaunchCommand('HERMES_TUI=1', hasSession)}`,
+    `inline restart: ${relaunchCommand('HERMES_TUI=1 HERMES_TUI_INLINE=1', hasSession)}`,
+    `classic restart: ${relaunchCommand('HERMES_TUI=0', hasSession)}`,
+    'make TUI default: add export HERMES_TUI=1 to your shell config (~/.zshrc on macOS zsh)'
+  ].join('\n')
+}
 
 export const coreCommands: SlashCommand[] = [
+
   {
     help: 'list commands + hotkeys',
     name: 'help',
@@ -69,6 +96,7 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
+            ['/tui [status|fullscreen|inline|classic|default]', 'inspect renderer mode and relaunch/default commands'],
             ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
             [
               '/details <section> [hidden|collapsed|expanded|reset]',
@@ -90,6 +118,74 @@ export const coreCommands: SlashCommand[] = [
     help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => ctx.session.die()
+  },
+
+  {
+    help: 'show or switch TUI renderer mode instructions',
+    name: 'tui',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase() || 'status'
+      const hasSession = Boolean(ctx.sid)
+
+      if (mode === 'status') {
+        return ctx.transcript.sys(tuiStatusText(hasSession))
+      }
+
+      if (mode === 'fullscreen') {
+        ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'tui', value: 'fullscreen' }).then(
+          ctx.guarded<ConfigSetResponse>(() =>
+            ctx.transcript.sys(
+              'TUI renderer preference saved: fullscreen\n' +
+                `Restart in fullscreen no-flicker mode: ${relaunchCommand('HERMES_TUI=1', hasSession)}\n` +
+                'This uses the alternate screen and app-managed transcript scrolling.'
+            )
+          ),
+          ctx.guardedErr
+        )
+
+        return
+      }
+
+      if (mode === 'inline') {
+        ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'tui', value: 'inline' }).then(
+          ctx.guarded<ConfigSetResponse>(() =>
+            ctx.transcript.sys(
+              'TUI renderer preference saved: inline\n' +
+                `Restart in inline TUI mode: ${relaunchCommand('HERMES_TUI=1 HERMES_TUI_INLINE=1', hasSession)}\n` +
+                'This keeps native terminal scrollback at the cost of the clean alternate-screen renderer.'
+            )
+          ),
+          ctx.guardedErr
+        )
+
+        return
+      }
+
+      if (mode === 'classic') {
+        ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'tui', value: 'classic' }).then(
+          ctx.guarded<ConfigSetResponse>(() =>
+            ctx.transcript.sys(
+              'TUI renderer preference saved: classic\n' +
+                `Restart in classic terminal mode: ${relaunchCommand('HERMES_TUI=0', hasSession)}\n` +
+                'Use this as an escape hatch if a terminal does not handle fullscreen/mouse mode cleanly.'
+            )
+          ),
+          ctx.guardedErr
+        )
+
+        return
+      }
+
+      if (mode === 'default') {
+        return ctx.transcript.sys(
+          'Make TUI the default terminal experience by adding this to your shell config:\n' +
+            '  export HERMES_TUI=1\n' +
+            'On macOS zsh, put it in ~/.zshrc. One-off classic launch still works with: HERMES_TUI=0 hermes'
+        )
+      }
+
+      return ctx.transcript.sys(TUI_USAGE)
+    }
   },
 
   {
@@ -438,15 +534,49 @@ export const coreCommands: SlashCommand[] = [
 
       const preview = Math.max(80, parseInt(arg, 10) || 400)
 
-      const lines = items.map((m, i) => {
-        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
-        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
-        const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
+      ctx.transcript.page(formatTranscript(items, { previewChars: preview }), 'History')
+    }
+  },
 
-        return `[${tag}]\n${clipped}`
-      })
+  {
+    help: 'search the current visible transcript',
+    name: 'search',
+    run: (arg, ctx) => {
+      const query = arg.trim()
 
-      ctx.transcript.page(lines.join('\n\n'), 'History')
+      if (!query) {
+        return ctx.transcript.sys('usage: /search <query>')
+      }
+
+      const result = searchTranscript(ctx.local.getHistoryItems(), query, { previewChars: 400 })
+
+      if (!result.count) {
+        return ctx.transcript.sys(`no matches for: ${query}`)
+      }
+
+      ctx.transcript.page(result.text, 'Search')
+    }
+  },
+
+  {
+    help: 'export the visible TUI transcript to JSON',
+    name: 'export',
+    run: (arg, ctx) => {
+      const items = visibleConversationItems(ctx.local.getHistoryItems())
+
+      if (!items.length) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      try {
+        const title = arg.trim() || undefined
+        const json = exportTranscriptJson(items, { sessionId: ctx.sid, title })
+        const file = ctx.local.writeTranscriptFile(json, title)
+
+        ctx.transcript.sys(`transcript exported to: ${file}`)
+      } catch (error) {
+        ctx.transcript.sys(`export failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   },
 

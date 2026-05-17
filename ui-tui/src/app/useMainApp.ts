@@ -1,4 +1,7 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -7,6 +10,7 @@ import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../confi
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { promptAnchorFromViewport, stickyPromptAnchorFromViewport } from '../domain/viewport.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -100,6 +104,7 @@ export function useMainApp(gw: GatewayClient) {
   const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
+  const [scrolledAwayFromBottom, setScrolledAwayFromBottom] = useState(false)
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
@@ -306,6 +311,54 @@ export function useMainApp(gw: GatewayClient) {
     [selection]
   )
 
+  const scrollToBottom = useCallback(() => {
+    clearSelection()
+    scrollRef.current?.scrollToBottom()
+  }, [clearSelection])
+
+  const scrollToPrompt = useCallback(
+    (direction: 'next' | 'previous') => {
+      const s = scrollRef.current
+
+      if (!s) {
+        return
+      }
+
+      const anchor = promptAnchorFromViewport(historyItemsRef.current, virtualHistory.offsets, s.getScrollTop(), direction)
+
+      if (!anchor) {
+        return
+      }
+
+      clearSelection()
+      s.scrollTo(anchor.top)
+    },
+    [clearSelection, virtualHistory.offsets]
+  )
+
+  const scrollToStickyPrompt = useCallback(() => {
+    const s = scrollRef.current
+
+    if (!s) {
+      return
+    }
+
+    const anchor = stickyPromptAnchorFromViewport(
+      historyItemsRef.current,
+      virtualHistory.offsets,
+      s.getScrollTop(),
+      s.getScrollTop() + s.getViewportHeight(),
+      s.isSticky()
+    )
+
+    if (!anchor) {
+      return
+    }
+
+    clearSelection()
+    s.scrollTo(anchor.top)
+  }, [clearSelection, virtualHistory.offsets])
+
   const appendMessage = useCallback(
     (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
     []
@@ -445,6 +498,7 @@ export function useMainApp(gw: GatewayClient) {
 
       const label = toolTrailLabel('clarify')
 
+      // eslint-disable-next-line react-compiler/react-compiler -- turnController is an external mutable controller used outside React state.
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
@@ -543,7 +597,11 @@ export function useMainApp(gw: GatewayClient) {
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
-    terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
+    terminal: { hasSelection, scrollRef, scrollToBottom, scrollWithSelection, selection, stdout },
+    transcript: {
+      getHistoryItems: () => historyItemsRef.current,
+      getOffsets: () => virtualHistory.offsets
+    },
     voice: {
       enabled: voiceEnabled,
       recordKey: voiceRecordKey,
@@ -580,7 +638,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -621,6 +678,23 @@ export function useMainApp(gw: GatewayClient) {
 
   useLongRunToolCharms()
 
+  const writeTranscriptFile = useCallback((text: string, title?: string) => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)
+
+    const slug = (title ?? 'transcript')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48)
+
+    const file = join(process.cwd(), `hermes-tui-${slug || 'transcript'}-${stamp}.json`)
+
+    writeFileSync(file, text, 'utf8')
+
+    return file
+  }, [])
+
   const slash = useMemo(
     () =>
       createSlashHandler({
@@ -638,7 +712,8 @@ export function useMainApp(gw: GatewayClient) {
           getHistoryItems: () => historyItemsRef.current,
           getLastUserMsg: () => lastUserMsgRef.current,
           maybeWarn,
-          setCatalog
+          setCatalog,
+          writeTranscriptFile
         },
         session: {
           closeSession: session.closeSession,
@@ -667,7 +742,8 @@ export function useMainApp(gw: GatewayClient) {
       selection,
       send,
       session,
-      sys
+      sys,
+      writeTranscriptFile
     ]
   )
 
@@ -730,10 +806,13 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+
   const thinkingPanelVisible =
     sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const toolsPanelVisible =
     sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const activityPanelVisible =
     sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
@@ -778,9 +857,24 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       onModelSelect,
       resumeById: session.resumeById,
+      scrollToBottom,
+      scrollToPrompt,
+      scrollToStickyPrompt,
+      setScrolledAwayFromBottom,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
+    [
+      answerApproval,
+      answerClarify,
+      answerSecret,
+      answerSudo,
+      clearSelection,
+      onModelSelect,
+      scrollToBottom,
+      scrollToPrompt,
+      scrollToStickyPrompt,
+      session.resumeById
+    ]
   )
 
   const appComposer = useMemo(
@@ -815,6 +909,7 @@ export function useMainApp(gw: GatewayClient) {
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
+      showBottomAffordance: scrolledAwayFromBottom,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
@@ -827,6 +922,7 @@ export function useMainApp(gw: GatewayClient) {
       cwd,
       gitBranch,
       goodVibesTick,
+      scrolledAwayFromBottom,
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,

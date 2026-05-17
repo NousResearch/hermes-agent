@@ -45,15 +45,16 @@ const loadCommandRegistryNames = (): CommandRegistryLoad => {
   const here = dirname(fileURLToPath(import.meta.url))
 
   try {
+    const script =
+      'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
+
+    const python = process.env.PYTHON
+
     const names = JSON.parse(
-      execFileSync(
-        process.env.PYTHON ?? 'python3',
-        [
-          '-c',
-          'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
-        ],
-        { cwd: resolve(here, '../../..'), encoding: 'utf8' }
-      )
+      execFileSync(python ?? 'uv', python ? ['-c', script] : ['run', 'python', '-c', script], {
+        cwd: resolve(here, '../../..'),
+        encoding: 'utf8'
+      })
     ) as string[]
 
     return { names: [...new Set(names)] }

@@ -639,6 +639,7 @@ function normalizeSgrMouseFragment(fragment: string): string {
 
 function parseSgrMouseFragment(fragment: string): ParsedInput {
   const sequence = normalizeSgrMouseFragment(fragment)
+
   return parseMouseEvent(sequence) ?? parseKeypress(sequence)
 }
 
@@ -646,6 +647,7 @@ function parseTextWithSgrMouseFragments(text: string): ParsedInput[] | null {
   SGR_MOUSE_FRAGMENT_RE.lastIndex = 0
 
   const matches = [...text.matchAll(SGR_MOUSE_FRAGMENT_RE)]
+
   if (matches.length === 0) {
     return null
   }

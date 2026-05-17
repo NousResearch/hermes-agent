@@ -34,6 +34,45 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('/tui fullscreen persists the fullscreen renderer preference', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ key: 'tui', value: 'fullscreen' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/tui fullscreen')).toBe(true)
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'tui', value: 'fullscreen' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('TUI renderer preference saved: fullscreen'))
+    })
+  })
+
+  it('/tui inline persists the inline renderer preference', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ key: 'tui', value: 'inline' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/tui inline')).toBe(true)
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'tui', value: 'inline' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('TUI renderer preference saved: inline'))
+    })
+  })
+
+  it('/tui classic persists the classic renderer preference', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ key: 'tui', value: 'classic' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/tui classic')).toBe(true)
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'tui', value: 'classic' })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('TUI renderer preference saved: classic'))
+    })
+  })
+
   it('routes /status to live session.status instead of slash worker', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ output: 'Hermes TUI Status' }))
@@ -99,6 +138,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -121,6 +161,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning show to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -212,11 +253,14 @@ describe('createSlashHandler', () => {
       if (method === 'skills.reload') {
         return Promise.resolve({ output: '42 skill(s) available' })
       }
+
       if (method === 'commands.catalog') {
         return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       }
+
       return Promise.resolve({})
     })
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     createSlashHandler(ctx)('/reload-skills')
@@ -666,6 +710,59 @@ describe('createSlashHandler', () => {
 
     expect(rpc).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to save')
+  })
+
+  it('/search pages current transcript matches without slash worker fallback', () => {
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'user', text: 'find the latency bug' },
+          { role: 'assistant', text: 'The latency bug is in the TUI renderer.' },
+          { role: 'system', text: 'latency system noise' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/search latency')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.page).toHaveBeenCalledWith(expect.stringContaining('[You #1]'), 'Search')
+    expect(ctx.transcript.page).toHaveBeenCalledWith(expect.stringContaining('[Hermes #2]'), 'Search')
+  })
+
+  it('/search reports no matches locally', () => {
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }])
+      }
+    })
+
+    createSlashHandler(ctx)('/search missing')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no matches for: missing')
+  })
+
+  it('/export writes the visible TUI transcript locally', () => {
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'system', text: 'intro' },
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi' }
+        ]),
+        writeTranscriptFile: vi.fn(() => '/tmp/hermes-tui-transcript.json')
+      }
+    })
+
+    createSlashHandler(ctx)('/export demo')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.local.writeTranscriptFile).toHaveBeenCalledWith(expect.stringContaining('"title": "demo"'), 'demo')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('transcript exported to: /tmp/hermes-tui-transcript.json')
   })
 
   it('/rollback without an active session tells the user instead of hitting the RPC', () => {

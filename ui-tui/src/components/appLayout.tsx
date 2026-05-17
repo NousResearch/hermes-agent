@@ -9,6 +9,7 @@ import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import { promptJumpStateFromViewport } from '../domain/viewport.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -16,6 +17,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { useViewportSnapshot } from '../lib/viewportStore.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -86,78 +88,171 @@ const TranscriptPane = memo(function TranscriptPane({
   )
 
   return (
-    <>
-      <ScrollBox
-        flexDirection="column"
-        flexGrow={1}
-        flexShrink={1}
-        onClick={(e: { cellIsBlank?: boolean }) => {
-          if (e.cellIsBlank) {
-            actions.clearSelection()
-          }
-        }}
-        ref={transcript.scrollRef}
-        stickyScroll
-      >
-        <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+    <Box flexDirection="row" flexGrow={1} position="relative">
+      <Box flexDirection="row" flexGrow={1}>
+        <ScrollBox
+          flexDirection="column"
+          flexGrow={1}
+          flexShrink={1}
+          onClick={(e: { cellIsBlank?: boolean }) => {
+            if (e.cellIsBlank) {
+              actions.clearSelection()
+            }
+          }}
+          ref={transcript.scrollRef}
+          stickyScroll
+        >
+          <Box flexDirection="column" paddingX={1}>
+            {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
-            <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-                <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
-                </Box>
-              )}
+            {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
+              <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+                {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+                  <Box marginTop={1}>
+                    <Text color={ui.theme.color.border}>───</Text>
+                  </Box>
+                )}
 
-              {row.msg.kind === 'intro' ? (
-                <Box flexDirection="column" paddingTop={1}>
-                  <Banner t={ui.theme} />
+                {row.msg.kind === 'intro' ? (
+                  <Box flexDirection="column" paddingTop={1}>
+                    <Banner t={ui.theme} />
 
-                  {row.msg.info && <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />}
-                </Box>
-              ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-                <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
-              ) : (
-                <MessageLine
-                  cols={composer.cols}
-                  compact={ui.compact}
-                  detailsMode={ui.detailsMode}
-                  detailsModeCommandOverride={ui.detailsModeCommandOverride}
-                  limitHistoryRender={row.index < transcript.historyItems.length - FULL_RENDER_TAIL_ITEMS}
-                  msg={row.msg}
-                  sections={ui.sections}
-                  t={ui.theme}
-                />
-              )}
+                    {row.msg.info && <SessionPanel info={row.msg.info} sid={ui.sid} t={ui.theme} />}
+                  </Box>
+                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+                  <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
+                ) : (
+                  <MessageLine
+                    cols={composer.cols}
+                    compact={ui.compact}
+                    detailsMode={ui.detailsMode}
+                    detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                    limitHistoryRender={row.index < transcript.historyItems.length - FULL_RENDER_TAIL_ITEMS}
+                    msg={row.msg}
+                    sections={ui.sections}
+                    t={ui.theme}
+                  />
+                )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
-            </Box>
-          ))}
+                {row.index === lastUserIdx && <LiveTodoPanel />}
+              </Box>
+            ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+            {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
-          <StreamingAssistant
-            cols={composer.cols}
-            compact={ui.compact}
-            detailsMode={ui.detailsMode}
-            detailsModeCommandOverride={ui.detailsModeCommandOverride}
-            progress={progress}
-            sections={ui.sections}
-          />
-        </Box>
-      </ScrollBox>
+            <StreamingAssistant
+              cols={composer.cols}
+              compact={ui.compact}
+              detailsMode={ui.detailsMode}
+              detailsModeCommandOverride={ui.detailsModeCommandOverride}
+              progress={progress}
+              sections={ui.sections}
+            />
+          </Box>
+        </ScrollBox>
 
-      <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-      </NoSelect>
+        <NoSelect flexShrink={0} marginLeft={1}>
+          <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        </NoSelect>
+      </Box>
+
+      <ScrollJumpControls actions={actions} cols={composer.cols} transcript={transcript} />
 
       <StickyPromptTracker
         messages={transcript.historyItems}
         offsets={transcript.virtualHistory.offsets}
+        onAtBottomChange={atBottom => actions.setScrolledAwayFromBottom(!atBottom)}
         onChange={actions.setStickyPrompt}
         scrollRef={transcript.scrollRef}
       />
+    </Box>
+  )
+})
+
+const JumpButton = memo(function JumpButton({
+  children,
+  onPress
+}: {
+  children: string
+  onPress: (event: { stopImmediatePropagation?: () => void }) => void
+}) {
+  return (
+    <Box
+      backgroundColor="#1E1E1E"
+      borderColor="#4A4A4A"
+      borderStyle="round"
+      onMouseDown={onPress}
+      paddingX={1}
+    >
+      <Text color="#F5F5F5">{children}</Text>
+    </Box>
+  )
+})
+
+const ScrollJumpControls = memo(function ScrollJumpControls({
+  actions,
+  cols,
+  transcript
+}: Pick<AppLayoutProps, 'actions' | 'transcript'> & { cols: number }) {
+  const { atBottom, bottom, top } = useViewportSnapshot(transcript.scrollRef)
+  const state = promptJumpStateFromViewport(transcript.historyItems, transcript.virtualHistory.offsets, top, atBottom, bottom)
+  const width = Math.max(1, cols)
+
+  if (state.bottomMode === 'hidden') {
+    return null
+  }
+
+  return (
+    <>
+      {state.hasPreviousPrompt ? (
+        <NoSelect justifyContent="center" left={0} pointerEvents="box-none" position="absolute" top={0} width={width}>
+          <JumpButton
+            onPress={e => {
+              e.stopImmediatePropagation?.()
+              actions.scrollToPrompt('previous')
+            }}
+          >
+            Jump to previous prompt ↑
+          </JumpButton>
+        </NoSelect>
+      ) : null}
+
+      {state.hasNextPrompt ? (
+        <NoSelect bottom={0} justifyContent="center" left={0} pointerEvents="box-none" position="absolute" width={width}>
+          <JumpButton
+            onPress={e => {
+              e.stopImmediatePropagation?.()
+              actions.scrollToPrompt('next')
+            }}
+          >
+            Jump to next prompt ↓
+          </JumpButton>
+        </NoSelect>
+      ) : state.bottomMode === 'center' ? (
+        <NoSelect bottom={0} justifyContent="center" left={0} pointerEvents="box-none" position="absolute" width={width}>
+          <JumpButton
+            onPress={e => {
+              e.stopImmediatePropagation?.()
+              actions.scrollToBottom()
+            }}
+          >
+            Jump to bottom ↓
+          </JumpButton>
+        </NoSelect>
+      ) : null}
+
+      {state.bottomMode === 'left' ? (
+        <NoSelect bottom={0} left={1} pointerEvents="box-none" position="absolute">
+          <JumpButton
+            onPress={e => {
+              e.stopImmediatePropagation?.()
+              actions.scrollToBottom()
+            }}
+          >
+            Jump to bottom ↓
+          </JumpButton>
+        </NoSelect>
+      ) : null}
     </>
   )
 })
@@ -236,15 +331,7 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.muted} wrap="truncate-end">
-          <Text color={ui.theme.color.label}>↳ </Text>
-
-          {status.stickyPrompt}
-        </Text>
-      ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
-      )}
+      <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
 
       <StatusRulePane at="top" composer={composer} status={status} />
 

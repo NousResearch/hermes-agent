@@ -8,13 +8,25 @@ import pytest
 
 def _args(**overrides):
     base = {
+        "accept_hooks": False,
+        "checkpoints": False,
         "continue_last": None,
+        "ignore_rules": False,
+        "ignore_user_config": False,
+        "image": None,
+        "max_turns": None,
         "model": None,
+        "pass_session_id": False,
         "provider": None,
+        "query": None,
+        "quiet": False,
         "resume": None,
+        "skills": None,
         "toolsets": None,
         "tui": True,
         "tui_dev": False,
+        "verbose": False,
+        "worktree": False,
     }
     base.update(overrides)
     return Namespace(**base)
@@ -26,6 +38,62 @@ def main_mod(monkeypatch):
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
     return mod
+
+
+def test_cmd_chat_uses_configured_fullscreen_tui_default(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(*args, **kwargs):
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(main_mod, "_load_tui_display_preference", lambda: "fullscreen")
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(_args(tui=False))
+
+    assert captured["inline"] is False
+
+
+def test_cmd_chat_uses_configured_inline_tui_default(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(*args, **kwargs):
+        captured.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(main_mod, "_load_tui_display_preference", lambda: "inline")
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(_args(tui=False))
+
+    assert captured["inline"] is True
+
+
+def test_cmd_chat_configured_classic_default_does_not_launch_tui(monkeypatch, main_mod):
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(main_mod, "_load_tui_display_preference", lambda: "classic")
+    monkeypatch.setattr(main_mod, "_launch_tui", lambda **kwargs: pytest.fail("TUI should not launch"))
+
+    fake_cli = types.SimpleNamespace(main=lambda **kwargs: None)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    main_mod.cmd_chat(_args(tui=False))
+
+
+def test_explicit_tui_env_zero_overrides_configured_tui_default(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_TUI", "0")
+    monkeypatch.setattr(main_mod, "_load_tui_display_preference", lambda: "fullscreen")
+    monkeypatch.setattr(main_mod, "_launch_tui", lambda **kwargs: pytest.fail("TUI should not launch"))
+
+    fake_cli = types.SimpleNamespace(main=lambda **kwargs: None)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    main_mod.cmd_chat(_args(tui=False))
 
 
 def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
@@ -515,6 +583,7 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["HERMES_TUI_PROVIDER"] == "nous"
     assert env["HERMES_INFERENCE_PROVIDER"] == "nous"
     assert env["HERMES_TUI_TOOLSETS"] == "web,terminal"
+    assert "HERMES_TUI_INLINE" not in env
     active_path = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
     assert active_path.name.startswith("hermes-tui-active-session-")
     assert active_path.suffix == ".json"
@@ -585,7 +654,51 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
-def test_print_tui_exit_summary_prefers_actual_active_session_file(
+def test_launch_tui_sets_inline_env_when_requested(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured.update({"env": env})
+        return 1
+
+    monkeypatch.setenv("HERMES_TUI_INLINE", "1")
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(inline=True)
+
+    assert captured["env"]["HERMES_TUI_INLINE"] == "1"
+
+
+def test_launch_tui_clears_stale_inline_env_for_fullscreen(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured.update({"env": env})
+        return 1
+
+    monkeypatch.setenv("HERMES_TUI_INLINE", "1")
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(inline=False)
+
+    assert "HERMES_TUI_INLINE" not in captured["env"]
+
+
+def test_print_tui_exit_summary_prefers_active_session_file(
     monkeypatch, capsys, tmp_path
 ):
     import hermes_cli.main as main_mod

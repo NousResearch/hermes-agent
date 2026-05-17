@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
+import { promptAnchorFromViewport } from '../domain/viewport.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -80,7 +81,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions, composer, gateway, terminal, transcript, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -108,6 +109,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     terminal.scrollWithSelection(delta)
+  }
+
+  const jumpPrompt = (direction: 'next' | 'previous') => {
+    const s = terminal.scrollRef.current
+
+    if (!s) {
+      return
+    }
+
+    const anchor = promptAnchorFromViewport(transcript.getHistoryItems(), transcript.getOffsets(), s.getScrollTop(), direction)
+
+    if (anchor) {
+      clearSelection()
+      s.scrollTo(anchor.top)
+    }
   }
 
   const copySelection = () => {
@@ -186,6 +202,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (cur === null) {
+        // eslint-disable-next-line react-compiler/react-compiler -- This is a mutable ref draft cache, not component props/state.
         cRefs.historyDraftRef.current = cState.input
       }
 
@@ -406,6 +423,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const step = Math.max(4, Math.floor(viewport / 2))
 
       return scrollTranscript(key.pageUp ? -step : step)
+    }
+
+    if (ch === '{' || ch === '}') {
+      return ch === '{' ? jumpPrompt('previous') : jumpPrompt('next')
+    }
+
+    if ((key as { end?: boolean }).end && (key.ctrl || key.meta)) {
+      clearSelection()
+
+      return terminal.scrollToBottom()
     }
 
     // Escape-based voice bindings (ctrl/alt/super+escape) must win before the

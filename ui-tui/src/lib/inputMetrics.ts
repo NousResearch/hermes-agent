@@ -61,6 +61,7 @@ function visualLines(value: string, cols: number): VisualLine[] {
       }
 
       lineStart = originalIdx
+
       continue
     }
 

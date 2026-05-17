@@ -4023,6 +4023,30 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"key": key, "value": nv})
 
+    if key == "tui":
+        raw = str(value or "").strip().lower()
+        aliases = {
+            "full": "fullscreen",
+            "on": "fullscreen",
+            "1": "fullscreen",
+            "true": "fullscreen",
+            "yes": "fullscreen",
+            "off": "classic",
+            "0": "classic",
+            "false": "classic",
+            "no": "classic",
+            "cli": "classic",
+        }
+        nv = aliases.get(raw, raw)
+        if nv not in {"fullscreen", "inline", "classic"}:
+            return _err(
+                rid,
+                4002,
+                f"unknown tui renderer: {value}; pick fullscreen|inline|classic",
+            )
+        _write_config_key("display.tui", nv)
+        return _ok(rid, {"key": key, "value": nv})
+
     if key == "compact":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()

@@ -261,7 +261,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -371,10 +371,11 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
   )
 }
 
-export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
+export function StickyPromptTracker({ messages, offsets, scrollRef, onAtBottomChange, onChange }: StickyPromptTrackerProps) {
   const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
   const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
 
+  useEffect(() => onAtBottomChange(atBottom), [atBottom, onAtBottomChange])
   useEffect(() => onChange(text), [onChange, text])
 
   return null
@@ -473,6 +474,7 @@ interface StatusRuleProps {
 
 interface StickyPromptTrackerProps {
   messages: readonly Msg[]
+  onAtBottomChange: (atBottom: boolean) => void
   offsets: ArrayLike<number>
   onChange: (text: string) => void
   scrollRef: RefObject<ScrollBoxHandle | null>

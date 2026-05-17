@@ -205,9 +205,14 @@ export interface InputHandlerContext {
   terminal: {
     hasSelection: boolean
     scrollRef: RefObject<null | ScrollBoxHandle>
+    scrollToBottom: () => void
     scrollWithSelection: (delta: number) => void
     selection: SelectionApi
     stdout?: NodeJS.WriteStream
+  }
+  transcript: {
+    getHistoryItems: () => Msg[]
+    getOffsets: () => ArrayLike<number>
   }
   voice: {
     enabled: boolean
@@ -273,6 +278,7 @@ export interface SlashHandlerContext {
     getLastUserMsg: () => string
     maybeWarn: (value: unknown) => void
     setCatalog: StateSetter<null | SlashCatalog>
+    writeTranscriptFile: (text: string, title?: string) => string
   }
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>
@@ -306,6 +312,10 @@ export interface AppLayoutActions {
   clearSelection: () => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
+  scrollToBottom: () => void
+  scrollToPrompt: (direction: 'next' | 'previous') => void
+  scrollToStickyPrompt: () => void
+  setScrolledAwayFromBottom: (value: boolean) => void
   setStickyPrompt: (value: string) => void
 }
 
@@ -333,6 +343,7 @@ export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
   sessionStartedAt: null | number
+  showBottomAffordance: boolean
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string

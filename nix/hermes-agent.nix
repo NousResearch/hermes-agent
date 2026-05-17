@@ -16,7 +16,6 @@
   openssh,
   ffmpeg,
   tirith,
-  uv,
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -69,7 +68,6 @@ let
     openssh
     ffmpeg
     tirith
-    uv
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;

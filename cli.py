@@ -7543,14 +7543,12 @@ class HermesCLI:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
-                    from tools.environments.local import _sanitize_subprocess_env
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30, env=sanitized_env
+                                text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
@@ -8846,23 +8844,6 @@ class HermesCLI:
             self._config_mtime = cfg_path.stat().st_mtime
         except Exception:
             pass
-
-    @staticmethod
-    def _mcp_stdio_config_changed(old_mcp: dict, new_mcp: dict) -> bool:
-        """Return True when auto-reload would start new or changed stdio MCP commands."""
-
-        def _is_enabled_stdio(cfg) -> bool:
-            if not isinstance(cfg, dict) or not cfg.get("command"):
-                return False
-            enabled = cfg.get("enabled", True)
-            if isinstance(enabled, str):
-                return enabled.strip().lower() not in {"0", "false", "no", "off"}
-            return bool(enabled)
-
-        for name, new_cfg in (new_mcp or {}).items():
-            if _is_enabled_stdio(new_cfg) and new_cfg != (old_mcp or {}).get(name):
-                return True
-        return False
 
     def _confirm_destructive_slash(self, command: str, detail: str) -> Optional[str]:
         """Prompt the user to confirm a destructive session slash command.

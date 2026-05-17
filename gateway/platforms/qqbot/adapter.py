@@ -74,9 +74,6 @@ from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
-_QQ_TRUSTED_MEDIA_HOSTS = ("multimedia.nt.qq.com.cn",)
-_QQ_MAX_ATTACHMENT_DOWNLOAD_BYTES = 25 * 1024 * 1024
-
 
 class QQCloseError(Exception):
     """Raised when QQ WebSocket closes with a specific code.
@@ -234,7 +231,6 @@ class QQAdapter(BasePlatformAdapter):
         self._interaction_callback: Optional[
             Callable[[InteractionEvent], Awaitable[None]]
         ] = None
-        self._interaction_authorizer: Optional[Callable[[Any], bool]] = None
 
         # Default interaction dispatcher: routes approval-button clicks to
         # tools.approval.resolve_gateway_approval() and update-prompt clicks
@@ -887,19 +883,6 @@ class QQAdapter(BasePlatformAdapter):
         """
         self._interaction_callback = callback
 
-    def set_interaction_authorizer(
-            self,
-            authorizer: Optional[Callable[[Any], bool]],
-    ) -> None:
-        """Register the gateway authorization check for button operators.
-
-        QQ keyboard permissions are chat-scoped by default, so every
-        security-sensitive button click must pass the same authorization
-        policy as an incoming message before it can approve commands or
-        answer update prompts.
-        """
-        self._interaction_authorizer = authorizer
-
     async def _on_interaction(self, d: Any) -> None:
         """Handle an ``INTERACTION_CREATE`` event.
 
@@ -1022,17 +1005,6 @@ class QQAdapter(BasePlatformAdapter):
         if not button_data:
             return
 
-        is_sensitive = (
-            parse_approval_button_data(button_data) is not None
-            or parse_update_prompt_button_data(button_data) is not None
-        )
-        if is_sensitive and not self._is_interaction_authorized(event):
-            logger.warning(
-                "[%s] Dropping unauthorized button click %r from operator=%s",
-                self._log_tag, button_data, event.operator_openid or "(unknown)",
-            )
-            return
-
         approval = parse_approval_button_data(button_data)
         if approval is not None:
             session_key, decision = approval
@@ -1071,85 +1043,6 @@ class QQAdapter(BasePlatformAdapter):
             self._log_tag, button_data, event.id,
         )
 
-    def _source_for_interaction(self, event: InteractionEvent):
-        """Build a message-like source for gateway authorization checks."""
-        if event.scene == "group":
-            return self.build_source(
-                chat_id=event.group_openid,
-                user_id=event.group_member_openid or event.operator_openid,
-                chat_type="group",
-            )
-        if event.scene == "guild":
-            return self.build_source(
-                chat_id=event.channel_id or event.guild_id,
-                user_id=event.operator_openid,
-                chat_type="group",
-                guild_id=event.guild_id,
-            )
-        return self.build_source(
-            chat_id=event.user_openid or event.operator_openid,
-            user_id=event.operator_openid,
-            chat_type="dm",
-        )
-
-    def _is_interaction_authorized(self, event: InteractionEvent) -> bool:
-        """Return whether the button operator may perform sensitive actions."""
-        source = self._source_for_interaction(event)
-        if self._interaction_authorizer is not None:
-            try:
-                return bool(self._interaction_authorizer(source))
-            except Exception as exc:
-                logger.error(
-                    "[%s] Interaction authorizer failed for operator=%s: %s",
-                    self._log_tag, event.operator_openid or "(unknown)", exc,
-                )
-                return False
-
-        # Fallback for adapter-level use outside GatewayRunner. In the normal
-        # gateway path, set_interaction_authorizer() supplies the canonical
-        # allowlist/pairing policy from gateway/run.py.
-        if not self._is_interaction_allowed_by_env(source):
-            return False
-        if source.chat_type == "dm":
-            return self._is_dm_allowed(source.user_id or "")
-        return self._is_group_allowed(source.chat_id, source.user_id or "")
-
-    @staticmethod
-    def _csv_matches(value: str, target: str) -> bool:
-        """Return whether a comma-separated allowlist contains target."""
-        entries = {item.strip() for item in value.split(",") if item.strip()}
-        return "*" in entries or bool(target and target in entries)
-
-    @classmethod
-    def _is_interaction_allowed_by_env(cls, source: Any) -> bool:
-        """Apply gateway-compatible env allowlists when no authorizer exists."""
-        if os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
-            return True
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
-            return True
-
-        user_id = getattr(source, "user_id", "") or ""
-        platform_allowlist = os.getenv("QQ_ALLOWED_USERS", "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-        group_chat_allowlist = (
-            os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
-            if getattr(source, "chat_type", "") in {"group", "forum"}
-            else ""
-        )
-
-        configured = bool(platform_allowlist or global_allowlist or group_chat_allowlist)
-        if not configured:
-            return True
-
-        if group_chat_allowlist and cls._csv_matches(
-                group_chat_allowlist, getattr(source, "chat_id", "") or ""
-        ):
-            return True
-
-        return cls._csv_matches(platform_allowlist, user_id) or cls._csv_matches(
-            global_allowlist, user_id
-        )
-
     @staticmethod
     def _write_update_response(answer: str, operator: str = "") -> None:
         """Atomically write the update-prompt answer to ``.update_response``.
@@ -1172,89 +1065,6 @@ class QQAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to write update response: %s", exc)
-
-    def _is_trusted_qq_media_url(self, url: str) -> bool:
-        """Return whether a URL is a QQ media host that may receive QQBot auth."""
-        try:
-            host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
-        except Exception:
-            return False
-        return any(
-            host == trusted or host.endswith(f".{trusted}")
-            for trusted in _QQ_TRUSTED_MEDIA_HOSTS
-        )
-
-    def _is_source_authorized_for_attachment_processing(self, source) -> bool:
-        """Check GatewayRunner authorization before any attachment network I/O."""
-        runner = getattr(self, "gateway_runner", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if not callable(auth_fn):
-            return True
-        try:
-            return bool(auth_fn(source))
-        except Exception:
-            logger.warning(
-                "[%s] Attachment pre-auth check failed",
-                self._log_tag,
-                exc_info=True,
-            )
-            return False
-
-    async def _handle_unauthorized_before_attachments(self, event: MessageEvent) -> None:
-        """Route the bare message through normal auth/pairing without fetching media."""
-        logger.warning(
-            "[%s] Skipping QQ attachment processing for unauthorized sender: %s",
-            self._log_tag,
-            event.source.user_id if event.source else "unknown",
-        )
-        await self.handle_message(event)
-
-    async def _download_limited_bytes(
-            self,
-            url: str,
-            *,
-            headers: Dict[str, str],
-            context: str,
-    ) -> Optional[bytes]:
-        """Download a response body without exceeding the QQ attachment cap."""
-        if not self._http_client:
-            return None
-
-        async with self._http_client.stream(
-                "GET",
-                url,
-                timeout=30.0,
-                headers=headers,
-                follow_redirects=True,
-        ) as resp:
-            resp.raise_for_status()
-            content_length = resp.headers.get("content-length")
-            if content_length:
-                try:
-                    if int(content_length) > _QQ_MAX_ATTACHMENT_DOWNLOAD_BYTES:
-                        logger.warning(
-                            "[%s] Skipping %s download with content-length %s over %d bytes",
-                            self._log_tag,
-                            context,
-                            content_length,
-                            _QQ_MAX_ATTACHMENT_DOWNLOAD_BYTES,
-                        )
-                        return None
-                except ValueError:
-                    pass
-
-            data = bytearray()
-            async for chunk in resp.aiter_bytes():
-                data.extend(chunk)
-                if len(data) > _QQ_MAX_ATTACHMENT_DOWNLOAD_BYTES:
-                    logger.warning(
-                        "[%s] Skipping %s download larger than %d bytes",
-                        self._log_tag,
-                        context,
-                        _QQ_MAX_ATTACHMENT_DOWNLOAD_BYTES,
-                    )
-                    return None
-            return bytes(data)
 
     async def _handle_c2c_message(
             self,
@@ -1296,22 +1106,6 @@ class QQAdapter(BasePlatformAdapter):
                         _att.get("filename", ""),
                     )
 
-        source = self.build_source(
-            chat_id=user_openid,
-            user_id=user_openid,
-            chat_type="dm",
-        )
-        if not self._is_source_authorized_for_attachment_processing(source):
-            await self._handle_unauthorized_before_attachments(MessageEvent(
-                source=source,
-                text=text,
-                message_type=MessageType.TEXT,
-                raw_message=d,
-                message_id=msg_id,
-                timestamp=self._parse_qq_timestamp(timestamp),
-            ))
-            return
-
         # Process all attachments uniformly (images, voice, files)
         att_result = await self._process_attachments(attachments_raw)
         image_urls = att_result["image_urls"]
@@ -1352,7 +1146,11 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[user_openid] = "c2c"
         event = MessageEvent(
-            source=source,
+            source=self.build_source(
+                chat_id=user_openid,
+                user_id=user_openid,
+                chat_type="dm",
+            ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1382,22 +1180,6 @@ class QQAdapter(BasePlatformAdapter):
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
-        source = self.build_source(
-            chat_id=group_openid,
-            user_id=str(author.get("member_openid", "")),
-            chat_type="group",
-        )
-        if not self._is_source_authorized_for_attachment_processing(source):
-            await self._handle_unauthorized_before_attachments(MessageEvent(
-                source=source,
-                text=text,
-                message_type=MessageType.TEXT,
-                raw_message=d,
-                message_id=msg_id,
-                timestamp=self._parse_qq_timestamp(timestamp),
-            ))
-            return
-
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
@@ -1429,7 +1211,11 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
-            source=source,
+            source=self.build_source(
+                chat_id=group_openid,
+                user_id=str(author.get("member_openid", "")),
+                chat_type="group",
+            ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1469,23 +1255,6 @@ class QQAdapter(BasePlatformAdapter):
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
 
         text = content
-        source = self.build_source(
-            chat_id=channel_id,
-            user_id=author_id,
-            user_name=nick or None,
-            chat_type="group",
-        )
-        if not self._is_source_authorized_for_attachment_processing(source):
-            await self._handle_unauthorized_before_attachments(MessageEvent(
-                source=source,
-                text=text,
-                message_type=MessageType.TEXT,
-                raw_message=d,
-                message_id=msg_id,
-                timestamp=self._parse_qq_timestamp(timestamp),
-            ))
-            return
-
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
@@ -1516,7 +1285,12 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[channel_id] = "guild"
         event = MessageEvent(
-            source=source,
+            source=self.build_source(
+                chat_id=channel_id,
+                user_id=str(author.get("id", "")),
+                user_name=nick or None,
+                chat_type="group",
+            ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1552,22 +1326,6 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         text = content
-        source = self.build_source(
-            chat_id=guild_id,
-            user_id=str(author.get("id", "")),
-            chat_type="dm",
-        )
-        if not self._is_source_authorized_for_attachment_processing(source):
-            await self._handle_unauthorized_before_attachments(MessageEvent(
-                source=source,
-                text=text,
-                message_type=MessageType.TEXT,
-                raw_message=d,
-                message_id=msg_id,
-                timestamp=self._parse_qq_timestamp(timestamp),
-            ))
-            return
-
         att_result = await self._process_attachments(d.get("attachments"))
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
@@ -1598,7 +1356,11 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[guild_id] = "dm"
         event = MessageEvent(
-            source=source,
+            source=self.build_source(
+                chat_id=guild_id,
+                user_id=str(author.get("id", "")),
+                chat_type="dm",
+            ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1856,14 +1618,17 @@ class QQAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
 
+        if not self._http_client:
+            return None
+
         try:
-            data = await self._download_limited_bytes(
+            resp = await self._http_client.get(
                 url,
-                headers=self._qq_media_headers(url),
-                context="attachment",
+                timeout=30.0,
+                headers=self._qq_media_headers(),
             )
-            if data is None:
-                return None
+            resp.raise_for_status()
+            data = resp.content
         except Exception as exc:
             logger.debug(
                 "[%s] Download failed for %s: %s", self._log_tag, url[:80], exc
@@ -1903,13 +1668,14 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _qq_media_headers(self, url: str) -> Dict[str, str]:
-        """Return Authorization headers only for trusted QQ media downloads.
+    def _qq_media_headers(self) -> Dict[str, str]:
+        """Return Authorization headers for QQ multimedia CDN downloads.
 
-        QQ multimedia URLs require the bot token, but arbitrary attachment URLs
-        must never receive that credential.
+        QQ's multimedia URLs (multimedia.nt.qq.com.cn) require the bot's
+        access token in an Authorization header, otherwise the download
+        returns a non-200 status.
         """
-        if self._access_token and self._is_trusted_qq_media_url(url):
+        if self._access_token:
             return {"Authorization": f"QQBot {self._access_token}"}
         return {}
 
@@ -1959,7 +1725,7 @@ class QQAdapter(BasePlatformAdapter):
                 logger.warning("[%s] STT: no HTTP client", self._log_tag)
                 return None
 
-            download_headers = self._qq_media_headers(download_url)
+            download_headers = self._qq_media_headers()
             logger.debug(
                 "[%s] STT: downloading voice from %s (pre_wav=%s, headers=%s)",
                 self._log_tag,
@@ -1967,17 +1733,19 @@ class QQAdapter(BasePlatformAdapter):
                 is_pre_wav,
                 bool(download_headers),
             )
-            audio_data = await self._download_limited_bytes(
+            resp = await self._http_client.get(
                 download_url,
+                timeout=30.0,
                 headers=download_headers,
-                context="voice",
+                follow_redirects=True,
             )
-            if audio_data is None:
-                return None
+            resp.raise_for_status()
+            audio_data = resp.content
             logger.debug(
-                "[%s] STT: downloaded %d bytes",
+                "[%s] STT: downloaded %d bytes, content_type=%s",
                 self._log_tag,
                 len(audio_data),
+                resp.headers.get("content-type", "unknown"),
             )
 
             if len(audio_data) < 10:

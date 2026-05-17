@@ -20,9 +20,7 @@ from trajectory_compressor import (
 def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / ".env").write_text(
-        "OPENROUTER_API_KEY=from-hermes-home\n", encoding="utf-8"
-    )
+    (home / ".env").write_text("OPENROUTER_API_KEY=from-hermes-home\n", encoding="utf-8")
 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -47,20 +45,14 @@ def test_generate_summary_kimi_omits_temperature():
     compressor._use_call_llm = False
     compressor.client = MagicMock()
     compressor.client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary")
-            )
-        ]
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     )
 
     metrics = TrajectoryMetrics()
     result = compressor._generate_summary("tool output", metrics)
 
     assert result.startswith("[CONTEXT SUMMARY]:")
-    assert (
-        "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
-    )
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
 
 
 def test_generate_summary_public_moonshot_kimi_k2_5_omits_temperature():
@@ -78,20 +70,14 @@ def test_generate_summary_public_moonshot_kimi_k2_5_omits_temperature():
     compressor._use_call_llm = False
     compressor.client = MagicMock()
     compressor.client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary")
-            )
-        ]
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     )
 
     metrics = TrajectoryMetrics()
     result = compressor._generate_summary("tool output", metrics)
 
     assert result.startswith("[CONTEXT SUMMARY]:")
-    assert (
-        "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
-    )
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
 
 
 def test_generate_summary_public_moonshot_cn_kimi_k2_5_omits_temperature():
@@ -109,20 +95,14 @@ def test_generate_summary_public_moonshot_cn_kimi_k2_5_omits_temperature():
     compressor._use_call_llm = False
     compressor.client = MagicMock()
     compressor.client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary")
-            )
-        ]
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
     )
 
     metrics = TrajectoryMetrics()
     result = compressor._generate_summary("tool output", metrics)
 
     assert result.startswith("[CONTEXT SUMMARY]:")
-    assert (
-        "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
-    )
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -321,18 +301,12 @@ def _make_compressor(config=None):
     """Create a TrajectoryCompressor with mocked tokenizer and summarizer."""
     if config is None:
         config = CompressionConfig()
-    with (
-        patch.object(TrajectoryCompressor, "_init_tokenizer"),
-        patch.object(TrajectoryCompressor, "_init_summarizer"),
-    ):
+    with patch.object(TrajectoryCompressor, '_init_tokenizer'), \
+         patch.object(TrajectoryCompressor, '_init_summarizer'):
         compressor = TrajectoryCompressor(config)
     # Provide a simple token counter for tests (1 token per 4 chars)
     compressor.tokenizer = MagicMock()
     compressor.tokenizer.encode = lambda text: [0] * (len(text) // 4)
-    # Mock batch call used by count_turn_tokens
-    compressor.tokenizer.side_effect = lambda texts, **kwargs: {
-        "input_ids": [[0] * (len(text) // 4) for text in texts]
-    }
     return compressor
 
 
@@ -485,15 +459,15 @@ class TestTokenCounting:
     def test_count_trajectory_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "12345678"},  # 2 tokens
-            {"from": "human", "value": "1234567890ab"},  # 3 tokens
+            {"from": "system", "value": "12345678"},   # 2 tokens
+            {"from": "human", "value": "1234567890ab"}, # 3 tokens
         ]
         assert tc.count_trajectory_tokens(trajectory) == 5
 
     def test_count_turn_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "1234"},  # 1 token
+            {"from": "system", "value": "1234"},     # 1 token
             {"from": "human", "value": "12345678"},  # 2 tokens
         ]
         result = tc.count_turn_tokens(trajectory)

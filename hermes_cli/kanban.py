@@ -455,6 +455,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
                              f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
+    p_disp.add_argument("--auto-retry-iteration-exhausted", action="store_true",
+                        help="Reopen tasks blocked by strict iteration-budget exhaustion, up to --iteration-exhausted-retry-limit")
+    p_disp.add_argument("--iteration-exhausted-retry-limit", type=int,
+                        default=kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
+                        help=f"Maximum iteration-exhaustion blocked attempts to auto-retry per task (default: {kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
     # --- daemon (deprecated) ---
@@ -1684,12 +1689,15 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            auto_retry_iteration_exhausted=getattr(args, "auto_retry_iteration_exhausted", False),
+            iteration_exhausted_retry_limit=getattr(args, "iteration_exhausted_retry_limit", kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT),
         )
     if getattr(args, "json", False):
         print(json.dumps({
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
+            "iteration_exhausted_retried": res.iteration_exhausted_retried,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -1707,6 +1715,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Timed out:    {len(res.timed_out)}")
     if res.timed_out:
         print(f"  {', '.join(res.timed_out)}")
+    print(f"Iteration-budget retried: {len(res.iteration_exhausted_retried)}")
+    if res.iteration_exhausted_retried:
+        print(f"  {', '.join(res.iteration_exhausted_retried)}")
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")

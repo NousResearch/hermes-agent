@@ -1434,6 +1434,11 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Automatically reopen tasks blocked only because a Kanban worker hit
+        # its tool-call iteration budget. The retry is bounded so genuinely
+        # too-large/looping tasks still surface for human review.
+        "auto_retry_iteration_exhausted": True,
+        "iteration_exhausted_retry_limit": 1,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

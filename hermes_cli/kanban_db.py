@@ -2888,6 +2888,11 @@ DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
+# Block reason prefix emitted by run_agent.py when a kanban worker consumes
+# its tool-call iteration budget and cannot call kanban_complete itself.
+ITERATION_EXHAUSTED_REASON_PREFIX = "Iteration budget exhausted"
+DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT = 1
+
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -2917,6 +2922,8 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    iteration_exhausted_retried: list[str] = field(default_factory=list)
+    """Blocked tasks reopened by the bounded iteration-exhaustion policy."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3588,6 +3595,113 @@ def _record_spawn_failure(
     )
 
 
+def _iteration_exhausted_run_count(conn: sqlite3.Connection, task_id: str) -> int:
+    """Count prior closed runs blocked specifically for iteration exhaustion."""
+    prefix = f"{ITERATION_EXHAUSTED_REASON_PREFIX}%"
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+          FROM task_runs
+         WHERE task_id = ?
+           AND outcome = 'blocked'
+           AND summary LIKE ?
+        """,
+        (task_id, prefix),
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def retry_iteration_exhausted_blocks(
+    conn: sqlite3.Connection,
+    *,
+    retry_limit: int = DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
+) -> list[str]:
+    """Reopen blocked tasks whose latest block is strict budget exhaustion.
+
+    This is intentionally narrow: only the exact run_agent.py block prefix
+    qualifies, and only while the count of such blocked attempts is within
+    the configured cap. Human-input blocks stay blocked.
+    """
+    try:
+        retry_limit = int(retry_limit)
+    except (TypeError, ValueError):
+        retry_limit = DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT
+    if retry_limit < 1:
+        return []
+
+    prefix = f"{ITERATION_EXHAUSTED_REASON_PREFIX}%"
+    reopened: list[str] = []
+    now = int(time.time())
+    with write_txn(conn):
+        rows = conn.execute(
+            """
+            SELECT t.id AS task_id, r.id AS run_id, r.summary AS summary
+              FROM tasks t
+              JOIN task_runs r ON r.id = (
+                    SELECT rr.id
+                      FROM task_runs rr
+                     WHERE rr.task_id = t.id
+                       AND rr.ended_at IS NOT NULL
+                     ORDER BY rr.started_at DESC, rr.id DESC
+                     LIMIT 1
+              )
+             WHERE t.status = 'blocked'
+               AND r.outcome = 'blocked'
+               AND r.summary LIKE ?
+             ORDER BY t.priority DESC, t.created_at ASC
+            """,
+            (prefix,),
+        ).fetchall()
+        for row in rows:
+            tid = row["task_id"]
+            attempts = _iteration_exhausted_run_count(conn, tid)
+            if attempts > retry_limit:
+                continue
+
+            undone_parents = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+                (tid,),
+            ).fetchone()
+            new_status = "todo" if undone_parents else "ready"
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, current_run_id = NULL "
+                "WHERE id = ? AND status = 'blocked'",
+                (new_status, tid),
+            )
+            if cur.rowcount != 1:
+                continue
+
+            body = (
+                "Auto-retrying after iteration budget exhaustion "
+                f"({attempts}/{retry_limit}). Prior run summary was preserved; "
+                "continue from the previous handoff and complete or block "
+                "with a non-budget reason if human input is needed."
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (tid, "dispatcher", body, now),
+            )
+            _append_event(
+                conn, tid, "iteration_exhausted_auto_retried",
+                {
+                    "attempts": attempts,
+                    "retry_limit": retry_limit,
+                    "status": new_status,
+                    "run_id": row["run_id"],
+                },
+            )
+            _append_event(conn, tid, "commented", {"author": "dispatcher", "len": len(body)})
+            reopened.append(tid)
+    return reopened
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher loop + logging
+# ---------------------------------------------------------------------------
+
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
@@ -3672,6 +3786,8 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     board: Optional[str] = None,
+    auto_retry_iteration_exhausted: bool = False,
+    iteration_exhausted_retry_limit: int = DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -3699,6 +3815,10 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+
+    When ``auto_retry_iteration_exhausted`` is true, the dispatcher first
+    reopens tasks blocked by the strict run_agent.py iteration-budget reason,
+    up to ``iteration_exhausted_retry_limit`` blocked attempts per task.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -3734,6 +3854,44 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    if auto_retry_iteration_exhausted and not dry_run:
+        result.iteration_exhausted_retried = retry_iteration_exhausted_blocks(
+            conn,
+            retry_limit=iteration_exhausted_retry_limit,
+        )
+    elif auto_retry_iteration_exhausted and dry_run:
+        # `dry_run` must not mutate task state, but callers still want to know
+        # which blocked tasks the policy would reopen on a real tick.
+        prefix = f"{ITERATION_EXHAUSTED_REASON_PREFIX}%"
+        rows = conn.execute(
+            """
+            SELECT t.id
+              FROM tasks t
+              JOIN task_runs r ON r.id = (
+                    SELECT rr.id
+                      FROM task_runs rr
+                     WHERE rr.task_id = t.id
+                       AND rr.ended_at IS NOT NULL
+                     ORDER BY rr.started_at DESC, rr.id DESC
+                     LIMIT 1
+              )
+             WHERE t.status = 'blocked'
+               AND r.outcome = 'blocked'
+               AND r.summary LIKE ?
+             ORDER BY t.priority DESC, t.created_at ASC
+            """,
+            (prefix,),
+        ).fetchall()
+        try:
+            limit = int(iteration_exhausted_retry_limit)
+        except (TypeError, ValueError):
+            limit = DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT
+        if limit >= 1:
+            result.iteration_exhausted_retried = [
+                row["id"]
+                for row in rows
+                if _iteration_exhausted_run_count(conn, row["id"]) <= limit
+            ]
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on

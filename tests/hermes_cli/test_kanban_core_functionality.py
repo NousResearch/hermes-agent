@@ -109,6 +109,108 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         conn.close()
 
 
+def test_iteration_exhaustion_block_auto_retries_once(kanban_home, all_assignees_spawnable):
+    """Dispatcher should reopen strict iteration-budget blocks once."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="long task", assignee="worker")
+        kb.claim_task(conn, tid)
+        reason = (
+            "Iteration budget exhausted (60/60) — "
+            "task could not complete within the allowed iterations"
+        )
+        assert kb.block_task(conn, tid, reason=reason)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        res = kb.dispatch_once(
+            conn,
+            auto_retry_iteration_exhausted=True,
+            iteration_exhausted_retry_limit=1,
+            max_spawn=0,
+        )
+
+        assert res.iteration_exhausted_retried == [tid]
+        assert kb.get_task(conn, tid).status == "ready"
+        comments = kb.list_comments(conn, tid)
+        assert comments[-1].author == "dispatcher"
+        assert "Auto-retrying after iteration budget exhaustion" in comments[-1].body
+        events = kb.list_events(conn, tid)
+        assert "iteration_exhausted_auto_retried" in [e.kind for e in events]
+    finally:
+        conn.close()
+
+
+def test_iteration_exhaustion_auto_retry_respects_limit(kanban_home, all_assignees_spawnable):
+    """After the configured retry count, budget blocks stay blocked."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="still too large", assignee="worker")
+        reason = (
+            "Iteration budget exhausted (60/60) — "
+            "task could not complete within the allowed iterations"
+        )
+        for _ in range(2):
+            kb.claim_task(conn, tid)
+            assert kb.block_task(conn, tid, reason=reason)
+            assert kb.unblock_task(conn, tid)
+
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason=reason)
+
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            auto_retry_iteration_exhausted=True,
+            iteration_exhausted_retry_limit=1,
+        )
+
+        assert res.iteration_exhausted_retried == []
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_iteration_exhaustion_auto_retry_disabled_by_default(kanban_home, all_assignees_spawnable):
+    """Budget exhaustion stays human-blocked unless the policy is enabled."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="manual", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="Iteration budget exhausted (60/60) — task could not complete within the allowed iterations",
+        )
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.iteration_exhausted_retried == []
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_non_iteration_block_does_not_auto_retry(kanban_home, all_assignees_spawnable):
+    """Human-input blocks must not be reopened by the retry policy."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs human", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="needs credentials")
+
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            auto_retry_iteration_exhausted=True,
+            iteration_exhausted_retry_limit=1,
+        )
+
+        assert res.iteration_exhausted_retried == []
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_successful_spawn_does_not_reset_failure_counter(kanban_home, all_assignees_spawnable):
     """Under unified consecutive-failure counting, a successful spawn
     does NOT reset the counter — past failures stay on the books until

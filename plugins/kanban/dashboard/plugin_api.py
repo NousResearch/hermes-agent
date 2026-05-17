@@ -1396,7 +1396,12 @@ def dispatch(
     conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            board=board,
+            auto_retry_iteration_exhausted=True,
+            iteration_exhausted_retry_limit=kanban_db.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
         )
         # DispatchResult is a dataclass.
         try:

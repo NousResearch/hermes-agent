@@ -4590,6 +4590,29 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
+        auto_retry_iteration_exhausted = bool(
+            kanban_cfg.get("auto_retry_iteration_exhausted", True)
+        )
+        raw_iteration_retry_limit = kanban_cfg.get(
+            "iteration_exhausted_retry_limit",
+            _kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
+        )
+        try:
+            iteration_exhausted_retry_limit = int(raw_iteration_retry_limit)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.iteration_exhausted_retry_limit=%r; using default %d",
+                raw_iteration_retry_limit,
+                _kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT,
+            )
+            iteration_exhausted_retry_limit = _kb.DEFAULT_ITERATION_EXHAUSTED_RETRY_LIMIT
+        if iteration_exhausted_retry_limit < 0:
+            logger.warning(
+                "kanban dispatcher: kanban.iteration_exhausted_retry_limit=%r is below 0; disabling iteration-exhausted retry",
+                raw_iteration_retry_limit,
+            )
+            iteration_exhausted_retry_limit = 0
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -4625,6 +4648,8 @@ class GatewayRunner:
                     board=slug,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    auto_retry_iteration_exhausted=auto_retry_iteration_exhausted,
+                    iteration_exhausted_retry_limit=iteration_exhausted_retry_limit,
                 )
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)

@@ -4408,6 +4408,9 @@ class AIAgent:
                             quiet_mode=True,
                         )
                     }
+                    # Allow read_file so the review agent can verify
+                    # current file state before proposing skill patches
+                    review_whitelist.add("read_file")
                     set_thread_tool_whitelist(
                         review_whitelist,
                         deny_msg_fmt=(
@@ -4419,8 +4422,8 @@ class AIAgent:
                         review_agent.run_conversation(
                             user_message=(
                                 prompt
-                                + "\n\nYou can only call memory and skill "
-                                "management tools. Other tools will be denied "
+                                + "\n\nYou can call memory, skill management, "
+                                "and read_file tools. Other tools will be denied "
                                 "at runtime — do not attempt them."
                             ),
                             conversation_history=messages_snapshot,

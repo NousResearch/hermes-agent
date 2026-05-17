@@ -3452,6 +3452,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            if hasattr(adapter, "set_interaction_authorizer"):
+                adapter.set_interaction_authorizer(self._is_user_authorized)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4733,6 +4735,8 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    if hasattr(adapter, "set_interaction_authorizer"):
+                        adapter.set_interaction_authorizer(self._is_user_authorized)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:

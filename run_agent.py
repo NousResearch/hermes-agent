@@ -2869,7 +2869,7 @@ class AIAgent:
         elif getattr(self, "provider", None) == "vertex":
             from agent.anthropic_adapter import build_anthropic_vertex_client
             project = getattr(self, "_vertex_project", "") or os.environ.get("VERTEX_PROJECT_ID", "")
-            region = getattr(self, "_vertex_region", "us-east5") or "us-east5"
+            region = getattr(self, "_vertex_region", "global") or "global"
             self._anthropic_client = build_anthropic_vertex_client(project, region)
         else:
             from agent.anthropic_adapter import build_anthropic_client

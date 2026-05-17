@@ -841,7 +841,7 @@ def _resolve_explicit_runtime(
                                   or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
                 if vertex_project:
                     vertex_region = (os.environ.get("VERTEX_REGION")
-                                     or os.environ.get("CLOUD_ML_REGION") or "us-east5").strip()
+                                     or os.environ.get("CLOUD_ML_REGION") or "global").strip()
                     return {
                         "provider": "vertex",
                         "api_mode": "anthropic_messages",
@@ -1296,7 +1296,7 @@ def resolve_runtime_provider(
                                   or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
                 if vertex_project:
                     vertex_region = (os.environ.get("VERTEX_REGION")
-                                     or os.environ.get("CLOUD_ML_REGION") or "us-east5").strip()
+                                     or os.environ.get("CLOUD_ML_REGION") or "global").strip()
                     return {
                         "provider": "vertex",
                         "api_mode": "anthropic_messages",
@@ -1397,7 +1397,7 @@ def resolve_runtime_provider(
                       or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
                       or os.environ.get("GOOGLE_CLOUD_PROJECT") or "").strip()
         region = (os.environ.get("VERTEX_REGION")
-                  or os.environ.get("CLOUD_ML_REGION") or "us-east5").strip()
+                  or os.environ.get("CLOUD_ML_REGION") or "global").strip()
         if not project_id:
             raise AuthError(
                 "No GCP project found for Vertex AI. Set one of:\n"

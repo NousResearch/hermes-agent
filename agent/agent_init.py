@@ -540,7 +540,7 @@ def init_agent(
         elif _is_vertex_anthropic:
             from agent.anthropic_adapter import build_anthropic_vertex_client
             _vertex_project = getattr(agent, "project_id", None) or os.environ.get("VERTEX_PROJECT_ID") or os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or ""
-            _vertex_region = getattr(agent, "region", None) or os.environ.get("VERTEX_REGION") or "us-east5"
+            _vertex_region = getattr(agent, "region", None) or os.environ.get("VERTEX_REGION") or "global"
             agent._vertex_project = _vertex_project
             agent._vertex_region = _vertex_region
             agent._anthropic_client = build_anthropic_vertex_client(_vertex_project, _vertex_region)

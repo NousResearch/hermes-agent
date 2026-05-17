@@ -2103,10 +2103,15 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
-def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
+def _build_service_path_dirs(
+    project_root: Path | None = None,
+    hermes_home: Path | None = None,
+) -> list[str]:
     """Build PATH directory list for service units, excluding non-existent dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
+    if hermes_home is None:
+        hermes_home = get_hermes_home()
 
     candidates = []
 
@@ -2120,7 +2125,6 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if node_bin.is_dir():
         candidates.append(str(node_bin))
 
-    hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
     if hermes_node.is_dir():
         candidates.append(str(hermes_node))
@@ -2131,18 +2135,22 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
-def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
-    detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-
-    path_entries = _build_service_path_dirs()
+def _build_service_path_entries(hermes_home: Path | None = None) -> list[str]:
+    """Build PATH entries and include the currently resolved node binary dir."""
+    path_entries = _build_service_path_dirs(hermes_home=hermes_home)
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
+    return path_entries
+
+
+def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    python_path = get_python_path()
+    working_dir = str(PROJECT_ROOT)
+    detected_venv = _detect_venv_dir()
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
@@ -2157,6 +2165,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
+        path_entries = _build_service_path_entries(Path(hermes_home))
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -2204,6 +2213,7 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
+    path_entries = _build_service_path_entries(Path(hermes_home))
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))

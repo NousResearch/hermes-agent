@@ -284,7 +284,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                 and "/backend-api/codex" in agent._base_url_lower
             )
         )
-        is_xai_responses = agent.provider == "xai" or agent._base_url_hostname == "api.x.ai"
+        is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
         return _ct.build_kwargs(
             model=agent.model,

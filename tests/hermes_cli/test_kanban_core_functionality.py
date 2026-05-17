@@ -2672,6 +2672,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
+    assert "-Q" in cmd, (
+        "kanban workers must use chat quiet mode so detached Windows "
+        f"subprocesses do not initialize prompt_toolkit output: {cmd}"
+    )
     # Assignee + task env are still present
     assert "some-profile" in cmd
     env = captured["env"]

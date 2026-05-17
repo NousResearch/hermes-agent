@@ -4002,6 +4002,11 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     cmd.extend([
         "chat",
+        # Kanban workers are detached subprocesses with stdout/stderr redirected
+        # to a log file. On native Windows that means prompt_toolkit cannot find
+        # a console screen buffer when non-quiet chat output initializes, causing
+        # NoConsoleScreenBufferError before the worker can do any work.
+        "-Q",
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.

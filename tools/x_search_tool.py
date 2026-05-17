@@ -205,6 +205,24 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
             )
 
 
+def _validate_output_schema(output_schema: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if output_schema is None:
+        return None
+    if not isinstance(output_schema, dict):
+        raise ValueError("output_schema must be a JSON object")
+    return output_schema
+
+
+def _parse_structured_output(answer: str) -> Optional[Any]:
+    if not answer or not answer.strip():
+        return None
+    try:
+        return json.loads(answer)
+    except json.JSONDecodeError:
+        logger.warning("x_search structured output parse failed", exc_info=True)
+        return None
+
+
 def _extract_response_text(payload: Dict[str, Any]) -> str:
     output_text = str(payload.get("output_text") or "").strip()
     if output_text:
@@ -279,6 +297,10 @@ def x_search_tool(
     to_date: str = "",
     enable_image_understanding: bool = False,
     enable_video_understanding: bool = False,
+    output_schema: Optional[Dict[str, Any]] = None,
+    instructions: str = "",
+    previous_response_id: str = "",
+    store: bool = False,
 ) -> str:
     if not query or not query.strip():
         return tool_error("query is required for x_search")
@@ -296,8 +318,20 @@ def x_search_tool(
 
         try:
             _validate_date_range(from_date, to_date)
+            validated_schema = _validate_output_schema(output_schema)
         except ValueError as exc:
             return tool_error(str(exc))
+
+        instructions_value = instructions.strip()
+        previous_response_id_value = previous_response_id.strip()
+        if instructions_value and previous_response_id_value:
+            logger.warning(
+                "x_search instructions dropped because previous_response_id is present "
+                "(mutually exclusive per xAI Responses API)"
+            )
+            instructions_value = ""
+
+        should_store = bool(store) or bool(previous_response_id_value)
 
         tool_def: Dict[str, Any] = {"type": "x_search"}
         if allowed:
@@ -313,7 +347,7 @@ def x_search_tool(
         if enable_video_understanding:
             tool_def["enable_video_understanding"] = True
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": _get_x_search_model(),
             "input": [
                 {
@@ -322,8 +356,21 @@ def x_search_tool(
                 }
             ],
             "tools": [tool_def],
-            "store": False,
+            "store": should_store,
         }
+        if instructions_value:
+            payload["instructions"] = instructions_value
+        if previous_response_id_value:
+            payload["previous_response_id"] = previous_response_id_value
+        if validated_schema is not None:
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "output",
+                    "schema": validated_schema,
+                    "strict": True,
+                }
+            }
 
         timeout_seconds = _get_x_search_timeout_seconds()
         max_retries = _get_x_search_retries()
@@ -372,6 +419,9 @@ def x_search_tool(
         answer = _extract_response_text(data)
         citations = list(data.get("citations") or [])
         inline_citations = _extract_inline_citations(data)
+        structured_output = (
+            _parse_structured_output(answer) if validated_schema is not None else None
+        )
 
         # Degraded-result detection.
         #
@@ -406,7 +456,9 @@ def x_search_tool(
                 "tool": "x_search",
                 "model": payload["model"],
                 "query": query.strip(),
+                "response_id": data.get("id"),
                 "answer": answer,
+                "structured_output": structured_output,
                 "citations": citations,
                 "inline_citations": inline_citations,
                 "degraded": degraded,
@@ -495,6 +547,41 @@ X_SEARCH_SCHEMA = {
                 "description": "Whether xAI should analyze videos attached to matching X posts.",
                 "default": False,
             },
+            "output_schema": {
+                "type": "object",
+                "description": (
+                    "Optional JSON Schema for structured output. When provided, xAI returns "
+                    "the response as JSON conforming to this schema (strict mode); the parsed "
+                    "result is exposed in the `structured_output` field while the raw JSON "
+                    "string remains in `answer`."
+                ),
+            },
+            "instructions": {
+                "type": "string",
+                "description": (
+                    "Optional system-level instructions controlling response style "
+                    "(language, tone, formatting). Separate from the search query itself. "
+                    "Ignored when previous_response_id is also set."
+                ),
+            },
+            "previous_response_id": {
+                "type": "string",
+                "description": (
+                    "Optional response ID from a previous x_search call to continue the "
+                    "conversation. The referenced response must have been created with "
+                    "store=true. If instructions is also set, instructions is ignored."
+                ),
+            },
+            "store": {
+                "type": "boolean",
+                "description": (
+                    "Whether xAI should retain this response so it can be referenced later "
+                    "via previous_response_id. Default is false for privacy. Set store=true "
+                    "on the first call if you plan to chain follow-ups using response_id. "
+                    "When previous_response_id is provided, the request is stored automatically."
+                ),
+                "default": False,
+            },
         },
         "required": ["query"],
     },
@@ -510,6 +597,10 @@ def _handle_x_search(args, **kw):
         to_date=args.get("to_date", ""),
         enable_image_understanding=bool(args.get("enable_image_understanding", False)),
         enable_video_understanding=bool(args.get("enable_video_understanding", False)),
+        output_schema=args.get("output_schema"),
+        instructions=args.get("instructions", "") or "",
+        previous_response_id=args.get("previous_response_id", "") or "",
+        store=bool(args.get("store", False)),
     )
 
 

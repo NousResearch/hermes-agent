@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from hermes_cli.config import _secure_dir_safe
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +175,8 @@ def _write_json(path: Path, data: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to the creds.
-    # No-op on Windows (POSIX mode bits aren't enforced); ignore failures.
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    # _secure_dir_safe refuses to chmod top-level dirs (see #25821).
+    _secure_dir_safe(path.parent)
     # Per-process random suffix avoids collisions between concurrent
     # writers and stale leftovers from a prior crashed write.
     tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")

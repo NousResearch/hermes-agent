@@ -362,6 +362,55 @@ def _secure_dir(path):
         pass
 
 
+# Top-level / system directories that must never be chmodded — stripping
+# traversal permission on these would brick non-root users on the host.
+# Hit in production (issue #25821) when HERMES_HOME mis-resolved to `/`:
+# `chmod("/", 0o700)` silently succeeded and took out systemd-resolved,
+# systemd-networkd, every Docker container that drops privileges, and
+# graceful reboot. Root kept working (CAP_DAC_OVERRIDE) so debugging
+# took 5+ hours.
+_SECURE_DIR_BLOCKED = frozenset(
+    Path(p) for p in (
+        "/", "/etc", "/var", "/usr", "/home", "/root", "/opt",
+        "/tmp", "/sys", "/proc", "/dev", "/boot", "/lib", "/lib64",
+        "/run", "/srv", "/mnt", "/media",
+    )
+)
+
+
+def _secure_dir_safe(path) -> None:
+    """Like _secure_dir, but refuses to operate on top-level system dirs.
+
+    Use this from token-storage call sites where the path is derived from
+    a user-controlled env var (HERMES_HOME, HERMES_SHARED_AUTH_DIR, etc.):
+    if the env var is empty or mis-resolves, ``path.parent`` can land at
+    ``/`` and chmod 0o700 there would brick the host.
+
+    Always uses 0o700 (no HERMES_HOME_MODE override) because token stores
+    must not be traversable by other local users regardless of deployment
+    profile.
+
+    See issue #25821.
+    """
+    if is_managed():
+        return
+    try:
+        d = Path(path).resolve()
+    except (OSError, RuntimeError):
+        return  # symlink loop / inaccessible / not a real path
+    # Refuse top-level / single-component paths (covers `/`, `C:\`, ``)
+    if len(d.parts) < 2:
+        return
+    if d == Path(d.anchor):
+        return
+    if d in _SECURE_DIR_BLOCKED:
+        return
+    try:
+        os.chmod(d, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _is_container() -> bool:
     """Detect if we're running inside a Docker/Podman/LXC container.
 

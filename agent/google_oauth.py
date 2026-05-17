@@ -98,6 +98,7 @@ _DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
 # Regex patterns for fallback scraping from an installed gemini-cli.
 import re as _re
 from utils import atomic_replace
+from hermes_cli.config import _secure_dir_safe
 _CLIENT_ID_PATTERN = _re.compile(
     r"OAUTH_CLIENT_ID\s*=\s*['\"]([0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)['\"]"
 )
@@ -490,11 +491,8 @@ def save_credentials(creds: GoogleCredentials) -> Path:
     path = _credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to the creds file.
-    # On Windows this is a no-op (POSIX mode bits aren't enforced); ignore failures.
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
+    # _secure_dir_safe refuses to chmod top-level dirs (see #25821).
+    _secure_dir_safe(path.parent)
     payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
 
     with _credentials_lock():

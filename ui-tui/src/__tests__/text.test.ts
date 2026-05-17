@@ -8,12 +8,15 @@ import {
   estimateRows,
   estimateTokensRough,
   fmtK,
+  hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
+  sanitizeAnsiForRender,
   sameToolTrailGroup,
   splitToolDuration,
+  stripAnsi,
   thinkingPreview
 } from '../lib/text.js'
 
@@ -81,6 +84,27 @@ describe('estimateTokensRough', () => {
     expect(estimateTokensRough('a')).toBe(1)
     expect(estimateTokensRough('abcd')).toBe(1)
     expect(estimateTokensRough('abcde')).toBe(2)
+  })
+})
+
+describe('ANSI sanitizers', () => {
+  const ESC = String.fromCharCode(27)
+  const BEL = String.fromCharCode(7)
+
+  it('strips CSI/OSC/control bytes from plain previews', () => {
+    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}C${ESC}[?25lD`
+
+    expect(stripAnsi(sample)).toBe('ABCD')
+  })
+
+  it('keeps SGR color spans but removes cursor controls for Ansi rendering', () => {
+    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}${ESC}[?25lC`
+
+    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mC`)
+  })
+
+  it('detects non-CSI escape prefixes too', () => {
+    expect(hasAnsi(`ok${ESC}Ppayload${ESC}\\`)).toBe(true)
   })
 })
 

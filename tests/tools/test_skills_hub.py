@@ -101,7 +101,7 @@ class TestTrustLevelFor:
         src = self._source()
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
-        assert result in ("trusted", "community")
+        assert result in {"trusted", "community"}
 
 
 # ---------------------------------------------------------------------------

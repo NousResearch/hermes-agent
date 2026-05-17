@@ -1073,10 +1073,20 @@ def run_doctor(args):
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
         if ssh_host:
+            ssh_user = os.getenv("TERMINAL_SSH_USER")
+            ssh_port = os.getenv("TERMINAL_SSH_PORT")
+            ssh_key = os.getenv("TERMINAL_SSH_KEY")
+            target = f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host
+            cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+            if ssh_port:
+                cmd += ["-p", ssh_port]
+            if ssh_key:
+                cmd += ["-i", os.path.expanduser(ssh_key)]
+            cmd += [target, "echo ok"]
             # Try to connect
             try:
                 result = subprocess.run(
-                    ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=15
@@ -1474,6 +1484,15 @@ def run_doctor(args):
             }
             if base_url_host_matches(base, "api.kimi.com"):
                 headers["User-Agent"] = "claude-code/0.1.0"
+            # Google's Generative Language API (generativelanguage.googleapis.com)
+            # rejects ``Authorization: Bearer <api-key>`` with 401
+            # ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` — that header is reserved for
+            # OAuth 2 access tokens, not plain API keys. Plain keys use
+            # ``x-goog-api-key`` (or ``?key=``). Without this, a perfectly valid
+            # GOOGLE_API_KEY/GEMINI_API_KEY always shows red in ``hermes doctor``.
+            if url and base_url_host_matches(url, "generativelanguage.googleapis.com"):
+                headers.pop("Authorization", None)
+                headers["x-goog-api-key"] = key
             r = httpx.get(url, headers=headers, timeout=10)
             if (
                 pname == "Alibaba/DashScope"

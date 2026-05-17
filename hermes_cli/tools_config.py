@@ -96,11 +96,39 @@ CONFIGURABLE_TOOLSETS = [
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default — gated on xAI credentials (SuperGrok OAuth
-# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
-# which walks them through credential setup. The tool's check_fn means
-# the schema won't appear to the model even if enabled without credentials.
+# X search is off by default for users without xAI credentials, but
+# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
+# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
+# `hermes tools` → X (Twitter) Search setup walks users through credential
+# setup. The tool's check_fn means the schema still won't appear to the
+# model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+
+
+def _xai_credentials_present() -> bool:
+    """Cheap, side-effect-free check for usable xAI credentials.
+
+    Used to auto-enable the ``x_search`` toolset when the user has either
+    completed xAI Grok OAuth (SuperGrok subscription) or set
+    ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
+    auth store and environment. The tool's runtime ``check_fn`` still
+    gates schema registration if creds later expire or get revoked.
+    """
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens
+
+        _read_xai_oauth_tokens()
+        return True
+    except Exception:
+        pass
+    try:
+        from tools.xai_http import get_env_value as _xai_get_env_value
+
+        if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
+            return True
+    except Exception:
+        pass
+    return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -469,31 +497,6 @@ TOOL_CATEGORIES = {
             },
         ],
     },
-    "langfuse": {
-        "name": "Langfuse Observability",
-        "icon": "📊",
-        "providers": [
-            {
-                "name": "Langfuse Cloud",
-                "tag": "Hosted Langfuse (cloud.langfuse.com)",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
-                ],
-                "post_setup": "langfuse",
-            },
-            {
-                "name": "Langfuse Self-Hosted",
-                "tag": "Self-hosted Langfuse instance",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
-                ],
-                "post_setup": "langfuse",
-            },
-        ],
-    },
 }
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
@@ -818,21 +821,35 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
+            _print_info("    Installing Camofox browser package...")
+            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
-            else:
-                _print_warning("    npm install failed - run manually: npm install")
+            # Install @askjo/camofox-browser on-demand. It is NOT in
+            # package.json so that `hermes update` does not silently pull
+            # the ~300MB Camoufox Firefox-fork binary for every user.
+            # Stream output (no capture, no --silent) so the long-running
+            # postinstall download is visible instead of looking frozen.
+            try:
+                result = subprocess.run(
+                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
+                     "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(PROJECT_ROOT),
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning(
+                        "    npm install failed — run manually: "
+                        "npm install @askjo/camofox-browser"
+                    )
+            except Exception as exc:
+                _print_warning(f"    Camofox install failed: {exc}")
+                _print_info(
+                    "    Run manually: npm install @askjo/camofox-browser"
+                )
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
-            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
@@ -940,36 +957,6 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
-
-    elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
-        try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
-        # Opt the bundled observability/langfuse plugin into plugins.enabled.
-        # The plugin ships in the repo but doesn't load until the user enables
-        # it (standalone plugins are opt-in).
-        try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-            enabled = _get_enabled_set()
-            if "observability/langfuse" in enabled or "langfuse" in enabled:
-                _print_success("    Plugin observability/langfuse already enabled")
-            else:
-                enabled.add("observability/langfuse")
-                _save_enabled_set(enabled)
-                _print_success("    Plugin observability/langfuse enabled")
-        except Exception as exc:
-            _print_warning(f"    Could not enable plugin automatically: {exc}")
-            _print_info("    Run manually: hermes plugins enable observability/langfuse")
-        _print_info("    Restart Hermes for tracing to take effect.")
-        _print_info("    Verify: hermes plugins list")
 
     elif post_setup_key == "xai_grok":
         # Shared credential bootstrap for any picker entry that talks to xAI
@@ -1178,6 +1165,23 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
+        # Auto-enable ``x_search`` when xAI credentials are configured.
+        # Unlike ``homeassistant`` (whose ``ha_*`` tools live inside the
+        # platform composite and thus pass the subset check above),
+        # ``x_search`` is its own one-tool toolset that the composite does
+        # NOT include, so the subset loop never picks it up. Inject it
+        # directly here, mirroring the HASS_TOKEN → ``homeassistant`` rule
+        # below: once you have working creds, you don't have to also click
+        # through ``hermes tools`` to flip the toolset on. Only fires when
+        # the user has not yet saved an explicit toolset list — once they
+        # do, the saved list is authoritative.
+        x_search_auto_enabled = (
+            _toolset_allowed_for_platform("x_search", platform)
+            and _xai_credentials_present()
+        )
+        if x_search_auto_enabled:
+            enabled_toolsets.add("x_search")
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
         # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
@@ -1195,6 +1199,11 @@ def _get_platform_tools(
         # regressed after #14798 made cron honor per-platform tool config.
         if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
             default_off.remove("homeassistant")
+        # Symmetric carve-out for x_search auto-enable (see the inject
+        # block above). Without this, the default_off subtraction would
+        # strip the entry we just added.
+        if x_search_auto_enabled and "x_search" in default_off:
+            default_off.remove("x_search")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
@@ -2597,6 +2606,9 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    if provider.get("post_setup"):
+        _run_post_setup(provider["post_setup"])
 
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")

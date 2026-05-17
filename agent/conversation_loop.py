@@ -335,11 +335,20 @@ def run_conversation(
             # session-scoped state (e.g. warm a memory cache).
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 _invoke_hook(
                     "on_session_start",
                     session_id=agent.session_id,
                     model=agent.model,
                     platform=getattr(agent, "platform", None) or "",
+                    agent_id=_agent_id,
                 )
             except Exception as exc:
                 logger.warning("on_session_start hook failed: %s", exc)
@@ -436,6 +445,14 @@ def run_conversation(
     _plugin_user_context = ""
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -445,6 +462,7 @@ def run_conversation(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            agent_id=_agent_id,
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -925,6 +943,14 @@ def run_conversation(
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _agent_id = None
+                    try:
+                        from agent.profile import get_active_profile
+                        _p = get_active_profile()
+                        if _p:
+                            _agent_id = _p.id
+                    except Exception:
+                        pass
                     request_messages = api_kwargs.get("messages")
                     if not isinstance(request_messages, list):
                         request_messages = api_kwargs.get("input")
@@ -954,6 +980,7 @@ def run_conversation(
                         approx_input_tokens=approx_tokens,
                         request_char_count=total_chars,
                         max_tokens=agent.max_tokens,
+                        agent_id=_agent_id,
                     )
                 except Exception:
                     pass
@@ -2875,6 +2902,14 @@ def run_conversation(
 
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
                 _assistant_text = assistant_message.content or ""
                 _invoke_hook(
@@ -2893,6 +2928,7 @@ def run_conversation(
                     response_model=getattr(response, "model", None),
                     response=response,
                     usage=agent._usage_summary_for_api_request_hook(response),
+                    agent_id=_agent_id,
                     assistant_message=assistant_message,
                     assistant_content_chars=len(_assistant_text),
                     assistant_tool_call_count=len(_assistant_tool_calls),
@@ -3864,12 +3900,21 @@ def run_conversation(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                agent_id=_agent_id,
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
@@ -3885,6 +3930,14 @@ def run_conversation(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -3893,6 +3946,7 @@ def run_conversation(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                agent_id=_agent_id,
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -4000,6 +4054,14 @@ def run_conversation(
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
@@ -4007,6 +4069,7 @@ def run_conversation(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            agent_id=_agent_id,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

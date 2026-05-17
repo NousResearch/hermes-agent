@@ -1,0 +1,13 @@
+name: ais
+version: 0.1.0
+description: "AIS — cross-session knowledge-graph memory with temporal reasoning, RRF hybrid retrieval, and Ed25519 DID key auth."
+
+pip_dependencies:
+  - "hermes-memory-ais>=0.1.0"
+
+requires_env: []
+
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_session_switch

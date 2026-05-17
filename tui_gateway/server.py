@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
@@ -32,6 +33,7 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+apply_terminal_config_env_bridge()
 
 
 # ── Panic logger ─────────────────────────────────────────────────────

@@ -11325,9 +11325,12 @@ class GatewayRunner:
         if not name:
             # List recent titled sessions for this user/platform
             try:
+                owner_user_id = source.user_id
+                if not owner_user_id:
+                    return t("gateway.resume.no_named_sessions")
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source, user_id=owner_user_id, limit=10
                 )
                 titled = [s for s in sessions if s.get("title")]
                 if not titled:
@@ -11344,8 +11347,14 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
-        # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the name to a session ID owned by this gateway user.
+        owner_user_id = source.user_id
+        if not owner_user_id:
+            return t("gateway.resume.not_found", name=name)
+        user_source = source.platform.value if source.platform else None
+        target_id = self._session_db.resolve_session_by_title(
+            name, source=user_source, user_id=owner_user_id
+        )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -11436,6 +11445,7 @@ class GatewayRunner:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
+                user_id=source.user_id,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

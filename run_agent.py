@@ -53,13 +53,9 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
-# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
-# that imports the SDK on first call/isinstance check. This preserves:
-#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
-#       _create_openai_client, and
-#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-#
+# OpenAI is imported during module initialization so later model-controlled
+# file writes cannot plant a shadow ``openai`` module before first use.
+# Keep the module-level ``OpenAI`` name for existing patch("run_agent.OpenAI", ...) tests.
 # NOTE: `fire` is ONLY used in the `__main__` block below (for running
 # run_agent.py directly as a CLI) — it is NOT needed for library usage.
 # It is imported there, not here, so that importing run_agent from a
@@ -69,39 +65,17 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-
-
-_OPENAI_CLS_CACHE: Optional[type] = None
+from openai import OpenAI
 
 
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
+    """Return the eagerly imported ``openai.OpenAI`` class."""
+    return OpenAI
 
-
-class _OpenAIProxy:
-    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
-
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -116,6 +90,10 @@ if _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
 else:
     logger.info("No .env file found. Using system environment variables.")
+
+# Keep terminal/code-execution backends aligned with config.yaml for non-CLI
+# entry points without importing the classic interactive CLI.
+apply_terminal_config_env_bridge()
 
 
 # Import our tool system
@@ -13884,6 +13862,9 @@ class AIAgent:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
@@ -13923,7 +13904,7 @@ class AIAgent:
                         # Note: max_tokens = output token cap (one response).
                         #       context_length = total window (input + output combined).
                         available_out = parse_available_output_tokens_from_error(error_msg)
-                        if available_out is not None:
+                        if available_out is not None and available_out >= 512:
                             # Error is purely about the output cap being too large.
                             # Cap output to the available space and retry without
                             # touching context_length or triggering compression.
@@ -14042,6 +14023,9 @@ class AIAgent:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             # Can't compress further and already at minimum tier

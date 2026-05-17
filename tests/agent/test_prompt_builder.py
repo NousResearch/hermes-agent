@@ -617,6 +617,31 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "BLOCKED" in result
 
+    def test_hermes_md_symlink_is_not_loaded(self, tmp_path):
+        secret = tmp_path / "outside-secret.md"
+        secret.write_text("LOCAL_SECRET_CANARY=do-not-load")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".hermes.md").symlink_to(secret)
+
+        result = build_context_files_prompt(cwd=str(repo))
+
+        assert "LOCAL_SECRET_CANARY" not in result
+        assert ".hermes.md" not in result
+
+    def test_hermes_md_symlink_does_not_shadow_agents_md(self, tmp_path):
+        secret = tmp_path / "outside-secret.md"
+        secret.write_text("LOCAL_SECRET_CANARY=do-not-load")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".hermes.md").symlink_to(secret)
+        (repo / "AGENTS.md").write_text("Safe project rules.")
+
+        result = build_context_files_prompt(cwd=str(repo))
+
+        assert "Safe project rules" in result
+        assert "LOCAL_SECRET_CANARY" not in result
+
     def test_hermes_md_beats_agents_md(self, tmp_path):
         """When both exist, .hermes.md wins and AGENTS.md is not loaded."""
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
@@ -717,6 +742,12 @@ class TestFindHermesMd:
         assert _find_hermes_md(sub) == tmp_path / ".hermes.md"
 
     def test_returns_none_when_absent(self, tmp_path):
+        assert _find_hermes_md(tmp_path) is None
+
+    def test_ignores_symlink(self, tmp_path):
+        secret = tmp_path / "outside-secret.md"
+        secret.write_text("secret")
+        (tmp_path / ".hermes.md").symlink_to(secret)
         assert _find_hermes_md(tmp_path) is None
 
     def test_stops_at_git_root(self, tmp_path):

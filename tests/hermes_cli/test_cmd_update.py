@@ -133,6 +133,7 @@ class TestCmdUpdateBranchFallback:
         full_flags = [
             "/usr/bin/npm",
             "ci",
+            "--ignore-scripts",
             "--silent",
             "--no-fund",
             "--no-audit",

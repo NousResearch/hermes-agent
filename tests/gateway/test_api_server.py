@@ -384,6 +384,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/internal/events", adapter._handle_internal_events)
     return app
 
 
@@ -430,6 +431,350 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+
+class TestInternalEventsEndpoint:
+    @staticmethod
+    def _entry(session_id="sess-123", session_key="agent:main:telegram:group:-1001:5"):
+        from datetime import datetime
+
+        from gateway.session import SessionEntry, SessionSource
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            user_id="user-1",
+            user_name="Tester",
+            thread_id="5",
+        )
+        entry = SessionEntry(
+            session_key=session_key,
+            session_id=session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+        )
+        return entry, source
+
+    @staticmethod
+    def _store(entry):
+        class FakeSessionStore:
+            def get_by_session_id(self, session_id):
+                return entry if entry and session_id == entry.session_id else None
+
+            def get_by_session_key(self, session_key):
+                return entry if entry and session_key == entry.session_key else None
+
+        return FakeSessionStore()
+
+    @staticmethod
+    def _recording_adapter():
+        class FakeTelegramAdapter:
+            def __init__(self):
+                self.events = []
+                self.called = asyncio.Event()
+
+            async def handle_message(self, event):
+                self.events.append(event)
+                self.called.set()
+
+        return FakeTelegramAdapter()
+
+    @pytest.mark.asyncio
+    async def test_agent_completed_event_injects_into_resolved_gateway_session(self):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        entry, source = self._entry()
+        target = self._recording_adapter()
+
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: target})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "type": "agent.completed",
+                    "session_id": "sess-123",
+                    "message": "The delegated agent finished successfully.",
+                    "metadata": {"task_id": "abc", "status": "completed"},
+                },
+            )
+            body = await resp.json()
+
+            assert resp.status == 202
+            assert body == {
+                "object": "hermes.internal_event",
+                "status": "accepted",
+                "type": "agent.completed",
+                "session_id": "sess-123",
+                "session_key": "agent:main:telegram:group:-1001:5",
+                "platform": "telegram",
+            }
+
+            # Dispatch is async; wait for the adapter to receive it.
+            await asyncio.wait_for(target.called.wait(), timeout=2)
+
+        assert len(target.events) == 1
+        event = target.events[0]
+        assert isinstance(event, MessageEvent)
+        assert event.message_type is MessageType.TEXT
+        assert event.internal is True
+        assert event.source is source
+        assert event.text == (
+            "[Hermes internal event] agent.completed\n"
+            "- task_id: abc\n"
+            "- status: completed\n\n"
+            "The delegated agent finished successfully.\n\n"
+            "Use the current conversation context to assess the result "
+            "and report the next step to the user."
+        )
+
+    @pytest.mark.asyncio
+    async def test_event_resolves_session_by_session_key(self):
+        entry, _ = self._entry()
+        target = self._recording_adapter()
+
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: target})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "type": "agent.failed",
+                    "session_key": "agent:main:telegram:group:-1001:5",
+                },
+            )
+            body = await resp.json()
+
+            assert resp.status == 202
+            assert body["session_id"] == "sess-123"
+            await asyncio.wait_for(target.called.wait(), timeout=2)
+
+        assert target.events[0].text.startswith("[Hermes internal event] agent.failed")
+
+    @pytest.mark.asyncio
+    async def test_async_dispatch_failure_is_logged(self):
+        entry, _ = self._entry()
+
+        class FailingAdapter:
+            def __init__(self):
+                self.called = asyncio.Event()
+
+            async def handle_message(self, event):
+                try:
+                    raise RuntimeError("boom")
+                finally:
+                    self.called.set()
+
+        failing = FailingAdapter()
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: failing})
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.api_server.logger") as mock_logger:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/internal/events",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"type": "agent.completed", "session_id": "sess-123"},
+                )
+
+                assert resp.status == 202
+                await asyncio.wait_for(failing.called.wait(), timeout=2)
+                # Let _dispatch's except/log run.
+                for _ in range(50):
+                    if mock_logger.exception.called:
+                        break
+                    await asyncio.sleep(0)
+
+        assert mock_logger.exception.called
+
+    @pytest.mark.asyncio
+    async def test_internal_events_rejects_missing_type(self):
+        adapter = _make_adapter(api_key="sk-secret")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"session_id": "sess-123"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert "type" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_internal_events_rejects_missing_session_id(self):
+        adapter = _make_adapter(api_key="sk-secret")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"type": "agent.completed"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert "session_id" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_internal_events_requires_auth(self):
+        entry, _ = self._entry()
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                json={"type": "agent.completed", "session_id": "sess-123"},
+            )
+
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_internal_events_rejects_unknown_session(self):
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(None))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={"type": "agent.completed", "session_id": "missing"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 404
+        assert "Session not found" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_internal_events_forbidden_without_api_key(self):
+        # /internal/events injects into existing sessions, so it must reject
+        # callers when no API key is configured — stricter than the local
+        # convenience that _check_auth() grants other endpoints.
+        entry, _ = self._entry()
+        adapter = _make_adapter()  # no api_key
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: self._recording_adapter()})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                json={"type": "agent.completed", "session_id": "sess-123"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 403
+        assert body["error"]["code"] == "api_key_required"
+
+    @pytest.mark.asyncio
+    async def test_internal_events_forbidden_without_api_key_even_with_bearer(self):
+        adapter = _make_adapter()  # no api_key
+        adapter.set_session_store(self._store(self._entry()[0]))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer anything"},
+                json={"type": "agent.completed", "session_id": "sess-123"},
+            )
+
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_internal_events_rejects_mismatched_identifiers(self):
+        entry_a, _ = self._entry(session_id="sess-A", session_key="key-A")
+        entry_b, _ = self._entry(session_id="sess-B", session_key="key-B")
+
+        class MismatchStore:
+            def get_by_session_id(self, session_id):
+                return entry_a if session_id == "sess-A" else None
+
+            def get_by_session_key(self, session_key):
+                return entry_b if session_key == "key-B" else None
+
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(MismatchStore())
+        adapter.set_adapter_registry({Platform.TELEGRAM: self._recording_adapter()})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "type": "agent.completed",
+                    "session_id": "sess-A",
+                    "session_key": "key-B",
+                },
+            )
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body["error"]["code"] == "session_identifier_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_internal_events_rejects_when_one_identifier_unresolved(self):
+        # Both supplied, session_id resolves but session_key does not.
+        entry, _ = self._entry()
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: self._recording_adapter()})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "type": "agent.completed",
+                    "session_id": "sess-123",
+                    "session_key": "not-the-right-key",
+                },
+            )
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body["error"]["code"] == "session_identifier_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_internal_events_accepts_consistent_identifiers(self):
+        # Both supplied and resolving to the same active entry still works.
+        entry, _ = self._entry()
+        target = self._recording_adapter()
+        adapter = _make_adapter(api_key="sk-secret")
+        adapter.set_session_store(self._store(entry))
+        adapter.set_adapter_registry({Platform.TELEGRAM: target})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/internal/events",
+                headers={"Authorization": "Bearer sk-secret"},
+                json={
+                    "type": "agent.completed",
+                    "session_id": "sess-123",
+                    "session_key": "agent:main:telegram:group:-1001:5",
+                },
+            )
+            body = await resp.json()
+
+            assert resp.status == 202
+            assert body["session_id"] == "sess-123"
+            await asyncio.wait_for(target.called.wait(), timeout=2)
+
+        assert len(target.events) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +968,10 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            # /internal/events hard-requires an API key, so the feature flag is
+            # False without one even though the route stays listed for discovery.
+            assert data["features"]["internal_events"] is False
+            assert data["endpoints"]["internal_events"]["path"] == "/internal/events"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
 
     @pytest.mark.asyncio
@@ -639,6 +988,8 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+            # With a key configured, /internal/events is usable.
+            assert data["features"]["internal_events"] is True
 
 
 # ---------------------------------------------------------------------------

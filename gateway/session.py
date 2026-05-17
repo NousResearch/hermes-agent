@@ -954,6 +954,27 @@ class SessionStore:
 
         return entry
 
+    def get_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the active entry for a gateway session key, if present."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
+
+    def get_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
+        """Return the active entry currently pointing at ``session_id``.
+
+        This provides a public lookup for internal event routing and avoids
+        callers reaching into the private ``_entries`` mapping.
+        """
+        if not session_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.session_id == session_id:
+                    return entry
+        return None
+
     def update_session(
         self,
         session_key: str,

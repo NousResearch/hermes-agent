@@ -689,6 +689,54 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
+class TestSessionStoreInternalEventLookups:
+    """Public lookup helpers used to route session-scoped internal events."""
+
+    @staticmethod
+    def _store(tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._db = None
+        store._loaded = True
+        return store
+
+    def test_get_by_session_id_returns_matching_entry(self, tmp_path):
+        store = self._store(tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="group",
+            thread_id="5",
+            user_id="user-1",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.get_by_session_id(entry.session_id) is entry
+
+    def test_get_by_session_id_returns_none_for_unknown_id(self, tmp_path):
+        store = self._store(tmp_path)
+        assert store.get_by_session_id("missing-session") is None
+
+    def test_get_by_session_id_returns_none_for_empty_id(self, tmp_path):
+        store = self._store(tmp_path)
+        assert store.get_by_session_id("") is None
+
+    def test_get_by_session_key_returns_matching_entry(self, tmp_path):
+        store = self._store(tmp_path)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="group",
+            thread_id="5",
+            user_id="user-1",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.get_by_session_key(entry.session_key) is entry
+        assert store.get_by_session_key("no-such-key") is None
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 

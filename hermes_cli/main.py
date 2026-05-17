@@ -7212,11 +7212,11 @@ def _install_psutil_android_compat(
                         f"refusing to extract link member: {name!r}"
                     )
             try:
-                tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]
+                tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]  # nosec B202  -- manual path/link guard above
             except TypeError:
                 # Python < 3.12 — no filter kwarg; the manual checks above already
                 # cover the main classes of path-traversal abuse.
-                tar.extractall(tmp_path)
+                tar.extractall(tmp_path)  # nosec B202  -- manual path/link guard above
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")

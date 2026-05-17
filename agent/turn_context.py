@@ -733,6 +733,14 @@ def build_turn_context(
     plugin_user_context = ""
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -744,6 +752,7 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            agent_id=_agent_id,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

@@ -2174,6 +2174,28 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_server_error(exc: Exception) -> bool:
+    """Detect transient 5xx server errors that warrant provider fallback.
+
+    Returns True for HTTP 5xx status codes and common server-error text
+    patterns.  Unlike payment or rate-limit errors, server errors indicate
+    the endpoint is temporarily broken — falling back to an alternative
+    provider is always better than returning a cryptic 503 to the user.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25822
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 500 <= status <= 599:
+        return True
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "503", "service unavailable", "server error",
+        "internal server error", "bad gateway",
+        "gateway timeout", "502", "504",
+        "currently experiencing high demand",
+    ))
+
+
 def _is_auth_error(exc: Exception) -> bool:
     """Detect auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
@@ -4521,16 +4543,22 @@ def call_llm(
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
+        # ── Server-error fallback (#25822) ───────────────────────────
+        # 5xx errors (503 UNAVAILABLE, etc.) are transient — always try
+        # fallback regardless of whether the provider was explicitly chosen.
+        is_server_err = _is_server_error(first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or is_server_err
         )
         # Only try alternative providers when the user didn't explicitly
-        # configure this task's provider.  Explicit provider = hard constraint;
-        # auto (the default) = best-effort fallback chain.  (#7559)
+        # configure this task's provider — UNLESS the error is a transient
+        # server error, in which case fallback is always better than a
+        # cryptic 503.  (#7559, #25822)
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -4542,6 +4570,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif is_server_err:
+                reason = f"server error ({first_err})"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -4853,13 +4883,16 @@ async def async_call_llm(
                 )
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        # ── Server-error fallback (#25822) ───────────────────────────
+        is_server_err = _is_server_error(first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or is_server_err
         )
         is_auto = resolved_provider in {"auto", "", None}
-        if should_fallback and is_auto:
+        if should_fallback and (is_auto or is_server_err):
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
@@ -4867,6 +4900,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif is_server_err:
+                reason = f"server error ({first_err})"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

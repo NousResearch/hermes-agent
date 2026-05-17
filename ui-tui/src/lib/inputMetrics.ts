@@ -1,4 +1,5 @@
 import { stringWidth } from '@hermes/ink'
+import wrapAnsi from 'wrap-ansi'
 
 import type { Role } from '../types.js'
 
@@ -12,8 +13,6 @@ interface VisualLine {
   start: number
 }
 
-const isWhitespace = (value: string) => /\s/.test(value)
-
 const graphemes = (value: string) =>
   [...seg().segment(value)].map(({ segment, index }) => ({
     end: index + segment.length,
@@ -22,77 +21,66 @@ const graphemes = (value: string) =>
     width: Math.max(1, stringWidth(segment))
   }))
 
-function visualLines(value: string, cols: number): VisualLine[] {
+// Build VisualLines from wrap-ansi's output by mapping each emitted character
+// back to its original offset in `value`. wrap-ansi only INSERTS '\n' at wrap
+// boundaries — it never drops, reorders, or substitutes existing characters —
+// so a parallel walk uniquely identifies each line's source range.
+//
+// This used to be a hand-rolled word-wrap (visualLines below) whose break
+// points disagreed with wrap-ansi in subtle but visible ways: exact-fill rows
+// pushed the cursor to a phantom next line, mid-word breaks landed one
+// grapheme off, etc. The composer's TextInput renders text via Ink's
+// <Text wrap="wrap">, which delegates to wrap-ansi — so any drift between the
+// two algorithms parks the hardware cursor several cells away from the last
+// rendered character. Sourcing both from wrap-ansi guarantees agreement.
+function visualLinesFromWrappedOutput(value: string, cols: number): VisualLine[] {
+  if (!value.length) {
+    return [{ start: 0, end: 0 }]
+  }
+
   const width = Math.max(1, cols)
+  const wrapped = wrapAnsi(value, width, { hard: true, trim: false })
   const lines: VisualLine[] = []
-  let sourceLineStart = 0
 
-  for (const sourceLine of value.split('\n')) {
-    const parts = graphemes(sourceLine)
+  let originalIdx = 0
+  let lineStart = 0
 
-    if (!parts.length) {
-      lines.push({ start: sourceLineStart, end: sourceLineStart })
-      sourceLineStart += 1
+  for (let i = 0; i < wrapped.length; i += 1) {
+    const ch = wrapped[i]!
+
+    if (ch === '\n') {
+      // wrap-ansi inserts '\n' to mark a soft-wrap boundary OR copies a
+      // literal '\n' from the input. Either way the next char in `wrapped`
+      // begins a new visual line. If the source character is a hard '\n',
+      // consume it (it doesn't appear in either line). Otherwise the '\n'
+      // is purely a wrap marker and originalIdx stays put.
+      lines.push({ start: lineStart, end: originalIdx })
+      const isHardNewline = originalIdx < value.length && value[originalIdx] === '\n'
+
+      if (isHardNewline) {
+        originalIdx += 1
+      }
+
+      lineStart = originalIdx
       continue
     }
 
-    let lineStartPart = 0
-    let lineStartOffset = sourceLineStart
-    let column = 0
-    let breakPart: null | number = null
-    let i = 0
-
-    while (i < parts.length) {
-      const part = parts[i]!
-      const partStart = sourceLineStart + part.index
-
-      if (column + part.width > width && i > lineStartPart) {
-        if (breakPart !== null && breakPart > lineStartPart) {
-          const breakOffset = sourceLineStart + parts[breakPart - 1]!.end
-          lines.push({ start: lineStartOffset, end: breakOffset })
-          lineStartPart = breakPart
-          lineStartOffset = breakOffset
-        } else {
-          lines.push({ start: lineStartOffset, end: partStart })
-          lineStartPart = i
-          lineStartOffset = partStart
-        }
-
-        column = 0
-        breakPart = null
-        i = lineStartPart
-        continue
-      }
-
-      column += part.width
-
-      if (isWhitespace(part.segment)) {
-        breakPart = i + 1
-      }
-
-      i += 1
-
-      if (column >= width && i < parts.length) {
-        const next = parts[i]!
-        const nextStartsWord = !isWhitespace(next.segment)
-
-        if (breakPart !== null && breakPart > lineStartPart && nextStartsWord) {
-          const breakOffset = sourceLineStart + parts[breakPart - 1]!.end
-          lines.push({ start: lineStartOffset, end: breakOffset })
-          lineStartPart = breakPart
-          lineStartOffset = breakOffset
-          column = 0
-          breakPart = null
-          i = lineStartPart
-        }
-      }
-    }
-
-    lines.push({ start: lineStartOffset, end: sourceLineStart + sourceLine.length })
-    sourceLineStart += sourceLine.length + 1
+    // Defensive: if wrap-ansi's emitted character ever desyncs from
+    // `value[originalIdx]` (would only happen if it substituted, which it
+    // doesn't for the wrap+hard option set we use), fall back to advancing
+    // by one to stay in lockstep. The lines/cursor map still terminates.
+    originalIdx += 1
   }
 
+  lines.push({ start: lineStart, end: originalIdx })
+
+  // wrap-ansi collapses an empty input into [""] which we already handled
+  // above; preserve the invariant that lines is never empty for any input.
   return lines.length ? lines : [{ start: 0, end: 0 }]
+}
+
+function visualLines(value: string, cols: number): VisualLine[] {
+  return visualLinesFromWrappedOutput(value, cols)
 }
 
 function widthBetween(value: string, start: number, end: number) {
@@ -108,6 +96,12 @@ function widthBetween(value: string, start: number, end: number) {
 /**
  * Mirrors the word-wrap behavior used by the composer TextInput.
  * Returns the zero-based visual line and column of the cursor cell.
+ *
+ * IMPORTANT: this MUST stay in lock-step with how Ink's `<Text wrap="wrap">`
+ * lays the value out (which uses `wrap-ansi`). Any divergence parks the
+ * hardware cursor several cells off the last rendered character — see the
+ * "cursor drift past blank cells" bug. visualLinesFromWrappedOutput is
+ * sourced directly from wrap-ansi to enforce that invariant.
  */
 export function cursorLayout(value: string, cursor: number, cols: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -124,14 +118,14 @@ export function cursorLayout(value: string, cursor: number, cols: number) {
   }
 
   const line = lines[lineIndex]!
-  let column = widthBetween(value, line.start, Math.min(pos, line.end))
+  const column = widthBetween(value, line.start, Math.min(pos, line.end))
 
-  // trailing cursor-cell overflows to the next row at the wrap column
-  if (column >= w) {
-    lineIndex++
-    column = 0
-  }
-
+  // NOTE: the previous implementation forced an extra line break when
+  // `column >= w` (the "trailing cursor-cell overflows" rule). With
+  // visualLinesFromWrappedOutput sourcing breaks from wrap-ansi, the line
+  // wrapping above already matches what Ink will actually render. Pushing
+  // the cursor onto a phantom next line here would re-introduce the same
+  // drift we're fixing, so we don't.
   return { column, line: lineIndex }
 }
 

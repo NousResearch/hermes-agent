@@ -2046,6 +2046,173 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
+    def test_stream_helper_event_order_error_falls_back_to_create_stream(self):
+        class BrokenStream:
+            def __enter__(self):
+                inner = RuntimeError(
+                    "Expected to have received "
+                    "`response.created` before `codex.rate_limits`"
+                )
+                outer = RuntimeError("API call failed after 3 retries: Connection error.")
+                outer.__cause__ = inner
+                raise outer
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeCreateStream:
+            closed = False
+
+            def __iter__(self):
+                return iter((
+                    SimpleNamespace(type="codex.rate_limits", rate_limits={}),
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_text.delta", delta="summary"),
+                    SimpleNamespace(
+                        type="response.completed",
+                        response=SimpleNamespace(
+                            output=[],
+                            usage=SimpleNamespace(
+                                input_tokens=3,
+                                output_tokens=1,
+                                total_tokens=4,
+                            ),
+                        ),
+                    ),
+                ))
+
+            def close(self):
+                self.closed = True
+
+        class FakeResponses:
+            def __init__(self):
+                self.stream_kwargs = None
+                self.create_kwargs = None
+                self.create_stream = FakeCreateStream()
+
+            def stream(self, **kwargs):
+                self.stream_kwargs = kwargs
+                return BrokenStream()
+
+            def create(self, **kwargs):
+                self.create_kwargs = kwargs
+                return self.create_stream
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert fake_client.responses.create_kwargs["stream"] is True
+        assert fake_client.responses.create_kwargs["timeout"] == 12.5
+        assert fake_client.responses.create_stream.closed is True
+        assert response.choices[0].message.content == "summary"
+        assert response.usage.total_tokens == 4
+
+    def test_read_error_falls_back_to_nonstream_create(self):
+        class BrokenStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                raise OSError(9, "Bad file descriptor")
+
+            def get_final_response(self):
+                raise AssertionError("stream should fail before final response")
+
+        class FakeResponses:
+            def __init__(self):
+                self.stream_kwargs = None
+                self.create_kwargs = []
+
+            def stream(self, **kwargs):
+                self.stream_kwargs = kwargs
+                return BrokenStream()
+
+            def create(self, **kwargs):
+                self.create_kwargs.append(kwargs)
+                assert kwargs.get("stream") is False
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="nonstream ok")],
+                    )],
+                    usage=SimpleNamespace(input_tokens=3, output_tokens=2, total_tokens=5),
+                )
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=12.5,
+        )
+
+        assert fake_client.responses.create_kwargs[0]["stream"] is False
+        assert fake_client.responses.create_kwargs[0]["timeout"] == 12.5
+        assert response.choices[0].message.content == "nonstream ok"
+        assert response.usage.total_tokens == 5
+
+    def test_event_order_stream_fallback_read_error_uses_nonstream(self):
+        class BrokenInitialStream:
+            def __enter__(self):
+                inner = RuntimeError(
+                    "Expected to have received "
+                    "`response.created` before `codex.rate_limits`"
+                )
+                outer = RuntimeError("API call failed after 3 retries: Connection error.")
+                outer.__cause__ = inner
+                raise outer
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class BrokenCreateStream:
+            closed = False
+
+            def __iter__(self):
+                raise OSError(9, "Bad file descriptor")
+
+            def close(self):
+                self.closed = True
+
+        class FakeResponses:
+            def __init__(self):
+                self.create_kwargs = []
+                self.create_stream = BrokenCreateStream()
+
+            def stream(self, **kwargs):
+                return BrokenInitialStream()
+
+            def create(self, **kwargs):
+                self.create_kwargs.append(kwargs)
+                if kwargs.get("stream") is True:
+                    return self.create_stream
+                assert kwargs.get("stream") is False
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="nonstream after bfd")],
+                    )],
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=3, total_tokens=7),
+                )
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert [call["stream"] for call in fake_client.responses.create_kwargs] == [True, False]
+        assert fake_client.responses.create_stream.closed is True
+        assert response.choices[0].message.content == "nonstream after bfd"
+        assert response.usage.total_tokens == 7
+
     def test_forwards_timeout_to_responses_stream(self):
         class FakeStream:
             def __enter__(self):

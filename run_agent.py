@@ -6935,6 +6935,38 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    @staticmethod
+    def _codex_stream_rejected_event_order(exc: BaseException) -> bool:
+        """Detect OpenAI SDK rejection of custom SSE events before creation.
+
+        codex-lb can emit ``codex.rate_limits`` before ``response.created``.
+        The SDK's ``responses.stream()`` helper treats that as an invalid
+        event order, while ``responses.create(stream=True)`` lets Hermes ignore
+        the custom frame and collect the terminal response.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [exc]
+        while stack:
+            current = stack.pop()
+            obj_id = id(current)
+            if obj_id in seen:
+                continue
+            seen.add(obj_id)
+            text = str(current)
+            if (
+                "Expected to have received" in text
+                and "response.created" in text
+            ):
+                return True
+            for attr in ("__cause__", "__context__"):
+                nested = getattr(current, attr, None)
+                if isinstance(nested, BaseException):
+                    stack.append(nested)
+            for arg in getattr(current, "args", ()):
+                if isinstance(arg, BaseException):
+                    stack.append(arg)
+        return False
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -7042,6 +7074,14 @@ class AIAgent:
                 )
                 return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             except RuntimeError as exc:
+                if self._codex_stream_rejected_event_order(exc):
+                    logger.debug(
+                        "Responses stream helper rejected event order; falling back "
+                        "to create(stream=True). %s error=%s",
+                        self._client_log_context(),
+                        exc,
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
                 if missing_completed and attempt < max_stream_retries:
@@ -7056,6 +7096,16 @@ class AIAgent:
                     logger.debug(
                         "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
                         self._client_log_context(),
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                raise
+            except Exception as exc:
+                if self._codex_stream_rejected_event_order(exc):
+                    logger.debug(
+                        "Responses stream helper rejected event order; falling back "
+                        "to create(stream=True). %s error=%s",
+                        self._client_log_context(),
+                        exc,
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise

@@ -449,6 +449,53 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert response.output[0].content[0].text == "create fallback ok"
 
 
+def test_run_codex_stream_falls_back_when_custom_event_precedes_created(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="codex.rate_limits", state={}),
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.completed",
+                response=_codex_message_response("event-order fallback ok"),
+            ),
+        ]
+    )
+
+    class BrokenStream:
+        def __enter__(self):
+            calls["stream"] += 1
+            inner = RuntimeError(
+                "Expected to have received `response.created` before "
+                "`codex.rate_limits`"
+            )
+            outer = RuntimeError("API call failed after 3 retries: Connection error.")
+            outer.__cause__ = inner
+            raise outer
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: BrokenStream(),
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls == {"stream": 1, "create": 1}
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "event-order fallback ok"
+
+
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}

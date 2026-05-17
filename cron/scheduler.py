@@ -128,6 +128,15 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_INTERACTIVE_CARD_TOP_LEVEL_KEYS = frozenset({
+    "config",
+    "elements",
+    "header",
+    "schema",
+    "i18n_elements",
+    "i18n_header",
+    "card_link",
+})
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -479,6 +488,25 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _is_interactive_card_json(content: str) -> bool:
+    """Return True when cron output is a raw interactive-card JSON payload.
+
+    Cron normally wraps final responses with a management header/footer.  That
+    is useful for plain text, but it prevents adapters such as Feishu from
+    routing structured card JSON as an interactive message.
+    """
+    raw = (content or "").strip()
+    if not raw.startswith("{"):
+        return False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return bool(_INTERACTIVE_CARD_TOP_LEVEL_KEYS & set(payload.keys()))
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -510,6 +538,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
+
+    if wrap_response and _is_interactive_card_json(content):
+        logger.info("Job '%s': raw interactive card JSON detected; skipping cron delivery wrapper", job.get("id", "?"))
+        wrap_response = False
 
     if wrap_response:
         task_name = job.get("name", job["id"])

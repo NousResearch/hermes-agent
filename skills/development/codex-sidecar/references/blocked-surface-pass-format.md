@@ -4,29 +4,26 @@ Context: During crypto_bot S006 branch-local completion evidence, Codex produced
 
 `- Blocked-surface scan: PASS, with basis: ...`
 
-The Hermes completion gate initially rejected it because the parser accepted exact `PASS`, `PASS ` with a space after it, `exit code 0`, `no blocked`, or `no matches`, but not `PASS, ...` where punctuation immediately follows PASS.
-
-Reusable lesson:
-
-- Prefer making Codex emit machine fields in the narrowest parser-compatible shape.
-- For `Blocked-surface scan`, `PASS with basis: ...` or standalone `PASS` plus details elsewhere is still the most robust emission shape.
-- If a sidecar result is semantically correct but rejected, inspect the completion-gate parser before rerunning broad audits; patch parser/tests when the expected result shape is reasonable.
-- Use TDD for parser repairs: write a regression test that fails on the rejected evidence shape, then patch the predicate and verify the original completion gate artifact passes.
-- Keep this distinction clear: blocked-surface scan is not necessarily an all-files allowlist check. Unlisted discovery docs, JSON evidence, and validation scripts are not blocked merely because they are absent from a task allowlist; allowlists decide whether otherwise sensitive workflow/service/docs paths are approved for the task.
-
-Regression pattern:
-
-```python
-def test_blocked_surface_scan_accepts_pass_with_punctuated_basis() -> None:
-    assert completion_gate.blocked_surface_scan_passed([
-        "PASS, with basis: approved workflow path"
-    ])
-    assert not completion_gate.blocked_surface_scan_passed(["passive wording only"])
-```
-
-Robust parser predicate:
+The completion gate originally rejected it because the parser accepted exactly `pass` or `pass ` but not `pass,`. The branch-local control-plane repair changed the parser to a PASS token-boundary rule:
 
 ```python
 if normalized == "pass" or re.match(r"^pass\b", normalized):
     return True
 ```
+
+Durable guidance for future sidecar audits:
+
+- Prefer parser-compatible machine fields over prose-only semantic clarity.
+- Emit `Blocked-surface scan: PASS with basis: ...` or `Blocked-surface scan: PASS` plus details elsewhere.
+- The punctuation form `PASS, with basis: ...` is now accepted by the repaired completion gate, but the punctuation-free `PASS with basis: ...` remains the safer cross-version format.
+- Do not infer blocked surfaces solely because changed files are outside a task allowlist. The allowlist decides whether otherwise sensitive workflow/service/docs paths are approved for the task; ordinary docs, JSON evidence, discovery artifacts, and validation scripts are not blocked merely by absence from the allowlist.
+- When a sidecar says final conclusion PASS but completion gate rejects a machine field, inspect the parser before rerunning work. A semantically valid result can fail on field-shape strictness.
+- Add targeted regression coverage whenever a sidecar wording shape is accepted into the control-plane contract.
+
+Verification pattern:
+
+1. Add/adjust a narrow test for the exact machine-field shape.
+2. Run the single test RED if possible.
+3. Patch the parser minimally.
+4. Run targeted pytest and ruff.
+5. Rerun the completion gate against the same sidecar artifact to prove the blocker was parser-only.

@@ -98,9 +98,12 @@ non-product-repo state path.
   particular, `Blocked-surface scan` should be emitted as `PASS with basis: ...`
   or a standalone `PASS` with details elsewhere for maximum compatibility. If a
   semantically valid `PASS, ...` or similar machine field is rejected, use TDD to
-  patch the completion-gate parser rather than rerunning broad audits. See
-  `references/blocked-surface-pass-format.md` for the S006 parser pitfall and
-  regression-test pattern.
+  patch the completion-gate parser rather than rerunning broad audits. Do not
+  treat a file as blocked merely because it is absent from a task allowlist; the
+  allowlist is for otherwise sensitive surfaces, while ordinary docs, JSON
+  evidence, discovery artifacts, and validation scripts need their own surface
+  classification. See `references/blocked-surface-pass-format.md` for the S006
+  parser pitfall, allowlist nuance, and regression-test pattern.
 
 ## Required Final Audit Shape
 

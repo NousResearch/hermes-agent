@@ -1,14 +1,37 @@
 #!/usr/bin/env node
 // Bundles src/entry.tsx into a single self-contained dist/entry.js.
 // No runtime node_modules needed.
-import { build } from 'esbuild'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { createRequire as __cr } from 'node:module'
 
+const require = __cr(import.meta.url)
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const out = resolve(root, 'dist/entry.js')
+
+// esbuild binary version mismatch on Android arm64: the npm-installed
+// @esbuild/android-arm64 binary can end up with a different version than
+// the esbuild package lib/main.js expects (e.g. 0.28.0 vs 0.27.7).
+// We resolve the correct binary here and pass it via ESBUILD_BINARY_PATH
+// so the service subprocess uses the matching pair.
+const esbuildLibDir = resolve(root, 'node_modules/esbuild/lib')
+const esbuildBinPath = resolve(esbuildLibDir, '../bin/esbuild')
+
+// IMPORTANT: clear any external ESBUILD_BINARY_PATH that may point to a
+// stale version (e.g. ~/.hermes/esbuild-built on this system is 0.28.0
+// while the local node_modules/esbuild is 0.27.7).
+delete process.env.ESBUILD_BINARY_PATH
+
+let esbuild
+try {
+  // Try local node_modules esbuild first (version-matched pair)
+  esbuild = require('esbuild')
+} catch {
+  // Fallback: use the explicit binary path
+  esbuild = require(resolve(esbuildLibDir, 'main.js'))
+}
 
 // `react-devtools-core` is only imported when DEV=true at runtime (Ink dev
 // mode). Stub it out so the bundle doesn't carry the dep.
@@ -26,7 +49,7 @@ const stubDevtools = {
   }
 }
 
-await build({
+await esbuild.build({
   entryPoints: [resolve(root, 'src/entry.tsx')],
   bundle: true,
   platform: 'node',

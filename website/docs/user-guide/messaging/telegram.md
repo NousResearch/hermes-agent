@@ -132,16 +132,17 @@ Recommended pattern:
 terminal:
   backend: docker
   docker_volumes:
-    - "/home/user/.hermes/cache/documents:/output"
+    - "/home/user/.hermes/cache/documents:/agent-artifacts"
 ```
 
 Then:
 
-- write files inside Docker to `/output/...` or `/outputs/...`
-- emit either the host path or the mounted container path, for example
-  `MEDIA:/output/report.txt`
-- the gateway maps mounted `/output` or `/outputs` container paths back through
-  `docker_volumes`
+- write files inside Docker under the mounted container path, e.g.
+  `/agent-artifacts/report.txt`
+- emit either the host path or the mounted container path, e.g.
+  `MEDIA:/agent-artifacts/report.txt`
+- the gateway maps mounted container paths back through `docker_volumes` /
+  `TERMINAL_DOCKER_VOLUMES`; `/output` is only a convention, not a requirement
 
 If you already have a `docker_volumes:` section, add the new mount to the same
 list. YAML duplicate keys silently override earlier ones.

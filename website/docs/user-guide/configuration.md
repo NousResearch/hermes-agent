@@ -331,7 +331,7 @@ terminal:
   docker_volumes:
     - "/home/user/projects:/workspace/projects"   # Read-write (default)
     - "/home/user/datasets:/data:ro"              # Read-only
-    - "/home/user/.hermes/cache/documents:/output" # Gateway-visible exports
+    - "/home/user/.hermes/cache/documents:/agent-artifacts" # Gateway-visible exports
 ```
 
 This is useful for:
@@ -340,15 +340,17 @@ This is useful for:
 - **Shared workspaces** where both you and the agent access the same files
 
 If you use a messaging gateway and want the agent to send generated files via
-`MEDIA:/...`, prefer a dedicated host-visible export mount such as
-`/home/user/.hermes/cache/documents:/output`.
+`MEDIA:/...`, configure a host-visible bind mount. The container path is your
+choice; `/output` is only a convention, not a requirement. For example:
+`/home/user/.hermes/cache/documents:/agent-artifacts`.
 
-- Write files inside Docker to `/output/...` or `/outputs/...`
-- Emit either the host path or the mounted container path, for example
-  `MEDIA:/output/report.txt`
-- The gateway maps mounted `/output` or `/outputs` container paths back through
-  `docker_volumes`
-- Do **not** emit unmapped container-only paths like `/workspace/...`
+- Write files inside Docker under the mounted container path, e.g.
+  `/agent-artifacts/report.txt`
+- Emit either the host path or the mounted container path, e.g.
+  `MEDIA:/agent-artifacts/report.txt`
+- The gateway maps mounted container paths back through `docker_volumes` /
+  `TERMINAL_DOCKER_VOLUMES` using the longest matching non-root bind mount
+- Do **not** emit unmapped container-only paths
 
 :::warning
 YAML duplicate keys silently override earlier ones. If you already have a

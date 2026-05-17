@@ -11,18 +11,15 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 
-MEDIA_EXPORT_CONTAINER_ROOTS = ("/output", "/outputs")
-
-
 def parse_docker_volume_spec(spec: str) -> tuple[str, str] | None:
     """Parse a Docker ``-v`` bind mount as ``(host_path, container_path)``.
 
     Hermes stores ``terminal.docker_volumes`` in ``TERMINAL_DOCKER_VOLUMES`` as
-    JSON strings like ``/host/exports:/output[:options]``. Docker's optional
-    third field can be ``ro``, ``rw``, ``cached``, ``delegated``, propagation
-    flags, SELinux flags, or comma-separated combinations. Named volumes and
-    malformed entries are ignored because the host gateway cannot derive a
-    readable filesystem path from them.
+    JSON strings like ``/host/exports:/container/path[:options]``. Docker's
+    optional third field can be ``ro``, ``rw``, ``cached``, ``delegated``,
+    propagation flags, SELinux flags, or comma-separated combinations. Named
+    volumes and malformed entries are ignored because the host gateway cannot
+    derive a readable filesystem path from them.
     """
     if not isinstance(spec, str):
         return None
@@ -95,21 +92,18 @@ def _container_path_is_within(path: str, root: str) -> bool:
     return path == root or path.startswith(f"{root}/")
 
 
-def is_media_export_mount(
-    container_root: str,
-    *,
-    allowed_roots: Iterable[str] = MEDIA_EXPORT_CONTAINER_ROOTS,
-) -> bool:
-    """Return whether a container mount root is intended for MEDIA exports."""
-    container_root = posixpath.normpath(container_root)
-    if container_root == "/":
-        return False
+def is_docker_media_bind_mount(container_root: str) -> bool:
+    """Return whether a Docker bind mount can map outbound MEDIA paths.
 
-    for root in allowed_roots:
-        root = posixpath.normpath(str(root))
-        if root.startswith("/") and _container_path_is_within(container_root, root):
-            return True
-    return False
+    The user chooses the export path through ``terminal.docker_volumes`` /
+    ``TERMINAL_DOCKER_VOLUMES``.  Do not hard-code a container directory such as
+    ``/output``; any explicit non-root bind mount is mappable because the host
+    side is user-specified and readable by the gateway.  Root mounts are still
+    ignored because they would make every absolute container path look
+    host-readable.
+    """
+    container_root = posixpath.normpath(str(container_root or ""))
+    return container_root.startswith("/") and container_root != "/"
 
 
 def docker_media_bind_mounts_from_env(raw_volumes: str | None = None) -> tuple[tuple[str, str], ...]:
@@ -117,8 +111,18 @@ def docker_media_bind_mounts_from_env(raw_volumes: str | None = None) -> tuple[t
     return tuple(
         (host_root, container_root)
         for host_root, container_root in docker_bind_mounts_from_env(raw_volumes)
-        if is_media_export_mount(container_root)
+        if is_docker_media_bind_mount(container_root)
     )
+
+
+def _host_path_is_within_root(path: str, root: str) -> bool:
+    """Return True when ``path`` resolves inside ``root`` on the host FS."""
+    try:
+        real_root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
+        real_path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        return os.path.commonpath([real_root, real_path]) == real_root
+    except (OSError, ValueError):
+        return False
 
 
 def _translate_docker_path_to_host(
@@ -141,9 +145,12 @@ def _translate_docker_path_to_host(
 
     host_root, container_root = best_mount
     rel_path = posixpath.relpath(container_path, container_root)
-    if rel_path == ".":
-        return host_root
-    return os.path.normpath(os.path.join(host_root, *rel_path.split("/")))
+    candidate = host_root if rel_path == "." else os.path.normpath(
+        os.path.join(host_root, *rel_path.split("/"))
+    )
+    if not _host_path_is_within_root(candidate, host_root):
+        return None
+    return candidate
 
 
 def resolve_outbound_media_path(path: str) -> str:
@@ -151,13 +158,12 @@ def resolve_outbound_media_path(path: str) -> str:
 
     The gateway delivers files from the host process, but terminal tools can run
     in a Docker sandbox.  When Docker is the active backend and the MEDIA path is
-    inside a configured Docker bind mount, this maps the container path to the
-    corresponding host path.  The automatic mapping is intentionally limited to
-    explicit MEDIA export mounts under ``/output`` or ``/outputs``; other Docker
-    bind mounts continue to behave like unmapped paths.  Host-visible paths
-    outside those mapped export roots, non-Docker backends, malformed volume
-    config, and unmapped paths fall back to the expanded original path without
-    raising.
+    inside a user-configured Docker bind mount, this maps the container path to
+    the corresponding host path.  The mapping is derived from
+    ``TERMINAL_DOCKER_VOLUMES`` / ``terminal.docker_volumes``; it is not tied to
+    a hard-coded container directory such as ``/output``.  Named volumes,
+    malformed volume config, root container mounts, non-Docker backends, and
+    unmapped paths fall back to the expanded original path without raising.
     """
     try:
         expanded = os.path.expanduser(path)

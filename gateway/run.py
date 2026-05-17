@@ -1418,13 +1418,14 @@ class GatewayRunner:
 
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
-        """Warn when Docker-backed gateways lack an explicit export mount.
+        """Warn when Docker-backed gateways lack host-readable bind mounts.
 
-        MEDIA delivery happens in the gateway process, so paths emitted by the model
-        must be readable from the host. A plain container-local path like
-        `/workspace/report.txt` or `/output/report.txt` often exists only inside
-        Docker, so users commonly need a dedicated export mount such as
-        `host-dir:/output`.
+        MEDIA delivery happens in the gateway process, so paths emitted by the
+        model must be readable from the host. A plain container-local path like
+        `/workspace/report.txt` or `/artifacts/report.txt` often exists only
+        inside Docker, so users commonly need a dedicated bind mount such as
+        `host-dir:/artifacts`. The container path is user-chosen through
+        ``terminal.docker_volumes`` / ``TERMINAL_DOCKER_VOLUMES``.
         """
         if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
             return
@@ -1439,9 +1440,11 @@ class GatewayRunner:
 
         logger.warning(
             "Docker backend is enabled for the messaging gateway but no explicit host-visible "
-            "output mount (for example '/home/user/.hermes/cache/documents:/output') is configured. "
-            "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
-            "for container-local paths like '/workspace/...' or '/output/...'."
+            "Docker bind mount is configured. This is fine if the model already emits "
+            "host-visible paths, but MEDIA file delivery can fail for container-local paths "
+            "like '/workspace/...' or '/artifacts/...'. Configure terminal.docker_volumes "
+            "with a host_path:container_path bind mount and emit MEDIA: paths under that "
+            "container_path."
         )
 
 

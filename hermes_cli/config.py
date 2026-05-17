@@ -611,9 +611,10 @@ DEFAULT_CONFIG = {
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example:
         # ["/home/user/projects:/workspace/projects",
-        #  "/home/user/.hermes/cache/documents:/output"]
-        # Gateway MEDIA delivery accepts host paths or mounted export paths
-        # under /output or /outputs, such as MEDIA:/output/report.txt.
+        #  "/home/user/.hermes/cache/documents:/agent-artifacts"]
+        # Gateway MEDIA delivery accepts host paths or mounted container paths
+        # derived from this list, such as MEDIA:/agent-artifacts/report.txt for
+        # the example above (or any other non-root container_path you choose).
         "docker_volumes": [],
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.

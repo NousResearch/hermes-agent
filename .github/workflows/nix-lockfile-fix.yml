@@ -182,7 +182,7 @@ jobs:
   # ── PR fix (manual / checkbox) ─────────────────────────────────────
   # Existing behavior: run on manual dispatch OR when a task-list
   # checkbox in the sticky lockfile-check comment flips from [ ] to [x].
-  fix:
+  fix-compute:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment'
@@ -194,6 +194,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+      owner: ${{ steps.resolve.outputs.owner }}
+      repo: ${{ steps.resolve.outputs.repo }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      pr: ${{ steps.resolve.outputs.pr }}
     steps:
       - name: Authorize & resolve PR
         id: resolve
@@ -277,47 +283,34 @@ jobs:
         id: apply
         run: nix run .#fix-lockfiles
 
-      - name: Generate GitHub App token
-        if: steps.apply.outputs.changed == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
-      - name: Commit & push
-        if: steps.apply.outputs.changed == 'true'
+      - name: Validate and stage patch
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
-          git remote set-url origin "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}.git"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nix/tui.nix nix/web.nix
-          git commit -m "fix(nix): refresh npm lockfile hashes"
-          git push
 
-      - name: Update sticky (applied)
-        if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3
+          if [ "${{ steps.apply.outputs.changed }}" != 'true' ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          unexpected="$(git diff --name-only | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
+          git diff -- nix/tui.nix nix/web.nix > nix-lockfile-fix.patch
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload lockfile patch
+        if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          header: nix-lockfile-check
-          number: ${{ steps.resolve.outputs.pr }}
-          message: |
-            ### ✅ Lockfile fix applied
-
-            Pushed a commit refreshing the npm lockfile hashes — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-
-      - name: Update sticky (already current)
-        if: steps.apply.outputs.changed == 'false' && steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3
-        with:
-          header: nix-lockfile-check
-          number: ${{ steps.resolve.outputs.pr }}
-          message: |
-            ### ✅ Lockfile hashes already current
-
-            Nothing to commit — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          name: nix-lockfile-fix-pr-patch
+          path: nix-lockfile-fix.patch
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Update sticky (failed)
         if: failure() && steps.resolve.outputs.pr != ''
@@ -329,3 +322,95 @@ jobs:
             ### ❌ Lockfile fix failed
 
             See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs.
+
+  fix-push:
+    if: needs.fix-compute.result == 'success'
+    needs: fix-compute
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate GitHub App token
+        if: needs.fix-compute.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout target branch
+        if: needs.fix-compute.outputs.changed == 'true'
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          repository: ${{ needs.fix-compute.outputs.owner }}/${{ needs.fix-compute.outputs.repo }}
+          ref: ${{ needs.fix-compute.outputs.ref }}
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Download lockfile patch
+        if: needs.fix-compute.outputs.changed == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: nix-lockfile-fix-pr-patch
+
+      - name: Validate patch
+        if: needs.fix-compute.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          touched="$(git apply --numstat nix-lockfile-fix.patch | awk 'NF {print $3}')"
+          unexpected="$(printf '%s\n' "$touched" | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Patch touches unexpected files: $unexpected"
+            exit 1
+          fi
+
+          git apply --check nix-lockfile-fix.patch
+
+      - name: Commit & push
+        if: needs.fix-compute.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply nix-lockfile-fix.patch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nix/tui.nix nix/web.nix
+          git commit -m "fix(nix): refresh npm lockfile hashes"
+          git push
+
+      - name: Update sticky (applied)
+        if: needs.fix-compute.outputs.changed == 'true' && needs.fix-compute.outputs.pr != ''
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3
+        with:
+          header: nix-lockfile-check
+          number: ${{ needs.fix-compute.outputs.pr }}
+          message: |
+            ### ✅ Lockfile fix applied
+
+            Pushed a commit refreshing the npm lockfile hashes — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+      - name: Update sticky (failed)
+        if: failure() && needs.fix-compute.outputs.pr != ''
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3
+        with:
+          header: nix-lockfile-check
+          number: ${{ needs.fix-compute.outputs.pr }}
+          message: |
+            ### ❌ Lockfile fix failed
+
+            See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for logs.
+
+      - name: Update sticky (already current)
+        if: needs.fix-compute.outputs.changed == 'false' && needs.fix-compute.outputs.pr != ''
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3
+        with:
+          header: nix-lockfile-check
+          number: ${{ needs.fix-compute.outputs.pr }}
+          message: |
+            ### ✅ Lockfile hashes already current
+
+            Nothing to commit — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).

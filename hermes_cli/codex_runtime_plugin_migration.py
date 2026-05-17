@@ -554,10 +554,10 @@ def _looks_like_test_tempdir(path: str) -> bool:
     return any(needle in normalized for needle in needles)
 
 
-def _build_hermes_tools_mcp_entry() -> dict:
+def _build_hermes_tools_mcp_entry(allowed_tools: Optional[list[str]] = None) -> dict:
     """Build the codex stdio-transport entry that launches Hermes' own
     tool surface as an MCP server. Codex's subprocess will call back into
-    this for browser/web/delegate_task/vision/memory/skills tools.
+    this only for names listed in codex_runtime.allow_runtime_tools.
 
     The command runs the worktree's Python via the current sys.executable
     so a hermes installed under /opt/, /usr/local/, or a venv all work.
@@ -592,6 +592,18 @@ def _build_hermes_tools_mcp_entry() -> dict:
     # Quiet mode + redaction defaults so the MCP wire stays clean.
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
+    protected_tools = {
+        "memory", "session_search", "send_message", "cronjob",
+        "clarify", "todo", "delegate_task",
+    }
+    sanitized_allowed = []
+    for tool_name in allowed_tools or []:
+        if not isinstance(tool_name, str):
+            continue
+        normalized = tool_name.strip()
+        if normalized and normalized not in protected_tools and normalized not in sanitized_allowed:
+            sanitized_allowed.append(normalized)
+    env["HERMES_CODEX_RUNTIME_TOOLS"] = ",".join(sanitized_allowed)
 
     out: dict[str, Any] = {
         "command": sys.executable,
@@ -694,7 +706,9 @@ def migrate(
     # The server itself is agent/transports/hermes_tools_mcp_server.py
     # and is launched on demand by codex (stdio MCP).
     if expose_hermes_tools:
-        translated["hermes-tools"] = _build_hermes_tools_mcp_entry()
+        runtime_cfg = (hermes_config or {}).get("codex_runtime") or {}
+        allowed_tools = runtime_cfg.get("allow_runtime_tools") if isinstance(runtime_cfg, dict) else []
+        translated["hermes-tools"] = _build_hermes_tools_mcp_entry(allowed_tools)
         if "hermes-tools" not in report.migrated:
             report.migrated.append("hermes-tools")
 

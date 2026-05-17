@@ -127,6 +127,9 @@ def _get_model_config() -> Dict[str, Any]:
             detected = _auto_detect_local_model(base_url)
             if detected:
                 cfg["default"] = detected
+        codex_runtime_cfg = config.get("codex_runtime")
+        if isinstance(codex_runtime_cfg, dict):
+            cfg["codex_runtime"] = dict(codex_runtime_cfg)
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
@@ -175,9 +178,9 @@ _VALID_API_MODES = {
     "bedrock_converse",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Hermes' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
+    # instead of Hermes' tool dispatch. Gated behind `codex_runtime.enabled`
+    # AND `codex_runtime.mode == "app_server"`. Legacy model.openai_runtime
+    # is compatibility-only and cannot activate the runtime by itself.
     "codex_app_server",
 }
 
@@ -197,22 +200,19 @@ def _maybe_apply_codex_app_server_runtime(
     api_mode: str,
     model_cfg: Optional[Dict[str, Any]],
 ) -> str:
-    """Optional opt-in: rewrite api_mode → "codex_app_server" for OpenAI/Codex
-    providers when the user has explicitly enabled that runtime via
-    `model.openai_runtime: codex_app_server` in config.yaml.
+    """Rewrite api_mode to codex_app_server only when the authoritative gate is open.
 
-    Default behavior is preserved: when the key is unset, "auto", or empty,
-    this function is a no-op. Only providers in {"openai", "openai-codex"}
-    are eligible — other providers (anthropic, openrouter, etc.) cannot be
-    rerouted through codex.
-
-    Returns the (possibly-rewritten) api_mode."""
+    `model.openai_runtime` is legacy compatibility only. Stale values there must
+    not activate app-server execution after rollback or config migration.
+    """
     if not model_cfg:
         return api_mode
     if provider not in {"openai", "openai-codex"}:
         return api_mode
-    runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
-    if runtime == "codex_app_server":
+    codex_cfg = model_cfg.get("codex_runtime")
+    if not isinstance(codex_cfg, dict):
+        return api_mode
+    if codex_cfg.get("enabled") is True and str(codex_cfg.get("mode") or "").strip().lower() == "app_server":
         return "codex_app_server"
     return api_mode
 
@@ -859,9 +859,14 @@ def _resolve_explicit_runtime(
             last_refresh = creds.get("last_refresh")
             if not explicit_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
+        api_mode = _maybe_apply_codex_app_server_runtime(
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model_cfg=model_cfg,
+        )
         return {
             "provider": "openai-codex",
-            "api_mode": "codex_responses",
+            "api_mode": api_mode,
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",

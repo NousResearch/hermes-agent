@@ -218,6 +218,26 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
+
+    try:
+        from hermes_cli.config import load_config as _load_codex_runtime_cfg
+        _agent_cfg = _load_codex_runtime_cfg() or {}
+    except Exception:
+        _agent_cfg = {}
+    _codex_runtime_config = _agent_cfg.get("codex_runtime", {}) if isinstance(_agent_cfg, dict) else {}
+    if not isinstance(_codex_runtime_config, dict):
+        _codex_runtime_config = {}
+    agent.codex_runtime_enabled = cfg_get(_codex_runtime_config, "enabled", default=False) is True
+    _codex_runtime_mode = str(cfg_get(_codex_runtime_config, "mode", default="responses_only") or "responses_only").strip().lower()
+    agent.codex_runtime_mode = _codex_runtime_mode if _codex_runtime_mode in {"responses_only", "app_server"} else "responses_only"
+    _codex_runtime_allowlist = cfg_get(_codex_runtime_config, "allow_runtime_tools", default=[])
+    _protected_codex_tools = {"memory", "session_search", "send_message", "cronjob", "clarify", "todo", "delegate_task"}
+    agent.codex_runtime_allow_runtime_tools = [
+        tool_name.strip()
+        for tool_name in (_codex_runtime_allowlist if isinstance(_codex_runtime_allowlist, list) else [])
+        if isinstance(tool_name, str) and tool_name.strip() and tool_name.strip() not in _protected_codex_tools
+    ]
+
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
@@ -256,6 +276,13 @@ def init_agent(
         agent.api_mode = "bedrock_converse"
     else:
         agent.api_mode = "chat_completions"
+
+    if agent.api_mode == "codex_app_server" and not (
+        agent.codex_runtime_enabled is True and agent.codex_runtime_mode == "app_server"
+    ):
+        # Legacy/explicit codex_app_server must not bypass the authoritative
+        # codex_runtime gate. Fall back to the normal OpenAI/Codex runtime.
+        agent.api_mode = "codex_responses" if agent.provider in {"openai", "openai-codex"} else "chat_completions"
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.

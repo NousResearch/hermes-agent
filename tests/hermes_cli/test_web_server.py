@@ -2,6 +2,7 @@
 
 import os
 import json
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -345,6 +346,82 @@ class TestWebServerEndpoints:
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
 
+    def test_file_upload_saves_under_profile_media_dir(self):
+        """Dashboard uploads are saved inside the active Hermes profile."""
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.post(
+            "/api/media/file?filename=..%2Fdemo%20clip.pdf",
+            content=b"%PDF-fake-document",
+            headers={"Content-Type": "application/pdf"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        stored = Path(data["stored_path"])
+        root = get_hermes_home() / "media" / "dashboard-uploads"
+        assert stored.is_file()
+        assert stored.read_bytes() == b"%PDF-fake-document"
+        assert stored.resolve().is_relative_to(root.resolve())
+        assert ".." not in stored.name
+        assert data["agent_path"] == data["stored_path"]
+        assert data["kind"] == "文档/数据"
+        assert data["suggested_prompt"].startswith("请分析这个本地文档/数据文件：")
+
+    def test_file_upload_classifies_video_files(self):
+        resp = self.client.post(
+            "/api/media/file?filename=demo.mp4",
+            content=b"fake-video-bytes",
+            headers={"Content-Type": "video/mp4"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["kind"] == "视频"
+        assert "视频/音频" in data["suggested_prompt"]
+
+    def test_file_upload_rejects_unsupported_extensions(self):
+        resp = self.client.post(
+            "/api/media/file?filename=installer.exe",
+            content=b"not-safe",
+        )
+
+        assert resp.status_code == 400
+        assert "Unsupported file extension" in resp.json()["detail"]
+
+    def test_file_upload_rejects_empty_body(self):
+        resp = self.client.post(
+            "/api/media/file?filename=empty.mp4",
+            content=b"",
+        )
+
+        assert resp.status_code == 400
+        assert "empty" in resp.json()["detail"].lower()
+
+    def test_file_upload_rejects_oversized_body(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_DASHBOARD_UPLOAD_MAX_BYTES", 3)
+        resp = self.client.post(
+            "/api/media/file?filename=large.mp4",
+            content=b"1234",
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+
+    def test_file_upload_requires_session_token(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
+            "/api/media/file?filename=demo.pdf",
+            content=b"fake-pdf",
+        )
+
+        assert resp.status_code == 401
+
 
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests
@@ -590,6 +667,259 @@ class TestNewEndpoints:
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
+
+    def test_session_organization_project_assignment_round_trip(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="organize-session-1",
+                source="cli",
+                model="gpt-5.5",
+            )
+            db.append_message(
+                "organize-session-1",
+                role="user",
+                content="Sort this conversation into a project.",
+            )
+        finally:
+            db.close()
+
+        create_resp = self.client.post(
+            "/api/session-organization/projects",
+            json={"name": "A Share Research", "description": "Market work"},
+        )
+        assert create_resp.status_code == 200
+        project = create_resp.json()["project"]
+
+        assign_resp = self.client.put(
+            "/api/session-organization/sessions/organize-session-1",
+            json={"project_id": project["id"]},
+        )
+        assert assign_resp.status_code == 200
+        assert assign_resp.json()["assignment"]["project_id"] == project["id"]
+
+        org_resp = self.client.get("/api/session-organization")
+        assert org_resp.status_code == 200
+        org = org_resp.json()
+        assert org["projects"][0]["name"] == "A Share Research"
+        assert org["assignments"]["organize-session-1"]["project_id"] == project["id"]
+
+        sessions_resp = self.client.get("/api/sessions?limit=5")
+        assert sessions_resp.status_code == 200
+        sessions = sessions_resp.json()["sessions"]
+        row = next(s for s in sessions if s["id"] == "organize-session-1")
+        assert row["project_id"] == project["id"]
+
+        project_sessions = self.client.get(
+            f"/api/sessions?project_id={project['id']}&limit=5"
+        ).json()["sessions"]
+        assert [s["id"] for s in project_sessions] == ["organize-session-1"]
+
+        general_sessions = self.client.get(
+            "/api/sessions?project_id=__general__&limit=5"
+        ).json()["sessions"]
+        assert all(s.get("project_id") is None for s in general_sessions)
+
+    def test_general_sessions_hide_unassigned_codex_mirrors(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="ordinary-hermes-session",
+                source="cli",
+                model="gpt-5.5",
+            )
+            db.create_session(
+                session_id="codex-orphan-session",
+                source="codex",
+                model="codex",
+            )
+            db.create_session(
+                session_id="technical-smoke-session",
+                source="tool",
+                model="gpt-5.5",
+            )
+        finally:
+            db.close()
+
+        general_sessions = self.client.get(
+            "/api/sessions?project_id=__general__&limit=10"
+        ).json()["sessions"]
+        ids = [s["id"] for s in general_sessions]
+        assert "ordinary-hermes-session" in ids
+        assert "codex-orphan-session" not in ids
+        assert "technical-smoke-session" not in ids
+
+    def test_session_organization_unassigns_when_project_deleted(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="organize-session-2",
+                source="cli",
+                model="gpt-5.5",
+            )
+        finally:
+            db.close()
+
+        project = self.client.post(
+            "/api/session-organization/projects",
+            json={"name": "Cloud Ops"},
+        ).json()["project"]
+        self.client.put(
+            "/api/session-organization/sessions/organize-session-2",
+            json={"project_id": project["id"]},
+        )
+
+        delete_resp = self.client.delete(
+            f"/api/session-organization/projects/{project['id']}"
+        )
+        assert delete_resp.status_code == 200
+
+        org = self.client.get("/api/session-organization").json()
+        assert org["projects"] == []
+        assert org["assignments"] == {}
+
+    def test_codex_session_index_import_mirrors_without_moving_files(self, monkeypatch, tmp_path):
+        codex_home = tmp_path / "codex-home"
+        session_id = "019df9b4-dd41-7883-b85d-ca95c76e508a"
+        session_dir = codex_home / "sessions" / "2026" / "05" / "06"
+        session_dir.mkdir(parents=True)
+        session_file = session_dir / f"rollout-2026-05-06T03-54-33-{session_id}.jsonl"
+        session_file.write_text(
+            '{"timestamp":"2026-05-06T03:54:33Z","type":"session_meta","payload":{}}\n',
+            encoding="utf-8",
+        )
+        (codex_home / "session_index.jsonl").write_text(
+            json.dumps(
+                {
+                    "id": session_id,
+                    "thread_name": "Mirror Codex history",
+                    "updated_at": "2026-05-06T03:54:33.1234567Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_CODEX_HOME", str(codex_home))
+
+        resp = self.client.post("/api/codex-sessions/import", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["imported"] == 1
+        assert data["updated"] == 0
+        assert data["project"]["name"] == "Codex 会话库"
+        assert session_file.exists()
+
+        mirror_id = f"codex-{session_id}"
+        sessions = self.client.get(
+            f"/api/sessions?project_id={data['project']['id']}&limit=5"
+        ).json()["sessions"]
+        assert [s["id"] for s in sessions] == [mirror_id]
+        assert sessions[0]["source"] == "codex"
+        assert sessions[0]["title"] == "Mirror Codex history"
+
+        messages = self.client.get(f"/api/sessions/{mirror_id}/messages").json()["messages"]
+        assert len(messages) == 1
+        assert "Codex mirror import" in messages[0]["content"]
+        assert str(session_file) in messages[0]["content"]
+
+        repeat = self.client.post("/api/codex-sessions/import", json={}).json()
+        assert repeat["imported"] == 0
+        assert repeat["updated"] == 1
+
+    def test_codex_import_mirrors_workspace_projects(self, monkeypatch, tmp_path):
+        codex_home = tmp_path / "codex-home"
+        session_dir = codex_home / "sessions" / "2026" / "05" / "16"
+        session_dir.mkdir(parents=True)
+        first_id = "019e1943-39fb-7dd3-84db-733fe280a20f"
+        second_id = "019e2817-6a31-70e0-a7b2-5bdc5f232ee1"
+        for sid in (first_id, second_id):
+            (session_dir / f"rollout-2026-05-16T00-00-00-{sid}.jsonl").write_text(
+                '{"timestamp":"2026-05-16T00:00:00Z","type":"session_meta","payload":{}}\n',
+                encoding="utf-8",
+            )
+
+        (codex_home / "session_index.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "id": first_id,
+                            "thread_name": "Cloud ops thread",
+                            "updated_at": "2026-05-16T00:00:00Z",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "id": second_id,
+                            "thread_name": "Hermes thread",
+                            "updated_at": "2026-05-16T00:01:00Z",
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        project_9 = r"D:\我的文档\Documents\New project 9"
+        project_7 = r"D:\我的文档\Documents\New project 7"
+        (codex_home / ".codex-global-state.json").write_text(
+            json.dumps(
+                {
+                    "project-order": [project_9, project_7],
+                    "electron-workspace-root-labels": {
+                        project_9: "云端服务器",
+                        project_7: "Herms Agent",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        state_db = codex_home / "state_5.sqlite"
+        conn = sqlite3.connect(state_db)
+        try:
+            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT)")
+            conn.execute(
+                "INSERT INTO threads (id, cwd) VALUES (?, ?)",
+                (first_id, r"\\?\D:\我的文档\Documents\New project 9"),
+            )
+            conn.execute(
+                "INSERT INTO threads (id, cwd) VALUES (?, ?)",
+                (second_id, r"\\?\D:\我的文档\Documents\New project 7"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        monkeypatch.setenv("HERMES_CODEX_HOME", str(codex_home))
+
+        resp = self.client.post("/api/codex-sessions/import", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["imported"] == 2
+        assert [p["name"] for p in data["projects"]] == ["云端服务器", "Herms Agent"]
+
+        org = self.client.get("/api/session-organization").json()
+        project_by_name = {p["name"]: p for p in org["projects"]}
+        assert project_by_name["云端服务器"]["workspace_path"] == project_9
+        assert project_by_name["Herms Agent"]["workspace_path"] == project_7
+
+        cloud_sessions = self.client.get(
+            f"/api/sessions?project_id={project_by_name['云端服务器']['id']}&limit=5"
+        ).json()["sessions"]
+        hermes_sessions = self.client.get(
+            f"/api/sessions?project_id={project_by_name['Herms Agent']['id']}&limit=5"
+        ).json()["sessions"]
+        assert [s["id"] for s in cloud_sessions] == [f"codex-{first_id}"]
+        assert [s["id"] for s in hermes_sessions] == [f"codex-{second_id}"]
 
     # --- Profiles ---
 

@@ -10,18 +10,23 @@ Usage:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hmac
 import importlib.util
 import json
 import logging
 import os
 import secrets
+import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import tempfile
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -94,6 +99,427 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
+_DASHBOARD_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+_DASHBOARD_UPLOAD_VIDEO_EXTENSIONS: frozenset[str] = frozenset({
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".mkv",
+    ".webm",
+    ".avi",
+})
+_DASHBOARD_UPLOAD_AUDIO_EXTENSIONS: frozenset[str] = frozenset({
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+})
+_DASHBOARD_UPLOAD_IMAGE_EXTENSIONS: frozenset[str] = frozenset({
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".webp",
+})
+_DASHBOARD_UPLOAD_DOCUMENT_EXTENSIONS: frozenset[str] = frozenset({
+    ".csv",
+    ".doc",
+    ".docx",
+    ".htm",
+    ".html",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".ods",
+    ".odp",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".rtf",
+    ".tsv",
+    ".txt",
+    ".xls",
+    ".xlsm",
+    ".xlsx",
+    ".xml",
+    ".yaml",
+    ".yml",
+})
+_DASHBOARD_UPLOAD_ARCHIVE_EXTENSIONS: frozenset[str] = frozenset({
+    ".7z",
+    ".gz",
+    ".tar",
+    ".tgz",
+    ".zip",
+})
+_DASHBOARD_UPLOAD_EXTENSIONS: frozenset[str] = frozenset().union(
+    _DASHBOARD_UPLOAD_VIDEO_EXTENSIONS,
+    _DASHBOARD_UPLOAD_AUDIO_EXTENSIONS,
+    _DASHBOARD_UPLOAD_IMAGE_EXTENSIONS,
+    _DASHBOARD_UPLOAD_DOCUMENT_EXTENSIONS,
+    _DASHBOARD_UPLOAD_ARCHIVE_EXTENSIONS,
+)
+_SESSION_ORGANIZATION_FILENAME = "session_organization.json"
+_session_organization_lock = threading.Lock()
+
+
+def _session_organization_path() -> Path:
+    return get_hermes_home() / _SESSION_ORGANIZATION_FILENAME
+
+
+def _empty_session_organization() -> Dict[str, Any]:
+    now = time.time()
+    return {
+        "version": 1,
+        "updated_at": now,
+        "projects": [],
+        "assignments": {},
+    }
+
+
+def _load_session_organization() -> Dict[str, Any]:
+    path = _session_organization_path()
+    if not path.exists():
+        return _empty_session_organization()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _log.warning("session organization file is unreadable: %s", path)
+        return _empty_session_organization()
+
+    if not isinstance(raw, dict):
+        return _empty_session_organization()
+    raw.setdefault("version", 1)
+    raw.setdefault("updated_at", time.time())
+    raw.setdefault("projects", [])
+    raw.setdefault("assignments", {})
+    if not isinstance(raw["projects"], list):
+        raw["projects"] = []
+    if not isinstance(raw["assignments"], dict):
+        raw["assignments"] = {}
+    return raw
+
+
+def _save_session_organization(data: Dict[str, Any]) -> None:
+    path = _session_organization_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["version"] = 1
+    data["updated_at"] = time.time()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _clean_session_project_name(name: str) -> str:
+    cleaned = " ".join((name or "").replace("\x00", "").split())
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Project name is required")
+    if len(cleaned) > 80:
+        raise HTTPException(status_code=400, detail="Project name is too long")
+    return cleaned
+
+
+def _clean_optional_text(value: Optional[str], *, max_len: int = 500) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).replace("\x00", "").split())
+    if len(cleaned) > max_len:
+        raise HTTPException(status_code=400, detail="Text field is too long")
+    return cleaned
+
+
+def _project_name_exists(data: Dict[str, Any], name: str, *, except_id: str = "") -> bool:
+    folded = name.casefold()
+    return any(
+        str(p.get("name", "")).casefold() == folded and p.get("id") != except_id
+        for p in data.get("projects", [])
+        if isinstance(p, dict)
+    )
+
+
+def _project_ids(data: Dict[str, Any]) -> set[str]:
+    return {
+        str(p.get("id"))
+        for p in data.get("projects", [])
+        if isinstance(p, dict) and p.get("id")
+    }
+
+
+def _normalize_session_organization(data: Dict[str, Any]) -> Dict[str, Any]:
+    project_ids = _project_ids(data)
+    assignments = {}
+    for sid, assignment in data.get("assignments", {}).items():
+        if not isinstance(sid, str) or not isinstance(assignment, dict):
+            continue
+        project_id = assignment.get("project_id")
+        if project_id not in project_ids:
+            continue
+        assignments[sid] = {
+            "project_id": project_id,
+            "updated_at": float(assignment.get("updated_at") or data.get("updated_at") or 0),
+        }
+    data["assignments"] = assignments
+    return data
+
+
+def _session_assignment_for(data: Dict[str, Any], session_id: str) -> Dict[str, Any] | None:
+    assignment = data.get("assignments", {}).get(session_id)
+    if not isinstance(assignment, dict):
+        return None
+    project_id = assignment.get("project_id")
+    if not project_id or project_id not in _project_ids(data):
+        return None
+    return assignment
+
+
+def _default_codex_home() -> Path:
+    configured = os.getenv("HERMES_CODEX_HOME") or os.getenv("CODEX_HOME")
+    if configured:
+        return Path(configured).expanduser()
+
+    hermes_home = get_hermes_home().resolve()
+    parts = hermes_home.parts
+    if len(parts) >= 4 and parts[0] == "/" and parts[1] == "mnt" and parts[2] == "c":
+        users_idx = next(
+            (idx for idx, part in enumerate(parts) if part.lower() == "users"),
+            None,
+        )
+        if users_idx is not None and users_idx + 1 < len(parts):
+            return Path(*parts[: users_idx + 2]) / ".codex"
+
+    return Path.home() / ".codex"
+
+
+def _parse_codex_updated_at(value: Any) -> float:
+    if not isinstance(value, str) or not value.strip():
+        return time.time()
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    if "." in raw:
+        head, tail = raw.split(".", 1)
+        digits = []
+        rest = ""
+        for idx, ch in enumerate(tail):
+            if ch.isdigit():
+                digits.append(ch)
+                continue
+            rest = tail[idx:]
+            break
+        if len(digits) > 6:
+            raw = f"{head}.{''.join(digits[:6])}{rest}"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return time.time()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _codex_session_file_map(sessions_dir: Path) -> Dict[str, Path]:
+    result: Dict[str, Path] = {}
+    if not sessions_dir.exists():
+        return result
+    for path in sessions_dir.rglob("*.jsonl"):
+        name = path.name
+        if "-" not in name:
+            continue
+        codex_id = name.rsplit("-", 5)[-5:]
+        if len(codex_id) != 5:
+            continue
+        joined = "-".join(codex_id).removesuffix(".jsonl")
+        if joined:
+            result.setdefault(joined, path)
+    return result
+
+
+def _normalize_codex_workspace_path(value: Any) -> str:
+    if value is None:
+        return ""
+    raw = str(value).strip().replace("\x00", "")
+    if not raw:
+        return ""
+    if raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    raw = raw.replace("\\", "/").rstrip("/")
+    while "//" in raw:
+        raw = raw.replace("//", "/")
+    return raw.casefold()
+
+
+def _codex_workspace_basename(value: str) -> str:
+    raw = str(value or "").strip().rstrip("\\/")
+    if raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    parts = [part for part in raw.replace("\\", "/").split("/") if part]
+    return parts[-1] if parts else "Codex project"
+
+
+def _load_codex_workspace_projects(codex_home: Path) -> List[Dict[str, str]]:
+    state_path = codex_home / ".codex-global-state.json"
+    if not state_path.exists():
+        return []
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _log.warning("Codex global state is unreadable: %s", state_path)
+        return []
+    if not isinstance(raw, dict):
+        return []
+
+    labels = raw.get("electron-workspace-root-labels")
+    if not isinstance(labels, dict):
+        labels = {}
+    ordered = raw.get("project-order")
+    if not isinstance(ordered, list):
+        ordered = []
+
+    roots: List[str] = []
+    seen: set[str] = set()
+    for candidate in [*ordered, *labels.keys()]:
+        if not isinstance(candidate, str):
+            continue
+        normalized = _normalize_codex_workspace_path(candidate)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        roots.append(candidate)
+
+    projects: List[Dict[str, str]] = []
+    for root in roots:
+        label = labels.get(root)
+        name = _clean_optional_text(label, max_len=80) if isinstance(label, str) else None
+        projects.append(
+            {
+                "root": root,
+                "normalized_root": _normalize_codex_workspace_path(root),
+                "name": name or _codex_workspace_basename(root),
+            }
+        )
+    return projects
+
+
+def _codex_state_db_path(codex_home: Path) -> Optional[Path]:
+    candidates = sorted(
+        codex_home.glob("state_*.sqlite"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _query_codex_thread_workspaces(state_db: Path) -> Dict[str, str]:
+    conn = sqlite3.connect(f"file:{state_db.as_posix()}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT id, cwd FROM threads WHERE id IS NOT NULL").fetchall()
+    finally:
+        conn.close()
+
+    result: Dict[str, str] = {}
+    for thread_id, cwd in rows:
+        if not thread_id:
+            continue
+        normalized = _normalize_codex_workspace_path(cwd)
+        if normalized:
+            result[str(thread_id)] = normalized
+    return result
+
+
+def _query_codex_thread_workspaces_from_snapshot(state_db: Path) -> Dict[str, str]:
+    with tempfile.TemporaryDirectory(prefix="hermes-codex-state-") as tmp:
+        tmp_db = Path(tmp) / state_db.name
+        shutil.copy2(state_db, tmp_db)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(state_db) + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, Path(str(tmp_db) + suffix))
+        return _query_codex_thread_workspaces(tmp_db)
+
+
+def _load_codex_thread_workspaces(codex_home: Path) -> Dict[str, str]:
+    state_db = _codex_state_db_path(codex_home)
+    if state_db is None or not state_db.exists():
+        return {}
+    try:
+        return _query_codex_thread_workspaces(state_db)
+    except (OSError, sqlite3.Error):
+        try:
+            return _query_codex_thread_workspaces_from_snapshot(state_db)
+        except (OSError, sqlite3.Error):
+            _log.warning("Codex state DB does not expose thread workspace metadata: %s", state_db)
+            return {}
+
+
+def _codex_project_for_workspace(
+    normalized_workspace: str,
+    projects: List[Dict[str, str]],
+) -> Dict[str, str] | None:
+    if not normalized_workspace:
+        return None
+    best: Dict[str, str] | None = None
+    best_len = -1
+    for project in projects:
+        root = project.get("normalized_root", "")
+        if not root:
+            continue
+        if normalized_workspace == root or normalized_workspace.startswith(f"{root}/"):
+            if len(root) > best_len:
+                best = project
+                best_len = len(root)
+    return best
+
+
+def _codex_mirror_message(
+    *,
+    codex_id: str,
+    title: str,
+    updated_at: str,
+    source_path: Optional[Path],
+) -> str:
+    path_text = str(source_path) if source_path else "(source file not found)"
+    return (
+        "Codex mirror import\n\n"
+        f"- Codex session id: {codex_id}\n"
+        f"- Title: {title or '(untitled)'}\n"
+        f"- Updated at: {updated_at or '(unknown)'}\n"
+        f"- Original file: {path_text}\n\n"
+        "This Hermes session is a non-destructive mirror of the Codex index. "
+        "The original Codex file remains in place."
+    )
+
+
+def _find_or_create_session_project(
+    data: Dict[str, Any],
+    *,
+    name: str,
+    description: str,
+    workspace_path: Optional[str],
+) -> Dict[str, Any]:
+    for project in data.get("projects", []):
+        if isinstance(project, dict) and str(project.get("name", "")).casefold() == name.casefold():
+            return project
+    now = time.time()
+    project = {
+        "id": uuid.uuid4().hex[:12],
+        "name": name,
+        "description": description,
+        "default_model": "codex",
+        "default_skills": [],
+        "workspace_path": workspace_path,
+        "created_at": now,
+        "updated_at": now,
+    }
+    data.setdefault("projects", []).append(project)
+    return project
 
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
@@ -460,6 +886,32 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class SessionProjectCreate(BaseModel):
+    name: str
+    description: str = ""
+    default_model: Optional[str] = None
+    default_skills: List[str] = []
+    workspace_path: Optional[str] = None
+
+
+class SessionProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    default_model: Optional[str] = None
+    default_skills: Optional[List[str]] = None
+    workspace_path: Optional[str] = None
+
+
+class SessionProjectAssignment(BaseModel):
+    project_id: Optional[str] = None
+
+
+class CodexSessionImportRequest(BaseModel):
+    codex_home: Optional[str] = None
+    project_name: str = "Codex 会话库"
+    limit: int = 1000
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -772,26 +1224,469 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+def _sanitize_dashboard_upload_filename(filename: str) -> str:
+    """Return a basename safe to persist under the Hermes profile media dir."""
+    raw = (filename or "").replace("\x00", "").replace("\\", "/")
+    name = Path(raw).name.strip().strip(".")
+    if not name:
+        name = "file"
+
+    suffix = Path(name).suffix.lower()
+    stem = Path(name).stem or "file"
+    safe_stem = "".join(
+        ch if ch.isalnum() or ch in {" ", ".", "-", "_"} else "_"
+        for ch in stem
+    )
+    safe_stem = " ".join(safe_stem.split()).strip(" .-_") or "file"
+    safe_stem = safe_stem[:96].rstrip(" .-_") or "file"
+    return f"{safe_stem}{suffix}"
+
+
+def _dashboard_upload_root() -> Path:
+    return get_hermes_home() / "media" / "dashboard-uploads"
+
+
+def _dashboard_upload_target(filename: str) -> Path:
+    safe_name = _sanitize_dashboard_upload_filename(filename)
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in _DASHBOARD_UPLOAD_EXTENSIONS:
+        allowed = ", ".join(sorted(_DASHBOARD_UPLOAD_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file extension. Allowed: {allowed}",
+        )
+
+    root = _dashboard_upload_root()
+    root.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    target = (root / f"{timestamp}-{uuid.uuid4().hex[:8]}-{safe_name}").resolve()
+    if not target.is_relative_to(root.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid upload filename.")
+    return target
+
+
+def _dashboard_upload_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in _DASHBOARD_UPLOAD_VIDEO_EXTENSIONS:
+        return "视频"
+    if suffix in _DASHBOARD_UPLOAD_AUDIO_EXTENSIONS:
+        return "音频"
+    if suffix in _DASHBOARD_UPLOAD_IMAGE_EXTENSIONS:
+        return "图片"
+    if suffix in _DASHBOARD_UPLOAD_ARCHIVE_EXTENSIONS:
+        return "压缩包"
+    return "文档/数据"
+
+
+def _dashboard_file_analysis_prompt(path: Path) -> str:
+    kind = _dashboard_upload_kind(path)
+    return (
+        f"请分析这个本地{kind}文件：{path}。"
+        "请先识别文件类型和可用工具，再选择安全的读取方式。"
+        "如果是视频/音频，请优先提取媒体信息、关键帧或转写；"
+        "如果是图片/PDF/Office/文本/数据表，请读取内容并提炼结构、要点和异常；"
+        "如果是压缩包，请先列出目录和文件清单，不要执行里面的脚本或程序。"
+        "最后用中文总结内容、关键发现、可执行建议、明显风险和需要我确认的地方。"
+        "不要移动、删除或执行原文件。"
+    )
+
+
+@app.post("/api/media/file")
+@app.post("/api/media/video")
+async def upload_dashboard_file(request: Request):
+    """Save a dashboard-uploaded file under the active Hermes profile."""
+    _require_token(request)
+    target = _dashboard_upload_target(request.query_params.get("filename", ""))
+
+    total = 0
+    try:
+        with target.open("xb") as fh:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                if total + len(chunk) > _DASHBOARD_UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            "File is too large. "
+                            f"Maximum size is {_DASHBOARD_UPLOAD_MAX_BYTES // (1024 * 1024)} MB."
+                        ),
+                    )
+                fh.write(chunk)
+                total += len(chunk)
+    except HTTPException:
+        target.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        _log.exception("POST /api/media/file failed")
+        raise HTTPException(status_code=500, detail="Failed to save file upload.") from exc
+
+    if total == 0:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    path_text = str(target)
+    return {
+        "ok": True,
+        "filename": target.name,
+        "size": total,
+        "kind": _dashboard_upload_kind(target),
+        "content_type": request.headers.get("content-type", ""),
+        "stored_path": path_text,
+        "agent_path": path_text,
+        "suggested_prompt": _dashboard_file_analysis_prompt(target),
+    }
+
+
 @app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+async def get_sessions(limit: int = 20, offset: int = 0, project_id: Optional[str] = None):
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
+            organization = _normalize_session_organization(_load_session_organization())
             now = time.time()
-            for s in sessions:
+
+            def decorate_session(s: Dict[str, Any]) -> Dict[str, Any]:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                assignment = _session_assignment_for(organization, s.get("id", ""))
+                s["project_id"] = assignment.get("project_id") if assignment else None
+                return s
+
+            if project_id:
+                all_sessions = [
+                    decorate_session(s)
+                    for s in db.list_sessions_rich(limit=10000, offset=0)
+                ]
+                if project_id == "__general__":
+                    filtered = [
+                        s
+                        for s in all_sessions
+                        if not s.get("project_id")
+                        and s.get("source") not in {"codex", "tool"}
+                    ]
+                else:
+                    filtered = [s for s in all_sessions if s.get("project_id") == project_id]
+                total = len(filtered)
+                sessions = filtered[offset: offset + limit]
+            else:
+                sessions = [
+                    decorate_session(s)
+                    for s in db.list_sessions_rich(limit=limit, offset=offset)
+                ]
+                total = db.session_count()
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/session-organization")
+async def get_session_organization():
+    try:
+        with _session_organization_lock:
+            data = _normalize_session_organization(_load_session_organization())
+            _save_session_organization(data)
+        return data
+    except Exception:
+        _log.exception("GET /api/session-organization failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/session-organization/projects")
+async def create_session_project(body: SessionProjectCreate):
+    name = _clean_session_project_name(body.name)
+    description = _clean_optional_text(body.description, max_len=500) or ""
+    workspace_path = _clean_optional_text(body.workspace_path, max_len=500)
+    default_model = _clean_optional_text(body.default_model, max_len=160)
+    default_skills = [
+        item for item in (_clean_optional_text(skill, max_len=80) for skill in body.default_skills)
+        if item
+    ]
+
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        if _project_name_exists(data, name):
+            raise HTTPException(status_code=409, detail="Project name already exists")
+        now = time.time()
+        project = {
+            "id": uuid.uuid4().hex[:12],
+            "name": name,
+            "description": description,
+            "default_model": default_model,
+            "default_skills": default_skills,
+            "workspace_path": workspace_path,
+            "created_at": now,
+            "updated_at": now,
+        }
+        data["projects"].append(project)
+        _save_session_organization(data)
+    return {"project": project}
+
+
+@app.patch("/api/session-organization/projects/{project_id}")
+async def update_session_project(project_id: str, body: SessionProjectUpdate):
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        for project in data.get("projects", []):
+            if project.get("id") != project_id:
+                continue
+            if body.name is not None:
+                name = _clean_session_project_name(body.name)
+                if _project_name_exists(data, name, except_id=project_id):
+                    raise HTTPException(status_code=409, detail="Project name already exists")
+                project["name"] = name
+            if body.description is not None:
+                project["description"] = _clean_optional_text(body.description, max_len=500) or ""
+            if body.default_model is not None:
+                project["default_model"] = _clean_optional_text(body.default_model, max_len=160)
+            if body.default_skills is not None:
+                project["default_skills"] = [
+                    item
+                    for item in (
+                        _clean_optional_text(skill, max_len=80)
+                        for skill in body.default_skills
+                    )
+                    if item
+                ]
+            if body.workspace_path is not None:
+                project["workspace_path"] = _clean_optional_text(body.workspace_path, max_len=500)
+            project["updated_at"] = time.time()
+            _save_session_organization(data)
+            return {"project": project}
+    raise HTTPException(status_code=404, detail="Project not found")
+
+
+@app.delete("/api/session-organization/projects/{project_id}")
+async def delete_session_project(project_id: str):
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        before = len(data.get("projects", []))
+        data["projects"] = [
+            p for p in data.get("projects", [])
+            if isinstance(p, dict) and p.get("id") != project_id
+        ]
+        if len(data["projects"]) == before:
+            raise HTTPException(status_code=404, detail="Project not found")
+        data["assignments"] = {
+            sid: assignment
+            for sid, assignment in data.get("assignments", {}).items()
+            if isinstance(assignment, dict) and assignment.get("project_id") != project_id
+        }
+        _save_session_organization(data)
+    return {"ok": True}
+
+
+@app.put("/api/session-organization/sessions/{session_id}")
+async def assign_session_project(session_id: str, body: SessionProjectAssignment):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid or not db.get_session(sid):
+            raise HTTPException(status_code=404, detail="Session not found")
+    finally:
+        db.close()
+
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        project_id = body.project_id
+        if not project_id:
+            data.get("assignments", {}).pop(sid, None)
+            _save_session_organization(data)
+            return {"assignment": None}
+        if project_id not in _project_ids(data):
+            raise HTTPException(status_code=404, detail="Project not found")
+        assignment = {"project_id": project_id, "updated_at": time.time()}
+        data.setdefault("assignments", {})[sid] = assignment
+        _save_session_organization(data)
+    return {"assignment": assignment}
+
+
+@app.post("/api/codex-sessions/import")
+async def import_codex_sessions(body: CodexSessionImportRequest):
+    from hermes_state import SessionDB
+
+    codex_home = Path(body.codex_home).expanduser() if body.codex_home else _default_codex_home()
+    index_path = codex_home / "session_index.jsonl"
+    sessions_dir = codex_home / "sessions"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail=f"Codex session index not found: {index_path}")
+    if body.limit <= 0 or body.limit > 10000:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 10000")
+
+    file_map = _codex_session_file_map(sessions_dir)
+    codex_projects = _load_codex_workspace_projects(codex_home)
+    thread_workspaces = _load_codex_thread_workspaces(codex_home)
+    mirrored_ids: List[str] = []
+    project_mirror_ids: Dict[str, List[str]] = {}
+    projectless_ids: List[str] = []
+    imported = 0
+    updated = 0
+    skipped = 0
+    missing_files = 0
+
+    db = SessionDB()
+    try:
+        with index_path.open("r", encoding="utf-8-sig") as fh:
+            for line in fh:
+                if len(mirrored_ids) >= body.limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    skipped += 1
+                    continue
+                codex_id = str(record.get("id") or "").strip()
+                if not codex_id:
+                    skipped += 1
+                    continue
+                title = _clean_optional_text(record.get("thread_name"), max_len=100) or f"Codex {codex_id[:8]}"
+                updated_at = str(record.get("updated_at") or "")
+                updated_ts = _parse_codex_updated_at(updated_at)
+                source_path = file_map.get(codex_id)
+                if source_path is None:
+                    missing_files += 1
+
+                mirror_id = f"codex-{codex_id}"
+                codex_project = _codex_project_for_workspace(
+                    thread_workspaces.get(codex_id, ""),
+                    codex_projects,
+                )
+                existed = db.get_session(mirror_id) is not None
+                if not existed:
+                    db.create_session(mirror_id, source="codex", model="codex")
+                    imported += 1
+                else:
+                    updated += 1
+
+                try:
+                    db.set_session_title(mirror_id, title)
+                except ValueError:
+                    fallback = f"{title[:80].rstrip()} ({codex_id[:8]})"
+                    db.set_session_title(mirror_id, fallback)
+
+                db.replace_messages(
+                    mirror_id,
+                    [
+                        {
+                            "role": "user",
+                            "content": _codex_mirror_message(
+                                codex_id=codex_id,
+                                title=title,
+                                updated_at=updated_at,
+                                source_path=source_path,
+                            ),
+                        }
+                    ],
+                )
+
+                def _stamp(conn, sid=mirror_id, ts=updated_ts):
+                    conn.execute(
+                        "UPDATE sessions SET source = 'codex', model = 'codex', "
+                        "started_at = ?, ended_at = ?, end_reason = 'codex_mirror' "
+                        "WHERE id = ?",
+                        (ts, ts, sid),
+                    )
+
+                db._execute_write(_stamp)
+                mirrored_ids.append(mirror_id)
+                if codex_project:
+                    project_mirror_ids.setdefault(codex_project["normalized_root"], []).append(mirror_id)
+                else:
+                    projectless_ids.append(mirror_id)
+    finally:
+        db.close()
+
+    project_name = _clean_session_project_name(body.project_name)
+    response_project: Dict[str, Any] | None = None
+    response_projects: List[Dict[str, Any]] = []
+    with _session_organization_lock:
+        data = _normalize_session_organization(_load_session_organization())
+        now = time.time()
+        if codex_projects:
+            legacy_ids = {
+                str(project.get("id"))
+                for project in data.get("projects", [])
+                if isinstance(project, dict)
+                and str(project.get("name", "")).casefold() == project_name.casefold()
+            }
+            if legacy_ids:
+                data["projects"] = [
+                    project
+                    for project in data.get("projects", [])
+                    if not (
+                        isinstance(project, dict)
+                        and str(project.get("id")) in legacy_ids
+                    )
+                ]
+                data["assignments"] = {
+                    sid: assignment
+                    for sid, assignment in data.get("assignments", {}).items()
+                    if not (
+                        isinstance(assignment, dict)
+                        and str(assignment.get("project_id")) in legacy_ids
+                    )
+                }
+        for codex_project in codex_projects:
+            project = _find_or_create_session_project(
+                data,
+                name=codex_project["name"],
+                description="只读镜像 Codex 项目；原始会话文件仍保留在 Codex 目录。",
+                workspace_path=codex_project["root"],
+            )
+            project["description"] = "只读镜像 Codex 项目；原始会话文件仍保留在 Codex 目录。"
+            project["workspace_path"] = codex_project["root"]
+            project["default_model"] = "codex"
+            project["updated_at"] = now
+            response_projects.append(project)
+            if response_project is None:
+                response_project = project
+            for mirror_id in project_mirror_ids.get(codex_project["normalized_root"], []):
+                data.setdefault("assignments", {})[mirror_id] = {
+                    "project_id": project["id"],
+                    "updated_at": now,
+                }
+
+        if not codex_projects:
+            project = _find_or_create_session_project(
+                data,
+                name=project_name,
+                description="只读镜像 Codex 本地会话索引；原始文件仍保留在 Codex 目录。",
+                workspace_path=str(codex_home),
+            )
+            project["updated_at"] = now
+            response_project = project
+            response_projects.append(project)
+            for mirror_id in mirrored_ids:
+                data.setdefault("assignments", {})[mirror_id] = {
+                    "project_id": project["id"],
+                    "updated_at": now,
+                }
+        _save_session_organization(data)
+
+    return {
+        "ok": True,
+        "codex_home": str(codex_home),
+        "project": response_project,
+        "projects": response_projects,
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "missing_files": missing_files,
+        "projectless": len(projectless_ids),
+        "total": len(mirrored_ids),
+    }
 
 
 @app.get("/api/sessions/search")

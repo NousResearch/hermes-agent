@@ -55,7 +55,7 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -63,6 +63,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["strict_mention"] = strict_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
+    if allowed_channels is not None:
+        extra["allowed_channels"] = allowed_channels
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -249,7 +251,12 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         text = f"<@{bot_uid}> {text}"
     is_mentioned = bot_uid and f"<@{bot_uid}>" in text
 
-    if not is_dm:
+    if not is_dm and bot_uid:
+        # allowed_channels check (whitelist — must pass before other gating)
+        allowed = adapter._slack_allowed_channels()
+        if allowed and channel_id not in allowed:
+            return False
+
         if channel_id in adapter._slack_free_response_channels():
             return True
         elif not adapter._slack_require_mention():
@@ -552,3 +559,131 @@ def test_mention_outside_strict_mode_still_registers_thread():
         adapter._mentioned_threads.add(event_thread_ts)
 
     assert thread_ts in adapter._mentioned_threads
+
+
+# ---------------------------------------------------------------------------
+# Tests: _slack_allowed_channels
+# ---------------------------------------------------------------------------
+
+def test_allowed_channels_default_empty(monkeypatch):
+    monkeypatch.delenv("SLACK_ALLOWED_CHANNELS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_allowed_channels() == set()
+
+
+def test_allowed_channels_list():
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID, OTHER_CHANNEL_ID])
+    result = adapter._slack_allowed_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+def test_allowed_channels_csv_string():
+    adapter = _make_adapter(allowed_channels=f"{CHANNEL_ID}, {OTHER_CHANNEL_ID}")
+    result = adapter._slack_allowed_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+def test_allowed_channels_empty_string():
+    adapter = _make_adapter(allowed_channels="")
+    assert adapter._slack_allowed_channels() == set()
+
+
+def test_allowed_channels_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", f"{CHANNEL_ID},{OTHER_CHANNEL_ID}")
+    adapter = _make_adapter()  # no config value → falls back to env
+    result = adapter._slack_allowed_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: allowed_channels gating integration
+# ---------------------------------------------------------------------------
+
+def test_allowed_channels_blocks_non_whitelisted_channel():
+    """Messages in channels not in allowed_channels are silently ignored."""
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
+
+
+def test_allowed_channels_permits_whitelisted_channel():
+    """Messages in the allowed channel are processed normally."""
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+def test_allowed_channels_empty_no_restriction():
+    """Empty allowed_channels imposes no restriction (fully backward compatible)."""
+    adapter = _make_adapter(allowed_channels="")
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, mentioned=True) is True
+
+
+def test_allowed_channels_blocks_even_when_mentioned():
+    """Whitelist takes precedence — @mention in a non-allowed channel is ignored."""
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, mentioned=True) is False
+
+
+def test_allowed_channels_dm_unaffected():
+    """DMs bypass the allowed_channels check entirely."""
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    # DM channel IDs typically start with D; the check is guarded by `not is_dm`
+    assert _would_process(adapter, is_dm=True, channel_id="DDMCHANNEL") is True
+
+
+def test_allowed_channels_env_var_blocks_channel(monkeypatch):
+    """SLACK_ALLOWED_CHANNELS env var (no config) also gates messages."""
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", CHANNEL_ID)
+    adapter = _make_adapter()  # no config value → falls back to env
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
+    assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: config bridging for allowed_channels
+# ---------------------------------------------------------------------------
+
+def test_config_bridges_slack_allowed_channels(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  allowed_channels:\n"
+        f"    - {CHANNEL_ID}\n"
+        f"    - {OTHER_CHANNEL_ID}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_ALLOWED_CHANNELS", raising=False)
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_ALLOWED_CHANNELS"] == f"{CHANNEL_ID},{OTHER_CHANNEL_ID}"
+
+
+def test_config_bridges_slack_allowed_channels_env_takes_precedence(monkeypatch, tmp_path):
+    """Env var set before load_gateway_config() should not be overwritten."""
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        f"  allowed_channels: {CHANNEL_ID}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", OTHER_CHANNEL_ID)  # already set
+
+    load_gateway_config()
+
+    import os as _os
+    # env var must not be overwritten by config.yaml
+    assert _os.environ["SLACK_ALLOWED_CHANNELS"] == OTHER_CHANNEL_ID

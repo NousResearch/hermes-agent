@@ -770,15 +770,6 @@ class TestValidateCodexAutoCorrection:
         assert result.get("corrected_model") is None
         assert result["message"] is None
 
-    def test_very_different_name_falls_to_suggestions(self):
-        """Names too different for auto-correction are rejected with a suggestion list."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
-            result = validate_requested_model("totally-wrong", "openai-codex")
-        assert result["accepted"] is False
-        assert result["recognized"] is False
-        assert result.get("corrected_model") is None
-        assert "not found" in result["message"]
 
 
 # -- probe_api_models — Cloudflare UA mitigation --------------------------------

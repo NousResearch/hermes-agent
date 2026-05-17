@@ -73,6 +73,24 @@ def _cmd_approve(store, platform: str, code: str):
         display = f"{name} ({uid})" if name else uid
         print(f"\n  Approved! User {display} on {platform} can now use the bot~")
         print("  They'll be recognized automatically on their next message.\n")
+    elif store._is_locked_out(platform):
+        # Disambiguate: approve_code returns None for both invalid codes
+        # and lockout. Tell the operator it's lockout so they don't chase
+        # a "wrong code" rabbit hole (#10195).
+        import time as _time
+        limits = store._load_json(store._rate_limit_path())
+        lockout_until = limits.get(f"_lockout:{platform}", 0)
+        remaining = max(0, int(lockout_until - _time.time()))
+        mins = remaining // 60
+        print(
+            f"\n  Platform '{platform}' is locked out after too many failed "
+            f"approval attempts."
+        )
+        print(f"  Lockout clears in ~{mins} minute(s).")
+        print(
+            "  To reset sooner, delete the '_lockout:{0}' entry from "
+            "~/.hermes/platforms/pairing/_rate_limits.json\n".format(platform)
+        )
     else:
         print(f"\n  Code '{code}' not found or expired for platform '{platform}'.")
         print("  Run 'hermes pairing list' to see pending codes.\n")

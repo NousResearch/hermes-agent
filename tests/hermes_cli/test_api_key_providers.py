@@ -1100,6 +1100,159 @@ class TestHuggingFaceModels:
 
 
 # =============================================================================
+# NovitaAI provider tests (added by feat/add-novita-provider)
+# =============================================================================
+
+class TestNovitaProvider:
+    """Tests for NovitaAI — an OpenAI-compatible multi-model aggregator."""
+
+    def test_novita_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("novita")
+        assert profile is not None
+        assert profile.name == "novita"
+        assert profile.display_name == "NovitaAI"
+        assert profile.base_url == "https://api.novita.ai/openai/v1"
+        assert "NOVITA_API_KEY" in profile.env_vars
+
+    def test_novita_aliases(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("novita")
+        assert "novita-ai" in profile.aliases
+        assert "novitaai" in profile.aliases
+
+    def test_novita_alias_resolves(self):
+        assert resolve_provider("novita-ai") == "novita"
+        assert resolve_provider("novitaai") == "novita"
+
+    def test_novita_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Novita."""
+        assert "novita" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["novita"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "novita"
+        assert pconfig.inference_base_url == "https://api.novita.ai/openai/v1"
+        assert pconfig.api_key_env_vars == ("NOVITA_API_KEY",)
+        assert pconfig.base_url_env_var == "NOVITA_BASE_URL"
+
+    def test_novita_aliases_in_registry(self):
+        assert "novita-ai" in PROVIDER_REGISTRY
+        assert "novitaai" in PROVIDER_REGISTRY
+
+    def test_main_provider_models_has_novita(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "novita" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["novita"]) >= 1
+
+    def test_models_py_has_novita(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "novita" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["novita"]) >= 1
+
+    def test_novita_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["novita"] == models_models["novita"]
+
+    def test_novita_models_use_org_name_format(self):
+        """Novita models should use org/name format."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["novita"]:
+            assert "/" in model, f"Novita model {model!r} missing org/ prefix"
+
+    def test_novita_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("novita-ai") == "novita"
+        assert _PROVIDER_ALIASES.get("novitaai") == "novita"
+
+    def test_novita_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "novita" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["novita"] == "NovitaAI"
+
+    def test_novita_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "novita" in _PROVIDER_PREFIXES
+
+    def test_novita_url_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.novita.ai") == "novita"
+
+    def test_context_size_in_context_length_keys(self):
+        """Novita /v1/models uses 'context_size' as the context length key."""
+        from agent.model_metadata import _CONTEXT_LENGTH_KEYS
+        assert "context_size" in _CONTEXT_LENGTH_KEYS
+
+    def test_novita_pricing_unit_conversion(self):
+        """Novita returns prices in 0.0001 USD per Mtok; divide by 10_000 * 1_000_000."""
+        from agent.model_metadata import _extract_pricing
+        # Sample shape from real Novita /v1/models response
+        payload = {
+            "id": "deepseek/deepseek-v3-0324",
+            "input_token_price_per_m": 2690,    # = $0.269 / Mtok
+            "output_token_price_per_m": 4000,   # = $0.400 / Mtok
+        }
+        result = _extract_pricing(payload)
+        # Resulting strings represent per-token prices in dollars.
+        assert "prompt" in result
+        assert "completion" in result
+        assert float(result["prompt"]) == 2690 / 10_000 / 1_000_000
+        assert float(result["completion"]) == 4000 / 10_000 / 1_000_000
+
+    def test_novita_pricing_cache(self, monkeypatch):
+        """_fetch_novita_pricing should cache results in _pricing_cache."""
+        from hermes_cli import models as models_mod
+        monkeypatch.setenv("NOVITA_API_KEY", "sk-test-key")
+        monkeypatch.setenv("NOVITA_BASE_URL", "https://api.novita.ai/openai/v1")
+        models_mod._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
+
+        call_count = {"n": 0}
+        fake_payload = {
+            "data": [
+                {
+                    "id": "x/y",
+                    "input_token_price_per_m": 1000,
+                    "output_token_price_per_m": 2000,
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return _FakeResp()
+
+        monkeypatch.setattr(
+            models_mod.urllib.request, "urlopen", fake_urlopen
+        )
+
+        # First call hits the network.
+        first = models_mod._fetch_novita_pricing()
+        assert "x/y" in first
+        assert call_count["n"] == 1
+
+        # Second call returns cached result without re-hitting the network.
+        second = models_mod._fetch_novita_pricing()
+        assert second == first
+        assert call_count["n"] == 1
+
+        # force_refresh bypasses the cache.
+        models_mod._fetch_novita_pricing(force_refresh=True)
+        assert call_count["n"] == 2
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 

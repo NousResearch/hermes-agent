@@ -44,7 +44,7 @@ function readClipboardCommands(
 
   const attempts: Array<{ args: readonly string[]; cmd: string }> = []
 
-  if (env.WSL_INTEROP) {
+  if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
     attempts.push({ cmd: 'powershell.exe', args: POWERSHELL_ARGS })
   }
 
@@ -91,32 +91,76 @@ export async function readClipboardText(
   return null
 }
 
+function writeClipboardCommands(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv
+): Array<{ args: readonly string[]; cmd: string }> {
+  if (platform === 'darwin') {
+    return [{ cmd: 'pbcopy', args: [] }]
+  }
+
+  if (platform === 'win32') {
+    return [{ cmd: 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input'] }]
+  }
+
+  const attempts: Array<{ args: readonly string[]; cmd: string }> = []
+
+  if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
+    attempts.push({
+      cmd: 'powershell.exe',
+      args: ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Value $input']
+    })
+  }
+
+  if (env.WAYLAND_DISPLAY) {
+    attempts.push({ cmd: 'wl-copy', args: ['--type', 'text/plain'] })
+  }
+
+  attempts.push({ cmd: 'xclip', args: ['-selection', 'clipboard', '-in'] })
+  attempts.push({ cmd: 'xsel', args: ['--clipboard', '--input'] })
+
+  return attempts
+}
+
 /**
  * Write plain text to the system clipboard.
  *
- * On macOS this uses `pbcopy`. On other platforms we intentionally return
- * false for now; non-mac copy still falls back to OSC52.
+ * Tries native platform tools in fallback order:
+ * - macOS: pbcopy
+ * - Windows: PowerShell Set-Clipboard
+ * - WSL: powershell.exe Set-Clipboard
+ * - Linux Wayland: wl-copy --type text/plain
+ * - Linux X11: xclip -selection clipboard -in
+ * - Linux X11 alt: xsel --clipboard --input
+ *
+ * Returns true if at least one backend succeeded, false otherwise
+ * (callers should fall back to OSC52 on false).
  */
 export async function writeClipboardText(
   text: string,
   platform: NodeJS.Platform = process.platform,
-  start: typeof spawn = spawn
+  start: typeof spawn = spawn,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<boolean> {
-  if (platform !== 'darwin') {
-    return false
+  const candidates = writeClipboardCommands(platform, env)
+
+  for (const { cmd, args } of candidates) {
+    try {
+      const ok = await new Promise<boolean>(resolve => {
+        const child = start(cmd, [...args], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+
+        child.once('error', () => resolve(false))
+        child.once('close', code => resolve(code === 0))
+        child.stdin?.end(text)
+      })
+
+      if (ok) {
+        return true
+      }
+    } catch {
+      // Fall through to the next clipboard backend.
+    }
   }
 
-  try {
-    const ok = await new Promise<boolean>(resolve => {
-      const child = start('pbcopy', [], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
-
-      child.once('error', () => resolve(false))
-      child.once('close', code => resolve(code === 0))
-      child.stdin.end(text)
-    })
-
-    return ok
-  } catch {
-    return false
-  }
+  return false
 }

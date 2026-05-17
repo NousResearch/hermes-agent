@@ -1,0 +1,350 @@
+# Catálogo de mensagens estáticas do Hermes -- Português
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  COMANDO PERIGOSO: {description}"
+  choose_long:     "      [o]uma vez  |  [s]sessão  |  [a]sempre  |  [d]negar"
+  choose_short:    "      [o]uma vez  |  [s]sessão  |  [d]negar"
+  prompt_long:     "      Escolha [o/s/a/D]: "
+  prompt_short:    "      Escolha [o/s/D]: "
+  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  allowed_once:    "      ✓ Permitido uma vez"
+  allowed_session: "      ✓ Permitido nesta sessão"
+  allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
+  denied:          "      ✗ Negado"
+  cancelled:       "      ✗ Cancelado"
+  blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
+
+gateway:
+  approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
+  draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
+  goal_cleared:     "✓ Objetivo removido."
+  no_active_goal:   "Não há objetivo ativo."
+  config_read_failed: "⚠️ Não foi possível ler config.yaml: {error}"
+  config_save_failed: "⚠️ Não foi possível guardar a configuração: {error}"
+
+  model:
+    error_prefix:           "Erro: {error}"
+    switched:               "Modelo alterado para `{model}`"
+    provider_label:         "Fornecedor: {provider}"
+    context_label:          "Contexto: {tokens} tokens"
+    max_output_label:       "Saída máxima: {tokens} tokens"
+    cost_label:             "Custo: {cost}"
+    capabilities_label:     "Capacidades: {capabilities}"
+    prompt_caching_enabled: "Cache de prompts: ativado"
+    warning_prefix:         "Aviso: {warning}"
+    saved_global:           "Guardado em config.yaml (`--global`)"
+    session_only_hint:      "_(apenas para esta sessão — adiciona `--global` para tornar permanente)_"
+    current_label:          "Atual: `{model}` em {provider}"
+    current_tag:            " (atual)"
+    more_models_suffix:     " (+{count} mais)"
+    usage_switch_model:     "`/model <name>` — mudar de modelo"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — mudar de fornecedor"
+    usage_persist:          "`/model <name> --global` — guardar permanentemente"
+
+  agents:
+    header:                "🤖 **Agentes e tarefas ativos**"
+    active_agents:         "**Agentes ativos:** {count}"
+    this_chat:             " · este chat"
+    more:                  "... e mais {count}"
+    running_processes:     "**Processos em segundo plano em execução:** {count}"
+    async_jobs:            "**Tarefas assíncronas do gateway:** {count}"
+    none:                  "Não há agentes ativos nem tarefas em execução."
+    state_starting:        "a iniciar"
+    state_running:         "em execução"
+
+  approve:
+    no_pending:            "Não há nenhum comando pendente para aprovar."
+    once_singular:         "✅ Comando aprovado. O agente está a retomar..."
+    once_plural:           "✅ Comandos aprovados ({count} comandos). O agente está a retomar..."
+    session_singular:      "✅ Comando aprovado (padrão aprovado para esta sessão). O agente está a retomar..."
+    session_plural:        "✅ Comandos aprovados (padrão aprovado para esta sessão) ({count} comandos). O agente está a retomar..."
+    always_singular:       "✅ Comando aprovado (padrão aprovado permanentemente). O agente está a retomar..."
+    always_plural:         "✅ Comandos aprovados (padrão aprovado permanentemente) ({count} comandos). O agente está a retomar..."
+
+  background:
+    usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
+    started:               "🔄 Tarefa em segundo plano iniciada: \"{preview}\"\nID da tarefa: {task_id}\nPodes continuar a conversar — os resultados aparecerão aqui quando estiverem prontos."
+
+  branch:
+    db_unavailable:        "Base de dados de sessões indisponível."
+    no_conversation:       "Não há conversa para ramificar — envia uma mensagem primeiro."
+    create_failed:         "Falha ao criar ramo: {error}"
+    switch_failed:         "Ramo criado, mas não foi possível mudar para ele."
+    branched_one:          "⑂ Ramificado para **{title}** ({count} mensagem copiada)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+    branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+
+  commands:
+    usage:                 "Uso: `/commands [page]`"
+    skill_header:          "⚡ **Comandos de skill**:"
+    default_desc:          "Comando de skill"
+    none:                  "Não há comandos disponíveis."
+    header:                "📚 **Comandos** ({total} no total, página {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← anterior"
+    nav_next:              "seguinte → `/commands {page}`"
+    out_of_range:          "_(A página solicitada {requested} estava fora do intervalo, a mostrar a página {page}.)_"
+
+  compress:
+    not_enough:            "Não há conversa suficiente para comprimir (são necessárias pelo menos 4 mensagens)."
+    no_provider:           "Nenhum fornecedor configurado — não é possível comprimir."
+    nothing_to_do:         "Ainda não há nada para comprimir (a transcrição continua a ser todo o contexto protegido)."
+    focus_line:            "Foco: \"{topic}\""
+    summary_failed:        "⚠️ Falha ao gerar o resumo ({error}). {count} mensagem(ns) histórica(s) foram removidas e substituídas por um marcador; o contexto anterior já não pode ser recuperado. Considera verificar a configuração do modelo auxiliary.compression."
+    aux_failed:            "ℹ️ O modelo de compressão configurado `{model}` falhou ({error}). Recuperado com o teu modelo principal — o contexto está intacto — mas talvez queiras verificar `auxiliary.compression.model` em config.yaml."
+    failed:                "Compressão falhou: {error}"
+
+  debug:
+    upload_failed:         "✗ Falha ao carregar relatório de depuração: {error}"
+    header:                "**Relatório de depuração carregado:**"
+    auto_delete:           "⏱ Os pastes serão eliminados automaticamente em 6 horas."
+    full_logs_hint:        "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
+    share_hint:            "Partilha estes links com a equipa do Hermes para obter suporte."
+
+  deny:
+    stale:                 "❌ Comando negado (a aprovação tinha expirado)."
+    no_pending:            "Não há nenhum comando pendente para negar."
+    denied_singular:       "❌ Comando negado."
+    denied_plural:         "❌ Comandos negados ({count} comandos)."
+
+  fast:
+    not_supported:         "⚡ /fast só está disponível para modelos da OpenAI que suportam Priority Processing."
+    status:                "⚡ Priority Processing\n\nModo atual: `{mode}`\n\n_Uso:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Argumento desconhecido: `{arg}`\n\n**Opções válidas:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (apenas esta sessão)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
+    usage:                 "Uso: `/footer [on|off|status]`"
+    saved:                 "📎 Rodapé de execução: **{state}**{example}\n_(guardado globalmente — produz efeito na próxima mensagem)_"
+    example_line:          "\nExemplo: `{preview}`"
+    state_on:              "ON"
+    state_off:             "OFF"
+
+  goal:
+    unavailable:           "Os objetivos não estão disponíveis nesta sessão."
+    no_goal_set:           "Nenhum objetivo definido."
+    paused:                "⏸ Objetivo pausado: {goal}"
+    no_resume:             "Nenhum objetivo para retomar."
+    resumed:               "▶ Objetivo retomado: {goal}\nEnvia qualquer mensagem para continuar, ou aguarda — darei o próximo passo no próximo turno."
+    invalid:               "Objetivo inválido: {error}"
+    set:                   "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Comandos do Hermes**\n"
+    skill_header:          "\n⚡ **Comandos de skill** ({count} ativos):"
+    more_use_commands:     "\n... e mais {count}. Usa `/commands` para a lista paginada completa."
+
+  insights:
+    invalid_days:          "Valor --days inválido: {value}"
+    error:                 "Erro ao gerar análise: {error}"
+
+  kanban:
+    error_prefix:          "⚠ erro do kanban: {error}"
+    subscribed_suffix:     "(subscrito — receberás uma notificação quando {task_id} terminar ou bloquear)"
+    truncated_suffix:      "… (truncado; usa `hermes kanban …` no teu terminal para a saída completa)"
+    no_output:             "(sem saída)"
+
+  personality:
+    none_configured:       "Nenhuma personalidade configurada em `{path}/config.yaml`"
+    header:                "🎭 **Personalidades disponíveis**\n"
+    none_option:           "• `none` — (sem sobreposição de personalidade)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nUso: `/personality <name>`"
+    save_failed:           "⚠️ Falha ao guardar a alteração de personalidade: {error}"
+    cleared:               "🎭 Personalidade removida — a usar o comportamento base do agente.\n_(produz efeito na próxima mensagem)_"
+    set_to:                "🎭 Personalidade definida como **{name}**\n_(produz efeito na próxima mensagem)_"
+    unknown:               "Personalidade desconhecida: `{name}`\n\nDisponíveis: {available}"
+
+  profile:
+    header:                "👤 **Perfil:** `{profile}`"
+    home:                  "📂 **Início:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (predefinido)"
+    level_disabled:            "none (desativado)"
+    scope_session:             "substituição de sessão"
+    scope_global:              "configuração global"
+    status:                    "🧠 **Definições de raciocínio**\n\n**Esforço:** `{level}`\n**Âmbito:** {scope}\n**Visualização:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "ativada ✓"
+    display_off:               "desativada"
+    display_set_on:            "🧠 ✓ Visualização do raciocínio: **ATIVADA**\nO pensamento do modelo será mostrado antes de cada resposta em **{platform}**."
+    display_set_off:           "🧠 ✓ Visualização do raciocínio: **DESATIVADA** para **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` não é suportado. Usa `/reasoning <level> --global` para alterar o predefinido global."
+    reset_done:                "🧠 ✓ Substituição de raciocínio da sessão removida; a regressar à configuração global."
+    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    set_global:                "🧠 ✓ Esforço de raciocínio definido como `{effort}` (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
+    set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
+    set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp cancelado. As ferramentas MCP não foram alteradas."
+    always_followup:       "ℹ️ Próximas chamadas a `/reload-mcp` serão executadas sem confirmação. Reativa através de `approvals.mcp_reload_confirm: true` em `config.yaml`."
+    confirm_prompt:        "⚠️ **Confirmar /reload-mcp**\n\nRecarregar os servidores MCP reconstrói o conjunto de ferramentas desta sessão e **invalida a cache de prompt do fornecedor** — a próxima mensagem reenviará os tokens de entrada completos. Em modelos de contexto longo ou de raciocínio elevado isto pode ser dispendioso.\n\nEscolhe:\n• **Aprovar uma vez** — recarregar agora\n• **Aprovar sempre** — recarregar agora e silenciar este pedido permanentemente\n• **Cancelar** — manter as ferramentas MCP inalteradas\n\n_Alternativa em texto: responde `/approve`, `/always` ou `/cancel`._"
+    header:                "🔄 **Servidores MCP recarregados**\n"
+    reconnected:           "♻️ Reconectados: {names}"
+    added:                 "➕ Adicionados: {names}"
+    removed:               "➖ Removidos: {names}"
+    none_connected:        "Não há servidores MCP ligados."
+    tools_available:       "\n🔧 {tools} ferramenta(s) disponíveis de {servers} servidor(es)"
+    failed:                "❌ Falha ao recarregar MCP: {error}"
+
+  reload_skills:
+    header:                "🔄 **Skills recarregadas**\n"
+    no_new:                "Não foram detetadas novas skills."
+    total:                 "\n📚 {count} skill(s) disponíveis"
+    added_header:          "➕ **Skills adicionadas:**"
+    removed_header:        "➖ **Skills removidas:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Falha ao recarregar skills: {error}"
+
+  reset:
+    header_default:        "✨ Sessão reiniciada! A começar do zero."
+    header_new:            "✨ Nova sessão iniciada!"
+    header_titled:         "✨ Nova sessão iniciada: {title}"
+    title_rejected:        "\n⚠️ Título rejeitado: {error}"
+    title_error_untitled:  "\n⚠️ {error} — sessão iniciada sem título."
+    title_empty_untitled:  "\n⚠️ O título fica vazio após a limpeza — sessão iniciada sem título."
+    tip:                   "\n✦ Dica: {tip}"
+
+  restart:
+    in_progress:           "⏳ O reinício do gateway já está em curso..."
+    restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Base de dados de sessões indisponível."
+    no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
+    list_header:           "📋 **Sessões com nome**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nUso: `/resume <nome da sessão>`"
+    list_failed:           "Não foi possível listar as sessões: {error}"
+    not_found:             "Não foi encontrada nenhuma sessão correspondente a '**{name}**'.\nUsa `/resume` sem argumentos para ver as sessões disponíveis."
+    already_on:            "📌 Já estás na sessão **{name}**."
+    switch_failed:         "Falha ao mudar de sessão."
+    resumed_one:           "↻ Sessão **{title}** retomada ({count} mensagem). Conversa restaurada."
+    resumed_many:          "↻ Sessão **{title}** retomada ({count} mensagens). Conversa restaurada."
+    resumed_no_count:      "↻ Sessão **{title}** retomada. Conversa restaurada."
+
+  retry:
+    no_previous:           "Não há mensagem anterior para tentar novamente."
+
+  rollback:
+    not_enabled:           "Os checkpoints não estão ativados.\nAtiva-os em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Não foram encontrados checkpoints para {cwd}"
+    invalid_number:        "Número de checkpoint inválido. Usa 1-{max}."
+    restored:              "✅ Restaurado para o checkpoint {hash}: {reason}\nFoi guardado automaticamente um snapshot anterior ao rollback."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Falha ao guardar o canal principal: {error}"
+    success:               "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
+
+  status:
+    header:                "📊 **Estado do Hermes Gateway**"
+    session_id:            "**ID da sessão:** `{session_id}`"
+    title:                 "**Título:** {title}"
+    created:               "**Criada:** {timestamp}"
+    last_activity:         "**Última atividade:** {timestamp}"
+    tokens:                "**Tokens:** {tokens}"
+    agent_running:         "**Agente em execução:** {state}"
+    state_yes:             "Sim ⚡"
+    state_no:              "Não"
+    queued:                "**Seguimentos em fila:** {count}"
+    platforms:             "**Plataformas ligadas:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Parado. O agente ainda não tinha começado — podes continuar esta sessão."
+    stopped:               "⚡ Parado. Podes continuar esta sessão."
+    no_active:             "Não há nenhuma tarefa ativa para parar."
+
+  title:
+    db_unavailable:        "Base de dados de sessões indisponível."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ O título está vazio após a limpeza. Usa caracteres imprimíveis."
+    set_to:                "✏️ Título da sessão definido: **{title}**"
+    not_found:             "Sessão não encontrada na base de dados."
+    current_with_title:    "📌 Sessão: `{session_id}`\nTítulo: **{title}**"
+    current_no_title:      "📌 Sessão: `{session_id}`\nSem título. Uso: `/title O meu nome de sessão`"
+
+  topic:
+    not_telegram_dm:         "O comando /topic só está disponível em chats privados do Telegram."
+    no_session_db:           "Base de dados de sessões indisponível."
+    unauthorized:            "Não tens autorização para usar /topic neste bot."
+    restore_needs_topic:     "Para restaurar uma sessão, cria ou abre primeiro um topic do Telegram, depois envia /topic <session-id> dentro desse topic. Para criar um novo topic, abre All Messages e envia qualquer mensagem aí."
+    topics_disabled:         "Os topics do Telegram ainda não estão ativados para este bot.\n\nComo ativá-los:\n1. Abre @BotFather.\n2. Escolhe o teu bot.\n3. Abre Bot Settings → Threads Settings.\n4. Ativa Threaded Mode e garante que os utilizadores podem criar novas threads.\n\nDepois envia /topic novamente."
+    topics_user_disallowed:  "Os topics do Telegram estão ativados, mas os utilizadores não podem criá-los.\n\nAbre @BotFather → escolhe o teu bot → Bot Settings → Threads Settings, depois desativa 'Disallow users to create new threads'.\n\nDepois envia /topic novamente."
+    enable_failed:           "Falha ao ativar o modo topic do Telegram: {error}"
+    bound_status:            "Este topic está associado a:\nSessão: {label}\nID: {session_id}\n\nUsa /new para substituir este topic por uma sessão nova.\nPara trabalho paralelo, abre All Messages e envia uma mensagem aí para criar outro topic."
+    thread_ready:            "Os topics multi-sessão do Telegram estão ativados.\n\nEste topic será usado como uma sessão independente do Hermes. Usa /new para substituir a sessão atual deste topic. Para trabalho paralelo, abre All Messages e envia uma mensagem aí para criar outro topic."
+    untitled_session:        "Sessão sem título"
+
+  undo:
+    nothing:               "Nada para anular."
+    removed:               "↩️ {count} mensagem(ns) anulada(s).\nRemovido: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."
+    not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
+    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
+    start_failed:            "✗ Falha ao iniciar a atualização: {error}"
+    starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
+
+  usage:
+    rate_limits:              "⏱️ **Limites de taxa:** {state}"
+    header_session:           "📊 **Utilização de tokens da sessão**"
+    label_model:              "Modelo: `{model}`"
+    label_input_tokens:       "Tokens de entrada: {count}"
+    label_cache_read:         "Tokens de leitura de cache: {count}"
+    label_cache_write:        "Tokens de escrita de cache: {count}"
+    label_output_tokens:      "Tokens de saída: {count}"
+    label_total:              "Total: {count}"
+    label_api_calls:          "Chamadas à API: {count}"
+    label_cost:               "Custo: {prefix}${amount}"
+    label_cost_included:      "Custo: incluído"
+    label_context:            "Contexto: {used} / {total} ({pct}%)"
+    label_compressions:       "Compressões: {count}"
+    header_session_info:      "📊 **Informações da sessão**"
+    label_messages:           "Mensagens: {count}"
+    label_estimated_context:  "Contexto estimado: ~{count} tokens"
+    detailed_after_first:     "_(Utilização detalhada disponível após a primeira resposta do agente)_"
+    no_data:                  "Não há dados de utilização disponíveis para esta sessão."
+
+  verbose:
+    not_enabled:           "O comando `/verbose` não está ativado para plataformas de mensagens.\n\nAtiva-o em `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Progresso de ferramentas: **OFF** — não é mostrada qualquer atividade de ferramentas."
+    mode_new:              "⚙️ Progresso de ferramentas: **NEW** — mostrado quando a ferramenta muda (comprimento da pré-visualização: `display.tool_preview_length`, predefinição 40)."
+    mode_all:              "⚙️ Progresso de ferramentas: **ALL** — cada chamada de ferramenta é mostrada (comprimento da pré-visualização: `display.tool_preview_length`, predefinição 40)."
+    mode_verbose:          "⚙️ Progresso de ferramentas: **VERBOSE** — cada chamada de ferramenta com os argumentos completos."
+    saved_suffix:          "_(guardado para **{platform}** — produz efeito na próxima mensagem)_"
+    save_failed:           "_(não foi possível guardar na configuração: {error})_"
+
+  voice:
+    enabled_voice_only:    "Modo de voz ativado.\nResponderei com voz quando enviares mensagens de voz.\nUsa /voice tts para receber respostas de voz em todas as mensagens."
+    disabled_text:         "Modo de voz desativado. Respostas apenas em texto."
+    tts_enabled:           "Auto-TTS ativado.\nTodas as respostas incluirão uma mensagem de voz."
+    status_mode:           "Modo de voz: {label}"
+    status_channel:        "Canal de voz: #{channel}"
+    status_participants:   "Participantes: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (a falar)"
+    enabled_short:         "Modo de voz ativado."
+    disabled_short:        "Modo de voz desativado."
+    label_off:             "Desativado (apenas texto)"
+    label_voice_only:      "Ativado (resposta de voz a mensagens de voz)"
+    label_all:             "TTS (resposta de voz a todas as mensagens)"
+
+  yolo:
+    disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — comandos perigosos exigirão aprovação."
+    enabled:                    "⚡ Modo YOLO **ATIVADO** nesta sessão — todos os comandos são aprovados automaticamente. Usa com precaução."
+
+  shared:
+    session_db_unavailable:      "Base de dados de sessões indisponível."
+    session_db_unavailable_prefix: "Base de dados de sessões indisponível"
+    session_not_found:           "Sessão não encontrada na base de dados."
+    warn_passthrough:            "⚠️ {error}"

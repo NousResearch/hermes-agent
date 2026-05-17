@@ -716,8 +716,10 @@ class TestMatrixModuleImport:
                 "sys.meta_path.insert(0, _Blocker())\n"
                 "for k in list(sys.modules):\n"
                 "    if k.startswith('mautrix'): del sys.modules[k]\n"
+                "from unittest.mock import patch\n"
                 "from gateway.platforms.matrix import check_matrix_requirements\n"
-                "assert not check_matrix_requirements()\n"
+                "with patch('tools.lazy_deps.ensure', side_effect=ImportError('blocked')):\n"
+                "    assert not check_matrix_requirements()\n"
                 "print('OK')\n"
             )],
             capture_output=True, text=True, timeout=10,
@@ -737,7 +739,8 @@ class TestMatrixRequirements:
             import mautrix  # noqa: F401
             assert check_matrix_requirements() is True
         except ImportError:
-            assert check_matrix_requirements() is False
+            with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
+                assert check_matrix_requirements() is False
 
     def test_check_requirements_without_creds(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
@@ -759,7 +762,8 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
 
         from gateway.platforms import matrix as matrix_mod
-        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
             assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
@@ -775,7 +779,8 @@ class TestMatrixRequirements:
                 import mautrix  # noqa: F401
                 assert matrix_mod.check_matrix_requirements() is True
             except ImportError:
-                assert matrix_mod.check_matrix_requirements() is False
+                with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
+                    assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
         """MATRIX_ENCRYPTION=true should pass if E2EE deps are available."""
@@ -789,7 +794,8 @@ class TestMatrixRequirements:
                 import mautrix  # noqa: F401
                 assert matrix_mod.check_matrix_requirements() is True
             except ImportError:
-                assert matrix_mod.check_matrix_requirements() is False
+                with patch("tools.lazy_deps.ensure", side_effect=ImportError("mautrix unavailable")):
+                    assert matrix_mod.check_matrix_requirements() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1738,6 +1744,7 @@ class TestMatrixReactions:
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
+        self.adapter._reaction_redaction_delay_seconds = 0.01
         self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
         self.adapter._redact_reaction = AsyncMock(return_value=True)
         self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
@@ -1752,14 +1759,21 @@ class TestMatrixReactions:
             message_id="$msg1",
         )
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._redact_reaction.assert_not_awaited()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_awaited_once_with(
+            "!room:ex",
+            "$eyes_reaction_123",
+            "processing complete",
+        )
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_cross_on_failure(self):
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
+        self.adapter._reaction_redaction_delay_seconds = 0.01
         self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
         self.adapter._redact_reaction = AsyncMock(return_value=True)
         self.adapter._send_reaction = AsyncMock(return_value="$cross_reaction_456")
@@ -1774,8 +1788,14 @@ class TestMatrixReactions:
             message_id="$msg1",
         )
         await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
-        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._redact_reaction.assert_not_awaited()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u274c")
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_awaited_once_with(
+            "!room:ex",
+            "$eyes_reaction_123",
+            "processing complete",
+        )
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
@@ -1818,6 +1838,33 @@ class TestMatrixReactions:
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.adapter._redact_reaction.assert_not_called()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+
+    @pytest.mark.asyncio
+    async def test_approval_reaction_cleanup_is_delayed(self):
+        """Bot approval reaction redactions should not run inline."""
+
+        self.adapter._reaction_redaction_delay_seconds = 0.01
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        prompt = MagicMock()
+        prompt.bot_reaction_events = {
+            "\u2705": "$allow_reaction",
+            "\u274e": "$deny_reaction",
+        }
+
+        await self.adapter._redact_bot_approval_reactions("!room:ex", prompt)
+
+        self.adapter._redact_reaction.assert_not_awaited()
+        await asyncio.sleep(0.03)
+        self.adapter._redact_reaction.assert_any_await(
+            "!room:ex",
+            "$allow_reaction",
+            "approval resolved",
+        )
+        self.adapter._redact_reaction.assert_any_await(
+            "!room:ex",
+            "$deny_reaction",
+            "approval resolved",
+        )
 
     @pytest.mark.asyncio
     async def test_reactions_disabled(self):

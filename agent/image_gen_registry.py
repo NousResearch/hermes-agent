@@ -77,6 +77,17 @@ def get_active_provider() -> Optional[ImageGenProvider]:
 
     Reads ``image_gen.provider`` from config.yaml; falls back per the
     module docstring.
+
+    **Availability semantics** (mirrors :mod:`agent.web_search_registry`):
+
+    - When ``image_gen.provider`` is explicitly set, the configured
+      provider is returned even if :meth:`ImageGenProvider.is_available`
+      reports False — the dispatcher surfaces a precise "X_API_KEY is not
+      set" error rather than silently switching backends.
+    - When ``image_gen.provider`` is unset, the fallback path (single-
+      provider shortcut and the FAL legacy preference) is filtered by
+      ``is_available()`` so we don't pick a provider the user has no
+      credentials for.
     """
     configured: Optional[str] = None
     try:
@@ -94,6 +105,17 @@ def get_active_provider() -> Optional[ImageGenProvider]:
     with _lock:
         snapshot = dict(_providers)
 
+    def _is_available_safe(p: ImageGenProvider) -> bool:
+        """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("image_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
+    # 1. Explicit config wins — return regardless of is_available() so the
+    #    user gets a precise downstream error message rather than a silent
+    #    backend switch.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
@@ -103,13 +125,16 @@ def get_active_provider() -> Optional[ImageGenProvider]:
             configured,
         )
 
-    # Fallback: single-provider case
-    if len(snapshot) == 1:
-        return next(iter(snapshot.values()))
+    # 2. Fallback: single registered provider — but only if it's actually
+    #    available (no credentials = don't surface it as "active").
+    available = [p for p in snapshot.values() if _is_available_safe(p)]
+    if len(available) == 1:
+        return available[0]
 
-    # Fallback: prefer legacy FAL for backward compat
-    if "fal" in snapshot:
-        return snapshot["fal"]
+    # 3. Fallback: prefer legacy FAL for backward compat, when available.
+    fal = snapshot.get("fal")
+    if fal is not None and _is_available_safe(fal):
+        return fal
 
     return None
 

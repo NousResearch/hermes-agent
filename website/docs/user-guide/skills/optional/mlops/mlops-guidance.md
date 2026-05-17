@@ -20,6 +20,7 @@ Control LLM output with regex and grammars, guarantee valid JSON/XML/code genera
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `guidance`, `transformers` |
+| Platforms | linux, macos, windows |
 | Tags | `Prompt Engineering`, `Guidance`, `Constrained Generation`, `Structured Output`, `JSON Validation`, `Grammar`, `Microsoft Research`, `Format Enforcement`, `Multi-Step Workflows` |
 
 ## Reference: full SKILL.md

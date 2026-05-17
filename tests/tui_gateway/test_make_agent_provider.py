@@ -5,6 +5,7 @@ Without resolve_runtime_provider(), bare-slug models in config
 provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 
@@ -95,6 +96,48 @@ def test_make_agent_ignores_display_personality_without_system_prompt():
         _make_agent("sid-default-personality", "key-default-personality")
 
         assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] is None
+
+
+def test_make_agent_honors_tui_launch_env_flags():
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HERMES_TUI_MAX_TURNS": "7",
+                "HERMES_TUI_CHECKPOINTS": "1",
+                "HERMES_TUI_PASS_SESSION_ID": "1",
+                "HERMES_IGNORE_RULES": "1",
+            },
+        ),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-env", "key-env")
+
+        kwargs = mock_agent.call_args.kwargs
+        assert kwargs["max_iterations"] == 7
+        assert kwargs["checkpoints_enabled"] is True
+        assert kwargs["pass_session_id"] is True
+        assert kwargs["skip_context_files"] is True
+        assert kwargs["skip_memory"] is True
 
 
 def test_probe_config_health_flags_null_sections():

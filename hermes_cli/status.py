@@ -141,8 +141,6 @@ def show_status(args):
         "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
-        "Tinker": "TINKER_API_KEY",
-        "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
@@ -367,7 +365,7 @@ def show_status(args):
         if persist is None:
             persist_enabled = bool(terminal_cfg.get("container_persistent", True))
         else:
-            persist_enabled = persist.lower() in ("1", "true", "yes", "on")
+            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
         auth_status = describe_vercel_auth()
         sdk_ok = importlib.util.find_spec("vercel") is not None
         sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[vercel]')"

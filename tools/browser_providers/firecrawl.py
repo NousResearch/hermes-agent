@@ -47,12 +47,17 @@ class FirecrawlProvider(CloudBrowserProvider):
 
         body: Dict[str, object] = {"ttl": ttl}
 
-        response = requests.post(
-            f"{self._api_url()}/v2/browser",
-            headers=self._headers(),
-            json=body,
-            timeout=30,
-        )
+        try:
+            response = requests.post(
+                f"{self._api_url()}/v2/browser",
+                headers=self._headers(),
+                json=body,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                f"Firecrawl API connection failed: {exc}"
+            ) from exc
 
         if not response.ok:
             raise RuntimeError(
@@ -79,7 +84,7 @@ class FirecrawlProvider(CloudBrowserProvider):
                 headers=self._headers(),
                 timeout=10,
             )
-            if response.status_code in (200, 201, 204):
+            if response.status_code in {200, 201, 204}:
                 logger.debug("Successfully closed Firecrawl session %s", session_id)
                 return True
             else:

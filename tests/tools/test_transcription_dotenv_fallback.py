@@ -69,6 +69,12 @@ class TestProviderSelectionGate:
             assert tt._get_provider({"enabled": True, "provider": "groq"}) == "groq"
 
     def test_explicit_mistral_sees_dotenv(self):
+        """Mistral STT is intentionally disabled (PyPI quarantine 2026-05-12).
+
+        Even with the dotenv key visible, explicit `provider: mistral` must
+        return "none" with a warning. Restore the previous behavior once
+        `mistralai` is un-quarantined on PyPI.
+        """
         from tools import transcription_tools as tt
 
         with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
@@ -76,7 +82,7 @@ class TestProviderSelectionGate:
              patch.object(tt, "_has_local_command", return_value=False), \
              patch("hermes_cli.config.load_env",
                    return_value={"MISTRAL_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "mistral"
+            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "none"
 
     def test_explicit_xai_sees_dotenv(self):
         from tools import transcription_tools as tt
@@ -164,7 +170,15 @@ class TestTranscribeCallSitesReadDotenv:
         assert seen_keys == ["mistral-dotenv-key"]
 
     def test_transcribe_xai_forwards_dotenv_key(self):
+        """xAI STT now resolves credentials through ``tools.xai_http`` so the
+        OAuth bearer wins when present and ``XAI_API_KEY`` is the fallback.
+        Patch the resolver's ``get_env_value`` to simulate a dotenv-only key
+        and confirm it reaches the HTTP call. The per-call-site
+        ``transcription_tools.get_env_value`` is still consulted for the
+        ``XAI_STT_BASE_URL`` override (covered by ``test_custom_base_url``).
+        """
         from tools import transcription_tools as tt
+        from tools import xai_http
 
         captured: dict = {}
 
@@ -177,15 +191,12 @@ class TestTranscribeCallSitesReadDotenv:
             response.json.return_value = {"text": "hello"}
             return response
 
-        # get_env_value is consulted for both XAI_API_KEY and XAI_STT_BASE_URL.
-        # Return the key for the first call, None for base-url override
-        # (so it defaults to the module-level XAI_STT_BASE_URL).
         def fake_get_env_value(name, default=None):
             if name == "XAI_API_KEY":
                 return "xai-dotenv-key"
             return None
 
-        with patch.object(tt, "get_env_value", side_effect=fake_get_env_value), \
+        with patch.object(xai_http, "get_env_value", side_effect=fake_get_env_value), \
              patch("requests.post", side_effect=fake_post), \
              patch("builtins.open", MagicMock()):
             result = tt._transcribe_xai("/tmp/fake.mp3", "grok-stt")

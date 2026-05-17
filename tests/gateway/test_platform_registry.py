@@ -394,3 +394,317 @@ class TestPlatformsMerge:
             assert "LabelTest" in label
         finally:
             _reg.unregister("labeltest")
+
+
+# ── apply_yaml_config_fn (PlatformEntry field + load_gateway_config dispatch) ──
+
+
+class TestApplyYamlConfigFnField:
+    """The hook field itself — defaults, custom values, signature."""
+
+    def test_default_is_none(self):
+        entry = PlatformEntry(
+            name="test",
+            label="Test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+        )
+        assert entry.apply_yaml_config_fn is None
+
+    def test_accepts_callable(self):
+        def _hook(yaml_cfg, platform_cfg):
+            return None
+
+        entry = PlatformEntry(
+            name="test",
+            label="Test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            apply_yaml_config_fn=_hook,
+        )
+        assert entry.apply_yaml_config_fn is _hook
+        # Sanity-check the signature contract.
+        assert entry.apply_yaml_config_fn({"x": 1}, {"y": 2}) is None
+
+
+class TestApplyYamlConfigFnDispatch:
+    """End-to-end dispatch through load_gateway_config().
+
+    Each test registers a temporary PlatformEntry, writes a config.yaml in
+    a tmp HERMES_HOME, calls load_gateway_config(), and asserts the hook
+    was invoked correctly.  Cleanup unregisters the entry.
+    """
+
+    def _write_config(self, tmp_path, content: str):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
+        return hermes_home
+
+    def _register_hook(self, name, hook_fn):
+        from gateway.platform_registry import platform_registry as _reg
+
+        entry = PlatformEntry(
+            name=name,
+            label=name.title(),
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            apply_yaml_config_fn=hook_fn,
+        )
+        _reg.register(entry)
+        return _reg
+
+    def test_hook_can_mutate_environ(self, tmp_path, monkeypatch):
+        """A hook that mutates os.environ has its env vars set after load."""
+        env_var = "MYHOOKPLAT_FLAG"
+        monkeypatch.delenv(env_var, raising=False)
+
+        def _hook(yaml_cfg, platform_cfg):
+            if "flag" in platform_cfg and not os.getenv(env_var):
+                os.environ[env_var] = str(platform_cfg["flag"]).lower()
+            return None
+
+        reg = self._register_hook("myhookplat", _hook)
+        try:
+            home = self._write_config(
+                tmp_path, "myhookplat:\n  flag: true\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            assert os.environ.get(env_var) == "true"
+        finally:
+            reg.unregister("myhookplat")
+            os.environ.pop(env_var, None)
+
+    def test_hook_returned_dict_merges_into_extra(self, tmp_path, monkeypatch):
+        """A hook that returns a dict has it merged into PlatformConfig.extra."""
+
+        def _hook(yaml_cfg, platform_cfg):
+            return {"seeded_key": "seeded_value", "flag": platform_cfg.get("flag")}
+
+        reg = self._register_hook("myextraplat", _hook)
+        try:
+            home = self._write_config(
+                tmp_path, "myextraplat:\n  flag: yes\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            cfg = load_gateway_config()
+
+            plat = Platform("myextraplat")
+            assert plat in cfg.platforms
+            extra = cfg.platforms[plat].extra
+            assert extra.get("seeded_key") == "seeded_value"
+            # flag value carried through from yaml_cfg arg.
+            assert extra.get("flag") is True
+        finally:
+            reg.unregister("myextraplat")
+
+    def test_hook_receives_full_yaml_and_platform_subdict(
+        self, tmp_path, monkeypatch
+    ):
+        """Hook receives both the full yaml_cfg and its own platform sub-dict."""
+        captured: dict = {}
+
+        def _hook(yaml_cfg, platform_cfg):
+            captured["yaml_cfg"] = yaml_cfg
+            captured["platform_cfg"] = platform_cfg
+            return None
+
+        reg = self._register_hook("mycaptureplat", _hook)
+        try:
+            home = self._write_config(
+                tmp_path,
+                "top_level_key: 1\n"
+                "mycaptureplat:\n"
+                "  inner_key: deep\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            assert captured["yaml_cfg"].get("top_level_key") == 1
+            assert captured["platform_cfg"] == {"inner_key": "deep"}
+        finally:
+            reg.unregister("mycaptureplat")
+
+    def test_hook_exception_swallowed(self, tmp_path, monkeypatch):
+        """A misbehaving hook never aborts load_gateway_config()."""
+
+        def _bad_hook(yaml_cfg, platform_cfg):
+            raise RuntimeError("plugin author bug")
+
+        # Also register a well-behaved hook to ensure dispatch continues
+        # iterating after a bad one.
+        good_called = {"count": 0}
+
+        def _good_hook(yaml_cfg, platform_cfg):
+            good_called["count"] += 1
+            return None
+
+        from gateway.platform_registry import platform_registry as _reg
+        _reg.register(PlatformEntry(
+            name="mybadplat",
+            label="MyBad",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            apply_yaml_config_fn=_bad_hook,
+        ))
+        _reg.register(PlatformEntry(
+            name="mygoodplat",
+            label="MyGood",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            apply_yaml_config_fn=_good_hook,
+        ))
+        try:
+            home = self._write_config(
+                tmp_path,
+                "mybadplat:\n  k: v\n"
+                "mygoodplat:\n  k: v\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            # Must not raise.
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            assert good_called["count"] == 1
+        finally:
+            _reg.unregister("mybadplat")
+            _reg.unregister("mygoodplat")
+
+    def test_hook_skipped_when_platform_section_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """Hook is NOT called when the platform's YAML section is absent."""
+        called = {"count": 0}
+
+        def _hook(yaml_cfg, platform_cfg):
+            called["count"] += 1
+            return None
+
+        reg = self._register_hook("myabsentplat", _hook)
+        try:
+            home = self._write_config(tmp_path, "telegram:\n  k: v\n")
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            assert called["count"] == 0
+        finally:
+            reg.unregister("myabsentplat")
+
+    def test_hook_skipped_when_platform_section_not_dict(
+        self, tmp_path, monkeypatch
+    ):
+        """Hook is NOT called when the platform's YAML section isn't a dict."""
+        called = {"count": 0}
+
+        def _hook(yaml_cfg, platform_cfg):
+            called["count"] += 1
+            return None
+
+        reg = self._register_hook("mybadshapeplat", _hook)
+        try:
+            home = self._write_config(
+                tmp_path, "mybadshapeplat: just-a-string\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            assert called["count"] == 0
+        finally:
+            reg.unregister("mybadshapeplat")
+
+    def test_env_var_takes_precedence_when_hook_uses_getenv_guard(
+        self, tmp_path, monkeypatch
+    ):
+        """The standard `not os.getenv(...)` guard preserves env > YAML."""
+        env_var = "MYPRECPLAT_FLAG"
+        monkeypatch.setenv(env_var, "preexisting")
+
+        def _hook(yaml_cfg, platform_cfg):
+            if "flag" in platform_cfg and not os.getenv(env_var):
+                os.environ[env_var] = str(platform_cfg["flag"]).lower()
+            return None
+
+        reg = self._register_hook("myprecplat", _hook)
+        try:
+            home = self._write_config(
+                tmp_path, "myprecplat:\n  flag: yaml-value\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+            load_gateway_config()
+
+            # Pre-existing env var was NOT clobbered by the hook.
+            assert os.environ.get(env_var) == "preexisting"
+        finally:
+            reg.unregister("myprecplat")
+            os.environ.pop(env_var, None)
+
+
+class TestPluginPlatformSharedKeyBridge:
+    """Plugin-registered platforms get the same shared-key bridging as built-ins.
+
+    Without this, plugin authors using ``apply_yaml_config_fn`` would have to
+    re-implement bridging for every common key (``unauthorized_dm_behavior``,
+    ``notice_delivery``, ``reply_prefix``, ``require_mention``, ``dm_policy``,
+    ``allow_from``, etc.) — defeating the hook's whole point of letting
+    plugins focus on their *platform-specific* keys.
+    """
+
+    def _write_config(self, tmp_path, content: str):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
+        return hermes_home
+
+    def test_shared_keys_bridged_for_plugin_platform(self, tmp_path, monkeypatch):
+        """A plugin platform's ``require_mention``/``dm_policy``/etc. flow into
+        ``PlatformConfig.extra`` without the plugin needing its own bridge."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="mysharedplat",
+            label="MySharedPlat",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(
+                tmp_path,
+                "mysharedplat:\n"
+                "  require_mention: true\n"
+                "  dm_policy: allow\n"
+                "  reply_prefix: \"→ \"\n"
+                "  allow_from: [\"alice\", \"bob\"]\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("mysharedplat")
+            assert plat in cfg.platforms
+            extra = cfg.platforms[plat].extra
+            assert extra.get("require_mention") is True
+            assert extra.get("dm_policy") == "allow"
+            assert extra.get("reply_prefix") == "→ "
+            assert extra.get("allow_from") == ["alice", "bob"]
+        finally:
+            _reg.unregister("mysharedplat")

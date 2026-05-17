@@ -14,6 +14,7 @@ from agent.anthropic_adapter import (
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
+    build_anthropic_bedrock_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
@@ -66,11 +67,9 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
-            # Default: 1M-context beta stays IN for OAuth so 1M-capable
-            # subscriptions keep full context. The reactive recovery path
-            # in run_agent.py flips it off only after a subscription
-            # actually rejects the beta.
-            assert "context-1m-2025-08-07" in betas
+            # Native Anthropic does not get context-1m by default; accounts
+            # without that beta reject even short auxiliary requests.
+            assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
 
     def test_oauth_drop_context_1m_beta_strips_only_1m(self):
@@ -99,7 +98,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "context-1m-2025-08-07" in betas
+            assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -109,8 +108,26 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
+
+    def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-key",
+                base_url="https://example.services.ai.azure.com/models/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
+    def test_bedrock_client_keeps_context_1m_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -986,8 +1003,8 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
-    def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
-        """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
+    def test_fast_mode_oauth_default_omits_context_1m_beta(self):
+        """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-6",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1000,7 +1017,7 @@ class TestBuildAnthropicKwargs:
         betas = kwargs["extra_headers"]["anthropic-beta"]
         assert "fast-mode-2026-02-01" in betas
         assert "oauth-2025-04-20" in betas
-        assert "context-1m-2025-08-07" in betas
+        assert "context-1m-2025-08-07" not in betas
 
     def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m from fast-mode

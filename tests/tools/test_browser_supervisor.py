@@ -561,3 +561,80 @@ def test_bridge_captures_prompt_and_returns_reply_text(chrome_cdp, supervisor_re
 
     value = asyncio.run(nav_and_read())
     assert value == "AGENT-SUPPLIED-REPLY", f"expected AGENT-SUPPLIED-REPLY, got {value!r}"
+
+
+def test_evaluate_runtime_primitive(chrome_cdp, supervisor_registry):
+    """evaluate_runtime returns primitive values via the supervisor's live WS."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-1", cdp_url=cdp_url)
+
+    # Need a page to evaluate against.
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("1 + 41")
+    assert out["ok"] is True
+    assert out["result"] == 42
+    assert out["result_type"] == "number"
+
+
+def test_evaluate_runtime_object(chrome_cdp, supervisor_registry):
+    """Plain objects come back JSON-serialized via returnByValue=True."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-2", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime('({foo: "bar", n: 7})')
+    assert out["ok"] is True
+    assert out["result"] == {"foo": "bar", "n": 7}
+    assert out["result_type"] == "object"
+
+
+def test_evaluate_runtime_js_exception(chrome_cdp, supervisor_registry):
+    """JS exceptions surface as ok=False with the exception message."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-3", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("nonExistentVar.nope")
+    assert out["ok"] is False
+    assert "ReferenceError" in out["error"] or "not defined" in out["error"]
+
+
+def test_evaluate_runtime_dom_node_returns_empty_object(chrome_cdp, supervisor_registry):
+    """DOM nodes with returnByValue=true serialize to ``{}`` (Chrome quirk).
+
+    This is honest — DOM nodes can't be deeply JSON-serialized — and matches
+    DevTools console behaviour for the same expression.  Documenting the
+    contract here so a future change that "fixes" it (e.g. switching to
+    returnByValue=false + DOM.describeNode) doesn't break callers expecting
+    the current shape.
+    """
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-4", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("document.querySelector('h1')")
+    assert out["ok"] is True
+    assert out["result_type"] == "object"
+    # Empty dict — Chrome can't deeply-serialize a DOM node through returnByValue.
+    assert out["result"] == {}
+
+
+def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
+    """``Infinity``/``NaN``/``BigInt`` come back via ``unserializableValue``."""
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-5", cdp_url=cdp_url)
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    out = supervisor.evaluate_runtime("Infinity")
+    assert out["ok"] is True
+    assert out["result"] == "Infinity"

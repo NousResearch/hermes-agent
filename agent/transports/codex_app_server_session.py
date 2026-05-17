@@ -541,7 +541,7 @@ class CodexAppServerSession:
                 turn_status = (
                     (note.get("params") or {}).get("turn") or {}
                 ).get("status")
-                if turn_status and turn_status not in ("completed", "interrupted"):
+                if turn_status and turn_status not in {"completed", "interrupted"}:
                     err_obj = (
                         (note.get("params") or {}).get("turn") or {}
                     ).get("error")
@@ -775,9 +775,9 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
     """
-    if choice in ("once",):
+    if choice in {"once",}:
         return "accept"
-    if choice in ("session", "always"):
+    if choice in {"session", "always"}:
         return "acceptForSession"
     return "decline"
 

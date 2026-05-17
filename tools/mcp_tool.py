@@ -540,7 +540,7 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
         raise InvalidMcpUrlError(
             f"Invalid MCP URL for '{server_name}': {stripped!r} ({exc})"
         ) from exc
-    if parsed.scheme.lower() not in ("http", "https"):
+    if parsed.scheme.lower() not in {"http", "https"}:
         raise InvalidMcpUrlError(
             f"Invalid MCP URL for '{server_name}': scheme must be http or "
             f"https, got {parsed.scheme!r} ({stripped!r})"

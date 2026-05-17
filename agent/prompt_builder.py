@@ -170,6 +170,28 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+PINECONE_RECALL_HEADING = "PINECONE RECALL (verify before relying):"
+
+
+def format_pinecone_recall_block(snippets: list[dict[str, object]] | list[object]) -> str:
+    """Render retrieved Pinecone snippets as a clearly-marked prompt block."""
+    if not snippets:
+        return ""
+
+    lines = [PINECONE_RECALL_HEADING]
+    for idx, snippet in enumerate(snippets, start=1):
+        if isinstance(snippet, dict):
+            text = str(snippet.get("text") or "").strip()
+            provenance = str(snippet.get("provenance") or "unknown source")
+        else:
+            text = str(getattr(snippet, "text", "") or "").strip()
+            provenance = str(getattr(snippet, "provenance", "unknown source") or "unknown source")
+        if not text:
+            continue
+        lines.append(f"{idx}. [{provenance}] {text}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

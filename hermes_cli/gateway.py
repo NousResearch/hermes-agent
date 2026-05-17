@@ -2840,7 +2840,15 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    
+
+    <!-- Cap the restart delay so the gateway recovers quickly after
+         `hermes update` triggers a service restart (exit code {GATEWAY_SERVICE_RESTART_EXIT_CODE}).
+         Without this, launchd's default exponential back-off can delay
+         restarts by minutes when the process exits repeatedly in quick
+         succession (e.g. update → restart → brief crash → restart). -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     

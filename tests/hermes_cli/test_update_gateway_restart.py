@@ -149,6 +149,25 @@ class TestLaunchdPlistReplace:
         assert replace_idx == run_idx + 1
 
 
+class TestLaunchdPlistThrottle:
+    """ThrottleInterval must be present so launchd restarts the gateway
+    quickly after ``hermes update`` triggers a service restart."""
+
+    def test_plist_contains_throttle_interval(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>ThrottleInterval</key>" in plist
+
+    def test_plist_throttle_interval_is_10_seconds(self):
+        plist = gateway_cli.generate_launchd_plist()
+        lines = [line.strip() for line in plist.splitlines()]
+        for i, line in enumerate(lines):
+            if line == "<key>ThrottleInterval</key>":
+                assert lines[i + 1] == "<integer>10</integer>"
+                break
+        else:
+            raise AssertionError("ThrottleInterval key not found in plist")
+
+
 class TestLaunchdPlistPath:
     def test_plist_contains_environment_variables(self):
         plist = gateway_cli.generate_launchd_plist()

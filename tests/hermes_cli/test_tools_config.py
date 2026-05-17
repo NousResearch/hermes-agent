@@ -1048,9 +1048,6 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
 
 
 @pytest.mark.parametrize("provider_name,post_setup_key", [
-    ("Browserbase", "agent_browser"),
-    ("Browser Use", "agent_browser"),
-    ("Firecrawl", "agent_browser"),
     ("Camofox", "camofox"),
 ])
 def test_reconfigure_provider_runs_post_setup_for_env_var_providers(

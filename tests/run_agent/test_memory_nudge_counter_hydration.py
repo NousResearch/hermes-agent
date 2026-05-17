@@ -120,10 +120,20 @@ def test_production_code_contains_hydration_block():
     """Smoke test: confirm the hydration code is actually wired into
     run_conversation(). If someone deletes it, tests above still pass
     against the inline replica — this fails them awake.
+
+    The body now lives in agent/conversation_loop.py after the
+    run_agent.py refactor; check both files for safety.
     """
     from pathlib import Path
-    src = Path(__file__).resolve().parents[2] / "run_agent.py"
-    content = src.read_text(encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    src_ra = (repo / "run_agent.py").read_text(encoding="utf-8")
+    src_cl = (repo / "agent" / "conversation_loop.py").read_text(encoding="utf-8")
+    content = src_ra + src_cl
     # Anchor on the unique comment + the modulo line.
     assert "Hydrate per-session nudge counters from persisted history" in content
-    assert "self._turns_since_memory = prior_user_turns % self._memory_nudge_interval" in content
+    # The line uses ``self.`` in run_agent.py form and ``agent.`` in the
+    # extracted module, accept either.
+    assert (
+        "self._turns_since_memory = prior_user_turns % self._memory_nudge_interval" in content
+        or "agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval" in content
+    )

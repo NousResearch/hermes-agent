@@ -5205,14 +5205,19 @@ class TestMemoryNudgeCounterPersistence:
     def test_counters_not_reset_in_preamble(self):
         """The run_conversation preamble must not zero the nudge counters."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         # The preamble resets many fields (retry counts, budget, etc.)
         # before the main loop. Find that reset block and verify our
         # counters aren't in it. The reset block ends at iteration_budget.
-        preamble_end = src.index("self.iteration_budget = IterationBudget")
+        # After the run_agent.py refactor the body uses ``agent.X`` instead
+        # of ``self.X``, so accept either form.
+        preamble_end = src.index("iteration_budget = IterationBudget")
         preamble = src[:preamble_end]
         assert "self._turns_since_memory = 0" not in preamble
         assert "self._iters_since_skill = 0" not in preamble
+        assert "agent._turns_since_memory = 0" not in preamble
+        assert "agent._iters_since_skill = 0" not in preamble
 
 
 class TestDeadRetryCode:
@@ -5220,7 +5225,8 @@ class TestDeadRetryCode:
 
     def test_no_unreachable_max_retries_after_backoff(self):
         import inspect
-        source = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        source = inspect.getsource(_rc)
         occurrences = source.count("if retry_count >= max_retries:")
         assert occurrences == 2, (
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
@@ -5258,7 +5264,8 @@ class TestMemoryContextSanitization:
         a literal <memory-context> tag we don't silently delete their text.
         The streaming scrubber + plugin-side scrub cover real leak paths."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         assert "sanitize_context(user_message)" not in src
         assert "sanitize_context(persist_user_message)" not in src
 
@@ -5294,7 +5301,8 @@ class TestMemoryProviderTurnStart:
     def test_on_turn_start_called_before_prefetch(self):
         """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         # Find the actual method calls, not comments
         idx_turn_start = src.index(".on_turn_start(")
         idx_prefetch = src.index(".prefetch_all(")
@@ -5304,7 +5312,13 @@ class TestMemoryProviderTurnStart:
         )
 
     def test_on_turn_start_uses_user_turn_count(self):
-        """Source-level check: on_turn_start receives self._user_turn_count."""
+        """Source-level check: on_turn_start receives the user_turn_count."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
-        assert "on_turn_start(self._user_turn_count" in src
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
+        # After the run_agent.py refactor the body uses ``agent.X`` instead
+        # of ``self.X``.  Accept either spelling.
+        assert (
+            "on_turn_start(self._user_turn_count" in src
+            or "on_turn_start(agent._user_turn_count" in src
+        )

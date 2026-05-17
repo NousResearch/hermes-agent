@@ -75,7 +75,9 @@ class TestAgentLoopSourceStillHasCarveOut:
     def test_run_agent_excludes_jsondecodeerror_from_local_validation(self):
         import run_agent
         import inspect
-        src = inspect.getsource(run_agent)
+        from agent import conversation_loop
+        # The body moved into agent/conversation_loop.py; scan both for safety.
+        src = inspect.getsource(run_agent) + inspect.getsource(conversation_loop)
         # The predicate we care about must reference json.JSONDecodeError
         # in its exclusion tuple. We check for the specific co-occurrence
         # rather than the literal string so harmless reformatting doesn't

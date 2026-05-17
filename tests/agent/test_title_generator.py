@@ -113,6 +113,23 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_omits_temperature_for_model_compatibility(self):
+        """Title generation should let strict models use their default sampling."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Compatible Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title("question", "answer")
+
+        assert title == "Compatible Title"
+        assert "temperature" not in captured_kwargs
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

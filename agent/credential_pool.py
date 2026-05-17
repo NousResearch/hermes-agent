@@ -1665,6 +1665,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
 
 def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources: Set[str]) -> bool:
+    stale_seed_sources = {"gh_cli", "claude_code", "hermes_pkce"}
     retained = [
         entry
         for entry in entries
@@ -1672,7 +1673,7 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
         or entry.source in active_sources
         or not (
             entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
+            or entry.source in stale_seed_sources
         )
     ]
     if len(retained) == len(entries):

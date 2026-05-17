@@ -321,6 +321,33 @@ class TestFetchApiModels:
         assert catalog is not None
         assert [item["id"] for item in catalog] == ["gpt-5.4"]
 
+    def test_fetch_github_model_catalog_filters_policy_disabled_models(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data": ['
+                    b'{"id": "gpt-5.4", "model_picker_enabled": true, '
+                    b'"policy": {"state": "disabled"}, '
+                    b'"supported_endpoints": ["/responses"], '
+                    b'"capabilities": {"type": "chat"}}, '
+                    b'{"id": "gpt-5-mini", "model_picker_enabled": true, '
+                    b'"policy": {"state": "enabled"}, '
+                    b'"supported_endpoints": ["/chat/completions"], '
+                    b'"capabilities": {"type": "chat"}}]}'
+                )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            catalog = fetch_github_model_catalog("gh-token")
+
+        assert catalog is not None
+        assert [item["id"] for item in catalog] == ["gpt-5-mini"]
+
 
 class TestGithubReasoningEfforts:
     def test_gpt5_supports_minimal_to_high(self):

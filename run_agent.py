@@ -8321,24 +8321,32 @@ class AIAgent:
                     if not tool_calls_acc:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
-                        deltas_were_sent["yes"] = True
-                    # Tool calls suppress regular content streaming (avoids
-                    # displaying chatty "I'll use the tool..." text alongside
-                    # tool calls).  But reasoning tags embedded in suppressed
-                    # content should still reach the display — otherwise the
-                    # reasoning box only appears as a post-response fallback,
-                    # rendering it confusingly after the already-streamed
-                    # response.  Route suppressed content through the stream
-                    # delta callback so its tag extraction can fire the
-                    # reasoning display.  Non-reasoning text is harmlessly
-                    # suppressed by the CLI's _stream_delta when the stream
-                    # box is already closed (tool boundary flush).
-                    elif self.stream_delta_callback:
-                        try:
-                            self.stream_delta_callback(delta.content)
-                            self._record_streamed_assistant_text(delta.content)
-                        except Exception:
-                            pass
+                        # Track whether text was actually visible to an external
+                        # stream consumer. Quiet callers such as cron still use
+                        # streaming for health checks, but no user has seen any
+                        # partial text there; if the provider dies mid tool-call,
+                        # we should let the normal retry/fallback path recover
+                        # instead of returning a partial warning stub.
+                        if self._has_stream_consumers():
+                            deltas_were_sent["yes"] = True
+                    else:
+                        # Tool calls suppress regular content streaming (avoids
+                        # displaying chatty "I'll use the tool..." text alongside
+                        # tool calls).  But reasoning tags embedded in suppressed
+                        # content should still reach the display — otherwise the
+                        # reasoning box only appears as a post-response fallback,
+                        # rendering it confusingly after the already-streamed
+                        # response.  Route suppressed content through the stream
+                        # delta callback so its tag extraction can fire the
+                        # reasoning display.  Non-reasoning text is harmlessly
+                        # suppressed by the CLI's _stream_delta when the stream
+                        # box is already closed (tool boundary flush).
+                        if self.stream_delta_callback:
+                            try:
+                                self.stream_delta_callback(delta.content)
+                                self._record_streamed_assistant_text(delta.content)
+                            except Exception:
+                                pass
 
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
@@ -8546,7 +8554,11 @@ class AIAgent:
                                 if text and not has_tool_use:
                                     _fire_first_delta()
                                     self._fire_stream_delta(text)
-                                    deltas_were_sent["yes"] = True
+                                    # Only treat partial text as delivered if a
+                                    # real stream consumer exists. Quiet callers
+                                    # can safely retry on stream failures.
+                                    if self._has_stream_consumers():
+                                        deltas_were_sent["yes"] = True
                             elif delta_type == "thinking_delta":
                                 thinking_text = getattr(delta, "thinking", "")
                                 if thinking_text:

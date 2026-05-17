@@ -1135,7 +1135,7 @@ class TestPartialToolCallWarning:
         agent._interrupt_requested = False
 
         fired_deltas: list = []
-        agent._fire_stream_delta = lambda text: fired_deltas.append(text)
+        agent.stream_delta_callback = lambda text: fired_deltas.append(text)
         agent._current_streamed_assistant_text = "Let me write the audit: "
 
         import os as _os
@@ -1194,7 +1194,8 @@ class TestPartialToolCallWarning:
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
-        agent._current_streamed_assistant_text = "Here's my answer so far"
+        fired_deltas: list = []
+        agent.stream_delta_callback = lambda text: fired_deltas.append(text)
 
         import os as _os
         _prev = _os.environ.get("HERMES_STREAM_RETRIES")
@@ -1282,7 +1283,7 @@ class TestSilentRetryMidToolCall:
         agent._interrupt_requested = False
 
         fired_deltas: list = []
-        agent._fire_stream_delta = lambda text: fired_deltas.append(text)
+        agent.stream_delta_callback = lambda text: fired_deltas.append(text)
 
         import os as _os
         _prev = _os.environ.get("HERMES_STREAM_RETRIES")
@@ -1324,6 +1325,80 @@ class TestSilentRetryMidToolCall:
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_quiet_mid_tool_stream_error_uses_general_retry_not_stub(
+        self, mock_close, mock_create, mock_replace,
+    ):
+        """Quiet callers (cron/subagents) use streaming for health checks even
+        with no display consumer. If that stream dies after text + partial tool
+        JSON, no user-visible text was actually delivered, so the safe recovery
+        is the normal retry path — not a partial warning stub that marks the
+        turn as a textual assistant reply and drops the tool call."""
+        from run_agent import AIAgent
+        import httpx as _httpx
+
+        attempts = {"n": 0}
+
+        def _first_stream():
+            yield _make_stream_chunk(content="Let me write the audit: ")
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="write_file"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"path": "/tmp/x", '),
+            ])
+            raise _httpx.RemoteProtocolError("peer closed connection")
+
+        def _second_stream():
+            yield _make_stream_chunk(content="Let me write the audit: ")
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="write_file"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments='{"path": "/tmp/x", "content": "hi"}',
+                ),
+            ])
+            yield _make_stream_chunk(finish_reason="tool_calls")
+
+        def _pick_stream(*a, **kw):
+            attempts["n"] += 1
+            return _first_stream() if attempts["n"] == 1 else _second_stream()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _pick_stream
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        assert not agent._has_stream_consumers()
+
+        import os as _os
+        _prev = _os.environ.get("HERMES_STREAM_RETRIES")
+        _os.environ["HERMES_STREAM_RETRIES"] = "1"
+        try:
+            response = agent._interruptible_streaming_api_call({})
+        finally:
+            if _prev is None:
+                _os.environ.pop("HERMES_STREAM_RETRIES", None)
+            else:
+                _os.environ["HERMES_STREAM_RETRIES"] = _prev
+
+        assert attempts["n"] == 2
+        msg = response.choices[0].message
+        assert "Stream stalled" not in (getattr(msg, "content", None) or "")
+        assert getattr(msg, "tool_calls", None)
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_silent_retry_exhausted_falls_back_to_stub(
         self, mock_close, mock_create, mock_replace,
     ):
@@ -1356,7 +1431,7 @@ class TestSilentRetryMidToolCall:
         agent._interrupt_requested = False
 
         fired_deltas: list = []
-        agent._fire_stream_delta = lambda text: fired_deltas.append(text)
+        agent.stream_delta_callback = lambda text: fired_deltas.append(text)
 
         import os as _os
         _prev = _os.environ.get("HERMES_STREAM_RETRIES")
@@ -1412,7 +1487,8 @@ class TestSilentRetryMidToolCall:
         )
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
-        agent._current_streamed_assistant_text = "Here's my answer so far"
+        fired_deltas: list = []
+        agent.stream_delta_callback = lambda text: fired_deltas.append(text)
 
         import os as _os
         _prev = _os.environ.get("HERMES_STREAM_RETRIES")

@@ -542,6 +542,64 @@ class TestExtractText:
         assert DingTalkAdapter._extract_text(msg) == ""
 
 
+class TestExtractMedia:
+    def test_extracts_file_message_from_sdk_extensions(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        msg = SimpleNamespace(
+            image_content=None,
+            rich_text_content=None,
+            rich_text=None,
+            message_type="file",
+            extensions={
+                "content": {
+                    "downloadCode": "dl-file-123",
+                    "fileName": "note.md",
+                }
+            },
+        )
+
+        msg_type, media_urls, media_types = adapter._extract_media(msg)
+
+        assert msg_type == MessageType.DOCUMENT
+        assert media_urls == ["dl-file-123"]
+        assert media_types and media_types[0].startswith("text/")
+
+
+class TestResolveMediaCodes:
+    @pytest.mark.asyncio
+    async def test_resolves_download_codes_from_sdk_extension_content(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "robot-code-1"
+        adapter._get_access_token = AsyncMock(return_value="token-123")
+        adapter._fetch_download_url = AsyncMock()
+
+        content = {
+            "downloadCode": "dl-file-123",
+            "fileName": "brief.md",
+        }
+        msg = SimpleNamespace(
+            robot_code=None,
+            image_content=None,
+            rich_text_content=None,
+            extensions={"content": content},
+        )
+
+        await adapter._resolve_media_codes(msg)
+
+        adapter._fetch_download_url.assert_awaited_once_with(
+            "dl-file-123",
+            "robot-code-1",
+            "token-123",
+            content,
+            "downloadCode",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)
 # ---------------------------------------------------------------------------

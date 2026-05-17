@@ -2760,7 +2760,14 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         ):
             repaired["type"] = "object"
 
-        if repaired.get("type") == "object":
+        if repaired.get("type") == "array":
+            # OpenAI Codex and other providers require items definition for arrays
+            if "items" not in repaired:
+                repaired["items"] = {"type": "object", "properties": {}}
+            elif not isinstance(repaired.get("items"), dict):
+                # items is present but not a schema object (e.g., a bool or invalid)
+                repaired["items"] = {"type": "object", "properties": {}}
+        elif repaired.get("type") == "object":
             # Ensure properties exists so required can reference it safely
             if "properties" not in repaired or not isinstance(
                 repaired.get("properties"), dict

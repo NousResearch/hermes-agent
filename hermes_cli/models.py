@@ -2419,6 +2419,12 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     if item.get("model_picker_enabled") is False:
         return False
 
+    policy = item.get("policy")
+    if isinstance(policy, dict):
+        policy_state = str(policy.get("state") or "").strip().lower()
+        if policy_state == "disabled":
+            return False
+
     capabilities = item.get("capabilities")
     if isinstance(capabilities, dict):
         model_type = str(capabilities.get("type") or "").strip().lower()

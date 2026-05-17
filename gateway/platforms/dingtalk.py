@@ -107,7 +107,91 @@ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 DINGTALK_TYPE_MAPPING = {
     "picture": "image",
     "voice": "audio",
+    "audio": "audio",
+    "video": "video",
+    "file": "file",
+    "document": "file",
 }
+
+
+def _guess_dingtalk_media_mime(payload: Any, default: str = "application/octet-stream") -> str:
+    """Best-effort MIME detection for DingTalk media payloads.
+
+    DingTalk file/document callbacks are inconsistent across SDK versions: the
+    parsed ChatbotMessage may keep the raw content only in ``extensions``. We
+    infer a stable MIME hint from file name / media type fields so downstream
+    document handling can distinguish text-ish files like ``.md``.
+    """
+    if isinstance(payload, dict):
+        file_name = str(
+            payload.get("fileName")
+            or payload.get("filename")
+            or payload.get("name")
+            or ""
+        ).strip()
+        explicit = str(
+            payload.get("mimeType")
+            or payload.get("mime_type")
+            or payload.get("contentType")
+            or payload.get("content_type")
+            or payload.get("fileType")
+            or payload.get("file_type")
+            or ""
+        ).strip()
+    else:
+        file_name = str(
+            getattr(payload, "file_name", None)
+            or getattr(payload, "fileName", None)
+            or getattr(payload, "filename", None)
+            or getattr(payload, "name", None)
+            or ""
+        ).strip()
+        explicit = str(
+            getattr(payload, "mime_type", None)
+            or getattr(payload, "mimeType", None)
+            or getattr(payload, "content_type", None)
+            or getattr(payload, "contentType", None)
+            or getattr(payload, "file_type", None)
+            or getattr(payload, "fileType", None)
+            or ""
+        ).strip()
+
+    explicit_lower = explicit.lower()
+    if "/" in explicit_lower:
+        return explicit_lower
+    if explicit_lower in DINGTALK_TYPE_MAPPING:
+        mapped = DINGTALK_TYPE_MAPPING[explicit_lower]
+        if mapped == "image":
+            return "image/*"
+        if mapped == "audio":
+            return "audio/*"
+        if mapped == "video":
+            return "video/*"
+
+    import mimetypes
+    from pathlib import Path
+
+    guessed, _ = mimetypes.guess_type(file_name)
+    if guessed:
+        return guessed
+
+    ext = Path(file_name).suffix.lower()
+    text_like_overrides = {
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+        ".csv": "text/csv",
+        ".log": "text/plain",
+        ".json": "text/plain",
+        ".xml": "text/plain",
+        ".yaml": "text/plain",
+        ".yml": "text/plain",
+        ".toml": "text/plain",
+        ".ini": "text/plain",
+        ".cfg": "text/plain",
+    }
+    if ext in text_like_overrides:
+        return text_like_overrides[ext]
+    return default
 
 
 def check_dingtalk_requirements() -> bool:
@@ -742,14 +826,35 @@ class DingTalkAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
 
+        def _append_media(download_ref: str, item_type: str = "file", payload: Any = None) -> None:
+            nonlocal msg_type
+            if not download_ref:
+                return
+            mapped = DINGTALK_TYPE_MAPPING.get((item_type or "").lower(), "file")
+            media_urls.append(download_ref)
+            if mapped == "image":
+                media_types.append(_guess_dingtalk_media_mime(payload, "image/*"))
+                if msg_type == MessageType.TEXT:
+                    msg_type = MessageType.PHOTO
+            elif mapped == "audio":
+                media_types.append(_guess_dingtalk_media_mime(payload, "audio/*"))
+                if msg_type == MessageType.TEXT:
+                    msg_type = MessageType.AUDIO
+            elif mapped == "video":
+                media_types.append(_guess_dingtalk_media_mime(payload, "video/*"))
+                if msg_type == MessageType.TEXT:
+                    msg_type = MessageType.VIDEO
+            else:
+                media_types.append(_guess_dingtalk_media_mime(payload, "application/octet-stream"))
+                if msg_type == MessageType.TEXT:
+                    msg_type = MessageType.DOCUMENT
+
         # Check for image/picture
         image_content = getattr(message, "image_content", None)
         if image_content:
             download_code = getattr(image_content, "download_code", None)
             if download_code:
-                media_urls.append(download_code)
-                media_types.append("image")
-                msg_type = MessageType.PHOTO
+                _append_media(download_code, "picture", image_content)
 
         # Check for rich text with mixed content
         rich_text = getattr(message, "rich_text_content", None) or getattr(
@@ -761,28 +866,50 @@ class DingTalkAdapter(BasePlatformAdapter):
                 for item in rich_list:
                     if isinstance(item, dict):
                         dl_code = (
-                            item.get("downloadCode") or item.get("download_code") or ""
+                            item.get("downloadCode")
+                            or item.get("download_code")
+                            or item.get("pictureDownloadCode")
+                            or ""
                         )
                         item_type = item.get("type", "")
                         if dl_code:
-                            mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
-                            media_urls.append(dl_code)
-                            if mapped == "image":
-                                media_types.append("image")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.PHOTO
-                            elif mapped == "audio":
-                                media_types.append("audio")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.AUDIO
-                            elif mapped == "video":
-                                media_types.append("video")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.VIDEO
-                            else:
-                                media_types.append("application/octet-stream")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.DOCUMENT
+                            _append_media(dl_code, item_type, item)
+
+        # SDK fallback: unsupported msgtype payloads are often kept in extensions.
+        if not media_urls:
+            ext = getattr(message, "extensions", None) or {}
+            candidates = []
+            if isinstance(ext, dict):
+                for key in ("content", "file", "image", "audio", "video"):
+                    value = ext.get(key)
+                    if value:
+                        candidates.append(value)
+                candidates.append(ext)
+
+            msg_type_str = (getattr(message, "message_type", "") or "").lower()
+            for payload in candidates:
+                if isinstance(payload, dict):
+                    dl_code = (
+                        payload.get("downloadCode")
+                        or payload.get("download_code")
+                        or payload.get("pictureDownloadCode")
+                        or payload.get("mediaId")
+                        or payload.get("media_id")
+                        or ""
+                    )
+                    if not dl_code:
+                        continue
+                    payload_type = str(
+                        payload.get("type")
+                        or payload.get("msgtype")
+                        or payload.get("msgType")
+                        or payload.get("fileType")
+                        or payload.get("file_type")
+                        or msg_type_str
+                        or "file"
+                    ).lower()
+                    _append_media(dl_code, payload_type, payload)
+                    break
 
         msg_type_str = getattr(message, "message_type", "") or ""
         if msg_type_str == "picture" and not media_urls:
@@ -1296,14 +1423,39 @@ class DingTalkAdapter(BasePlatformAdapter):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
 
+        # 3. Raw extension payloads for SDK-unsupported msgtypes (e.g. file)
+        ext = getattr(message, "extensions", None) or {}
+        if isinstance(ext, dict):
+            candidate_payloads = []
+            for key in ("content", "file", "image", "audio", "video"):
+                value = ext.get(key)
+                if isinstance(value, dict):
+                    candidate_payloads.append(value)
+            candidate_payloads.append(ext)
+
+            for payload in candidate_payloads:
+                if isinstance(payload, dict):
+                    for key in (
+                        "downloadCode",
+                        "pictureDownloadCode",
+                        "download_code",
+                        "mediaId",
+                        "media_id",
+                    ):
+                        if payload.get(key):
+                            codes_to_resolve.append((payload, key))
+                            break
+
         if not codes_to_resolve:
             return
 
         # Resolve all codes in parallel
         tasks = []
+        seen = set()
         for obj, key in codes_to_resolve:
             code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
-            if code:
+            if code and code not in seen:
+                seen.add(code)
                 tasks.append(
                     self._fetch_download_url(code, robot_code, token, obj, key)
                 )

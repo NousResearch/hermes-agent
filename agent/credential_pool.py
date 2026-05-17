@@ -929,6 +929,47 @@ class CredentialPool:
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
                     return updated
+                if auth_mod._is_terminal_nous_refresh_error(exc):
+                    logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state = _load_provider_state(auth_store, "nous") or {
+                                "client_id": entry.client_id,
+                                "portal_base_url": entry.portal_base_url,
+                                "inference_base_url": entry.inference_base_url,
+                                "token_type": entry.token_type,
+                                "scope": entry.scope,
+                                "tls": entry.tls,
+                            }
+                            store_refresh = str(state.get("refresh_token") or "").strip()
+                            entry_refresh = str(entry.refresh_token or "").strip()
+                            if not store_refresh or store_refresh == entry_refresh:
+                                auth_mod._quarantine_nous_oauth_state(
+                                    state,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
+                                _save_provider_state(auth_store, "nous", state)
+                                _save_auth_store(auth_store)
+                    except Exception as clear_exc:
+                        logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
+
+                    cleared = replace(
+                        entry,
+                        access_token=None,
+                        refresh_token=None,
+                        agent_key=None,
+                        agent_key_expires_at=None,
+                    )
+                    self._replace_entry(entry, cleared)
+                    self._persist()
+                    self._mark_exhausted(
+                        cleared,
+                        401,
+                        {"reason": getattr(exc, "code", None), "message": str(exc)},
+                    )
+                    return None
             self._mark_exhausted(entry, None)
             return None
 

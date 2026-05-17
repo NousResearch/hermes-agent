@@ -510,6 +510,70 @@ def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
     assert entry.agent_key == "agent-key"
 
 
+def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    from hermes_cli import auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    refresh_calls = {"count": 0}
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        refresh_calls["count"] += 1
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _terminal_refresh_failure)
+
+    pool = load_pool("nous")
+    assert pool.select() is not None
+    assert pool.try_refresh_current() is None
+
+    entry = pool.entries()[0]
+    assert entry.last_status == "exhausted"
+    assert entry.last_error_code == 401
+    assert entry.refresh_token is None
+    assert entry.access_token is None
+    assert entry.agent_key is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    nous_state = auth_payload["providers"]["nous"]
+    assert not nous_state.get("refresh_token")
+    assert not nous_state.get("access_token")
+    assert not nous_state.get("agent_key")
+    assert nous_state["last_auth_error"]["code"] == "invalid_grant"
+
+    assert pool.try_refresh_current() is None
+    assert refresh_calls["count"] == 1
+
+
 def test_load_pool_removes_stale_file_backed_singleton_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

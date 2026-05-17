@@ -164,6 +164,37 @@ def test_nous_adapter_get_credential_raises_on_refresh_failure(tmp_path, monkeyp
             adapter.get_credential()
 
 
+def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "access-tok",
+        "refresh_token": "refresh-tok",
+        "agent_key": "stale-agent-key",
+    })
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        side_effect=AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        ),
+    ):
+        adapter = NousPortalAdapter()
+        with pytest.raises(RuntimeError, match="Refresh session has been revoked"):
+            adapter.get_credential()
+
+    stored = json.loads((tmp_path / "auth.json").read_text())
+    nous_state = stored["providers"]["nous"]
+    assert not nous_state.get("refresh_token")
+    assert not nous_state.get("access_token")
+    assert not nous_state.get("agent_key")
+    assert nous_state["last_auth_error"]["code"] == "invalid_grant"
+
+
 def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
     """If the refresh helper succeeds but produces no agent_key, we surface a clear error."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

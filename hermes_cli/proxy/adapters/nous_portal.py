@@ -16,8 +16,11 @@ import threading
 from typing import Any, Dict, FrozenSet, Optional
 
 from hermes_cli.auth import (
+    AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
     _load_auth_store,
+    _is_terminal_nous_refresh_error,
+    _quarantine_nous_oauth_state,
     _save_auth_store,
     _write_shared_nous_state,
     refresh_nous_oauth_from_state,
@@ -81,6 +84,17 @@ class NousPortalAdapter(UpstreamAdapter):
 
             try:
                 refreshed = refresh_nous_oauth_from_state(state)
+            except AuthError as exc:
+                if _is_terminal_nous_refresh_error(exc):
+                    _quarantine_nous_oauth_state(
+                        state,
+                        exc,
+                        reason="proxy_refresh_failure",
+                    )
+                    self._save_state(state)
+                raise RuntimeError(
+                    f"Failed to refresh Nous Portal credentials: {exc}"
+                ) from exc
             except Exception as exc:
                 raise RuntimeError(
                     f"Failed to refresh Nous Portal credentials: {exc}"

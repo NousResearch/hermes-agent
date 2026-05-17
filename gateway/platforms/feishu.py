@@ -162,6 +162,13 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Match a full markdown table block: header row + separator row + zero or more
+# data rows, bounded by a blank line or end-of-string. Feishu post 'md' elements
+# do not support table rendering; splitting the full block lets us emit table
+# rows as plain-text elements instead.
+_TABLE_BLOCK_RE = re.compile(
+    r"(?:^|\n\n)(\|.+\|\n\|[-|: ]+\|\n(?:\|.+\|\n?)*)", re.MULTILINE
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -559,32 +566,103 @@ def _build_markdown_post_payload(content: str) -> str:
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+    """Build Feishu post rows, isolating fenced code blocks and tables.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    Feishu's ``md`` element cannot render markdown tables — a table rendered
+    in an ``md`` element appears blank on the client.  Split the reply so that:
+
+    * Prose with markdown formatting uses ``{"tag": "md"}`` elements.
+    * Tables are emitted as ``{"tag": "text"}`` elements (readable but no
+      formatting rendering issues).
+    * Fenced code blocks inside prose segments are isolated into their own rows
+      to prevent the ``md`` renderer from swallowing trailing content.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
+
+    has_code = "```" in content
+    has_table = _TABLE_BLOCK_RE.search(content)
+
+    if not has_code and not has_table:
         return [[{"tag": "md", "text": content}]]
+
+    # ------------------------------------------------------------------
+    # Phase 1 — split into table / non-table segments
+    # ------------------------------------------------------------------
+    segments: list[tuple[str, bool]]  # (text, is_table)
+    if has_table:
+        segments = _split_by_table_blocks(content)
+    else:
+        segments = [(content, False)]
+
+    # ------------------------------------------------------------------
+    # Phase 2 — render each segment, isolating code fences in prose
+    # ------------------------------------------------------------------
+    rows: List[List[Dict[str, str]]] = []
+    for segment_text, is_table in segments:
+        if is_table:
+            segment = segment_text.strip()
+            if segment:
+                rows.append([{"tag": "text", "text": segment}])
+            continue
+
+        # Prose segment — apply the fence-isolation logic
+        segment_rows = _build_prose_rows(segment_text)
+        rows.extend(segment_rows)
+
+    return rows if rows else [[{"tag": "md", "text": content}]]
+
+
+def _split_by_table_blocks(content: str) -> list:
+    """Split *content* into (text, is_table) segments.
+
+    Each table block (header + separator + data rows) gets ``is_table=True``;
+    everything else between them gets ``is_table=False``.
+    """
+    segments: list = []
+    last_end = 0
+    for match in _TABLE_BLOCK_RE.finditer(content):
+        start = match.start()
+        # Allow a leading newline on the table block (the pattern captures it
+        # with (?:^|\n\n)).  Push the boundary back so we don't swallow the
+        # blank line that belongs to the preceding paragraph.
+        text_before = content[last_end:start]
+        if match.group(0).startswith("\n\n"):
+            # The pattern anchored on ^ or \n\n — keep the final blank line
+            # out of the prose segment so the message doesn't get extra spacing.
+            pass
+        if text_before.strip():
+            segments.append((text_before, False))
+        segments.append((match.group(0).lstrip("\n"), True))
+        last_end = match.end()
+
+    remainder = content[last_end:]
+    if remainder.strip():
+        segments.append((remainder, False))
+
+    return segments
+
+
+def _build_prose_rows(text: str) -> List[List[Dict[str, str]]]:
+    """Build post rows for a prose segment (no tables), isolating fenced code."""
+    if "```" not in text:
+        stripped = text.strip()
+        return [[{"tag": "md", "text": stripped}]] if stripped else []
 
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
     in_code_block = False
 
-    def _flush_current() -> None:
+    def _flush() -> None:
         nonlocal current
         if not current:
             return
-        segment = "\n".join(current)
-        if segment.strip():
+        segment = "\n".join(current).strip()
+        if segment:
             rows.append([{"tag": "md", "text": segment}])
-        current = []
+        current.clear()
 
-    for raw_line in content.splitlines():
+    for raw_line in text.splitlines():
         stripped_line = raw_line.strip()
         is_fence = bool(
             _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
@@ -594,17 +672,17 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
         if is_fence:
             if not in_code_block:
-                _flush_current()
+                _flush()
             current.append(raw_line)
             in_code_block = not in_code_block
             if not in_code_block:
-                _flush_current()
+                _flush()
             continue
 
         current.append(raw_line)
 
-    _flush_current()
-    return rows or [[{"tag": "md", "text": content}]]
+    _flush()
+    return rows if rows else [[{"tag": "md", "text": text.strip()}]]
 
 
 def parse_feishu_post_payload(
@@ -4232,13 +4310,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Feishu post-type 'md' elements do not render markdown tables; the
+        # _build_markdown_post_rows function handles this by emitting table rows
+        # as plain-text elements inside the post payload (so the table stays
+        # readable while other formatting is preserved).
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

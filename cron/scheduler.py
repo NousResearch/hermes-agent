@@ -490,6 +490,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    # HERMES_FEISHU_CARD_CRON_PATCH_BEGIN
+    try:
+        from hermes_feishu_card.hook_runtime import emit_cron_delivery as _hfc_emit_cron
+        _hfc_cron_metadata = {"delivery_kind": "cron"}
+        # event_name="message.completed"
+        if _hfc_emit_cron(locals()):
+            return None
+    except Exception:
+        pass
+    # HERMES_FEISHU_CARD_CRON_PATCH_END
     targets = _resolve_delivery_targets(job)
     if not targets:
         if job.get("deliver", "local") != "local":

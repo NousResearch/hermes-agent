@@ -53,13 +53,9 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
-# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
-# that imports the SDK on first call/isinstance check. This preserves:
-#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
-#       _create_openai_client, and
-#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-#
+# OpenAI is imported during module initialization so later model-controlled
+# file writes cannot plant a shadow ``openai`` module before first use.
+# Keep the module-level ``OpenAI`` name for existing patch("run_agent.OpenAI", ...) tests.
 # NOTE: `fire` is ONLY used in the `__main__` block below (for running
 # run_agent.py directly as a CLI) — it is NOT needed for library usage.
 # It is imported there, not here, so that importing run_agent from a
@@ -69,39 +65,17 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-
-
-_OPENAI_CLS_CACHE: Optional[type] = None
+from openai import OpenAI
 
 
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
+    """Return the eagerly imported ``openai.OpenAI`` class."""
+    return OpenAI
 
-
-class _OpenAIProxy:
-    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
-
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -116,6 +90,10 @@ if _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
 else:
     logger.info("No .env file found. Using system environment variables.")
+
+# Keep terminal/code-execution backends aligned with config.yaml for non-CLI
+# entry points without importing the classic interactive CLI.
+apply_terminal_config_env_bridge()
 
 
 # Import our tool system
@@ -2002,7 +1980,7 @@ class AIAgent:
         # through get_tool_definitions()).  Duplicate function names cause
         # 400 errors on providers that enforce unique names (e.g. Xiaomi
         # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
+        if self._memory_provider_tools_allowed() and self.tools is not None:
             _existing_tool_names = {
                 t.get("function", {}).get("name")
                 for t in self.tools
@@ -2458,8 +2436,7 @@ class AIAgent:
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform
-                    or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
@@ -4372,8 +4349,7 @@ class AIAgent:
             ),
             "session_id": self.session_id or "",
             "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform
-                            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             "tool_name": "memory",
         }
         if task_id:
@@ -10424,6 +10400,18 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _memory_provider_tools_allowed(self) -> bool:
+        """Return True when provider-backed memory tools are in this agent's toolset."""
+        return bool(self._memory_manager and "memory" in self.valid_tool_names)
+
+    def _is_allowed_memory_provider_tool(self, function_name: str) -> bool:
+        """Return True only for provider memory tools exposed to this agent."""
+        return bool(
+            self._memory_manager
+            and function_name in self.valid_tool_names
+            and self._memory_manager.has_tool(function_name)
+        )
+
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch.
 
@@ -10437,8 +10425,6 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             parent_agent=self,
         )
@@ -10484,10 +10470,6 @@ class AIAgent:
                 limit=function_args.get("limit", 3),
                 db=session_db,
                 current_session_id=self.session_id,
-                session_source=(
-                    self.platform
-                    or os.environ.get("HERMES_SESSION_SOURCE", "cli")
-                ),
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
@@ -10514,7 +10496,7 @@ class AIAgent:
                 except Exception:
                     pass
             return result
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
+        elif self._is_allowed_memory_provider_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -11113,10 +11095,6 @@ class AIAgent:
                         limit=function_args.get("limit", 3),
                         db=session_db,
                         current_session_id=self.session_id,
-                        session_source=(
-                            self.platform
-                            or os.environ.get("HERMES_SESSION_SOURCE", "cli")
-                        ),
                     )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
@@ -11206,7 +11184,7 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+            elif self._is_allowed_memory_provider_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
                 spinner = None
@@ -11932,6 +11910,16 @@ class AIAgent:
                     # skipping them because conversation_history is still the
                     # pre-compression length.
                     conversation_history = None
+                    # Fix: reset retry counters after compression so the model
+                    # gets a fresh budget on the compressed context.  Without
+                    # this, pre-compression retries carry over and the model
+                    # hits "(empty)" immediately after compression-induced
+                    # context loss.
+                    self._empty_content_retries = 0
+                    self._thinking_prefill_retries = 0
+                    self._last_content_with_tools = None
+                    self._last_content_tools_all_housekeeping = False
+                    self._mute_post_response = False
                     # Re-estimate after compression
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
@@ -13874,6 +13862,9 @@ class AIAgent:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
@@ -13913,7 +13904,7 @@ class AIAgent:
                         # Note: max_tokens = output token cap (one response).
                         #       context_length = total window (input + output combined).
                         available_out = parse_available_output_tokens_from_error(error_msg)
-                        if available_out is not None:
+                        if available_out is not None and available_out >= 512:
                             # Error is purely about the output cap being too large.
                             # Cap output to the available space and retry without
                             # touching context_length or triggering compression.
@@ -14032,6 +14023,9 @@ class AIAgent:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             # Can't compress further and already at minimum tier
@@ -14294,13 +14288,6 @@ class AIAgent:
                 # infinite loops when compression reduces messages but not enough
                 # to fit the context window.
                 retry_count += 1
-                # Fix: reset retry counters after compression so the model
-                # gets a fresh budget on the compressed context.
-                self._empty_content_retries = 0
-                self._thinking_prefill_retries = 0
-                self._last_content_with_tools = None
-                self._last_content_tools_all_housekeeping = False
-                self._mute_post_response = False
                 restart_with_compressed_messages = False
                 continue
 

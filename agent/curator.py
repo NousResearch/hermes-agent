@@ -388,9 +388,8 @@ CURATOR_REVIEW_PROMPT = (
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n"
+    "      Then archive the old sibling with `skill_manage action=delete` "
+    "after preserving any needed content with `skill_manage action=write_file`.\n"
     "4. Also flag skills whose NAME is too narrow (contains a PR number, "
     "a feature codename, a specific error string, an 'audit' / "
     "'diagnosis' / 'salvage' session artifact). These almost always "
@@ -410,8 +409,9 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "Do not use terminal, file, network, browser, messaging, delegation, "
+    "or cron tools; the curator review is intentionally restricted to "
+    "the skills toolset.\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -1688,6 +1688,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
+        dry_run = prompt.startswith(CURATOR_DRY_RUN_BANNER)
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
@@ -1700,6 +1701,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             # single-session review path caps itself at a much smaller
             # number because it's not doing a curation sweep.
             max_iterations=9999,
+            enabled_toolsets=["curator_readonly" if dry_run else "curator"],
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

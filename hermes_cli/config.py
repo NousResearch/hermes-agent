@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import json
 import logging
 import os
 import platform
@@ -241,26 +242,27 @@ def managed_error(action: str = "modify configuration"):
 # Container-aware CLI (NixOS container mode)
 # =============================================================================
 
-def get_container_exec_info() -> Optional[dict]:
-    """Read container mode metadata from HERMES_HOME/.container-mode.
+_CONTAINER_MODE_SYSTEM_FILE = Path("/etc/hermes-agent/container-mode")
+_CONTAINER_MODE_ALLOWED_BACKENDS = frozenset({"docker", "podman"})
 
-    Returns a dict with keys: backend, container_name, exec_user, hermes_bin
-    or None if container mode is not active, we're already inside the
-    container, or HERMES_DEV=1 is set.
 
-    The .container-mode file is written by the NixOS activation script when
-    container.enable = true. It tells the host CLI to exec into the container
-    instead of running locally.
-    """
-    if os.environ.get("HERMES_DEV") == "1":
-        return None
+def _container_mode_candidates() -> List[Tuple[Path, bool]]:
+    """Return (metadata path, trusts runtime_path) in preferred order."""
+    override = os.environ.get("HERMES_CONTAINER_MODE_FILE")
+    if override:
+        return [(Path(override), True)]
+    return [
+        (_CONTAINER_MODE_SYSTEM_FILE, True),
+        (get_hermes_home() / ".container-mode", False),
+    ]
 
-    from hermes_constants import is_container
-    if is_container():
-        return None
 
-    container_mode_file = get_hermes_home() / ".container-mode"
-
+def _read_container_mode_file(
+    container_mode_file: Path,
+    *,
+    allow_runtime_path: bool,
+) -> Optional[dict]:
+    """Parse and validate one container-mode metadata file."""
     try:
         info = {}
         with open(container_mode_file, "r", encoding="utf-8") as f:
@@ -274,16 +276,54 @@ def get_container_exec_info() -> Optional[dict]:
     # All other exceptions (PermissionError, malformed data, etc.) propagate
 
     backend = info.get("backend", "docker")
-    container_name = info.get("container_name", "hermes-agent")
-    exec_user = info.get("exec_user", "hermes")
-    hermes_bin = info.get("hermes_bin", "/data/current-package/bin/hermes")
+    if backend not in _CONTAINER_MODE_ALLOWED_BACKENDS:
+        raise ValueError(
+            f"Invalid container backend {backend!r}; expected 'docker' or 'podman'."
+        )
 
-    return {
+    container_info = {
         "backend": backend,
-        "container_name": container_name,
-        "exec_user": exec_user,
-        "hermes_bin": hermes_bin,
+        "container_name": info.get("container_name", "hermes-agent"),
+        "exec_user": info.get("exec_user", "hermes"),
+        "hermes_bin": info.get("hermes_bin", "/data/current-package/bin/hermes"),
     }
+    runtime_path = info.get("runtime_path") if allow_runtime_path else None
+    if runtime_path:
+        runtime = Path(runtime_path)
+        if not runtime.is_absolute():
+            raise ValueError("container runtime_path must be absolute")
+        container_info["runtime_path"] = runtime_path
+    return container_info
+
+
+def get_container_exec_info() -> Optional[dict]:
+    """Read validated container mode metadata.
+
+    Returns a dict with keys: backend, container_name, exec_user, hermes_bin
+    and optionally runtime_path, or None if container mode is not active,
+    we're already inside the container, or HERMES_DEV=1 is set.
+
+    The NixOS activation script writes the trusted metadata file under
+    /etc/hermes-agent so the containerized agent cannot modify host routing.
+    A legacy HERMES_HOME/.container-mode fallback remains for older installs,
+    but backend values are restricted to Docker/Podman and runtime_path is
+    ignored unless it came from the trusted system metadata path.
+    """
+    if os.environ.get("HERMES_DEV") == "1":
+        return None
+
+    from hermes_constants import is_container
+    if is_container():
+        return None
+
+    for container_mode_file, allow_runtime_path in _container_mode_candidates():
+        info = _read_container_mode_file(
+            container_mode_file,
+            allow_runtime_path=allow_runtime_path,
+        )
+        if info is not None:
+            return info
+    return None
 
 
 # =============================================================================
@@ -357,16 +397,17 @@ def _is_container() -> bool:
     return False
 
 
-def _secure_file(path):
+def _secure_file(path, *, allow_container_skip: bool = True):
     """Set file to owner-only read/write (0600). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
 
-    Skipped in containers — Docker/Podman volume mounts often need broader
-    permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
+    Container chmod skipping is allowed for non-secret config files only.
+    Credential files such as ``.env`` must pass ``allow_container_skip=False``
+    so existing permissive volume modes are not preserved for secrets.
     """
-    if is_managed() or _is_container():
+    if is_managed() or (allow_container_skip and _is_container()):
         return
     try:
         if os.path.exists(str(path)):
@@ -592,9 +633,9 @@ DEFAULT_CONFIG = {
         "docker_run_as_host_user": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
-        # Disabled by default because approval checks are per command and cannot
-        # model shell state staged in earlier calls. Opt in explicitly when needed.
-        "persistent_shell": False,
+        # Enabled by default for non-local backends (SSH); local is always opt-in
+        # via TERMINAL_LOCAL_PERSISTENT env var.
+        "persistent_shell": True,
     },
 
     "web": {
@@ -1365,6 +1406,10 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Cross-profile dispatch policy for profile-global kanban tools.
+        # Example: {"techlead": ["researcher", "coder"]}. Dispatcher-spawned
+        # workers keep their existing task-scoped fan-out behavior.
+        "allowed_assignees": {},
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2063,6 +2108,16 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "VOICE_TOOLS_OPENAI_CUSTOM_KEY": {
+        "description": (
+            "Endpoint-specific API key for custom OpenAI-compatible TTS base_url values"
+        ),
+        "prompt": "Custom OpenAI-compatible TTS API key",
+        "url": "",
+        "tools": ["openai_tts"],
+        "password": True,
+        "category": "tool",
+    },
     "ELEVENLABS_API_KEY": {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",
@@ -2346,14 +2401,6 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
         "category": "messaging",
-    },
-    "BLUEBUBBLES_WEBHOOK_TOKEN": {
-        "description": "Optional dedicated token for authenticating BlueBubbles webhooks",
-        "prompt": "BlueBubbles webhook token",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
     },
     "BLUEBUBBLES_ALLOWED_USERS": {
         "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
@@ -4034,6 +4081,89 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+TERMINAL_CONFIG_ENV_MAP = {
+    "backend": "TERMINAL_ENV",
+    "env_type": "TERMINAL_ENV",
+    "cwd": "TERMINAL_CWD",
+    "timeout": "TERMINAL_TIMEOUT",
+    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+    "docker_image": "TERMINAL_DOCKER_IMAGE",
+    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+    "docker_env": "TERMINAL_DOCKER_ENV",
+    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+    "modal_image": "TERMINAL_MODAL_IMAGE",
+    "modal_mode": "TERMINAL_MODAL_MODE",
+    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+    "ssh_host": "TERMINAL_SSH_HOST",
+    "ssh_user": "TERMINAL_SSH_USER",
+    "ssh_port": "TERMINAL_SSH_PORT",
+    "ssh_key": "TERMINAL_SSH_KEY",
+    "container_cpu": "TERMINAL_CONTAINER_CPU",
+    "container_memory": "TERMINAL_CONTAINER_MEMORY",
+    "container_disk": "TERMINAL_CONTAINER_DISK",
+    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+}
+
+
+def apply_terminal_config_env_bridge(config: Optional[Dict[str, Any]] = None) -> None:
+    """Bridge explicit ``terminal`` config.yaml settings to ``TERMINAL_*`` env vars.
+
+    ``terminal_tool`` intentionally reads backend settings from environment
+    variables.  Non-classic entry points (TUI, ACP, direct ``run_agent`` imports)
+    must still honor config.yaml without importing the heavyweight classic CLI.
+    Only values explicitly present in config.yaml are bridged, and explicit
+    terminal config remains authoritative over stale ``.env`` values.
+    """
+    if config is None and os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return
+
+    try:
+        raw_config = read_raw_config() if config is None else config
+        raw_config = _expand_env_vars(raw_config)
+    except Exception:
+        logger.debug("Failed to read terminal config for env bridge", exc_info=True)
+        return
+
+    terminal_config = (
+        raw_config.get("terminal", {}) if isinstance(raw_config, dict) else {}
+    )
+    if not isinstance(terminal_config, dict) or not terminal_config:
+        return
+
+    terminal_config = dict(terminal_config)
+    if "backend" in terminal_config:
+        terminal_config["env_type"] = terminal_config["backend"]
+
+    env_type = (
+        str(terminal_config.get("env_type", os.getenv("TERMINAL_ENV", "local"))).strip()
+        or "local"
+    )
+    cwd_placeholders = {".", "auto", "cwd"}
+    if "cwd" in terminal_config:
+        cwd = terminal_config["cwd"]
+        if str(cwd) in cwd_placeholders:
+            if env_type == "local":
+                terminal_config["cwd"] = os.getcwd()
+            else:
+                terminal_config.pop("cwd", None)
+        elif isinstance(cwd, str):
+            terminal_config["cwd"] = os.path.expanduser(cwd)
+
+    for config_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
+        if config_key not in terminal_config:
+            continue
+        value = terminal_config[config_key]
+        if isinstance(value, (list, dict)):
+            os.environ[env_var] = json.dumps(value)
+        else:
+            os.environ[env_var] = str(value)
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -4380,8 +4510,15 @@ def sanitize_env_file() -> int:
     return fixes
 
 
+def _should_sanitize_non_ascii_credential(key: str) -> bool:
+    """Return True for outbound credentials that are safe to ASCII-strip."""
+    from hermes_cli.env_loader import should_sanitize_non_ascii_credential
+
+    return should_sanitize_non_ascii_credential(key)
+
+
 def _check_non_ascii_credential(key: str, value: str) -> str:
-    """Warn and strip non-ASCII characters from credential values.
+    """Warn and strip non-ASCII characters from outbound credential values.
 
     API keys and tokens must be pure ASCII — they are sent as HTTP header
     values which httpx/httpcore encode as ASCII.  Non-ASCII characters
@@ -4428,8 +4565,10 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
-    # API keys / tokens must be ASCII — strip non-ASCII with a warning.
-    value = _check_non_ascii_credential(key, value)
+    # Outbound API keys / tokens must be ASCII for HTTP headers.  Do not
+    # lossy-normalize inbound auth secrets (for example WEBHOOK_SECRET).
+    if _should_sanitize_non_ascii_credential(key):
+        value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
 
@@ -4485,7 +4624,7 @@ def save_env_value(key: str, value: str):
         except OSError:
             pass
         raise
-    _secure_file(env_path)
+    _secure_file(env_path, allow_container_skip=False)
 
     os.environ[key] = value
 
@@ -4540,7 +4679,7 @@ def remove_env_value(key: str) -> bool:
             except OSError:
                 pass
             raise
-        _secure_file(env_path)
+        _secure_file(env_path, allow_container_skip=False)
 
     os.environ.pop(key, None)
     return found
@@ -4816,21 +4955,12 @@ def edit_config():
         import shutil
         import sys as _sys
         if _sys.platform == "win32":
-            import ntpath
-
-            from hermes_cli.stdio import _trusted_system_notepad_path
-
-            candidates = [_trusted_system_notepad_path(), 'code', 'vim', 'vi', 'nano']
-            is_abs_editor = ntpath.isabs
+            candidates = ['notepad', 'code', 'vim', 'vi', 'nano']
         else:
             candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
-            is_abs_editor = os.path.isabs
         for cmd in candidates:
-            if not cmd:
-                continue
-            resolved = cmd if is_abs_editor(cmd) else shutil.which(cmd)
-            if resolved:
-                editor = resolved
+            if shutil.which(cmd):
+                editor = cmd
                 break
     
     if not editor:
@@ -4858,7 +4988,7 @@ def set_config_value(key: str, value: str):
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
-        'TINKER_API_KEY',
+        'TINKER_API_KEY', 'API_SERVER_KEY', 'GATEWAY_PROXY_KEY', 'WEBHOOK_SECRET',
     ]
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):

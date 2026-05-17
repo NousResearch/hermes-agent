@@ -3814,18 +3814,13 @@ class TelegramAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Return a pre-auth text batching key scoped to one Telegram sender."""
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
-
-        session_key = build_session_key(
+        return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-        sender_id = event.source.user_id_alt or event.source.user_id
-        if sender_id:
-            return f"{session_key}:sender:{sender_id}"
-        return session_key
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.

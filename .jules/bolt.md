@@ -1,3 +1,0 @@
-## 2024-05-16 - [Fast batch tokenization in python]
-**Learning:** HuggingFace `tokenizer` batch encoding (passing a list of texts to `tokenizer(texts)`) is approximately 3x faster than calling `tokenizer.encode(text)` in a loop, as it delegates the iteration down to the optimized Rust implementation within the `transformers` library. This is critical when computing token counts across multiple turns within a chat trajectory.
-**Action:** When working with tokenizers and a list of texts, prefer passing the entire list to the tokenizer at once rather than looping over items, making sure to fallback gracefully to character limits if the tokenizer object is absent or errors out.

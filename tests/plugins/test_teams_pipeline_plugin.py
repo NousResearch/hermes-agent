@@ -118,8 +118,6 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     from plugins.teams_pipeline import runtime as runtime_module
 
     class FakeAdapter:
-        client_state_configured = True
-
         def __init__(self) -> None:
             self.scheduler = None
 
@@ -161,8 +159,6 @@ async def test_bind_gateway_runtime_drops_notifications_when_unavailable(monkeyp
     from tools.microsoft_graph_auth import MicrosoftGraphConfigError
 
     class FakeAdapter:
-        client_state_configured = True
-
         def __init__(self) -> None:
             self.scheduler = None
 
@@ -188,44 +184,6 @@ async def test_bind_gateway_runtime_drops_notifications_when_unavailable(monkeyp
     assert "missing graph env" in gateway._teams_pipeline_runtime_error
     assert callable(adapter.scheduler)
     await adapter.scheduler({"id": "notif-2"}, object())
-
-
-@pytest.mark.anyio
-async def test_bind_gateway_runtime_drops_notifications_without_client_state(monkeypatch):
-    from plugins.teams_pipeline import runtime as runtime_module
-
-    class FakeAdapter:
-        client_state_configured = False
-
-        def __init__(self) -> None:
-            self.scheduler = None
-
-        def set_notification_scheduler(self, scheduler) -> None:
-            self.scheduler = scheduler
-
-    adapter = FakeAdapter()
-    gateway = SimpleNamespace(
-        adapters={Platform.MSGRAPH_WEBHOOK: adapter},
-        config=GatewayConfig(platforms={}),
-        _teams_pipeline_runtime=None,
-        _teams_pipeline_runtime_error=None,
-    )
-    build_called = False
-
-    def _build(_gateway_runner):
-        nonlocal build_called
-        build_called = True
-        return object()
-
-    monkeypatch.setattr(runtime_module, "build_pipeline_runtime", _build)
-
-    bound = runtime_module.bind_gateway_runtime(gateway)
-
-    assert bound is False
-    assert build_called is False
-    assert "MSGRAPH_WEBHOOK_CLIENT_STATE" in gateway._teams_pipeline_runtime_error
-    assert callable(adapter.scheduler)
-    await adapter.scheduler({"id": "notif-no-secret"}, object())
 
 
 def test_store_persists_subscription_event_and_job_state(tmp_path):

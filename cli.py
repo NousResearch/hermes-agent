@@ -7543,14 +7543,12 @@ class HermesCLI:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
-                    from tools.environments.local import _sanitize_subprocess_env
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30, env=sanitized_env
+                                text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
@@ -8810,15 +8808,7 @@ class HermesCLI:
         if new_mcp == self._config_mcp_servers:
             return  # mcp_servers unchanged (some other section was edited)
 
-        old_mcp = self._config_mcp_servers
         self._config_mcp_servers = new_mcp
-
-        if self._mcp_stdio_config_changed(old_mcp, new_mcp):
-            print()
-            print("⚠️  MCP stdio server config changed — run /reload-mcp to reconnect.")
-            print("   Auto-reload is skipped because stdio MCP servers can execute local commands.")
-            return
-
         # Notify user and reload.  Run in a separate thread with a hard
         # timeout so a hung MCP server cannot block the process_loop
         # indefinitely (which would freeze the entire TUI).
@@ -8831,23 +8821,6 @@ class HermesCLI:
         _reload_thread.join(timeout=30)
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
-
-    @staticmethod
-    def _mcp_stdio_config_changed(old_mcp: dict, new_mcp: dict) -> bool:
-        """Return True when auto-reload would start new or changed stdio MCP commands."""
-
-        def _is_enabled_stdio(cfg) -> bool:
-            if not isinstance(cfg, dict) or not cfg.get("command"):
-                return False
-            enabled = cfg.get("enabled", True)
-            if isinstance(enabled, str):
-                return enabled.strip().lower() not in {"0", "false", "no", "off"}
-            return bool(enabled)
-
-        for name, new_cfg in (new_mcp or {}).items():
-            if _is_enabled_stdio(new_cfg) and new_cfg != (old_mcp or {}).get(name):
-                return True
-        return False
 
     def _confirm_destructive_slash(self, command: str, detail: str) -> Optional[str]:
         """Prompt the user to confirm a destructive session slash command.

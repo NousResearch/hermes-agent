@@ -45,46 +45,15 @@ import logging
 import os
 import re
 import asyncio
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Optional
 import httpx
-# NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
-# the SDK pulls ~200 ms of imports (httpcore, firecrawl.v1/v2 type trees) and
-# we only need it when the backend is actually "firecrawl". We expose
-# ``Firecrawl`` as a thin proxy that imports the SDK on first call/
-# isinstance check, so both (a) the in-module ``Firecrawl(...)`` construction
-# site in _get_firecrawl_client() works unchanged, and (b) tests using
-# ``patch("tools.web_tools.Firecrawl", ...)`` keep working.
-if TYPE_CHECKING:
-    from firecrawl import Firecrawl  # noqa: F401 — type hints only
-
-_FIRECRAWL_CLS_CACHE: Optional[type] = None
+from firecrawl import Firecrawl
 
 
 def _load_firecrawl_cls() -> type:
-    """Import and cache ``firecrawl.Firecrawl``."""
-    global _FIRECRAWL_CLS_CACHE
-    if _FIRECRAWL_CLS_CACHE is None:
-        from firecrawl import Firecrawl as _cls
-        _FIRECRAWL_CLS_CACHE = _cls
-    return _FIRECRAWL_CLS_CACHE
+    """Return the eagerly imported ``firecrawl.Firecrawl`` class."""
+    return Firecrawl
 
-
-class _FirecrawlProxy:
-    """Module-level proxy that looks like ``firecrawl.Firecrawl`` but imports lazily."""
-
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_firecrawl_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_firecrawl_cls())
-
-    def __repr__(self):
-        return "<lazy firecrawl.Firecrawl proxy>"
-
-
-Firecrawl = _FirecrawlProxy()
 
 from agent.auxiliary_client import (
     async_call_llm,
@@ -133,8 +102,9 @@ def _get_backend() -> str:
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
+    # Free-tier API backends trail the paid ones so existing paid setups are
+    # unaffected. ddgs requires explicit configuration because availability
+    # probing must not import a module name that local files can shadow.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -142,7 +112,6 @@ def _get_backend() -> str:
         ("exa", _has_env("EXA_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
         if available:
@@ -204,23 +173,19 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
-        return _ddgs_package_importable()
+        return _ddgs_package_available()
     return False
 
 
-def _ddgs_package_importable() -> bool:
-    """Return True when the ``ddgs`` Python package can be imported.
+def _ddgs_package_available() -> bool:
+    """Return True when explicit ddgs configuration can use the installed package.
 
-    ddgs is the only backend whose availability is driven by a package
-    presence rather than an env var / config entry.  Wrapped in a helper
-    so auto-detect and ``_is_backend_available`` share the same check
-    (and tests can monkeypatch a single symbol).
+    This delegates to the provider's metadata-based check and deliberately does
+    not import ``ddgs`` so local files cannot execute during tool discovery.
     """
-    try:
-        import ddgs  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    from tools.web_providers.ddgs import ddgs_package_available
+
+    return ddgs_package_available()
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -1338,9 +1303,11 @@ async def web_extract_tool(
         Exception: If extraction fails or API key is not set
     """
     # Block URLs containing embedded secrets (exfiltration prevention).
-    from agent.redact import url_contains_secret
+    # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
+    from agent.redact import _PREFIX_RE
+    from urllib.parse import unquote
     for _url in urls:
-        if url_contains_secret(_url):
+        if _PREFIX_RE.search(_url) or _PREFIX_RE.search(unquote(_url)):
             return json.dumps({
                 "success": False,
                 "error": "Blocked: URL contains what appears to be an API key or token. "
@@ -2087,7 +2054,7 @@ def check_web_api_key() -> bool:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free")
     )
 
 

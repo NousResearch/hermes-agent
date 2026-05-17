@@ -209,30 +209,6 @@ class TestPluginContextEngineSlot:
         assert mgr._context_engine is engine
         assert mgr._context_engine.name == "stub"
 
-    def test_get_context_engine_returns_fresh_clone(self):
-        from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
-        mgr = PluginManager()
-        manifest = PluginManifest(name="test-lcm")
-        ctx = PluginContext(manifest, mgr)
-
-        engine = StubEngine()
-        engine.session_marker = "prototype"
-        ctx.register_context_engine(engine)
-
-        first = mgr.create_context_engine()
-        second = mgr.create_context_engine()
-
-        assert first is not None
-        assert second is not None
-        assert first is not second
-        assert first is not engine
-        assert second is not engine
-        assert first.name == "stub"
-        assert second.name == "stub"
-        first.session_marker = "session-a"
-        assert second.session_marker == "prototype"
-        assert engine.session_marker == "prototype"
-
     def test_reject_second_engine(self):
         from hermes_cli.plugins import PluginManager, PluginContext, PluginManifest
         mgr = PluginManager()
@@ -269,13 +245,6 @@ class TestPluginContextEngineSlot:
 
             engine = StubEngine()
             mgr._context_engine = engine
-            first = get_plugin_context_engine()
-            second = get_plugin_context_engine()
-            assert first is not None
-            assert second is not None
-            assert first is not second
-            assert first is not engine
-            assert second is not engine
-            assert first.name == "stub"
+            assert get_plugin_context_engine() is engine
         finally:
             plugins_mod._plugin_manager = old_mgr

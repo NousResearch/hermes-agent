@@ -377,6 +377,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         if _ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None
 
+        # Strip image parts for non-vision models that have provider profiles
+        # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
+        # registered providers with profiles were bypassing the strip.
+        api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
@@ -850,7 +855,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 agent.model, base_url=agent.base_url,
                 api_key=agent.api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
-                custom_providers=agent._custom_providers,
+                custom_providers=getattr(agent, "_custom_providers", None),
             )
             agent.context_compressor.update_model(
                 model=agent.model,

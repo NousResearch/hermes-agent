@@ -81,6 +81,10 @@ hermes chat -q "Hello"
 ### Run Tests
 
 ```bash
+# Preferred — matches CI parity checks and activates .venv/venv automatically
+scripts/run_tests.sh
+
+# Alternative after activating the venv
 pytest tests/ -v
 ```
 
@@ -185,7 +189,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run tests**: prefer `scripts/run_tests.sh`; use `pytest tests/ -v` only after activating the dev venv
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS and different Linux distros
 4. **Keep PRs focused**: One logical change per PR

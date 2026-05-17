@@ -184,7 +184,7 @@ hermes-agent/
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, reset policies
 │   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│       ├── telegram.py, discord.py, slack.py, whatsapp.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer

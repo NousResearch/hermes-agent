@@ -878,6 +878,8 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Remove 'model' from runtime_kwargs if present to avoid duplicate kwarg
+        runtime_kwargs.pop("model", None)
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
@@ -1846,7 +1848,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return
                 # Clear timer reference BEFORE flush so new deltas
                 # can start a fresh timer while we emit
-                nonlocal _batch_buf, _batch_timer
+                nonlocal _batch_timer
                 _batch_timer = None
                 await _flush_batch()
 

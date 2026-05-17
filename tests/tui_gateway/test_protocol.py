@@ -484,7 +484,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "goal status"])
 def test_slash_exec_rejects_pending_input_commands(server, cmd):
     """slash.exec must reject commands that use _pending_input in the CLI."""
     sid = "test-session"

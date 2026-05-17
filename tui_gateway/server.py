@@ -4382,8 +4382,16 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
+    ("/details", "Control agent detail visibility", "TUI"),
+    ("/fortune", "Show a random or daily local fortune", "TUI"),
+    ("/heapdump", "Write a V8 heap snapshot + diagnostics", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
+    ("/mem", "Print live V8 heap + RSS numbers", "TUI"),
     ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+    ("/replay", "Replay a completed spawn tree", "TUI"),
+    ("/replay-diff", "Diff two completed spawn trees", "TUI"),
+    ("/setup", "Run full setup wizard (launches `hermes setup`)", "TUI"),
+    ("/terminal-setup", "Configure IDE terminal keybindings", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -4395,7 +4403,6 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "queue",
         "q",
         "steer",
-        "plan",
         "goal",
     }
 )
@@ -5238,7 +5245,7 @@ def _(rid, params: dict) -> dict:
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)
-        ][:30]
+        ][:200]
         text_lower = text.lower()
         extras = [
             {
@@ -5252,14 +5259,49 @@ def _(rid, params: dict) -> dict:
                 "meta": "Control agent detail visibility",
             },
             {
+                "text": "/fortune",
+                "display": "/fortune",
+                "meta": "Show a random or daily local fortune",
+            },
+            {
+                "text": "/heapdump",
+                "display": "/heapdump",
+                "meta": "Write a V8 heap snapshot + diagnostics",
+            },
+            {
                 "text": "/logs",
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
             },
             {
+                "text": "/mem",
+                "display": "/mem",
+                "meta": "Print live V8 heap + RSS numbers",
+            },
+            {
                 "text": "/mouse",
                 "display": "/mouse",
                 "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+            },
+            {
+                "text": "/replay",
+                "display": "/replay",
+                "meta": "Replay a completed spawn tree",
+            },
+            {
+                "text": "/replay-diff",
+                "display": "/replay-diff",
+                "meta": "Diff two completed spawn trees",
+            },
+            {
+                "text": "/setup",
+                "display": "/setup",
+                "meta": "Run full setup wizard (launches `hermes setup`)",
+            },
+            {
+                "text": "/terminal-setup",
+                "display": "/terminal-setup",
+                "meta": "Configure IDE terminal keybindings",
             },
         ]
         for extra in extras:

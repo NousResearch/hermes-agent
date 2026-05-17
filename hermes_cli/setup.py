@@ -3116,6 +3116,256 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 
 
 # =============================================================================
+# Section: Persona Soul
+# =============================================================================
+
+_SOUL_TEMPLATE = """\
+# Hermes Agent Soul
+
+## Identity
+
+name: {name}
+role: {role}
+based_in: {based_in}
+brand_voice: {brand_voice}
+
+## Mission & goals
+
+this_year_headline: {this_year_headline}
+three_pillars:
+  - {pillar_1}
+  - {pillar_2}
+  - {pillar_3}
+whats_not_in_scope: {whats_not_in_scope}
+
+## Voice
+
+default_length: {default_length}
+question_cadence: {question_cadence}
+things_to_avoid: {things_to_avoid}
+
+## Worker prompt
+
+```text
+You are the Worker — a DeepSeek-based executor responsible for producing concrete
+output in response to tasks delegated by the Conductor.
+
+Rules:
+1. generate-don't-decide: Your job is to generate the best possible output for
+   the task you have been given. Do not second-guess the brief or reopen
+   decisions that the Conductor has already made. If ambiguity would block you,
+   surface it in your reasoning, then make the most defensible assumption and
+   proceed.
+
+2. show-reasoning-with-"why-this-approach": Before producing your output, write
+   a brief reasoning block that begins with the label WHY THIS APPROACH. Explain
+   your structural choices, tone decisions, and any trade-offs you considered.
+   Keep it honest and scannable — the Critic will read it.
+
+3. hand-to-Critic-before-returning-to-Conductor: Never return output directly to
+   the Conductor. After generating, tag your response END WORKER and pass the
+   full artifact plus your reasoning to the Critic. Wait for the Critic's verdict
+   before any further action.
+
+Output format:
+  WHY THIS APPROACH
+  <your reasoning>
+
+  ARTIFACT
+  <your generated output>
+
+  END WORKER → routing to Critic
+` ``
+
+## Critic prompt
+
+` ``text
+You are the Critic — a GPT-5.5 / Gemini-based evaluator. Your sole job is to
+assess the Worker's artifact with ruthless honesty before it reaches the Conductor.
+
+You must always return a verdict in this exact format:
+
+VERDICT: SHIP | REVISE | FUNDAMENTAL FLAW
+
+WHAT_WORKS
+<bullet list — what is strong, accurate, or well-executed>
+
+WHAT_LACKS
+<bullet list — gaps, weak spots, or missed requirements>
+
+WHATS_MISSING
+<bullet list — things that should be present but aren't>
+
+BEST_ANGLE
+<one concrete suggestion for the single highest-leverage improvement>
+
+Verdict definitions:
+  SHIP             — Artifact meets the brief; pass to Conductor as-is.
+  REVISE           — Artifact has fixable issues; return to Worker with your
+                     WHAT_LACKS + WHATS_MISSING + BEST_ANGLE as revision notes.
+  FUNDAMENTAL FLAW — Artifact misunderstands the task or has a structural error
+                     that revision cannot fix; escalate to Conductor with full
+                     diagnosis.
+
+Do not soften verdicts. Do not reward effort. Judge the artifact, not the Worker.
+` ``
+
+## Conductor prompt
+
+` ``text
+You are the Conductor — an Opus-class orchestrator. You set the brief, manage the
+Worker/Critic loop, and are the final gatekeeper before any artifact ships.
+
+Your responsibilities:
+
+1. Clarify before delegating — Ask 5–10 targeted clarifying questions before
+   writing the brief. Cover: audience, format, tone, constraints, success
+   criteria, and anything that would cause a FUNDAMENTAL FLAW if assumed wrong.
+   Group questions by theme; number them. Do not proceed until you have answers.
+
+2. Write a one-page brief — After clarification, produce a structured brief:
+     OBJECTIVE       — one sentence
+     AUDIENCE        — who will read/use this
+     FORMAT          — medium, length, structure
+     TONE            — emotional register and voice
+     MUST-HAVES      — non-negotiable requirements
+     OUT OF SCOPE    — what the Worker should not include
+     SUCCESS LOOKS LIKE — how you will judge the final artifact
+   Send the brief to the Worker. Do not include your own ideas about content.
+
+3. Validate the final artifact — When the Critic returns SHIP or you accept a
+   REVISE cycle, perform a final check against the brief:
+     - Every MUST-HAVE is satisfied
+     - Nothing OUT OF SCOPE has crept in
+     - The artifact matches the audience and tone
+   If it passes: approve and deliver. If it fails: send back with precise notes.
+
+Operating rules:
+  - You may run at most 3 Worker/Critic cycles before escalating to the user.
+  - Never write the artifact yourself — delegate to the Worker.
+  - Never override a FUNDAMENTAL FLAW verdict without user input.
+` ``
+"""
+
+
+def setup_soul(config: dict, *, dry_run: bool = False):
+    """Configure the agent's persona soul file (~/.hermes/soul.md)."""
+    soul_path = Path.home() / ".hermes" / "soul.md"
+
+    if dry_run:
+        print_header("Persona Soul (dry run)")
+        print_info("Would prompt for Identity, Mission, and Voice fields.")
+        print_info(f"Would write: {soul_path}")
+        if soul_path.exists():
+            print_info("Existing soul.md detected — would ask keep/overwrite/merge.")
+        print_info("No files written (--dry-run).")
+        return
+
+    print_header("Persona Soul")
+    print_info("Define your agent's identity, mission, and communication style.")
+    print_info(f"Output will be written to: {soul_path}")
+    print()
+
+    # Handle existing soul.md
+    if soul_path.exists():
+        print_warning(f"A soul.md already exists at {soul_path}")
+        choice_idx = prompt_choice(
+            "What would you like to do?",
+            [
+                "Keep existing soul.md (cancel)",
+                "Overwrite with new values",
+                "Merge — keep existing, append new sections below",
+            ],
+            0,
+        )
+        if choice_idx == 0:
+            print_info("Keeping existing soul.md. No changes made.")
+            return
+        merge_mode = choice_idx == 2
+    else:
+        merge_mode = False
+
+    # ── Identity ──
+    print_header("Identity")
+    name = prompt("Agent name", "Hermes")
+    role = prompt("Role / title", "AI assistant")
+    based_in = prompt("Based in (city, country, or 'remote')", "remote")
+    print_info("Brand voice — enter 3 adjectives that describe your agent's tone.")
+    adj1 = prompt("  Adjective 1", "clear")
+    adj2 = prompt("  Adjective 2", "direct")
+    adj3 = prompt("  Adjective 3", "helpful")
+    brand_voice = f"{adj1}, {adj2}, {adj3}"
+
+    # ── Mission & Goals ──
+    print_header("Mission & Goals")
+    this_year_headline = prompt(
+        "This year's headline goal (one sentence)",
+        "Ship reliable, useful features that delight users",
+    )
+    print_info("Three pillars — the core themes that guide everything you do.")
+    pillar_1 = prompt("  Pillar 1", "Quality")
+    pillar_2 = prompt("  Pillar 2", "Clarity")
+    pillar_3 = prompt("  Pillar 3", "Speed")
+    whats_not_in_scope = prompt(
+        "What's not in scope (topics/tasks to decline)",
+        "Legal advice, medical diagnosis, financial planning",
+    )
+
+    # ── Voice ──
+    print_header("Voice")
+    length_idx = prompt_choice(
+        "Default response length:",
+        ["short — concise, minimal prose", "medium — balanced detail", "long — thorough, full context"],
+        1,
+    )
+    default_length = ["short", "medium", "long"][length_idx]
+
+    cadence_idx = prompt_choice(
+        "Question cadence — how to ask clarifying questions:",
+        ["one-at-a-time — ask one question, wait for answer", "batched — ask all at once"],
+        0,
+    )
+    question_cadence = ["one-at-a-time", "batched"][cadence_idx]
+
+    print_info("Things to avoid — comma-separated phrases or behaviors to steer clear of.")
+    things_to_avoid = prompt(
+        "  Things to avoid",
+        "jargon, unnecessary disclaimers, over-hedging",
+    )
+
+    # ── Build and write soul.md ──
+    soul_content = _SOUL_TEMPLATE.format(
+        name=name,
+        role=role,
+        based_in=based_in,
+        brand_voice=brand_voice,
+        this_year_headline=this_year_headline,
+        pillar_1=pillar_1,
+        pillar_2=pillar_2,
+        pillar_3=pillar_3,
+        whats_not_in_scope=whats_not_in_scope,
+        default_length=default_length,
+        question_cadence=question_cadence,
+        things_to_avoid=things_to_avoid,
+    ).replace("` ``", "```")
+
+    try:
+        soul_path.parent.mkdir(parents=True, exist_ok=True)
+        if merge_mode and soul_path.exists():
+            existing = soul_path.read_text(encoding="utf-8")
+            soul_path.write_text(
+                existing.rstrip() + "\n\n---\n\n" + soul_content.lstrip(),
+                encoding="utf-8",
+            )
+            print_success(f"Merged into: {soul_path}  [{name} · {role} · {default_length} responses]")
+        else:
+            soul_path.write_text(soul_content, encoding="utf-8")
+            print_success(f"Written: {soul_path}  [{name} · {role} · {default_length} responses]")
+    except OSError as exc:
+        print_error(f"Failed to write {soul_path}: {exc}")
+
+
+# =============================================================================
 # Main Wizard Orchestrator
 # =============================================================================
 
@@ -3126,6 +3376,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("soul", "Persona Soul", setup_soul),
 ]
 
 
@@ -3140,6 +3391,7 @@ def run_setup_wizard(args):
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
+      hermes setup soul      — persona soul (supports --dry-run)
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -3203,7 +3455,10 @@ def run_setup_wizard(args):
                         Colors.MAGENTA,
                     )
                 )
-                func(config)
+                if key == "soul":
+                    func(config, dry_run=getattr(args, "dry_run", False))
+                else:
+                    func(config)
                 save_config(config)
                 print()
                 print_success(f"{label} configuration complete!")

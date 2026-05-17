@@ -10018,12 +10018,12 @@ def main():
         "setup",
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
-        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent",
+        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent|soul",
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
-        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
+        choices=["model", "tts", "terminal", "gateway", "tools", "agent", "soul"],
         default=None,
         help="Run a specific setup section instead of the full wizard",
     )
@@ -10047,6 +10047,12 @@ def main():
         action="store_true",
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
+    )
+    setup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Preview what 'hermes setup soul' would do without writing any files.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 

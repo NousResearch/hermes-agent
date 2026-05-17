@@ -134,8 +134,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
-    # observability/langfuse` or `hermes tools → Langfuse`); credentials gate
-    # the plugin at runtime.
+    # observability/langfuse`); credentials gate the plugin at runtime.
     "HERMES_LANGFUSE_ENV",
     "HERMES_LANGFUSE_RELEASE",
     "HERMES_LANGFUSE_SAMPLE_RATE",
@@ -199,9 +198,40 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+def detect_install_method(project_root: Optional[Path] = None) -> str:
+    """Detect how Hermes was installed: 'nixos', 'homebrew', 'git', or 'pip'."""
+    managed = get_managed_system()
+    if managed:
+        return managed.lower().replace(" ", "-")
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
+    if (project_root / ".git").is_dir():
+        return "git"
+    return "pip"
+
+
+def recommended_update_command_for_method(method: str) -> str:
+    """Return the update command for a given install method."""
+    if method == "nixos":
+        return "sudo nixos-rebuild switch"
+    if method == "homebrew":
+        return "brew upgrade hermes-agent"
+    if method == "pip":
+        import shutil
+        uv = shutil.which("uv")
+        if uv:
+            return "uv pip install --upgrade hermes-agent"
+        return "pip install --upgrade hermes-agent"
+    return "hermes update"
+
+
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
-    return get_managed_update_command() or "hermes update"
+    managed_cmd = get_managed_update_command()
+    if managed_cmd:
+        return managed_cmd
+    method = detect_install_method()
+    return recommended_update_command_for_method(method)
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
@@ -401,7 +431,10 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
+        for subdir in (
+            "cron", "sessions", "logs", "logs/curator", "memories",
+            "pairing", "hooks", "image_cache", "audio_cache", "skills",
+        ):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -1112,6 +1145,10 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
+                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
+                           # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
@@ -1269,6 +1306,18 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
+        # When True, any uploaded file is cached to disk with mime
+        # application/octet-stream and the path is surfaced to the agent so it
+        # can use terminal/read_file/etc. against it. Default False preserves
+        # the historical allowlist behaviour.
+        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        "allow_any_attachment": False,
+        # Maximum bytes per attachment the gateway will cache. The whole file
+        # is held in memory while being written, so unlimited uploads carry a
+        # real memory cost. Default 32 MiB matches the historical hardcoded
+        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        "max_attachment_bytes": 33554432,
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1439,6 +1488,15 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        # Periodic process memory usage logging (gateway only). Emits a
+        # grep-friendly "[MEMORY] rss=...MB ..." line at the configured
+        # interval so slow leaks in the long-lived gateway are visible
+        # in agent.log / gateway.log as a time series. Ported from
+        # cline/cline#10343.
+        "memory_monitor": {
+            "enabled": True,         # Flip to false to silence the periodic line
+            "interval_seconds": 300, # Default: every 5 minutes
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
@@ -1567,6 +1625,23 @@ DEFAULT_CONFIG = {
         # Empty by default; the registry defaults work for typical
         # setups.
         "servers": {},
+    },
+
+    # X (Twitter) Search via xAI's built-in x_search Responses tool.
+    # The tool registers when xAI credentials are available (SuperGrok
+    # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
+    # `hermes tools`. These settings tune the backing Responses API call.
+    "x_search": {
+        # xAI model used for the Responses call. grok-4.20-reasoning is
+        # the recommended default; any Grok model with x_search tool
+        # access works.
+        "model": "grok-4.20-reasoning",
+        # Request timeout in seconds (minimum 30). x_search can take
+        # 60-120s for complex queries — the default is generous.
+        "timeout_seconds": 180,
+        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
+        # Each retry backs off (1.5x attempt seconds, capped at 5s).
+        "retries": 2,
     },
 
     # Config schema version - bump this when adding new required fields
@@ -2839,6 +2914,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "discover_models",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2928,6 +3004,10 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    discover_models = entry.get("discover_models")
+    if isinstance(discover_models, bool):
+        normalized["discover_models"] = discover_models
 
     return normalized
 

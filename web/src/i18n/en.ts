@@ -574,6 +574,9 @@ export const en: Translations = {
     createTask: "Create task in this column",
     noTasks: "— no tasks —",
     unassigned: "unassigned",
+    needsAssignee: "Needs assignee",
+    needsAssigneeHint:
+      "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
     untitled: "(untitled)",
     loadingDetail: "Loading…",
     addComment: "Add a comment… (Enter to submit)",
@@ -664,7 +667,7 @@ export const en: Translations = {
     columnHelp: {
       triage: "Raw ideas — a specifier will flesh out the spec",
       todo: "Waiting on dependencies or unassigned",
-      ready: "Assigned and waiting for a dispatcher tick",
+      ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
       blocked: "Worker asked for human input",
       done: "Completed",

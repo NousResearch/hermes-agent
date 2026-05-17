@@ -511,3 +511,47 @@ class TestFormBodyRedaction:
         text = "first=1\nsecond=2"
         # Should pass through (still subject to other redactors)
         assert "first=1" in redact_sensitive_text(text)
+
+
+class TestAirtableToken:
+    """Airtable Personal Access Token redaction (pat<14chars>.<64chars>)."""
+
+    PAT = "patABCDEFGHIJKLMN.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567"
+    PAT_WITH_DASHES = "patABCDEFGHIJKLMN.abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP_01234"
+
+    def test_bare_token_is_masked(self):
+        result = redact_sensitive_text(f"token: {self.PAT}", force=True)
+        assert "ABCDEFGHIJKLMN" not in result
+        assert "abcdefghijklmnop" not in result
+        assert "..." in result
+
+    def test_token_with_dashes_and_underscores_is_masked(self):
+        result = redact_sensitive_text(f"key: {self.PAT_WITH_DASHES}", force=True)
+        assert "ABCDEFGHIJKLMN" not in result
+
+    def test_in_env_assignment_is_masked(self):
+        result = redact_sensitive_text(f"AIRTABLE_API_KEY={self.PAT}", force=True)
+        assert "AIRTABLE_API_KEY=" in result
+        assert "ABCDEFGHIJKLMN" not in result
+
+    def test_word_patch_unchanged(self):
+        assert redact_sensitive_text("patch this file", force=True) == "patch this file"
+
+    def test_word_path_unchanged(self):
+        assert redact_sensitive_text("path=/some/path", force=True) == "path=/some/path"
+
+    def test_word_pattern_unchanged(self):
+        assert redact_sensitive_text("pattern=abc", force=True) == "pattern=abc"
+
+    def test_word_patched_unchanged(self):
+        assert redact_sensitive_text("patched the bug", force=True) == "patched the bug"
+
+    def test_short_pat_prefix_no_dot_unchanged(self):
+        # Too short and no dot separator — must not match
+        result = redact_sensitive_text("patABCDEFGHIJKLMN", force=True)
+        assert result == "patABCDEFGHIJKLMN"
+
+    def test_token_preserved_prefix_visible(self):
+        # First 6 chars of the full token should be visible in masked output
+        result = redact_sensitive_text(self.PAT, force=True)
+        assert result.startswith("patABC")

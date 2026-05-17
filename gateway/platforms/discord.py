@@ -149,6 +149,50 @@ def _build_allowed_mentions():
     )
 
 
+_DISCORD_MALFORMED_MENTION_RE = re.compile(r"<@(?:!|&)?\d+(?=$|\s)")
+_DISCORD_TOOL_PREVIEW_RE = re.compile(
+    r"^(?:📚|⚙️|📖|🔎|🧠|💻|🛠️|🧪|📜|🌐|🖱️)\s+"
+    r"[A-Za-z_][\w.]*\([^\n]*\)\s*$"
+)
+_DISCORD_GATEWAY_STATUS_ECHO_RE = re.compile(
+    r"^(?:⚡\s*)?(?:"
+    r"Interrupting current task \(iteration \d+/\d+\)\. I'll respond to your message shortly\."
+    r"|Operation interrupted: waiting for model response \([^)]+\)\."
+    r"|Stopped\. You can continue this session\."
+    r"|No active task to stop\."
+    r")$"
+)
+
+
+def _looks_like_gateway_status_echo(text: str) -> bool:
+    """Return True for gateway/runtime status text that should not start a new turn."""
+    return bool(_DISCORD_GATEWAY_STATUS_ECHO_RE.match((text or "").strip()))
+
+
+def _sanitize_discord_outbound_content(content: str) -> str:
+    """Remove cascade-prone Discord artifacts before sending model output.
+
+    This is deliberately conservative: valid Discord user/role mentions remain
+    intact, but malformed mention fragments, known local control glyphs, and
+    copied gateway tool-preview lines are stripped so quoted previews do not
+    become fresh outbound content.
+    """
+    text = str(content or "").replace("\u2589", "")
+    text = _DISCORD_MALFORMED_MENTION_RE.sub("", text)
+    kept_lines: list[str] = []
+    dropping_tool_preview = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if _DISCORD_TOOL_PREVIEW_RE.match(stripped):
+            dropping_tool_preview = True
+            continue
+        if dropping_tool_preview and stripped.startswith("{") and stripped.endswith("}"):
+            continue
+        dropping_tool_preview = False
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip()
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -1410,7 +1454,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
-            # Format and split message if needed
+            # Format and split message if needed. Sanitize first so copied
+            # tool/status fragments or malformed mentions do not cascade back
+            # into Discord as fresh bot output.
+            content = _sanitize_discord_outbound_content(content)
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
@@ -1490,6 +1537,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         from tools.send_message_tool import _derive_forum_thread_name
 
+        content = _sanitize_discord_outbound_content(content)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
@@ -4707,6 +4755,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.
         event_text = normalized_content
+        if _looks_like_gateway_status_echo(event_text):
+            logger.info("[Discord] Ignoring gateway status echo message %s", getattr(message, "id", ""))
+            return
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 

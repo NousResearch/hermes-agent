@@ -5199,6 +5199,9 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Stamp agent_id before batching so the batch key reflects the
+        # routed agent (idempotent — handle_message will skip re-stamping).
+        self._attach_agent_id(event)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5459,8 +5462,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
+                    self._attach_agent_id(event)
                     await self._queue_media_group_event(str(media_group_id), event)
                 else:
+                    self._attach_agent_id(event)
                     batch_key = self._photo_batch_key(event, msg)
                     self._enqueue_photo_event(batch_key, event)
                 return
@@ -5566,8 +5571,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
                     media_group_id = getattr(msg, "media_group_id", None)
                     if media_group_id:
+                        self._attach_agent_id(event)
                         await self._queue_media_group_event(str(media_group_id), event)
                     else:
+                        self._attach_agent_id(event)
                         batch_key = self._photo_batch_key(event, msg)
                         self._enqueue_photo_event(batch_key, event)
                     return
@@ -5645,6 +5652,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
+            self._attach_agent_id(event)
             await self._queue_media_group_event(str(media_group_id), event)
             return
 

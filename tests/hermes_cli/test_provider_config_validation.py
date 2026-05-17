@@ -104,6 +104,43 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
+    def test_type_alias_sets_api_mode_without_unknown_key_warning(self, caplog):
+        """type: openai should be accepted as an api_mode/transport alias."""
+        entry = {
+            "base_url": "http://localhost:11434/v1",
+            "type": "openai",
+            "model": "qwen2.5:7b",
+            "api_key": "***",
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="ollama-local")
+        assert result is not None
+        assert result["api_mode"] == "openai"
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_api_mode_precedence_over_transport_and_type(self):
+        """Explicit api_mode should keep precedence over transport and type aliases."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_mode": "explicit",
+            "transport": "transport-alias",
+            "type": "type-alias",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "explicit"
+
+    def test_transport_precedence_over_type(self):
+        """transport should keep precedence over the more generic type alias."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "transport": "transport-alias",
+            "type": "type-alias",
+        }
+        result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["api_mode"] == "transport-alias"
+
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
         entry = {

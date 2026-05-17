@@ -2911,7 +2911,7 @@ def _normalize_custom_provider_entry(
         entry["key_env"] = entry["api_key_env"]
     _KNOWN_KEYS = {
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
-        "api_mode", "transport", "model", "default_model", "models",
+        "api_mode", "transport", "type", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models",
@@ -2977,7 +2977,11 @@ def _normalize_custom_provider_entry(
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
 
-    api_mode = entry.get("api_mode") or entry.get("transport")
+    # ``type: openai`` is the shape used by many OpenAI-compatible provider
+    # examples (including Ollama snippets).  Treat it as a transport alias so
+    # hand-written configs don't emit noisy "unknown key" warnings on every
+    # load.
+    api_mode = entry.get("api_mode") or entry.get("transport") or entry.get("type")
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
 

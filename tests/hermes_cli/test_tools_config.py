@@ -132,30 +132,28 @@ def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset()
     assert "homeassistant" in enabled
 
 
-def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
-    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
-
-    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
-    shouldn't also strip HA from platforms (like cron) that run through
-    _get_platform_tools without an explicit saved toolset list.
-
-    Regression guard for Norbert's HA cron breakage after #14798 made cron
-    honor per-platform tool config.
-    """
+def test_get_platform_tools_hass_token_does_not_enable_homeassistant_for_implicit_platforms(monkeypatch):
+    """Credentials alone are not a per-platform opt-in to HA control tools."""
     monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
 
-    cron_enabled = _get_platform_tools({}, "cron")
-    assert "homeassistant" in cron_enabled
-    # moa must stay off — the original goal of #14798
-    assert "moa" not in cron_enabled
+    for platform in ("api_server", "telegram", "cron", "cli"):
+        enabled = _get_platform_tools({}, platform)
+        assert "homeassistant" not in enabled
+        assert "moa" not in enabled
 
-    cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
+
+def test_get_platform_tools_explicit_homeassistant_opt_in_survives_with_hass_token(monkeypatch):
+    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
+    config = {"platform_toolsets": {"api_server": ["web", "homeassistant"]}}
+
+    enabled = _get_platform_tools(config, "api_server")
+
+    assert "homeassistant" in enabled
+    assert "web" in enabled
 
 
 def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_missing(monkeypatch):
-    """Without HASS_TOKEN, HA stays off by default — preserves #14798's behavior
-    for users who never configured HA."""
+    """Without explicit opt-in, HA stays off by default."""
     monkeypatch.delenv("HASS_TOKEN", raising=False)
 
     cron_enabled = _get_platform_tools({}, "cron")
@@ -301,7 +299,7 @@ def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
     assert "disabled-server" not in enabled
 
 
-def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
+def test_get_platform_tools_excludes_mcp_servers_with_explicit_builtin_selection():
     config = {
         "platform_toolsets": {"cli": ["web", "memory"]},
         "mcp_servers": {
@@ -314,8 +312,39 @@ def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_sele
 
     assert "web" in enabled
     assert "memory" in enabled
+    assert "exa" not in enabled
+    assert "web-search-prime" not in enabled
+
+
+def test_get_platform_tools_excludes_mcp_servers_with_explicit_empty_selection():
+    config = {
+        "platform_toolsets": {"telegram": []},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "telegram")
+
+    assert "exa" not in enabled
+    assert "web-search-prime" not in enabled
+
+
+def test_get_platform_tools_keeps_explicit_mcp_server_allowlist():
+    config = {
+        "platform_toolsets": {"cli": ["web", "exa"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
     assert "exa" in enabled
-    assert "web-search-prime" in enabled
+    assert "web-search-prime" not in enabled
 
 
 def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():

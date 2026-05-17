@@ -133,6 +133,9 @@ jobs:
        && !contains(github.event.changes.body.from, '[x] **Apply lockfile fix**'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Authorize & resolve PR
         id: resolve
@@ -194,6 +197,9 @@ jobs:
 
             Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
+      - name: Setup Nix with read-only Cachix
+        uses: ./.github/actions/nix-setup
+
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
@@ -201,13 +207,19 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - uses: ./.github/actions/nix-setup
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Apply lockfile hashes
         id: apply
         run: nix run .#fix-lockfiles
+
+      - name: Generate GitHub App token
+        if: steps.apply.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.resolve.outputs.owner }}
+          repositories: ${{ steps.resolve.outputs.repo }}
 
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'
@@ -218,7 +230,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nix/tui.nix nix/web.nix
           git commit -m "fix(nix): refresh npm lockfile hashes"
-          git push
+          git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}.git" "HEAD:${{ steps.resolve.outputs.ref }}"
 
       - name: Update sticky (applied)
         if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''

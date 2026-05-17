@@ -28,6 +28,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "config"),
             os.path.join(home, ".hermes", ".env"),
             str(hermes_home / ".env"),
+            str(hermes_home / "config.yaml"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

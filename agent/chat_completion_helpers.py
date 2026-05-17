@@ -850,6 +850,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 agent.model, base_url=agent.base_url,
                 api_key=agent.api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
+                custom_providers=agent._custom_providers,
             )
             agent.context_compressor.update_model(
                 model=agent.model,

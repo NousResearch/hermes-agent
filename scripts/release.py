@@ -184,6 +184,7 @@ AUTHOR_MAP = {
     "santoshhumagain1887@gmail.com": "npmisantosh",
     "39641663+luarss@users.noreply.github.com": "luarss",
     "16263913+zccyman@users.noreply.github.com": "zccyman",
+    "zccyman@users.noreply.github.com": "zccyman",  # PR #26998 (auxiliary fallback chain)
     "ahmetosrak@Ahmet-MacBook-Air.local": "Osraka",
     "98612432+Osraka@users.noreply.github.com": "Osraka",
     "112634774+ryptotalent@users.noreply.github.com": "ryptotalent",

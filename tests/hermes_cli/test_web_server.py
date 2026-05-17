@@ -1856,17 +1856,17 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Use ``/api/plugins/hermes-achievements/scan-status`` — a stable,
+        side-effect-free GET that reads in-process scan state with no DB or
+        external dependencies. With a valid token the handler should run
+        (200); without one the middleware should 401 before the handler.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/hermes-achievements/scan-status")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
@@ -2126,6 +2126,19 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_websocket_rejects_non_loopback_on_public_bind(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "0.0.0.0", raising=False
+        )
+
+        remote_ws = SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))
+        loopback_ws = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+
+        assert self.ws_module._ws_client_is_allowed(remote_ws) is False
+        assert self.ws_module._ws_client_is_allowed(loopback_ws) is True
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

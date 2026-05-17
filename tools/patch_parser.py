@@ -455,24 +455,12 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
-    """Apply a delete file operation."""
-    # Read before deleting so we can produce a real unified diff.
-    # Validation already confirmed existence; this guards against races.
-    read_result = file_ops.read_file_raw(op.file_path)
-    if read_result.error:
-        return False, f"Cannot delete {op.file_path}: file not found"
-
+    """Apply a delete file operation without returning deleted file content."""
     result = file_ops.delete_file(op.file_path)
     if result.error:
         return False, result.error
 
-    removed_lines = read_result.content.splitlines(keepends=True)
-    diff = ''.join(difflib.unified_diff(
-        removed_lines, [],
-        fromfile=f"a/{op.file_path}",
-        tofile="/dev/null",
-    ))
-    return True, diff or f"# Deleted: {op.file_path}"
+    return True, f"# Deleted: {op.file_path}"
 
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:

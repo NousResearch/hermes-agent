@@ -35,8 +35,12 @@ def _make_event(text="/update", platform=Platform.TELEGRAM,
 
 def _make_runner(hermes_home=None):
     """Create a bare GatewayRunner without calling __init__."""
+    from gateway.config import GatewayConfig, PlatformConfig
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="test-token")}
+    )
     runner.adapters = {}
     runner._voice_mode = {}
     runner._update_prompt_pending = {}

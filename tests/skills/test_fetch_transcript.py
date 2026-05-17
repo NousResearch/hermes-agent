@@ -32,6 +32,35 @@ class TestExtractVideoId:
         assert fetch_transcript.extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42") == "dQw4w9WgXcQ"
 
 
+class TestYoutubeSkillInstructions:
+    @staticmethod
+    def _skill_text():
+        skill_path = (
+            Path(__file__).resolve().parents[2]
+            / "skills"
+            / "media"
+            / "youtube-content"
+            / "SKILL.md"
+        )
+        return skill_path.read_text()
+
+    def test_terminal_examples_use_video_id_not_raw_url_placeholder(self):
+        skill_text = self._skill_text()
+
+        assert '"URL"' not in skill_text
+        assert '"https://youtube.com/watch?v=VIDEO_ID"' not in skill_text
+        assert (
+            "python3 SKILL_DIR/scripts/fetch_transcript.py "
+            "'VIDEO_ID' --text-only"
+        ) in skill_text
+
+    def test_workflow_warns_against_raw_url_shell_interpolation(self):
+        skill_text = self._skill_text()
+
+        assert "extract only the 11-character YouTube video ID" in skill_text
+        assert "Do not paste a raw user-provided URL into a shell command" in skill_text
+
+
 class TestFormatTimestamp:
     def test_seconds_only(self):
         assert fetch_transcript.format_timestamp(90) == "1:30"

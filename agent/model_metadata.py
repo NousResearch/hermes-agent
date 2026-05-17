@@ -2214,6 +2214,43 @@ def get_model_context_length(
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
+            # 2a. If a LOCAL endpoint responded with an OpenAI-shape catalog
+            # and is not detected as Ollama, skip the Ollama-native /api/show
+            # probes — they 404 quickly in isolation but their cumulative
+            # effect appears to interfere with downstream requests on some
+            # proxies. See #26489 (LiteLLM proxy fronting Ollama: full probe
+            # avalanche, then no chat completion issued).
+            #
+            # Only run detect_local_server_type for local URLs: the detector
+            # issues GET probes (/api/v1/models, /api/tags, /v1/props, /version)
+            # that should not be broadened to every remote OpenAI-compatible
+            # catalog endpoint.
+            # fetch_endpoint_model_metadata is in-memory cached (300s),
+            # so this re-call costs ~nothing.
+            catalog = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+            if catalog and is_local_endpoint(base_url):
+                if detect_local_server_type(base_url, api_key=api_key) != "ollama":
+                    logger.info(
+                        "Local endpoint %s exposes OpenAI-compatible catalog "
+                        "(%d models, non-Ollama); skipping Ollama-native probes.",
+                        base_url, len(catalog),
+                    )
+                    # Do NOT early-return — fall through to DEFAULT_CONTEXT_LENGTHS
+                    # below so a non-Ollama catalog model (e.g. claude-opus-4-8)
+                    # still gets its known context length instead of regressing
+                    # to the fallback window.
+                else:
+                    # Local Ollama detected — fall through to /api/show probe.
+                    pass
+            elif catalog and not is_local_endpoint(base_url):
+                # Remote OpenAI-compatible catalog: skip all server-type probes
+                # entirely (they would be a detector waterfall on a remote host).
+                # Fall through to DEFAULT_CONTEXT_LENGTHS lookup below.
+                logger.debug(
+                    "Remote endpoint %s exposes OpenAI-compatible catalog "
+                    "(%d models); skipping server-type probes.",
+                    base_url, len(catalog),
+                )
             # 2b. Ollama native /api/show — any URL might be an Ollama server
             # (local, cloud, or custom hosting).  Non-Ollama servers return
             # 404/405 quickly.  Fall through on failure.

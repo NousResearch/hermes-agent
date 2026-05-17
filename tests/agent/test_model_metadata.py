@@ -1055,6 +1055,155 @@ class TestGetModelContextLength:
 
 
 # =========================================================================
+# OpenAI-compat catalog short-circuit — see #26489
+# =========================================================================
+
+
+class TestOpenAICatalogShortCircuit:
+    """When a custom endpoint exposes an OpenAI-compatible /v1/models catalog
+    and is NOT detected as Ollama, get_model_context_length should treat it
+    as a generic proxy (LiteLLM, vLLM, etc.) and skip Ollama-native probes.
+
+    Bug: #26489 — LiteLLM proxy fronting Ollama. The full Ollama-style probe
+    sequence (/api/tags, /api/show, /v1/props, /version, ...) generated noise
+    404s and the user reported a downstream hang. Skipping these for
+    non-Ollama endpoints with an OpenAI catalog removes the probe avalanche.
+    """
+
+    @patch("agent.model_metadata._query_local_context_length")
+    @patch("agent.model_metadata._query_ollama_api_show")
+    @patch("agent.model_metadata.detect_local_server_type")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_litellm_proxy_skips_api_show_after_openai_catalog(
+        self, mock_fetch, mock_endpoint_fetch, mock_detect,
+        mock_api_show, mock_local_ctx,
+    ):
+        """Reproduces #26489: catalog responds, detect returns None (not Ollama)
+        → Ollama-native probes are skipped for the non-Ollama local endpoint,
+        but we now fall through to DEFAULT_CONTEXT_LENGTHS and the final
+        fallback rather than early-returning.
+        """
+        mock_fetch.return_value = {}
+        # LiteLLM catalog: model present but no context_length (OpenAI shape
+        # spec doesn't include it). _resolve_endpoint_context_length returns
+        # None, so we fall into the post-catalog guard.
+        mock_endpoint_fetch.return_value = {"qwen3-14b": {"name": "qwen3-14b"}}
+        mock_detect.return_value = None  # LiteLLM is not detected as Ollama
+        # Ollama probes return None (model not found on /api/show)
+        mock_api_show.return_value = None
+        mock_local_ctx.return_value = None
+
+        result = get_model_context_length(
+            "qwen3-14b",
+            base_url="http://localhost:4000/v1",
+            api_key="sk-lit...ummy",
+            provider="custom",
+        )
+
+        # qwen3-14b matches "qwen" in DEFAULT_CONTEXT_LENGTHS → 131072
+        assert result == 131072
+
+    @patch("agent.model_metadata._query_local_context_length")
+    @patch("agent.model_metadata._query_ollama_api_show")
+    @patch("agent.model_metadata.detect_local_server_type")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_real_ollama_still_probes_api_show(
+        self, mock_fetch, mock_endpoint_fetch, mock_detect,
+        mock_api_show, mock_local_ctx,
+    ):
+        """Regression guard: real Ollama (provider=custom, base_url=local
+        Ollama) still gets /api/show — detect returns 'ollama' so the
+        OpenAI-catalog guard does NOT fire.
+        """
+        mock_fetch.return_value = {}
+        # Modern Ollama exposes /v1/models in OpenAI shape too, so catalog
+        # is non-empty here. The detect_local_server_type='ollama' result
+        # is what tells us to keep probing /api/show.
+        mock_endpoint_fetch.return_value = {"llama3:8b": {"name": "llama3:8b"}}
+        mock_detect.return_value = "ollama"
+        mock_api_show.return_value = 131072  # /api/show reports real ctx
+
+        result = get_model_context_length(
+            "llama3:8b",
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            provider="custom",
+        )
+
+        assert result == 131072
+        mock_api_show.assert_called_once()
+
+    @patch("agent.model_metadata._query_local_context_length")
+    @patch("agent.model_metadata._query_ollama_api_show")
+    @patch("agent.model_metadata.detect_local_server_type")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_empty_catalog_falls_through_to_existing_probes(
+        self, mock_fetch, mock_endpoint_fetch, mock_detect,
+        mock_api_show, mock_local_ctx,
+    ):
+        """When the catalog is empty (endpoint down, returned [], parse error)
+        the guard must NOT fire — fall through to the existing Ollama probes
+        to preserve the legacy unknown-endpoint behavior.
+        """
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {}  # empty catalog
+        mock_detect.return_value = None
+        mock_api_show.return_value = None
+        mock_local_ctx.return_value = None
+
+        result = get_model_context_length(
+            "some-model",
+            base_url="http://localhost:9999/v1",
+            api_key="",
+            provider="custom",
+        )
+
+        # Empty catalog → guard doesn't fire → falls through to /api/show
+        # and _query_local_context_length, both return None → DEFAULT_FALLBACK.
+        assert result == CONTEXT_PROBE_TIERS[0]
+        mock_api_show.assert_called_once()
+
+
+    @patch("agent.model_metadata._query_local_context_length")
+    @patch("agent.model_metadata._query_ollama_api_show")
+    @patch("agent.model_metadata.detect_local_server_type")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_remote_non_ollama_catalog_gets_default_context_lengths(
+        self, mock_fetch, mock_endpoint_fetch, mock_detect,
+        mock_api_show, mock_local_ctx,
+    ):
+        """A non-Ollama remote catalog with a known model name (e.g.
+        claude-opus-4-8) must get its DEFAULT_CONTEXT_LENGTHS value (1M),
+        not the hard fallback window. Teknium #27331: the early return
+        bypassed the catalog lookup and regressed known models.
+        """
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "claude-opus-4-8": {"name": "claude-opus-4-8"},
+        }
+        # detect_local_server_type must NOT be called for remote URLs
+        mock_detect.return_value = None
+        mock_api_show.return_value = None
+        mock_local_ctx.return_value = None
+
+        result = get_model_context_length(
+            "claude-opus-4-8",
+            base_url="https://my-proxy.example.com/v1",
+            api_key="sk-test",
+            provider="custom",
+        )
+
+        # Must get 1M from DEFAULT_CONTEXT_LENGTHS, not 256K fallback
+        assert result == 1000000
+        # detect_local_server_type must NOT fire on remote URLs
+        mock_detect.assert_not_called()
+
+
+# =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe
 # =========================================================================
 

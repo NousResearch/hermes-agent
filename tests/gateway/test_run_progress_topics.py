@@ -602,6 +602,22 @@ class PreviewedResponseAgent:
         }
 
 
+class MisclassifiedInterimPreviewAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("Okay, searching now.", already_streamed=False)
+        return {
+            "final_response": "Here is the search result.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class StreamingRefineAgent:
     def __init__(self, **kwargs):
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
@@ -917,6 +933,21 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_interim_preview_does_not_suppress_final(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        MisclassifiedInterimPreviewAgent,
+        session_id="sess-interim-preview-not-final",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["final_response"] == "Here is the search result."
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["Okay, searching now."]
 
 
 @pytest.mark.asyncio

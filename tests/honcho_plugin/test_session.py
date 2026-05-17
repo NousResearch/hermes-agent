@@ -180,6 +180,22 @@ class TestManagerCacheOps:
         assert mgr._turn_counter == 0
         mgr._flush_session.assert_not_called()
 
+    def test_shutdown_save_messages_false_does_not_flush(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(write_frequency="async", save_messages=False)
+        mgr = HonchoSessionManager(config=cfg)
+        session = HonchoSession(key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s")
+        session.add_message("user", "hi")
+        mgr._cache[session.key] = session
+        mgr.flush_all = MagicMock()
+        mgr._flush_session = MagicMock(return_value=True)
+
+        mgr.shutdown()
+
+        mgr.flush_all.assert_not_called()
+        mgr._flush_session.assert_not_called()
+
     def test_save_enabled_async_enqueues_without_direct_flush(self):
         from plugins.memory.honcho.client import HonchoClientConfig
 

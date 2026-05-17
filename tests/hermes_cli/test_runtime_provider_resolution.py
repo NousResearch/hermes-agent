@@ -59,6 +59,47 @@ def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkey
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
 
 
+def test_resolve_runtime_provider_anthropic_model_base_url_beats_provider_fallback(monkeypatch):
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://api.anthropic.com"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "base_url": "https://model-proxy.example.com/anthropic",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "anthropic",
+                "base_url": "https://model-proxy.example.com/anthropic",
+            },
+            "providers": {"anthropic": {"base_url": "http://127.0.0.1:42069"}},
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "https://model-proxy.example.com/anthropic"
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_provider_base_url_when_secondary(monkeypatch):
     class _Entry:
         access_token = "pool-token"

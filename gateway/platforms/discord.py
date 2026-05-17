@@ -582,6 +582,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._liveness_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -851,7 +852,66 @@ class DiscordAdapter(BasePlatformAdapter):
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
 
+            # Liveness probe: discord.py's built-in reconnect handles WS drops,
+            # but a dead TCP socket behind a flaky proxy/VPN can leave the client
+            # in a "silent zombie" state where REST sends time out and WS never
+            # notices the underlying socket is gone. Periodically exercise the
+            # REST path; on N consecutive failures, kick the WS to force the
+            # internal reconnect loop in client.connect() to rebuild it.
+            # See: https://github.com/NousResearch/hermes-agent/issues/26656
+            adapter_self = self
+            async def _liveness_loop():
+                interval = float(self.config.extra.get("liveness_interval", 60))
+                threshold = int(self.config.extra.get("liveness_failure_threshold", 3))
+                fails = 0
+                while adapter_self._running:
+                    try:
+                        await asyncio.sleep(interval)
+                    except asyncio.CancelledError:
+                        return
+                    if not adapter_self._running or adapter_self._client is None:
+                        return
+                    if adapter_self._client.is_closed():
+                        return
+                    try:
+                        me = adapter_self._client.user
+                        if me is None:
+                            continue
+                        await adapter_self._client.fetch_user(me.id)
+                        if fails:
+                            logger.info("[%s] Discord liveness probe recovered", adapter_self.name)
+                        fails = 0
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        fails += 1
+                        logger.warning(
+                            "[%s] Discord liveness probe failed (%d/%d): %s",
+                            adapter_self.name, fails, threshold, e,
+                        )
+                        if fails >= threshold:
+                            logger.error(
+                                "[%s] Discord client appears dead after %d failed probes; "
+                                "kicking WS to force reconnect",
+                                adapter_self.name, fails,
+                            )
+                            try:
+                                ws = getattr(adapter_self._client, "ws", None)
+                                if ws is not None:
+                                    # 4000 = generic non-1000 code → discord.py treats it
+                                    # as resumable and the start() loop will reconnect.
+                                    await ws.close(code=4000)
+                            except Exception as close_err:
+                                logger.warning(
+                                    "[%s] Failed to close Discord WS during recovery: %s",
+                                    adapter_self.name, close_err,
+                                )
+                            fails = 0
+
+            if self._liveness_task and not self._liveness_task.done():
+                self._liveness_task.cancel()
             self._running = True
+            self._liveness_task = asyncio.create_task(_liveness_loop())
             return True
 
         except asyncio.TimeoutError:
@@ -865,6 +925,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Stop liveness probe before tearing the client down so it can't
+        # observe the half-closed state and try to "recover" it.
+        if self._liveness_task and not self._liveness_task.done():
+            self._liveness_task.cancel()
+            try:
+                await self._liveness_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._liveness_task = None
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -2705,8 +2775,20 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         async def _typing_loop() -> None:
+            # Safety: cap total lifetime at 30 minutes so a missed stop_typing()
+            # (e.g. caller crash, WS reconnect dropping the adapter ref) can't
+            # leak a task that pings POST /typing forever.
+            import time as _t
+            _started = _t.monotonic()
+            _MAX_LIFETIME_S = 30 * 60
             try:
                 while True:
+                    if _t.monotonic() - _started > _MAX_LIFETIME_S:
+                        logger.warning(
+                            "[Discord] Typing loop for %s exceeded %ds lifetime; self-cancelling (likely missed stop_typing)",
+                            chat_id, _MAX_LIFETIME_S,
+                        )
+                        return
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",

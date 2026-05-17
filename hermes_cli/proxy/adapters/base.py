@@ -93,7 +93,7 @@ class UpstreamAdapter(ABC):
         fallback paths, such as switching from a preferred token type to a
         legacy bearer after the upstream rejects the first request.
         """
-        del failed_credential, status_code
+        _ = failed_credential, status_code
         return None
 
     def describe(self) -> str:

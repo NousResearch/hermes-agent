@@ -828,10 +828,10 @@ class CredentialPool:
                     nous_state,
                     min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
                     force_refresh=force,
-                    auth_mode=(
-                        auth_mod.NOUS_INFERENCE_AUTH_LEGACY
+                    inference_auth_mode=(
+                        auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY
                         if force
-                        else auth_mod.NOUS_INFERENCE_AUTH_AUTO
+                        else auth_mod.NOUS_INFERENCE_AUTH_MODE_AUTO
                     ),
                 )
                 # Apply returned fields: dataclass fields via replace, extras via dict update

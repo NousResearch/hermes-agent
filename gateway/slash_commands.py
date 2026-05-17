@@ -3553,6 +3553,26 @@ class GatewaySlashCommandsMixin:
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 
+            # Adaptive context window: surface live router-tracking state
+            # when the feature is enabled (config flag wired in run_agent).
+            _adapt = getattr(agent, "_adaptive_context", None)
+            if _adapt is not None:
+                _summary = _adapt.summary()
+                if _summary["last_seen"]:
+                    if _summary["change_count"] == 0:
+                        lines.append(t(
+                            "gateway.usage.label_adaptive_context_baseline",
+                            model=_summary["last_seen"],
+                        ))
+                    else:
+                        lines.append(t(
+                            "gateway.usage.label_adaptive_context_changes",
+                            model=_summary["last_seen"],
+                            count=_summary["change_count"],
+                        ))
+                else:
+                    lines.append(t("gateway.usage.label_adaptive_context_pending"))
+
             if account_lines:
                 lines.append("")
                 lines.extend(account_lines)

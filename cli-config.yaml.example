@@ -418,6 +418,17 @@ compression:
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 
+  # When the configured model is a router id (e.g. "openrouter/auto",
+  # ":free"-suffixed names, model fallback chains), the actual backend
+  # selected per request varies — and so does its context window.
+  # If true, Hermes reads response.model after each LLM call and, when
+  # the backend changes, recomputes context budgets (threshold, tail,
+  # summary cap) against the new backend's real context_length.
+  # Default: false. Costs at most one model_metadata lookup per backend
+  # transition; lookups are cached on disk so subsequent transitions to
+  # the same backend are free.
+  adaptive_context_window: false
+
 # =============================================================================
 # Anthropic prompt caching TTL
 # =============================================================================

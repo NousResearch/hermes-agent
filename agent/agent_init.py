@@ -1122,6 +1122,25 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # Adaptive context window: observe response.model after each LLM
+    # call and re-budget the compressor when the upstream router
+    # resolves to a different backend (e.g. openrouter/auto picking
+    # Llama-3.3-70B one call and Qwen-2.5 the next, each with a
+    # different context_length). Off by default.
+    _compression_cfg_for_adapt = _agent_cfg.get("compression", {}) or {}
+    agent._adaptive_context_enabled = bool(
+        _compression_cfg_for_adapt.get("adaptive_context_window", False)
+    )
+    agent._adaptive_context = None
+    if agent._adaptive_context_enabled:
+        try:
+            from agent.adaptive_context import AdaptiveContextTracker
+            agent._adaptive_context = AdaptiveContextTracker()
+        except Exception as _ace_err:
+            logger.debug("adaptive_context_window: init failed (%s)", _ace_err)
+            agent._adaptive_context_enabled = False
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

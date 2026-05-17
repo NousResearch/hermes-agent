@@ -103,6 +103,8 @@ _PREFIX_PATTERNS = [
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
+    r"lin_api_[A-Za-z0-9_-]{10,}",      # Linear API key (lin_api_...)
+    r"pat[A-Za-z0-9]{14}\.[A-Za-z0-9]{40,}",  # Airtable Personal Access Token
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

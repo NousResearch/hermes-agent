@@ -559,6 +559,11 @@ class WeComAdapter(BasePlatformAdapter):
             timestamp=datetime.now(tz=timezone.utc),
         )
 
+        # Stamp agent_id before batching so the batch key (and its
+        # corresponding log line) reflect the routed agent, and so two
+        # agents that distinguish on sender don't share a batch buffer.
+        self._attach_agent_id(event)
+
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the WeCom client.
         if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:

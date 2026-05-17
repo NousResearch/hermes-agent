@@ -1940,6 +1940,9 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            # Stamp agent_id before batching so the batch key reflects the
+            # routed agent (idempotent — handle_message will skip re-stamping).
+            self._attach_agent_id(msg_event)
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)

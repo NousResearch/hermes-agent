@@ -57,19 +57,22 @@ def _patch_sdk(monkeypatch, *, lookup_result=None):
     return fake_client
 
 
-def _make_adapter(monkeypatch, **extra):
+def _make_adapter(monkeypatch, *, include_sms_text_batch_delay=True, **extra):
     _patch_sdk(monkeypatch)
     from gateway.platforms.inkbox import InkboxAdapter
+    extra_config = {
+        "api_key": "ApiKey_test",
+        "identity": "inkbox-on-call-agent",
+        "base_url": "https://inkbox.ai",
+    }
+    if include_sms_text_batch_delay:
+        extra_config["sms_text_batch_delay_seconds"] = 0
+    extra_config.update(extra)
 
     cfg = PlatformConfig(
         enabled=True,
         api_key="ApiKey_test",
-        extra={
-            "api_key": "ApiKey_test",
-            "identity": "inkbox-on-call-agent",
-            "base_url": "https://inkbox.ai",
-            **extra,
-        },
+        extra=extra_config,
     )
     adapter = InkboxAdapter(cfg)
     # Pre-construct an SDK client so methods that access self._inkbox work
@@ -78,6 +81,11 @@ def _make_adapter(monkeypatch, **extra):
     adapter._inkbox = Inkbox()
     adapter._public_host = "tunnel.example"
     return adapter
+
+
+async def _drain_background(adapter):
+    for task in list(adapter._background_tasks):
+        await task
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +326,259 @@ class TestWebhookRouting:
             await task
 
         assert len(captured) == 1
+
+    @pytest.mark.asyncio
+    async def test_sms_batching_is_opt_in_by_default(self, monkeypatch):
+        monkeypatch.delenv("INKBOX_SMS_TEXT_BATCH_DELAY_SECONDS", raising=False)
+        adapter = _make_adapter(monkeypatch, include_sms_text_batch_delay=False)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "sms-default-immediate",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "ping",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(envelope).encode()))
+        await _drain_background(adapter)
+
+        assert adapter._sms_text_batch_delay_seconds == 0
+        assert len(captured) == 1
+        assert captured[0].text.endswith("\nping")
+        assert adapter._pending_sms_text_batches == {}
+
+    @pytest.mark.asyncio
+    async def test_text_webhook_buffers_rapid_fragments_into_timestamped_burst(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, sms_text_batch_delay_seconds=60)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        def envelope(text_id, text, created_at):
+            return {
+                "event_type": "text.received",
+                "data": {"text_message": {
+                    "id": text_id,
+                    "remote_phone_number": "+15555550101",
+                    "local_phone_number": "+18005550100",
+                    "text": text,
+                    "direction": "inbound",
+                    "created_at": created_at,
+                }},
+            }
+
+        for payload in [
+            envelope("sms-burst-1", "first fragment", "2026-04-27T20:00:00Z"),
+            envelope("sms-burst-2", "correction", "2026-04-27T20:00:06Z"),
+            envelope("sms-burst-3", "extra detail", "2026-04-27T20:00:11Z"),
+        ]:
+            await adapter._handle_webhook(_FakeRequest(json.dumps(payload).encode()))
+
+        assert captured == []
+        assert len(adapter._pending_sms_text_batches) == 1
+
+        key = next(iter(adapter._pending_sms_text_batches))
+        await adapter._flush_sms_text_batch_now(key)
+        await _drain_background(adapter)
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.text.startswith("[inkbox:sms_burst messages=3 ")
+        assert "first_at=2026-04-27T20:00:00Z" in ev.text
+        assert "last_at=2026-04-27T20:00:11Z" in ev.text
+        assert "[+0s] first fragment" in ev.text
+        assert "[+6s] correction" in ev.text
+        assert "[+11s] extra detail" in ev.text
+        assert ev.message_id == "sms-burst-3"
+        assert ev.source.message_id == "sms-burst-3"
+
+    @pytest.mark.asyncio
+    async def test_sms_slash_command_bypasses_batching_and_marker(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, sms_text_batch_delay_seconds=60)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "sms-command",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "/stop",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(envelope).encode()))
+        await _drain_background(adapter)
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.text == "/stop"
+        assert ev.message_type.value == "command"
+        assert ev.get_command() == "stop"
+        assert adapter._last_inbound_modality["contact-uuid-123"] == "sms"
+        assert adapter._pending_sms_text_batches == {}
+
+    @pytest.mark.parametrize(
+        "control_word",
+        [
+            "START",
+            "STOP",
+            "UNSTOP",
+            "HELP",
+            "CANCEL",
+            "END",
+            "QUIT",
+            "UNSUBSCRIBE",
+            "YES",
+            "SUBSCRIBE",
+            "INFO",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_sms_control_word_does_not_enqueue_or_change_modality(
+        self, monkeypatch, control_word,
+    ):
+        adapter = _make_adapter(monkeypatch, sms_text_batch_delay_seconds=60)
+        adapter._last_inbound_modality["contact-uuid-123"] = "email"
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": f"sms-{control_word.lower()}-control",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": control_word,
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(envelope).encode()))
+        await _drain_background(adapter)
+
+        assert captured == []
+        assert adapter._last_inbound_modality["contact-uuid-123"] == "email"
+        assert adapter._pending_sms_text_batches == {}
+
+    @pytest.mark.asyncio
+    async def test_sms_flush_limit_preserves_concurrent_repopulated_batch(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            sms_text_batch_delay_seconds=60,
+            sms_text_batch_max_messages=1,
+        )
+
+        first = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "sms-limit-first",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "first",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+            }},
+        }
+        second = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "sms-limit-second",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "second",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:01Z",
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(first).encode()))
+        assert len(adapter._pending_sms_text_batches) == 1
+
+        async def fake_flush(key):
+            existing = adapter._pending_sms_text_batches.pop(key)
+            fragment = dict(existing["fragments"][0])
+            fragment["text"] = "concurrent"
+            fragment["message_id"] = "sms-limit-concurrent"
+            adapter._pending_sms_text_batches[key] = {
+                "marker": existing["marker"],
+                "fragments": [fragment],
+                "raw_messages": list(existing["raw_messages"]),
+                "last_event": existing["last_event"],
+            }
+
+        monkeypatch.setattr(adapter, "_flush_sms_text_batch_now", fake_flush)
+
+        await adapter._handle_webhook(_FakeRequest(json.dumps(second).encode()))
+
+        batch = next(iter(adapter._pending_sms_text_batches.values()))
+        assert [fragment["text"] for fragment in batch["fragments"]] == [
+            "concurrent",
+            "second",
+        ]
+
+        for task in list(adapter._pending_sms_text_batch_tasks.values()):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_duplicate_text_id_is_ignored_while_sms_batch_pending(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, sms_text_batch_delay_seconds=60)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "sms-pending-dup",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "ping",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+            }},
+        }
+        body = json.dumps(envelope).encode()
+        await adapter._handle_webhook(_FakeRequest(body))
+        await adapter._handle_webhook(_FakeRequest(body))
+
+        assert len(adapter._pending_sms_text_batches) == 1
+        batch = next(iter(adapter._pending_sms_text_batches.values()))
+        assert len(batch["fragments"]) == 1
+
+        key = next(iter(adapter._pending_sms_text_batches))
+        await adapter._flush_sms_text_batch_now(key)
+        await _drain_background(adapter)
+
+        assert len(captured) == 1
+        assert captured[0].text.endswith("\nping")
 
     @pytest.mark.asyncio
     async def test_text_lifecycle_event_does_not_enqueue_agent_turn(self, monkeypatch):

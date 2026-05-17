@@ -1098,6 +1098,7 @@ AUTHOR_MAP = {
     "dima@vectorly.app": "dimavrem22",
     "dimavrem22@gmail.com": "dimavrem22",
     "mfzeidan@gmail.com": "mfzeidan",
+    "mark@zeidan.ai": "mfzeidan",
 }
 
 

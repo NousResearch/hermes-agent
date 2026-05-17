@@ -185,6 +185,13 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
     monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_checklist",
+        lambda title, items, pre_selected=None: [
+            i for i in (pre_selected or []) if "Inkbox" not in items[i]
+        ],
+    )
 
     setup_mod.setup_gateway({})
 
@@ -224,6 +231,13 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
     monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
     monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+    monkeypatch.setattr(
+        setup_mod,
+        "prompt_checklist",
+        lambda title, items, pre_selected=None: [
+            i for i in (pre_selected or []) if "Inkbox" not in items[i]
+        ],
+    )
 
     # Patch is_container at the import location in setup.py
     import hermes_constants

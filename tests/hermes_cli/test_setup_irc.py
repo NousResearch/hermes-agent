@@ -236,6 +236,13 @@ class TestIRCGatewaySetupFreshInstall:
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+            monkeypatch.setattr(
+                setup_mod,
+                "prompt_checklist",
+                lambda title, items, pre_selected=None: [
+                    i for i in (pre_selected or []) if "Inkbox" not in items[i]
+                ],
+            )
 
             setup_mod.setup_gateway({})
 

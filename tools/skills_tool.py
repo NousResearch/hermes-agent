@@ -558,7 +558,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -569,7 +569,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Scan local first, then bundled-with-the-fork (e.g. inkbox skills), then
     # user-configured external dirs.  Earlier dirs take precedence on
     # name collisions because we dedup via ``seen_names``.
-    dirs_to_scan = [d for d in get_all_skills_dirs() if d.is_dir()]
+    dirs_to_scan = []
+    if SKILLS_DIR.is_dir():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(d for d in get_external_skills_dirs() if d.is_dir())
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -1565,4 +1568,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

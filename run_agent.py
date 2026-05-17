@@ -9211,7 +9211,7 @@ class AIAgent:
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
                     config_context_length=getattr(self, "_config_context_length", None),
-                    custom_providers=self._custom_providers,
+                    custom_providers=getattr(self, "_custom_providers", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,

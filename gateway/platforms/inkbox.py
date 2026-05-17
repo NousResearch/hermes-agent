@@ -71,6 +71,7 @@ import re
 import socket as _socket
 import time
 from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -117,6 +118,23 @@ DEFAULT_WS_PATH = "/phone/media/ws"
 CONTACT_CACHE_TTL_SECONDS = 300
 WEBHOOK_DEDUP_TTL_SECONDS = 300
 SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
+SMS_TEXT_BATCH_DELAY_SECONDS = 0.0
+SMS_TEXT_BATCH_MAX_MESSAGES = 8
+SMS_TEXT_BATCH_MAX_CHARS = 4000
+
+SMS_CONTROL_WORDS = frozenset({
+    "start",
+    "stop",
+    "unstop",
+    "help",
+    "cancel",
+    "end",
+    "quit",
+    "yes",
+    "subscribe",
+    "info",
+    "unsubscribe",
+})
 
 # Stable ``error`` codes returned by the Inkbox SMS send endpoint. Sourced
 # from the live server (apps/api_server/subapps/phone/send_text_service.py).
@@ -209,6 +227,53 @@ def _is_hermes_admin_notice(content: str) -> bool:
     if head.startswith(_ADMIN_NOTICE_PREFIXES):
         return True
     return any(s in head for s in _ADMIN_NOTICE_SUBSTRINGS)
+
+
+def _float_setting(extra: Dict[str, Any], key: str, env_name: str, default: float) -> float:
+    raw = extra[key] if key in extra else os.getenv(env_name, str(default))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, value)
+
+
+def _int_setting(extra: Dict[str, Any], key: str, env_name: str, default: int) -> int:
+    raw = extra[key] if key in extra else os.getenv(env_name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+
+def _parse_inkbox_timestamp(value: Any) -> datetime:
+    if isinstance(value, str) and value.strip():
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _format_inkbox_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _format_sms_delta(first_at: datetime, current_at: datetime) -> str:
+    seconds = max(0, int(round((current_at - first_at).total_seconds())))
+    return f"+{seconds}s"
+
+
+def _normalized_sms_control_word(text: str) -> Optional[str]:
+    normalized = " ".join((text or "").strip().lower().split())
+    return normalized if normalized in SMS_CONTROL_WORDS else None
 
 
 def _plain_value(value: Any) -> Optional[str]:
@@ -462,6 +527,24 @@ class InkboxAdapter(BasePlatformAdapter):
         else:
             raw_require_signature = os.getenv("INKBOX_REQUIRE_SIGNATURE", "true")
         self._require_signature = str(raw_require_signature).lower() not in ("false", "0", "no")
+        self._sms_text_batch_delay_seconds = _float_setting(
+            extra,
+            "sms_text_batch_delay_seconds",
+            "INKBOX_SMS_TEXT_BATCH_DELAY_SECONDS",
+            SMS_TEXT_BATCH_DELAY_SECONDS,
+        )
+        self._sms_text_batch_max_messages = _int_setting(
+            extra,
+            "sms_text_batch_max_messages",
+            "INKBOX_SMS_TEXT_BATCH_MAX_MESSAGES",
+            SMS_TEXT_BATCH_MAX_MESSAGES,
+        )
+        self._sms_text_batch_max_chars = _int_setting(
+            extra,
+            "sms_text_batch_max_chars",
+            "INKBOX_SMS_TEXT_BATCH_MAX_CHARS",
+            SMS_TEXT_BATCH_MAX_CHARS,
+        )
 
         # Live state.
         self._inkbox: Optional[Any] = None
@@ -484,6 +567,12 @@ class InkboxAdapter(BasePlatformAdapter):
         self._contact_cache: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str], float]] = {}
         # Webhook dedup by ``X-Inkbox-Request-Id`` (Inkbox retries on timeout).
         self._seen_request_ids: Dict[str, float] = {}
+        # session_key → pending inbound SMS fragments waiting for a quiet
+        # window. Human SMS users often send fragments/corrections in bursts;
+        # batching keeps one thought from becoming several self-interrupting
+        # agent turns.
+        self._pending_sms_text_batches: Dict[str, Dict[str, Any]] = {}
+        self._pending_sms_text_batch_tasks: Dict[str, asyncio.Task] = {}
         # chat_id → metadata of the most-recent inbound email for that chat.
         # Used by send()'s email branch to populate Re: <subject> and the
         # In-Reply-To header so replies thread into the original conversation
@@ -616,6 +705,17 @@ class InkboxAdapter(BasePlatformAdapter):
         logger.info("[Inkbox] Disconnected")
 
     async def _cleanup(self) -> None:
+        for task in list(self._pending_sms_text_batch_tasks.values()):
+            if not task.done():
+                task.cancel()
+        if self._pending_sms_text_batch_tasks:
+            await asyncio.gather(
+                *self._pending_sms_text_batch_tasks.values(),
+                return_exceptions=True,
+            )
+        self._pending_sms_text_batch_tasks.clear()
+        self._pending_sms_text_batches.clear()
+
         # Close any live call WS so callers don't hang on a half-open socket.
         for ws in list(self._active_call_ws.values()):
             with suppress(Exception):
@@ -1222,6 +1322,149 @@ class InkboxAdapter(BasePlatformAdapter):
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
 
+    def _sms_text_batch_key(self, event: MessageEvent) -> str:
+        from gateway.session import build_session_key
+
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    @staticmethod
+    def _sms_text_batch_chars(batch: Dict[str, Any]) -> int:
+        return sum(len(str(fragment.get("text") or "")) for fragment in batch["fragments"])
+
+    def _build_sms_text_event(
+        self,
+        *,
+        envelope: Dict[str, Any],
+        text_id: str,
+        remote: str,
+        contact: Optional[Dict[str, Any]],
+        chat_id: Any,
+        contact_name: Optional[str],
+        body: str,
+        timestamp: datetime,
+        text: Optional[str] = None,
+        message_type: MessageType = MessageType.TEXT,
+    ) -> MessageEvent:
+        source = self.build_source(
+            chat_id=str(chat_id),
+            chat_name=contact_name or remote,
+            chat_type="dm",
+            user_id=str(chat_id),
+            user_name=contact_name or remote,
+            message_id=text_id,
+        )
+        if text is None:
+            contact_block = self._contact_marker(contact)
+            text = f"[inkbox:sms from={remote} | {contact_block}]\n{body}"
+        return MessageEvent(
+            text=text,
+            message_type=message_type,
+            source=source,
+            raw_message=envelope,
+            message_id=text_id,
+            auto_skill="inkbox" if message_type == MessageType.TEXT else None,
+            timestamp=timestamp,
+        )
+
+    async def _enqueue_sms_text_event(self, event: MessageEvent) -> None:
+        key = self._sms_text_batch_key(event)
+        text = event.text or ""
+        marker, body = text.split("\n", 1) if "\n" in text else ("[inkbox:sms]", text)
+        batch = self._pending_sms_text_batches.get(key)
+        if batch is not None:
+            next_count = len(batch["fragments"]) + 1
+            next_chars = self._sms_text_batch_chars(batch) + len(body)
+            if (
+                next_count > self._sms_text_batch_max_messages
+                or next_chars > self._sms_text_batch_max_chars
+            ):
+                await self._flush_sms_text_batch_now(key)
+                batch = self._pending_sms_text_batches.get(key)
+
+        if batch is None:
+            batch = {
+                "marker": marker,
+                "fragments": [],
+                "raw_messages": [],
+            }
+            self._pending_sms_text_batches[key] = batch
+
+        batch["fragments"].append({
+            "text": body,
+            "timestamp": event.timestamp,
+            "message_id": event.message_id,
+            "source": event.source,
+        })
+        batch["raw_messages"].append(event.raw_message)
+        batch["last_event"] = event
+
+        if self._sms_text_batch_delay_seconds <= 0:
+            await self._flush_sms_text_batch_now(key)
+            return
+
+        prior_task = self._pending_sms_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_sms_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_sms_text_batch_after_delay(key)
+        )
+
+    async def _flush_sms_text_batch_after_delay(self, key: str) -> None:
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._sms_text_batch_delay_seconds)
+            await self._flush_sms_text_batch_now(key)
+        finally:
+            if self._pending_sms_text_batch_tasks.get(key) is current_task:
+                self._pending_sms_text_batch_tasks.pop(key, None)
+
+    async def _flush_sms_text_batch_now(self, key: str) -> None:
+        current_task = asyncio.current_task()
+        task = self._pending_sms_text_batch_tasks.get(key)
+        if task is not None and task is not current_task and not task.done():
+            task.cancel()
+        if task is not None and task is not current_task:
+            self._pending_sms_text_batch_tasks.pop(key, None)
+
+        batch = self._pending_sms_text_batches.pop(key, None)
+        if not batch:
+            return
+
+        fragments = batch["fragments"]
+        event = batch["last_event"]
+        if len(fragments) == 1:
+            body = fragments[0]["text"]
+            event.text = f"{batch['marker']}\n{body}"
+        else:
+            first_at = fragments[0]["timestamp"]
+            last_at = fragments[-1]["timestamp"]
+            burst_marker = batch["marker"].replace(
+                "[inkbox:sms ",
+                (
+                    f"[inkbox:sms_burst messages={len(fragments)} "
+                    f"first_at={_format_inkbox_timestamp(first_at)} "
+                    f"last_at={_format_inkbox_timestamp(last_at)} "
+                ),
+                1,
+            )
+            lines = [burst_marker]
+            for fragment in fragments:
+                delta = _format_sms_delta(first_at, fragment["timestamp"])
+                lines.append(f"[{delta}] {fragment['text']}")
+            event.text = "\n".join(lines)
+            event.raw_message = {
+                "event_type": "text.received.batch",
+                "items": batch["raw_messages"],
+            }
+        event.message_id = fragments[-1].get("message_id") or event.message_id
+        event.source = fragments[-1].get("source") or event.source
+        event.timestamp = fragments[-1].get("timestamp") or event.timestamp
+        await self._enqueue(event)
+
     async def _on_text_received(self, envelope: Dict[str, Any]) -> "web.Response":
         text_msg = (envelope.get("data") or {}).get("text_message") or {}
         text_id = str(text_msg.get("id") or "").strip()
@@ -1237,28 +1480,47 @@ class InkboxAdapter(BasePlatformAdapter):
         contact = await self._resolve_contact_full(kind="phone", value=remote)
         chat_id = (contact["id"] if contact else remote)
         contact_name = contact["name"] if contact and contact.get("name") else None
-
-        source = self.build_source(
-            chat_id=str(chat_id),
-            chat_name=contact_name or remote,
-            chat_type="dm",
-            user_id=str(chat_id),
-            user_name=contact_name or remote,
-            message_id=text_msg.get("id"),
-        )
         body = text_msg.get("text") or ""
-        contact_block = self._contact_marker(contact)
-        tagged = f"[inkbox:sms from={remote} | {contact_block}]\n{body}"
+        timestamp = _parse_inkbox_timestamp(text_msg.get("created_at"))
+
+        control_word = _normalized_sms_control_word(body)
+        if control_word:
+            logger.info(
+                "[Inkbox] SMS control '%s' from %s handled as protocol text",
+                control_word.upper(),
+                redact_phone(remote),
+            )
+            return web.Response(status=200, text="ok")
+
         self._last_inbound_modality[str(chat_id)] = "sms"
-        event = MessageEvent(
-            text=tagged,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=envelope,
-            message_id=text_id,
-            auto_skill="inkbox",
+
+        if body.lstrip().startswith("/"):
+            event = self._build_sms_text_event(
+                envelope=envelope,
+                text_id=text_id,
+                remote=remote,
+                contact=contact,
+                chat_id=chat_id,
+                contact_name=contact_name,
+                body=body,
+                timestamp=timestamp,
+                text=body.strip(),
+                message_type=MessageType.COMMAND,
+            )
+            await self._enqueue(event)
+            return web.Response(status=200, text="ok")
+
+        event = self._build_sms_text_event(
+            envelope=envelope,
+            text_id=text_id,
+            remote=remote,
+            contact=contact,
+            chat_id=chat_id,
+            contact_name=contact_name,
+            body=body,
+            timestamp=timestamp,
         )
-        await self._enqueue(event)
+        await self._enqueue_sms_text_event(event)
         return web.Response(status=200, text="ok")
 
     async def _on_text_lifecycle(self, envelope: Dict[str, Any]) -> "web.Response":

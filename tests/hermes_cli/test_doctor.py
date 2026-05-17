@@ -850,6 +850,7 @@ def _run_doctor_with_healthy_oauth_fallback(
     failing_host: str,
     gemini_oauth_status: dict,
     minimax_oauth_status: dict,
+    xai_oauth_status: dict | None = None,
 ) -> str:
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -886,6 +887,8 @@ def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
     monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: gemini_oauth_status)
     monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
+    _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: _xai_status)
 
     def fake_get(url, headers=None, timeout=None):
         status = 401 if failing_host in url else 200
@@ -902,7 +905,7 @@ def _run_doctor_with_healthy_oauth_fallback(
 
 
 @pytest.mark.parametrize(
-    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "unexpected_issue"),
+    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "xai_oauth_status", "unexpected_issue"),
     [
         (
             "GOOGLE_API_KEY",
@@ -910,6 +913,7 @@ def _run_doctor_with_healthy_oauth_fallback(
             "googleapis.com",
             {"logged_in": True, "email": "user@example.com"},
             {},
+            None,
             "Check GOOGLE_API_KEY in .env",
         ),
         (
@@ -918,7 +922,17 @@ def _run_doctor_with_healthy_oauth_fallback(
             "minimax.io",
             {},
             {"logged_in": True, "region": "global"},
+            None,
             "Check MINIMAX_API_KEY in .env",
+        ),
+        (
+            "XAI_API_KEY",
+            "bad-xai-key",
+            "api.x.ai",
+            {},
+            {},
+            {"logged_in": True, "auth_mode": "oauth_pkce"},
+            "Check XAI_API_KEY in .env",
         ),
     ],
 )
@@ -930,6 +944,7 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
     failing_host,
     gemini_oauth_status,
     minimax_oauth_status,
+    xai_oauth_status,
     unexpected_issue,
 ):
     out = _run_doctor_with_healthy_oauth_fallback(
@@ -940,10 +955,16 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
         failing_host=failing_host,
         gemini_oauth_status=gemini_oauth_status,
         minimax_oauth_status=minimax_oauth_status,
+        xai_oauth_status=xai_oauth_status,
     )
 
     assert "invalid API key" in out
     assert unexpected_issue not in out
+
+
+def test_has_healthy_oauth_fallback_returns_false_for_unknown_provider():
+    from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+    assert _has_healthy_oauth_fallback_for_apikey_provider("unknown-provider") is False
 
 
 class TestHasHealthyOauthFallbackForXai:
@@ -959,6 +980,27 @@ class TestHasHealthyOauthFallbackForXai:
         from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
         assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
 
-    def test_returns_false_for_unknown_provider(self):
+    def test_returns_false_when_xai_oauth_returns_none(self, monkeypatch):
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: None)
         from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
-        assert _has_healthy_oauth_fallback_for_apikey_provider("unknown-provider") is False
+        assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
+
+    def test_returns_false_when_xai_import_unavailable(self, monkeypatch):
+        import sys
+        # Simulate get_xai_oauth_auth_status missing from auth module
+        monkeypatch.delattr("hermes_cli.auth.get_xai_oauth_auth_status", raising=False)
+        # Force doctor module to re-import the function
+        monkeypatch.delitem(sys.modules, "hermes_cli.doctor", raising=False)
+        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+        assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
+
+    def test_xai_import_failure_does_not_affect_gemini(self, monkeypatch):
+        import sys
+        from hermes_cli import auth as _auth_mod
+        # xAI function missing, but Gemini is healthy
+        monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": True})
+        monkeypatch.delitem(sys.modules, "hermes_cli.doctor", raising=False)
+        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+        assert _has_healthy_oauth_fallback_for_apikey_provider("gemini") is True

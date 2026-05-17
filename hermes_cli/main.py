@@ -1024,6 +1024,14 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
+    """Find a pre-built TUI entry.js bundled in the wheel."""
+    if hermes_cli_dir is None:
+        hermes_cli_dir = Path(__file__).parent
+    bundled = hermes_cli_dir / "tui_dist" / "entry.js"
+    return bundled if bundled.is_file() else None
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1034,6 +1042,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
                 return env_node
         path = shutil.which(bin)
+        if not path and bin == "node":
+            try:
+                from hermes_cli.dep_ensure import ensure_dependency
+                if ensure_dependency("node"):
+                    path = shutil.which("node")
+            except Exception:
+                pass
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
@@ -1058,8 +1073,14 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
 
+        # 1b. Bundled in wheel (pip install)
+        bundled = _find_bundled_tui()
+        if bundled is not None:
+            node = _node_bin("node")
+            return [node, str(bundled)], bundled.parent
+
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
-    #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).
+    #    --dev flow: npm install if needed, then tsx src/entry.tsx.
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
@@ -1081,10 +1102,30 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
 
     if tui_dev:
+        # Keep the local @hermes/ink package exports in sync with source.
+        # --dev runs src/entry.tsx directly, but @hermes/ink resolves through
+        # packages/hermes-ink/dist/entry-exports.js. If that dist bundle is
+        # stale after a pull, newer hooks/components can exist in src while
+        # being missing at runtime (e.g. useCursorAdvance). Prebuild it here.
+        npm = _node_bin("npm")
+        ink_dir = tui_dir / "packages" / "hermes-ink"
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(ink_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI dev prebuild failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
+
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
-        npm = _node_bin("npm")
         return [npm, "start"], tui_dir
 
     # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
@@ -1522,14 +1563,18 @@ def cmd_whatsapp(args):
         )
         print(f"\n✓ Mode: {mode_label}")
 
-    # ── Step 2: Enable WhatsApp ──────────────────────────────────────────
+    # ── Step 2: Mode is selected, will enable WhatsApp only after pairing ──
+    # We intentionally don't write WHATSAPP_ENABLED=true here.  If the user
+    # aborts the wizard later (Ctrl+C, failed npm install, missed QR scan),
+    # we'd otherwise leave .env claiming WhatsApp is ready when the bridge
+    # has no creds.json.  Every subsequent `hermes gateway` then paid a 30s
+    # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
+    # Now: aborted setup leaves WHATSAPP_ENABLED unset → gateway skips it.
+    # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
+    # successful pairing) stay enabled — we just don't write it pre-emptively.
     print()
-    current = get_env_value("WHATSAPP_ENABLED")
-    if current and current.lower() == "true":
+    if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
         print("✓ WhatsApp is already enabled")
-    else:
-        save_env_value("WHATSAPP_ENABLED", "true")
-        print("✓ WhatsApp enabled")
 
     # ── Step 3: Allowed users ────────────────────────────────────────────
     current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
@@ -1619,6 +1664,12 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
+            # Existing pairing — ensure WHATSAPP_ENABLED reflects that.
+            # (Older installs may have lost the env var; covers re-runs
+            # where the user picked "no, keep my session" but the var
+            # was never set or got removed.)
+            if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
+                save_env_value("WHATSAPP_ENABLED", "true")
             print("\n✓ WhatsApp is configured and paired!")
             print("  Start the gateway with: hermes gateway")
             return
@@ -1647,6 +1698,11 @@ def cmd_whatsapp(args):
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
     if (session_dir / "creds.json").exists():
+        # Only enable WhatsApp now that pairing actually succeeded.  If the
+        # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
+        # and `hermes gateway` skips it cleanly instead of paying a 30s
+        # bridge timeout + queueing the platform for indefinite retries.
+        save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp paired successfully!")
         print()
         if wa_mode == "bot":
@@ -1675,6 +1731,24 @@ def cmd_setup(args):
     from hermes_cli.setup import run_setup_wizard
 
     run_setup_wizard(args)
+
+
+def cmd_postinstall(args):
+    """One-shot bootstrap for pip users: install non-Python deps + run setup."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    print("⚕ Hermes post-install bootstrap")
+    print()
+
+    for dep in ("node", "browser", "ripgrep", "ffmpeg"):
+        ensure_dependency(dep)
+
+    if not _has_any_provider_configured():
+        print()
+        cmd_setup(args)
+    else:
+        print()
+        print("✓ Post-install complete.")
 
 
 def cmd_model(args):
@@ -1932,6 +2006,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "xai-oauth":
+        _model_flow_xai_oauth(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2809,6 +2885,87 @@ def _model_flow_openai_codex(config, current_model=""):
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+    else:
+        print("No change.")
+
+
+def _model_flow_xai_oauth(_config, current_model=""):
+    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_xai_oauth_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        resolve_xai_oauth_runtime_credentials,
+        _login_xai_oauth,
+        DEFAULT_XAI_OAUTH_BASE_URL,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_xai_oauth_auth_status()
+    if status.get("logged_in"):
+        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            print("Starting a fresh xAI OAuth login...")
+            print()
+            try:
+                mock_args = argparse.Namespace()
+                _login_xai_oauth(
+                    mock_args,
+                    PROVIDER_REGISTRY["xai-oauth"],
+                    force_new_login=True,
+                )
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        elif choice == "3":
+            return
+    else:
+        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    # Resolve a usable base URL.  ``resolve_xai_oauth_runtime_credentials``
+    # only reads from the auth.json singleton — but credentials may legitimately
+    # live only in the pool (e.g. after ``hermes auth add xai-oauth``).  Fall
+    # back to the default base URL in that case so the model picker still
+    # completes successfully instead of bailing out with
+    # ``Could not resolve xAI OAuth credentials``.
+    base_url = DEFAULT_XAI_OAUTH_BASE_URL
+    try:
+        creds = resolve_xai_oauth_runtime_credentials()
+        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+    except Exception:
+        pass
+
+    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("xai-oauth", base_url)
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
     else:
         print("No change.")
 
@@ -7089,17 +7246,24 @@ def _update_node_dependencies() -> None:
         if not (path / "package.json").exists():
             continue
 
+        # Stream npm output (no `--silent`, no `capture_output`) so any
+        # optional dependency postinstall scripts (e.g. `agent-browser`'s
+        # Chromium fetch on first install) print progress instead of
+        # appearing to hang silently for minutes (#18840).  The
+        # `_UpdateOutputStream` wrapper installed by the updater mirrors
+        # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
         result = _run_npm_install_deterministic(
             npm,
             path,
-            extra_args=("--silent", "--no-fund", "--no-audit", "--progress=false"),
+            extra_args=("--no-fund", "--no-audit", "--progress=false"),
+            capture_output=False,
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")
             continue
 
         print(f"  ⚠ npm install failed in {label}")
-        stderr = (result.stderr or "").strip()
+        stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 
@@ -7282,6 +7446,22 @@ def _finalize_update_output(state):
 
 def _cmd_update_check():
     """Implement ``hermes update --check``: fetch and report without installing."""
+    from hermes_cli.config import detect_install_method
+    method = detect_install_method(PROJECT_ROOT)
+    if method == "pip":
+        from hermes_cli.config import recommended_update_command
+        from hermes_cli.banner import check_via_pypi
+        result = check_via_pypi()
+        if result is None:
+            print("✗ Could not reach PyPI to check for updates.")
+            sys.exit(1)
+        elif result == 0:
+            print("✓ Already up to date.")
+        else:
+            print("⚕ Update available on PyPI.")
+            print(f"  Run '{recommended_update_command()}' to install.")
+        return
+
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
         print("✗ Not a git repository — cannot check for updates.")
@@ -7559,6 +7739,28 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
+def _cmd_update_pip(args):
+    """Update Hermes via pip (for PyPI installs)."""
+    from hermes_cli import __version__
+
+    print(f"→ Current version: {__version__}")
+    print("→ Checking PyPI for updates...")
+
+    uv = shutil.which("uv")
+    if uv:
+        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
+
+    print(f"→ Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("✗ Update failed")
+        sys.exit(1)
+
+    print("✓ Update complete! Restart hermes to use the new version.")
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -7586,6 +7788,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if sys.platform == "win32":
             use_zip_update = True
         else:
+            from hermes_cli.config import detect_install_method
+            method = detect_install_method(PROJECT_ROOT)
+            if method == "pip":
+                _cmd_update_pip(args)
+                return
             print("✗ Not a git repository. Please reinstall:")
             print(
                 "  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
@@ -9400,7 +9607,7 @@ def _build_provider_choices() -> list[str]:
     except Exception:
         # Fallback: static list guarantees the CLI always works
         return [
-            "auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot",
+            "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
@@ -9424,7 +9631,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
+        "model", "pairing", "plugins", "postinstall", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -9864,6 +10071,17 @@ def main():
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================
+    # postinstall command
+    # =========================================================================
+    postinstall_parser = subparsers.add_parser(
+        "postinstall",
+        help="Bootstrap non-Python deps for pip installs (node, browser, ripgrep, ffmpeg)",
+        description="One-shot post-install for pip users. Installs system "
+        "dependencies that pip cannot provide, then runs setup if needed.",
+    )
+    postinstall_parser.set_defaults(func=cmd_postinstall)
+
+    # =========================================================================
     # whatsapp command
     # =========================================================================
     whatsapp_parser = subparsers.add_parser(
@@ -9922,6 +10140,12 @@ def main():
     slack_parser.set_defaults(func=cmd_slack)
 
     # =========================================================================
+    # send command — pipe shell-script output to any configured platform
+    # =========================================================================
+    from hermes_cli.send_cmd import register_send_subparser
+    register_send_subparser(subparsers)
+
+    # =========================================================================
     # login command
     # =========================================================================
     login_parser = subparsers.add_parser(
@@ -9931,7 +10155,7 @@ def main():
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "xai-oauth"],
         default=None,
         help="Provider to authenticate with (default: nous)",
     )
@@ -9977,7 +10201,7 @@ def main():
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "spotify"],
+        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )
@@ -11715,6 +11939,20 @@ Examples:
         action="store_true",
         help="Run interactive Hermes provider/model setup for ACP terminal auth",
     )
+    acp_parser.add_argument(
+        "--setup-browser",
+        action="store_true",
+        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+             "for browser tool support (idempotent).",
+    )
+    acp_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        dest="assume_yes",
+        help="Accept all prompts (used by --setup-browser to skip the "
+             "~400 MB Chromium download confirmation).",
+    )
 
     def cmd_acp(args):
         """Launch Hermes Agent as an ACP server."""
@@ -11728,6 +11966,10 @@ Examples:
                 acp_argv.append("--check")
             if getattr(args, "setup", False):
                 acp_argv.append("--setup")
+            if getattr(args, "setup_browser", False):
+                acp_argv.append("--setup-browser")
+            if getattr(args, "assume_yes", False):
+                acp_argv.append("--yes")
             acp_main(acp_argv)
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)

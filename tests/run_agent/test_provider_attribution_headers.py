@@ -3,6 +3,7 @@
 Mirrors the OpenRouter pattern for the Vercel AI Gateway so that
 referrerUrl / appName / User-Agent flow into gateway analytics.
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
@@ -63,6 +64,73 @@ def test_routermint_base_url_applies_user_agent_header(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
+def test_nvidia_cloud_base_url_applies_billing_origin_header(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://integrate.api.nvidia.com/v1",
+        model="nvidia/test-model",
+        provider="nvidia",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent._client_kwargs["default_headers"]["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+    agent._apply_client_headers_for_base_url("https://integrate.api.nvidia.com/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+
+@patch("run_agent.OpenAI")
+def test_nvidia_local_base_url_does_not_apply_billing_origin_header(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://integrate.api.nvidia.com/v1",
+        model="nvidia/test-model",
+        provider="nvidia",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs["default_headers"] = {
+        "X-BILLING-INVOKE-ORIGIN": "HermesAgent",
+    }
+
+    agent._apply_client_headers_for_base_url("http://localhost:8000/v1")
+
+    assert "default_headers" not in agent._client_kwargs
+
+
+@patch("run_agent.OpenAI")
+def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    routed_client = SimpleNamespace(
+        api_key="test-key",
+        base_url="https://integrate.api.nvidia.com/v1",
+        _custom_headers={"X-BILLING-INVOKE-ORIGIN": "HermesAgent"},
+    )
+
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(
+        routed_client,
+        "nvidia/test-model",
+    )):
+        agent = AIAgent(
+            provider="nvidia",
+            model="nvidia/test-model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
 
 
 @patch("run_agent.OpenAI")

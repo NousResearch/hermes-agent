@@ -244,8 +244,21 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
-def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert internal chat-style messages to Responses input items."""
+def _chat_messages_to_responses_input(
+    messages: List[Dict[str, Any]],
+    *,
+    is_xai_responses: bool = False,
+) -> List[Dict[str, Any]]:
+    """Convert internal chat-style messages to Responses input items.
+
+    ``is_xai_responses=True`` strips ``encrypted_content`` from replayed
+    reasoning items.  xAI's OAuth/SuperGrok ``/v1/responses`` surface
+    rejects encrypted reasoning blobs minted by prior turns: the request
+    streams an ``error`` SSE frame before ``response.created`` and the
+    OpenAI SDK collapses it into a generic stream-ordering error.  Native
+    Codex (chatgpt.com backend-api) DOES accept replayed encrypted_content
+    — keep the default off.
+    """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
 
@@ -271,9 +284,17 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
             if role == "assistant":
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
+                #
+                # xAI OAuth (SuperGrok/Premium) rejects replayed
+                # ``encrypted_content`` reasoning items minted by prior
+                # turns — see _chat_messages_to_responses_input docstring.
+                # When ``is_xai_responses`` is set we drop the replay
+                # entirely; Grok still reasons on each turn server-side,
+                # we just don't try to thread the prior turn's encrypted
+                # blob back in.
                 codex_reasoning = msg.get("codex_reasoning_items")
                 has_codex_reasoning = False
-                if isinstance(codex_reasoning, list):
+                if isinstance(codex_reasoning, list) and not is_xai_responses:
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
                             item_id = ri.get("id")
@@ -726,7 +747,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers",
+        "extra_headers", "extra_body",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -775,6 +796,19 @@ def _preflight_codex_api_kwargs(
             normalized_headers[key.strip()] = str(value)
         if normalized_headers:
             normalized["extra_headers"] = normalized_headers
+
+    extra_body = api_kwargs.get("extra_body")
+    if extra_body is not None:
+        if not isinstance(extra_body, dict):
+            raise ValueError("Codex Responses request 'extra_body' must be an object.")
+        # Pass extra_body through verbatim — used by xAI Responses to
+        # carry `prompt_cache_key` as a body-level field (the documented
+        # cache-routing surface on /v1/responses). The openai SDK
+        # serializes extra_body into the JSON body without per-field
+        # type checks, so it survives Responses.stream() kwarg-signature
+        # changes that would otherwise raise TypeError before the wire.
+        if extra_body:
+            normalized["extra_body"] = dict(extra_body)
 
     if allow_stream:
         stream = api_kwargs.get("stream")

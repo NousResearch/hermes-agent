@@ -263,6 +263,9 @@ def is_safe_url(url: str) -> bool:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         scheme = (parsed.scheme or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
+            return False
         if not hostname:
             return False
 

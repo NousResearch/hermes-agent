@@ -586,11 +586,20 @@ async def _process_large_content_chunked(
     
     # Run all chunk summarizations in parallel
     tasks = [summarize_chunk(i, chunk) for i, chunk in enumerate(chunks)]
-    results = await asyncio.gather(*tasks)
-    
-    # Collect successful summaries in order
+    # Use return_exceptions=True so a single task failure does not discard
+    # all other successfully summarized chunks.
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Filter out exceptions, then collect successful summaries in order
+    successful_results = []
+    for result_item in results:
+        if isinstance(result_item, BaseException):
+            logger.warning("Chunk summarization task failed: %s", result_item)
+            continue
+        successful_results.append(result_item)
+
     summaries = []
-    for chunk_idx, summary in sorted(results, key=lambda x: x[0]):
+    for chunk_idx, summary in sorted(successful_results, key=lambda x: x[0]):
         if summary:
             summaries.append(f"## Section {chunk_idx + 1}\n{summary}")
     
@@ -1038,10 +1047,16 @@ async def web_extract_tool(
             # Run all LLM processing in parallel
             results_list = response.get('results', [])
             tasks = [process_single_result(result) for result in results_list]
-            processed_results = await asyncio.gather(*tasks)
-            
+            # Use return_exceptions=True so a single task failure does not
+            # discard all other successfully processed results.
+            processed_results = await asyncio.gather(*tasks, return_exceptions=True)
+
             # Collect metrics and print results
-            for result, metrics, status in processed_results:
+            for result_item in processed_results:
+                if isinstance(result_item, BaseException):
+                    logger.warning("Web result processing task failed: %s", result_item)
+                    continue
+                result, metrics, status = result_item
                 url = result.get('url', 'Unknown URL')
                 if status == "processed":
                     debug_call_data["compression_metrics"].append(metrics)
@@ -1285,8 +1300,14 @@ async def web_crawl_tool(
                     return result, metrics, "too_short"
 
                 tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
-                processed_results = await asyncio.gather(*tasks)
-                for result, metrics, status in processed_results:
+                # Use return_exceptions=True so a single task failure does not
+                # discard all other successfully processed crawl results.
+                processed_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for result_item in processed_results:
+                    if isinstance(result_item, BaseException):
+                        logger.warning("Tavily crawl processing task failed: %s", result_item)
+                        continue
+                    result, metrics, status = result_item
                     if status == "processed":
                         debug_call_data["compression_metrics"].append(metrics)
                         debug_call_data["pages_processed_with_llm"] += 1

@@ -221,8 +221,11 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     """Schedule *coro* on the shared loop and block until done."""
+    from agent.async_utils import safe_schedule_threadsafe
     loop = _get_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    future = safe_schedule_threadsafe(coro, loop)
+    if future is None:
+        raise RuntimeError("Hindsight loop unavailable")
     return future.result(timeout=timeout)
 
 

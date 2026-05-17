@@ -398,6 +398,77 @@ class TestCheckFunction:
 
 
 # ---------------------------------------------------------------------------
+# MCP loop runner
+# ---------------------------------------------------------------------------
+
+class TestRunOnMcpLoop:
+    def test_scheduler_failure_closes_factory_coroutine(self):
+        """If run_coroutine_threadsafe raises, the factory's coroutine is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        created = {"coro": None}
+
+        async def _sample():
+            return "ok"
+
+        def factory():
+            created["coro"] = _sample()
+            return created["coro"]
+
+        fake_loop = MagicMock()
+        fake_loop.is_running.return_value = True
+
+        with patch.object(mcp, "_mcp_loop", fake_loop):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch(
+                    "agent.async_utils.asyncio.run_coroutine_threadsafe",
+                    side_effect=RuntimeError("scheduler down"),
+                ):
+                    with pytest.raises(RuntimeError):
+                        mcp._run_on_mcp_loop(factory)
+                gc.collect()
+
+        assert created["coro"] is not None
+        assert created["coro"].cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+    def test_dead_loop_closes_passed_coroutine(self):
+        """If loop is None, a passed coroutine (not factory) is closed."""
+        import gc
+        import warnings
+        import tools.mcp_tool as mcp
+
+        async def _sample():
+            return "ok"
+
+        coro = _sample()
+        with patch.object(mcp, "_mcp_loop", None):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with pytest.raises(RuntimeError, match="not running"):
+                    mcp._run_on_mcp_loop(coro)
+                gc.collect()
+
+        assert coro.cr_frame is None
+        runtime_warnings = [
+            w for w in caught
+            if issubclass(w.category, RuntimeWarning)
+            and "was never awaited" in str(w.message)
+            and "_sample" in str(w.message)
+        ]
+        assert runtime_warnings == []
+
+
+# ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
 
@@ -406,7 +477,8 @@ class TestToolHandler:
 
     def _patch_mcp_loop(self, coro_side_effect=None):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         if coro_side_effect:
             return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=coro_side_effect)
@@ -485,7 +557,8 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            def _interrupting_run(coro, timeout=30):
+            def _interrupting_run(coro_or_factory, timeout=30):
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
                 coro.close()
                 raise InterruptedError("User sent a new message")
             with patch(
@@ -1792,7 +1865,8 @@ class TestUtilityHandlers:
 
     def _patch_mcp_loop(self):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
 
@@ -3688,3 +3762,135 @@ class TestRegisterMcpServers:
                 )
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# Tests for parallel tool call support (port from openai/codex#17667)
+# ---------------------------------------------------------------------------
+
+class TestMcpParallelToolCalls:
+    """Tests for the supports_parallel_tool_calls config option."""
+
+    def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
+        """Non-MCP tool names always return False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe
+        assert is_mcp_tool_parallel_safe("web_search") is False
+        assert is_mcp_tool_parallel_safe("read_file") is False
+        assert is_mcp_tool_parallel_safe("terminal") is False
+        assert is_mcp_tool_parallel_safe("") is False
+
+    def test_is_mcp_tool_parallel_safe_no_servers(self):
+        """MCP tool from unknown server returns False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.clear()
+        assert is_mcp_tool_parallel_safe("mcp_docs_search") is False
+
+    def test_is_mcp_tool_parallel_safe_with_flag(self):
+        """MCP tool from a parallel-safe server returns True."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("docs")
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_docs_search") is True
+            assert is_mcp_tool_parallel_safe("mcp_docs_read_file") is True
+            # Different server should be False
+            assert is_mcp_tool_parallel_safe("mcp_github_list_repos") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+
+    def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
+        """Server names containing underscores are correctly matched."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("my_server")
+        try:
+            assert is_mcp_tool_parallel_safe("mcp_my_server_query") is True
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("my_server")
+
+    def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
+        """Tool name that is just 'mcp_{server}' without a tool part returns False."""
+        from tools.mcp_tool import is_mcp_tool_parallel_safe, _parallel_safe_servers, _lock
+        with _lock:
+            _parallel_safe_servers.add("docs")
+        try:
+            # "mcp_docs" has no tool part after the server name
+            assert is_mcp_tool_parallel_safe("mcp_docs") is False
+            # "mcp_docs_" has empty tool part
+            assert is_mcp_tool_parallel_safe("mcp_docs_") is False
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard("docs")
+
+    def test_register_mcp_servers_tracks_parallel_flag(self):
+        """register_mcp_servers populates _parallel_safe_servers from config."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+        fake_config = {
+            "parallel_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+            "serial_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+            "default_srv": {
+                "command": "echo",
+                # no supports_parallel_tool_calls key
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(fake_config)
+
+        with _lock:
+            assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
+            assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
+            assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
+            # Cleanup
+            _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+
+    def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
+        """Toggling supports_parallel_tool_calls to false removes server from the set."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _parallel_safe_servers, _lock,
+            sanitize_mcp_name_component,
+        )
+
+        # First registration: parallel enabled
+        config_on = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_on)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
+
+        # Second registration: parallel disabled
+        config_off = {
+            "toggle_srv": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+            },
+        }
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop"), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            register_mcp_servers(config_off)
+        with _lock:
+            assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers

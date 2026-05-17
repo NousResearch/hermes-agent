@@ -31,7 +31,8 @@ class _FakeCallToolResult:
         self.structuredContent = structuredContent
 
 
-def _fake_run_on_mcp_loop(coro, timeout=30):
+def _fake_run_on_mcp_loop(coro_or_factory, timeout=30):
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
     """Run an MCP coroutine directly in a fresh event loop."""
     loop = asyncio.new_event_loop()
     try:

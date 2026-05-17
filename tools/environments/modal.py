@@ -144,9 +144,14 @@ class _AsyncWorker:
         self._loop.run_forever()
 
     def run_coroutine(self, coro, timeout=600):
+        from agent.async_utils import safe_schedule_threadsafe
         if self._loop is None or self._loop.is_closed():
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("AsyncWorker loop is not running")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future = safe_schedule_threadsafe(coro, self._loop)
+        if future is None:
+            raise RuntimeError("AsyncWorker loop is not running")
         return future.result(timeout=timeout)
 
     def stop(self):

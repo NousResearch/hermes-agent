@@ -61,6 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -86,7 +87,12 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
+#
+# X search is off by default — gated on xAI credentials (SuperGrok OAuth
+# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
+# which walks them through credential setup. The tool's check_fn means
+# the schema won't appear to the model even if enabled without credentials.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -194,11 +200,10 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "xAI TTS",
-                "tag": "Grok voices - requires xAI API key",
-                "env_vars": [
-                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
-                ],
+                "tag": "Grok voices — uses xAI Grok OAuth or XAI_API_KEY",
+                "env_vars": [],
                 "tts_provider": "xai",
+                "post_setup": "xai_grok",
             },
             {
                 "name": "ElevenLabs",
@@ -308,6 +313,39 @@ TOOL_CATEGORIES = {
         # injected by ``_visible_providers``. Mirrors the design we'll
         # converge image_gen toward.
         "providers": [],
+    },
+    "x_search": {
+        "name": "X (Twitter) Search",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Hermes routes X searches through xAI's built-in x_search "
+            "Responses tool. Both credential sources hit the same "
+            "https://api.x.ai/v1/responses endpoint — pick whichever you "
+            "already have. SuperGrok OAuth is preferred when both are set "
+            "(uses your subscription quota instead of API spend)."
+        ),
+        "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
     },
     "browser": {
         "name": "Browser Automation",
@@ -420,31 +458,6 @@ TOOL_CATEGORIES = {
                     # optional pin for reproducibility across macOS updates.
                 ],
                 "post_setup": "cua_driver",
-            },
-        ],
-    },
-    "langfuse": {
-        "name": "Langfuse Observability",
-        "icon": "📊",
-        "providers": [
-            {
-                "name": "Langfuse Cloud",
-                "tag": "Hosted Langfuse (cloud.langfuse.com)",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
-                ],
-                "post_setup": "langfuse",
-            },
-            {
-                "name": "Langfuse Self-Hosted",
-                "tag": "Self-hosted Langfuse instance",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
-                ],
-                "post_setup": "langfuse",
             },
         ],
     },
@@ -772,21 +785,35 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
+            _print_info("    Installing Camofox browser package...")
+            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
-            else:
-                _print_warning("    npm install failed - run manually: npm install")
+            # Install @askjo/camofox-browser on-demand. It is NOT in
+            # package.json so that `hermes update` does not silently pull
+            # the ~300MB Camoufox Firefox-fork binary for every user.
+            # Stream output (no capture, no --silent) so the long-running
+            # postinstall download is visible instead of looking frozen.
+            try:
+                result = subprocess.run(
+                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
+                     "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(PROJECT_ROOT),
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning(
+                        "    npm install failed — run manually: "
+                        "npm install @askjo/camofox-browser"
+                    )
+            except Exception as exc:
+                _print_warning(f"    Camofox install failed: {exc}")
+                _print_info(
+                    "    Run manually: npm install @askjo/camofox-browser"
+                )
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
-            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
@@ -895,35 +922,72 @@ def _run_post_setup(post_setup_key: str):
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
 
-    elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
+    elif post_setup_key == "xai_grok":
+        # Shared credential bootstrap for any picker entry that talks to xAI
+        # (TTS, Video Gen, future Image Gen, etc.). Accepts either a
+        # SuperGrok-tier OAuth bearer token (preferred — billed against the
+        # user's existing subscription) or a raw XAI_API_KEY from
+        # console.x.ai. The picker entries declare empty env_vars so we
+        # drive the full auth UX here.
         try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
-        # Opt the bundled observability/langfuse plugin into plugins.enabled.
-        # The plugin ships in the repo but doesn't load until the user enables
-        # it (standalone plugins are opt-in).
+            from hermes_cli.auth import get_xai_oauth_auth_status
+            oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
+        except Exception:
+            oauth_logged_in = False
+        existing_api_key = get_env_value("XAI_API_KEY")
+
+        if oauth_logged_in:
+            _print_success(
+                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+            )
+            return
+        if existing_api_key:
+            _print_success("    xAI will use your existing XAI_API_KEY")
+            return
+
+        _print_info("    xAI needs credentials. Choose one:")
         try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-            enabled = _get_enabled_set()
-            if "observability/langfuse" in enabled or "langfuse" in enabled:
-                _print_success("    Plugin observability/langfuse already enabled")
-            else:
-                enabled.add("observability/langfuse")
-                _save_enabled_set(enabled)
-                _print_success("    Plugin observability/langfuse enabled")
+            from hermes_cli.setup import (
+                _run_xai_oauth_login_from_setup,
+                prompt_choice,
+                prompt as _setup_prompt,
+            )
+            from hermes_cli.config import save_env_value
         except Exception as exc:
-            _print_warning(f"    Could not enable plugin automatically: {exc}")
-            _print_info("    Run manually: hermes plugins enable observability/langfuse")
-        _print_info("    Restart Hermes for tracing to take effect.")
-        _print_info("    Verify: hermes plugins list")
+            _print_warning(f"    Could not load setup helpers: {exc}")
+            _print_info("    Run later: hermes auth add xai-oauth   (or set XAI_API_KEY)")
+            return
+
+        idx = prompt_choice(
+            "    How do you want xAI to authenticate?",
+            choices=[
+                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Paste an xAI API key (console.x.ai)",
+                "Skip — configure later via `hermes auth add xai-oauth`",
+            ],
+            default=0,
+        )
+        if idx == 0:
+            if _run_xai_oauth_login_from_setup():
+                _print_success(
+                    "    Logged in — xAI will use these OAuth credentials"
+                )
+            else:
+                _print_warning(
+                    "    xAI Grok OAuth login did not complete. "
+                    "Run later: hermes auth add xai-oauth"
+                )
+        elif idx == 1:
+            api_key = _setup_prompt("    xAI API key", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                _print_success("    XAI_API_KEY saved")
+            else:
+                _print_warning(
+                    "    No API key provided. Run later: hermes auth add xai-oauth"
+                )
+        else:
+            _print_info("    xAI will remain inactive until credentials are configured.")
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -1439,15 +1503,16 @@ def _plugin_image_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "image_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "image_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1476,15 +1541,16 @@ def _plugin_video_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "video_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "video_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1747,6 +1813,11 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if plugin_name:
         image_cfg = config.get("image_gen", {})
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
+    video_plugin_name = provider.get("video_gen_plugin_name")
+    if video_plugin_name:
+        video_cfg = config.get("video_gen", {})
+        return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:

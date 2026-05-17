@@ -518,6 +518,9 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -567,6 +570,9 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 

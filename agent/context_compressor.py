@@ -221,6 +221,114 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     return json.dumps(shrunken, ensure_ascii=False)
 
 
+_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
+
+
+def _is_image_part(part: Any) -> bool:
+    """True if ``part`` is a multimodal image content block.
+
+    Recognizes all three shapes the agent handles:
+      - OpenAI chat.completions: ``{"type": "image_url", "image_url": ...}``
+      - OpenAI Responses API:    ``{"type": "input_image", "image_url": "..."}``
+      - Anthropic native:        ``{"type": "image", "source": {...}}``
+    """
+    if not isinstance(part, dict):
+        return False
+    return part.get("type") in _IMAGE_PART_TYPES
+
+
+def _content_has_images(content: Any) -> bool:
+    """True if a message's ``content`` is a multimodal list with image parts."""
+    if not isinstance(content, list):
+        return False
+    return any(_is_image_part(p) for p in content)
+
+
+def _strip_images_from_content(content: Any) -> Any:
+    """Return a copy of ``content`` with every image part replaced by a
+    short text placeholder.
+
+    - String content is returned unchanged.
+    - Non-list, non-string content is returned unchanged.
+    - List content: image parts become ``{"type": "text", "text": "[Attached
+      image — stripped after compression]"}``; other parts are preserved as-is.
+
+    Input is never mutated.
+    """
+    if not isinstance(content, list):
+        return content
+    if not any(_is_image_part(p) for p in content):
+        return content
+
+    new_parts: List[Any] = []
+    for p in content:
+        if _is_image_part(p):
+            new_parts.append({
+                "type": "text",
+                "text": "[Attached image — stripped after compression]",
+            })
+        else:
+            new_parts.append(p)
+    return new_parts
+
+
+def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Replace image parts in older messages with placeholder text.
+
+    The anchor is the *last* user message that has any image content. Every
+    message before that anchor gets its image parts replaced with a short
+    placeholder so the outgoing request stops re-shipping the same multi-MB
+    base-64 image blobs on every turn.
+
+    If no user message carries images, the list is returned unchanged.
+    If the only user message with images is the very first one (nothing
+    earlier to strip), the list is returned unchanged.
+
+    Shallow copies of touched messages only; input is never mutated.
+    Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
+    shape the hermes compressor emits).
+    """
+    if not messages:
+        return messages
+
+    # Find the newest user message that carries at least one image part.
+    # We anchor on image-bearing user messages (not all user messages) so
+    # a plain text follow-up after a big-image turn still strips the old
+    # image — matching the problem kilocode#9434 set out to solve.
+    anchor = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        if _content_has_images(msg.get("content")):
+            anchor = i
+            break
+
+    if anchor <= 0:
+        # No image-bearing user message, or it's the very first message —
+        # nothing before it to strip.
+        return messages
+
+    changed = False
+    result: List[Dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        if i >= anchor or not isinstance(msg, dict):
+            result.append(msg)
+            continue
+        content = msg.get("content")
+        if not _content_has_images(content):
+            result.append(msg)
+            continue
+        new_msg = msg.copy()
+        new_msg["content"] = _strip_images_from_content(content)
+        result.append(new_msg)
+        changed = True
+
+    return result if changed else messages
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -1558,6 +1666,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self.compression_count += 1
 
         compressed = self._sanitize_tool_pairs(compressed)
+
+        # Replace image parts in all compressed messages before the newest
+        # image-bearing user turn with a short text placeholder. Without
+        # this, tail messages keep their original multi-MB base-64 image
+        # payloads forever, which can push every subsequent API request
+        # past the provider's body-size limit and wedge the session.
+        # Port of Kilo-Org/kilocode#9434.
+        compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate

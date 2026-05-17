@@ -839,3 +839,108 @@ class TestGitHubTokenCheck:
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
+
+
+def _run_doctor_with_healthy_oauth_fallback(
+    monkeypatch,
+    tmp_path,
+    *,
+    env_key: str,
+    bad_key: str,
+    failing_host: str,
+    gemini_oauth_status: dict,
+    minimax_oauth_status: dict,
+) -> str:
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: nous\n"
+        "  default: moonshotai/kimi-k2.6\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv(env_key, bad_key)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_CN_API_KEY", raising=False)
+    monkeypatch.setenv(env_key, bad_key)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: gemini_oauth_status)
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: minimax_oauth_status)
+
+    def fake_get(url, headers=None, timeout=None):
+        status = 401 if failing_host in url else 200
+        return types.SimpleNamespace(status_code=status)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("env_key", "bad_key", "failing_host", "gemini_oauth_status", "minimax_oauth_status", "unexpected_issue"),
+    [
+        (
+            "GOOGLE_API_KEY",
+            "bad-gemini-key",
+            "googleapis.com",
+            {"logged_in": True, "email": "user@example.com"},
+            {},
+            "Check GOOGLE_API_KEY in .env",
+        ),
+        (
+            "MINIMAX_API_KEY",
+            "bad-minimax-key",
+            "minimax.io",
+            {},
+            {"logged_in": True, "region": "global"},
+            "Check MINIMAX_API_KEY in .env",
+        ),
+    ],
+)
+def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
+    monkeypatch,
+    tmp_path,
+    env_key,
+    bad_key,
+    failing_host,
+    gemini_oauth_status,
+    minimax_oauth_status,
+    unexpected_issue,
+):
+    out = _run_doctor_with_healthy_oauth_fallback(
+        monkeypatch,
+        tmp_path,
+        env_key=env_key,
+        bad_key=bad_key,
+        failing_host=failing_host,
+        gemini_oauth_status=gemini_oauth_status,
+        minimax_oauth_status=minimax_oauth_status,
+    )
+
+    assert "invalid API key" in out
+    assert unexpected_issue not in out

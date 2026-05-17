@@ -103,6 +103,33 @@ class TestPluginPickerInjection:
         visible = tools_config._visible_providers(browser, {})
         assert all(p.get("image_gen_plugin_name") is None for p in visible)
 
+    def test_post_setup_propagated_when_declared(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        image_gen_registry.register_provider(_FakeProvider(
+            "xai_img",
+            schema={
+                "name": "xAI Grok Imagine",
+                "badge": "paid",
+                "tag": "grok image",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+        ))
+
+        rows = tools_config._plugin_image_gen_providers()
+        match = next(r for r in rows if r.get("image_gen_plugin_name") == "xai_img")
+        assert match["post_setup"] == "xai_grok"
+
+    def test_post_setup_omitted_when_not_declared(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        image_gen_registry.register_provider(_FakeProvider("plain_img"))
+
+        rows = tools_config._plugin_image_gen_providers()
+        match = next(r for r in rows if r.get("image_gen_plugin_name") == "plain_img")
+        assert "post_setup" not in match
+
 
 class TestPluginCatalog:
     def test_plugin_catalog_returns_models(self):

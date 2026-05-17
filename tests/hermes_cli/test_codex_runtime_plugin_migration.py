@@ -8,9 +8,13 @@ import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
+    MIGRATION_END_MARKER,
     MigrationReport,
+    _build_hermes_tools_mcp_entry,
     _format_toml_value,
+    _looks_like_test_tempdir,
     _strip_existing_managed_block,
+    _strip_unmanaged_plugin_tables,
     _translate_one_server,
     migrate,
     render_codex_toml_section,
@@ -567,9 +571,30 @@ class TestMigrate:
         assert "[model]" in new_text
         assert 'profile = "default"' in new_text
         assert "[providers.openai]" in new_text
-        # And new MCP block appended
+        # And new MCP block inserted without breaking user tables
         assert "[mcp_servers.a]" in new_text
         assert MIGRATION_MARKER in new_text
+
+    def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
+        """TOML has no explicit 'leave current table' syntax. If Hermes appends
+        root keys like default_permissions after a user table such as [features],
+        Codex parses them as features.default_permissions and rejects the config.
+        The managed block must therefore be inserted before the first table."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'model = "gpt-5.5"\n'
+            "\n"
+            "[features]\n"
+            "terminal_resize_reflow = true\n"
+        )
+        migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
+        new_text = target.read_text()
+        parsed = tomllib.loads(new_text)
+        assert parsed["default_permissions"] == ":workspace"
+        assert "default_permissions" not in parsed["features"]
+        assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
         """Quirk #6: when a user adds their own MCP server entry directly
@@ -635,3 +660,206 @@ class TestMigrate:
         assert "Migrated 2 MCP server(s)" in summary
         assert "- a" in summary
         assert "- b" in summary
+
+
+# ---- Bug B: duplicate [plugins.X] tables ----
+
+
+class TestStripUnmanagedPluginTables:
+    """Regression tests for issue #26250 Bug B.
+
+    When codex itself writes ``[plugins."<name>@<marketplace>"]`` tables
+    (via the user running ``codex plugins enable`` directly), re-running
+    ``hermes codex-runtime migrate`` would re-emit them inside the managed
+    block and the resulting duplicate-table-header would crash codex.
+    """
+
+    def test_strips_plugin_tables_outside_managed_block(self):
+        text = (
+            'model = "gpt-5.5"\n'
+            "\n"
+            "[mcp_servers.user-thing]\n"
+            'command = "x"\n'
+            "\n"
+            '[plugins."tasks@openai-curated"]\n'
+            "enabled = true\n"
+            "\n"
+            '[plugins."web-search@openai-curated"]\n'
+            "enabled = true\n"
+            "\n"
+            "[features]\n"
+            "terminal_resize_reflow = true\n"
+        )
+        stripped = _strip_unmanaged_plugin_tables(text)
+        assert "[plugins." not in stripped
+        # Non-plugin content preserved
+        assert "[mcp_servers.user-thing]" in stripped
+        assert "[features]" in stripped
+        assert "terminal_resize_reflow = true" in stripped
+
+    def test_preserves_content_when_no_plugin_tables(self):
+        text = (
+            'model = "gpt-5.5"\n'
+            "\n"
+            "[mcp_servers.x]\n"
+            'command = "y"\n'
+        )
+        assert _strip_unmanaged_plugin_tables(text) == text
+
+    def test_multi_line_array_in_plugin_table_does_not_leak(self):
+        """A multi-line TOML array inside a [plugins.X] table whose
+        continuation lines start with ``[`` (e.g. nested arrays) must NOT
+        prematurely exit the strip region — otherwise array fragments
+        leak into top-level output and produce invalid TOML on the next
+        codex startup. Regression guard for #26260 review.
+        """
+        text = (
+            '[plugins."tasks@openai-curated"]\n'
+            "allowed = [\n"
+            '  "a",\n'
+            '  ["nested"],\n'
+            "]\n"
+            "[features]\n"
+            "x = 1\n"
+        )
+        stripped = _strip_unmanaged_plugin_tables(text)
+        # Everything inside the plugin table — including the multi-line
+        # array's continuation lines starting with `[` — should be gone.
+        assert '["nested"]' not in stripped
+        assert "allowed" not in stripped
+        # Sibling user table survives intact.
+        assert "[features]" in stripped
+        assert "x = 1" in stripped
+        # Result is still valid TOML.
+        import tomllib
+        tomllib.loads(stripped)
+
+    def test_migrate_dedups_codex_owned_plugin_tables(self, tmp_path, monkeypatch):
+        """End-to-end: codex's pre-existing [plugins.X] tables get replaced by
+        the managed block's re-emission rather than duplicated."""
+        target = tmp_path / "config.toml"
+        target.write_text(
+            "[mcp_servers.user-server]\n"
+            'command = "x"\n'
+            "\n"
+            '[plugins."tasks@openai-curated"]\n'
+            "enabled = true\n"
+        )
+
+        # Simulate codex's plugin/list reporting the same plugin tasks@openai-curated.
+        def fake_query(codex_home=None, timeout=8.0):
+            return (
+                [{"name": "tasks", "marketplace": "openai-curated", "enabled": True}],
+                None,
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.codex_runtime_plugin_migration._query_codex_plugins",
+            fake_query,
+        )
+        migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
+        new_text = target.read_text()
+        # Only ONE [plugins."tasks@openai-curated"] header should remain — inside
+        # the managed block — not the original outside-the-block copy.
+        assert new_text.count('[plugins."tasks@openai-curated"]') == 1
+        # And the surviving one is inside our managed section.
+        managed_start = new_text.index(MIGRATION_MARKER)
+        managed_end = new_text.index(MIGRATION_END_MARKER)
+        plugin_idx = new_text.index('[plugins."tasks@openai-curated"]')
+        assert managed_start < plugin_idx < managed_end
+        # File parses cleanly as TOML (the original duplicate-key error is gone).
+        import tomllib
+        tomllib.loads(new_text)
+
+    def test_migrate_preserves_plugin_tables_when_plugin_list_fails(self, tmp_path, monkeypatch):
+        """If plugin/list RPC fails, we can't re-emit plugins authoritatively,
+        so we must NOT strip the user's existing [plugins.X] tables — that
+        would silently lose them."""
+        target = tmp_path / "config.toml"
+        target.write_text(
+            '[plugins."tasks@openai-curated"]\n'
+            "enabled = true\n"
+        )
+
+        def fake_query(codex_home=None, timeout=8.0):
+            return ([], "plugin/list query failed: codex not installed")
+
+        monkeypatch.setattr(
+            "hermes_cli.codex_runtime_plugin_migration._query_codex_plugins",
+            fake_query,
+        )
+        migrate({}, codex_home=tmp_path, discover_plugins=True, expose_hermes_tools=False)
+        new_text = target.read_text()
+        # User's plugin table preserved verbatim — we can't re-emit it.
+        assert '[plugins."tasks@openai-curated"]' in new_text
+
+
+# ---- Bug C: HERMES_HOME tempdir leak into ~/.codex/config.toml ----
+
+
+class TestHermesHomeLeakGuard:
+    """Regression tests for issue #26250 Bug C.
+
+    Previously ``_build_hermes_tools_mcp_entry()`` read ``HERMES_HOME``
+    directly from ``os.environ``, so a pytest ``monkeypatch.setenv`` would
+    leak a transient tempdir path into the user's real ``~/.codex/config.toml``
+    once codex spawned the hermes-tools MCP subprocess.
+    """
+
+    def test_tempdir_detector_recognizes_pytest_paths(self):
+        assert _looks_like_test_tempdir(
+            "/private/var/folders/abc/pytest-of-kshitij/pytest-137/popen-gw2/test_X/hermes_test"
+        )
+        assert _looks_like_test_tempdir(
+            "/tmp/pytest-of-user/pytest-12/test_X/hermes"
+        )
+        assert _looks_like_test_tempdir(
+            "/private/var/folders/zz/T/pytest-of-bob/pytest-1"
+        )
+
+    def test_tempdir_detector_accepts_real_hermes_home(self):
+        assert not _looks_like_test_tempdir("/Users/alice/.hermes")
+        assert not _looks_like_test_tempdir("/home/bob/.hermes")
+        assert not _looks_like_test_tempdir("/opt/hermes")
+        assert not _looks_like_test_tempdir("")
+
+    def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
+        """The headline regression: even when HERMES_HOME points at a pytest
+        tempdir, _build_hermes_tools_mcp_entry() must NOT propagate it."""
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            "/private/var/folders/xx/pytest-of-user/pytest-99/test_x/hermes_test",
+        )
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert "HERMES_HOME" not in env, (
+            f"pytest-tempdir HERMES_HOME leaked into codex MCP entry: "
+            f"{env.get('HERMES_HOME')!r}"
+        )
+
+    def test_real_hermes_home_propagates(self, monkeypatch, tmp_path):
+        """A legitimate HERMES_HOME (not a tempdir path) DOES propagate so the
+        MCP subprocess sees the same config as the parent CLI."""
+        # Use a path that looks real — under /Users or /home, not /var/folders.
+        # We can't easily create one in the test, so just use a stable path
+        # outside any tempdir-detector needle. The detector checks for tempdir
+        # markers, not for path existence.
+        real_path = "/Users/alice/.hermes"
+        monkeypatch.setenv("HERMES_HOME", real_path)
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert env.get("HERMES_HOME") == real_path
+
+    def test_unset_hermes_home_omits_env_key(self, monkeypatch):
+        """When HERMES_HOME is unset in the environment, the MCP entry MUST
+        NOT bake in a resolved-default path. The codex subprocess should
+        inherit whatever HERMES_HOME its launcher (systemd, gateway, shell)
+        sets at runtime, rather than being pinned to migrate-time defaults.
+        Regression guard for issue #26250 follow-up review."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert "HERMES_HOME" not in env, (
+            f"HERMES_HOME should not be set when env var is unset, got: "
+            f"{env.get('HERMES_HOME')!r}"
+        )

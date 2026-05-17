@@ -88,6 +88,17 @@ TOOLSETS = {
         "tools": ["web_search"],
         "includes": []
     },
+
+    "x_search": {
+        "description": (
+            "Search X (Twitter) posts and threads via xAI's built-in "
+            "x_search Responses tool. Available when xAI credentials are "
+            "configured (SuperGrok OAuth or XAI_API_KEY). Off by default; "
+            "enable in `hermes tools` → X (Twitter) Search."
+        ),
+        "tools": ["x_search"],
+        "includes": []
+    },
     
     "vision": {
         "description": "Image analysis and vision tools",

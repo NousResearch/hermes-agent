@@ -83,7 +83,11 @@ class WSTransport:
             return True
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(self._safe_send(line), self._loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
+            if fut is None:
+                self._closed = True
+                return False
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
             return not self._closed
         except Exception as exc:

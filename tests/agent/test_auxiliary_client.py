@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
 )
 
@@ -219,6 +220,77 @@ class TestReadCodexAccessToken:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         result = _read_codex_access_token()
         assert result == "plain-token-no-jwt"
+
+
+class TestResolveXaiOAuthForAux:
+    def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
+        """Auxiliary xAI OAuth must see pool-only credentials.
+
+        ``hermes auth status`` already reports these as logged in; compression
+        should not fall through to "no auxiliary provider configured" just
+        because the singleton auth-store entry is absent.
+        """
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+        monkeypatch.delenv("XAI_BASE_URL", raising=False)
+
+        pool = load_pool("xai-oauth")
+        pool.add_entry(PooledCredential(
+            provider="xai-oauth",
+            id="xai123",
+            label="pool-only",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token="pool-access-token",
+            refresh_token="pool-refresh-token",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        ))
+
+        assert _resolve_xai_oauth_for_aux() == (
+            "pool-access-token",
+            DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+
+    def test_pool_backed_credentials_honor_base_url_env_override(self, tmp_path, monkeypatch):
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_XAI_BASE_URL", "https://example.x.ai/v1/")
+
+        pool = load_pool("xai-oauth")
+        pool.add_entry(PooledCredential(
+            provider="xai-oauth",
+            id="xai456",
+            label="pool-only",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source="manual:xai_pkce",
+            access_token="pool-access-token",
+            refresh_token="pool-refresh-token",
+            base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        ))
+
+        assert _resolve_xai_oauth_for_aux() == (
+            "pool-access-token",
+            "https://example.x.ai/v1",
+        )
 
 
 class TestAnthropicOAuthFlag:
@@ -2415,8 +2487,49 @@ def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+class TestNvidiaBillingHeaders:
+    """NVIDIA NIM billing-origin headers are scoped to NVIDIA cloud."""
+
+    def test_resolve_provider_client_cloud_adds_billing_origin_header(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+        monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="nvidia-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="nvidia",
+                model="nvidia/test-model",
+            )
+
+        assert client is not None
+        assert model == "nvidia/test-model"
+        call_kwargs = mock_openai.call_args[1]
+        headers = call_kwargs["default_headers"]
+        assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+
+    def test_resolve_provider_client_local_nim_skips_billing_origin_header(self, monkeypatch):
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
+        monkeypatch.setenv("NVIDIA_BASE_URL", "http://localhost:8000/v1")
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="nvidia-local-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="nvidia",
+                model="nvidia/test-model",
+            )
+
+        assert client is not None
+        assert model == "nvidia/test-model"
+        call_kwargs = mock_openai.call_args[1]
+        headers = call_kwargs.get("default_headers", {})
+        assert "X-BILLING-INVOKE-ORIGIN" not in headers
 
 
 class TestOpenRouterExplicitApiKey:

@@ -369,6 +369,21 @@ def build_or_headers(or_config: dict | None = None) -> dict:
 
     return headers
 
+
+# NVIDIA NIM cloud billing attribution.  Keep this host-gated because the
+# nvidia provider also supports local/on-prem NIM endpoints via NVIDIA_BASE_URL.
+_NVIDIA_NIM_CLOUD_HEADERS = {
+    "X-BILLING-INVOKE-ORIGIN": "HermesAgent",
+}
+
+
+def build_nvidia_nim_headers(base_url: str | None) -> dict:
+    """Return NVIDIA NIM cloud attribution headers for build.nvidia.com traffic."""
+    if base_url_host_matches(str(base_url or ""), "integrate.api.nvidia.com"):
+        return dict(_NVIDIA_NIM_CLOUD_HEADERS)
+    return {}
+
+
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
 from hermes_cli import __version__ as _HERMES_VERSION
@@ -409,7 +424,7 @@ NOUS_EXTRA_BODY = _nous_extra_body()
 auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
-_OPENROUTER_MODEL = "google/gemini-3-flash-preview"
+_OPENROUTER_MODEL = "google/gemini-2.5-flash"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -1254,6 +1269,58 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     return api_key, base_url
 
 
+def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
+    """Resolve a fresh xAI OAuth (api_key, base_url) for auxiliary clients.
+
+    Prefer the credential pool, matching the main runtime/provider status
+    path.  Some xAI OAuth logins live only as pool entries; falling straight
+    to the singleton auth-store resolver would make auxiliary tasks such as
+    compression report "no provider configured" even though ``hermes auth
+    status`` shows xAI OAuth as logged in.
+
+    Falls back to ``hermes_cli.auth``'s singleton runtime resolver for older
+    auth-store-only logins. Returns ``None`` if the user is not authenticated
+    with xAI Grok OAuth.
+    """
+    try:
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+
+        pool = load_pool("xai-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = str(
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                    or ""
+                ).strip()
+                base_url = str(
+                    os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+                    or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+                    or getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or DEFAULT_XAI_OAUTH_BASE_URL
+                ).strip().rstrip("/")
+                if api_key and base_url:
+                    return api_key, base_url
+    except Exception as exc:
+        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
+
+    try:
+        from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+        creds = resolve_xai_oauth_runtime_credentials()
+    except Exception as exc:
+        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
+        return None
+
+    api_key = str(creds.get("api_key") or "").strip()
+    base_url = str(creds.get("base_url") or "").strip().rstrip("/")
+    if not api_key or not base_url:
+        return None
+    return api_key, base_url
+
+
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
@@ -1348,6 +1415,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(base_url)
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -1383,6 +1452,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            extra["default_headers"] = build_nvidia_nim_headers(base_url)
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -1402,7 +1473,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
-def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
@@ -1412,7 +1483,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=build_or_headers()), _OPENROUTER_MODEL
+                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
@@ -1420,7 +1491,7 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), _OPENROUTER_MODEL
+                   default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -1742,6 +1813,32 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         _fallback_client, model, custom_key, custom_base, custom_mode,
     )
     return _fallback_client, model
+
+
+def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
+
+    xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
+    wrap a plain ``OpenAI`` client in ``CodexAuxiliaryClient`` to translate
+    ``chat.completions.create()`` calls into ``responses.stream()`` requests.
+
+    The caller must pass an explicit model — pinning a default for Grok
+    would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
+    when the user has not authenticated with xAI Grok OAuth.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: xai-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    resolved = _resolve_xai_oauth_for_aux()
+    if resolved is None:
+        return None, None
+    api_key, base_url = resolved
+    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
+    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    return CodexAuxiliaryClient(real_client, model), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -2640,6 +2737,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+    elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
+        async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -2851,6 +2950,26 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # Without this branch, an xai-oauth main provider falls through to the
+    # generic ``oauth_external`` arm below and returns ``(None, None)``,
+    # silently re-routing every auxiliary task (compression, web extract,
+    # session search, curator, etc.) to whatever Step-2 fallback the user
+    # has configured.  Users on xAI Grok OAuth would then see surprise
+    # OpenRouter / Nous bills for side tasks they thought were running on
+    # their xAI subscription.
+    if provider == "xai-oauth":
+        client, default = _build_xai_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: xai-oauth requested but no xAI "
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok Subscription)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
@@ -2881,6 +3000,8 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(custom_base)
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -2928,10 +3049,17 @@ def resolve_provider_client(
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip()
-            custom_key_env = custom_entry.get("key_env", "").strip()
+            custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
             custom_key = custom_key or "no-key-required"
+            if custom_key == "no-key-required":
+                logger.warning(
+                    "resolve_provider_client: named custom provider %r has no resolvable "
+                    "api_key — request will be sent with placeholder no-key-required "
+                    "and will 401 on auth-required endpoints",
+                    custom_entry.get("name") or provider,
+                )
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
             entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()
@@ -3079,6 +3207,8 @@ def resolve_provider_client(
             headers.update(copilot_request_headers(
                 is_agent_turn=True, is_vision=is_vision
             ))
+        elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
+            headers.update(build_nvidia_nim_headers(base_url))
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
@@ -3201,6 +3331,8 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "xai-oauth":
+            return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
@@ -3275,7 +3407,7 @@ def _resolve_strict_vision_backend(
     if provider == "copilot":
         return resolve_provider_client("copilot", model, is_vision=True)
     if provider == "openrouter":
-        return _try_openrouter()
+        return _try_openrouter(model=model)
     if provider == "nous":
         return _try_nous(vision=True)
     if provider == "openai-codex":

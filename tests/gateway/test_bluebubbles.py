@@ -101,6 +101,11 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"
 
+    def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        text = "Use /api_v2 with FEATURE_FLAG_NAME and config_file.json"
+        assert adapter.format_message(text) == text
+
     def test_strip_markdown_headers(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("## Heading\ntext") == "Heading\ntext"

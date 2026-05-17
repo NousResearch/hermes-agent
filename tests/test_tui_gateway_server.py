@@ -4649,3 +4649,158 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+def test_notification_poller_delivers_completion(monkeypatch):
+    """Poller picks up completion events and triggers agent turns."""
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent())
+    server._sessions["sid_poll"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    # Clear queue
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    process_registry._completion_consumed.discard("proc_poller_test")
+
+    stop = threading.Event()
+
+    # Put event on queue, then immediately signal stop so the poller
+    # runs exactly one iteration.
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_poller_test",
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    })
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_poll", sess)
+
+        # Should have emitted a status.update with kind=process
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) >= 1
+        assert status_calls[0][2]["kind"] == "process"
+
+        # Should have triggered an agent turn
+        assert len(turns) == 1
+        assert "[IMPORTANT: Background process proc_poller_test completed" in turns[0]
+    finally:
+        server._sessions.pop("sid_poll", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_skips_consumed(monkeypatch):
+    """Already-consumed completions are not dispatched by the poller."""
+    from tools.process_registry import process_registry
+
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {"final_response": "ok", "messages": []}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent())
+    server._sessions["sid_skip"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry._completion_consumed.add("proc_already_done")
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_already_done",
+        "command": "echo x",
+        "exit_code": 0,
+        "output": "x",
+    })
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_skip", sess)
+        assert len(turns) == 0
+    finally:
+        server._sessions.pop("sid_skip", None)
+        process_registry._completion_consumed.discard("proc_already_done")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_requeues_when_busy(monkeypatch):
+    """When the agent is busy, the poller requeues the event."""
+    from tools.process_registry import process_registry
+
+    emitted = []
+
+    sess = _session(running=True)  # agent is busy
+    server._sessions["sid_busy"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    process_registry._completion_consumed.discard("proc_busy_test")
+
+    evt = {
+        "type": "completion",
+        "session_id": "proc_busy_test",
+        "command": "make build",
+        "exit_code": 0,
+        "output": "ok",
+    }
+    process_registry.completion_queue.put(evt)
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_busy", sess)
+
+        # Status update was emitted (user sees it)
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 1
+
+        # Event was requeued (agent was busy, no turn triggered)
+        assert not process_registry.completion_queue.empty()
+        requeued = process_registry.completion_queue.get_nowait()
+        assert requeued["session_id"] == "proc_busy_test"
+    finally:
+        server._sessions.pop("sid_busy", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()

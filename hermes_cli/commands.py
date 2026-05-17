@@ -198,6 +198,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
+    CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
+               gateway_only=True, args_hint="<pause|resume|list> [name]"),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
@@ -209,8 +211,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 

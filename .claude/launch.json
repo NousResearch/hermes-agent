@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hermes-dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "hermes_cli.main", "dashboard", "--no-open"],
+      "port": 9119
+    },
+    {
+      "name": "web-vite-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "web"],
+      "port": 5173
+    },
+    {
+      "name": "website-docs",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start", "--prefix", "website"],
+      "port": 3000
+    },
+    {
+      "name": "hermes-web-ui",
+      "runtimeExecutable": "hermes-web-ui",
+      "runtimeArgs": ["start"],
+      "port": 8648
+    }
+  ]
+}

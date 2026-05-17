@@ -823,6 +823,20 @@ def run_doctor(args):
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
+    # xAI OAuth — separate try/except so an import failure here cannot
+    # disrupt the already-printed Nous/Codex/Gemini/MiniMax rows above.
+    try:
+        from hermes_cli.auth import get_xai_oauth_auth_status
+        xai_oauth_status = get_xai_oauth_auth_status() or {}
+        if xai_oauth_status.get("logged_in"):
+            check_ok("xAI OAuth", "(logged in)")
+        else:
+            check_warn("xAI OAuth", "(not logged in)")
+            if xai_oauth_status.get("error"):
+                check_info(xai_oauth_status["error"])
+    except Exception:
+        pass
+
     if _safe_which("codex"):
         check_ok("codex CLI")
     else:

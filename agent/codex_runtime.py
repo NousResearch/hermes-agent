@@ -16,24 +16,13 @@ compatibility.
 
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 import os
-import threading
-import time
-import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
-
-
-def _ra():
-    """Lazy ``run_agent`` reference for test-patch routing."""
-    import run_agent
-    return run_agent
-
 
 
 def run_codex_app_server_turn(

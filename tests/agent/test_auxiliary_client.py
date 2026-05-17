@@ -2389,10 +2389,13 @@ class TestAuxiliaryClientPoisonedCacheEviction:
     def test_call_llm_evicts_on_connection_error_with_explicit_provider(self):
         """Connection error on an explicit provider must drop the cached client.
 
-        This is the exact reporter scenario: ``auxiliary.compression.provider:
-        main`` (resolves to ``openai-codex``) → no fallback chain runs (not
-        auto), but the cached client was poisoned by a prior timeout and must
-        be evicted so the next call rebuilds.
+        Reporter scenario: ``auxiliary.compression.provider: main`` (resolves
+        to ``openai-codex``).  After #26803, capacity errors (payment/quota/
+        connection) DO trigger fallback even on explicit providers — so we
+        also stub ``_try_payment_fallback`` to ``(None, None, "")`` so the
+        connection error re-raises after eviction instead of escaping into
+        a real network call.  The contract under test is cache eviction,
+        not the fallback gate.
         """
         from agent.auxiliary_client import _client_cache, _client_cache_lock
 
@@ -2412,6 +2415,9 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             ), patch(
                 "agent.auxiliary_client._get_cached_client",
                 return_value=(poisoned, "gpt-5.5"),
+            ), patch(
+                "agent.auxiliary_client._try_payment_fallback",
+                return_value=(None, None, ""),
             ):
                 with pytest.raises(ConnectionError):
                     call_llm(
@@ -2445,6 +2451,9 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             ), patch(
                 "agent.auxiliary_client._get_cached_client",
                 return_value=(poisoned, "gpt-5.5"),
+            ), patch(
+                "agent.auxiliary_client._try_payment_fallback",
+                return_value=(None, None, ""),
             ):
                 with pytest.raises(ConnectionError):
                     await async_call_llm(

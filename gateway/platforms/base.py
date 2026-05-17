@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import time
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -1296,6 +1297,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        self._session_started_at: Dict[str, float] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -2599,6 +2601,7 @@ class BasePlatformAdapter(ABC):
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._session_started_at.pop(session_key, None)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
         """Return True if the owner task for ``session_key`` is done/cancelled.
@@ -2641,7 +2644,31 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._session_started_at.pop(session_key, None)
         return True
+
+    def _active_session_age(self, session_key: str) -> float:
+        started = getattr(self, "_session_started_at", {}).get(session_key)
+        if not started:
+            return 0.0
+        return max(0.0, time.time() - started)
+
+    def _active_session_hard_timeout_seconds(self) -> float:
+        """Optional per-adapter hard cap for a busy session.
+
+        Most platforms keep the default disabled and rely on cooperative
+        interrupt semantics. Polling transports such as SimpleX can opt in so a
+        fresh inbound item does not sit behind an old turn for tens of minutes
+        after that old turn stops reaching interrupt checkpoints.
+        """
+        raw = getattr(self, "_max_active_session_seconds", None)
+        if raw is None:
+            raw = (getattr(self.config, "extra", {}) or {}).get("max_active_session_seconds", 0)
+        try:
+            value = float(raw or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, value)
 
     def _start_session_processing(
         self,
@@ -2659,6 +2686,7 @@ class BasePlatformAdapter(ABC):
         """
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
+        self._session_started_at[session_key] = time.time()
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
@@ -2668,6 +2696,7 @@ class BasePlatformAdapter(ABC):
             # Tests stub create_task() with lightweight sentinels that are not
             # hashable and do not support lifecycle callbacks.
             self._session_tasks.pop(session_key, None)
+            self._session_started_at.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
             return False
         if hasattr(task, "add_done_callback"):
@@ -2845,6 +2874,24 @@ class BasePlatformAdapter(ABC):
         # this is the split-brain tail described in issue #11016.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
+
+        # Optional hard-timeout safety valve for polling transports. A
+        # cooperative interrupt only helps once the old agent reaches an
+        # interrupt checkpoint; if an opted-in adapter has exceeded its cap,
+        # cancel the stale turn before queueing this fresh user message behind
+        # it.
+        if session_key in self._active_sessions:
+            hard_timeout = self._active_session_hard_timeout_seconds()
+            active_age = self._active_session_age(session_key)
+            if hard_timeout and active_age > hard_timeout:
+                logger.warning(
+                    "[%s] Active session %s exceeded %.0fs (age %.0fs); cancelling stale turn before processing new message",
+                    self.name,
+                    session_key,
+                    hard_timeout,
+                    active_age,
+                )
+                await self.cancel_session_processing(session_key)
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
@@ -3362,6 +3409,7 @@ class BasePlatformAdapter(ABC):
                 # Hand ownership of the session to the drain task so
                 # stale-lock detection keeps working while it runs.
                 self._session_tasks[session_key] = drain_task
+                self._session_started_at[session_key] = time.time()
                 try:
                     self._background_tasks.add(drain_task)
                     drain_task.add_done_callback(self._background_tasks.discard)
@@ -3474,6 +3522,7 @@ class BasePlatformAdapter(ABC):
                     # Hand ownership of the session to the drain task so stale-lock
                     # detection keeps working while it runs.
                     self._session_tasks[session_key] = drain_task
+                    self._session_started_at[session_key] = time.time()
                     try:
                         self._background_tasks.add(drain_task)
                         drain_task.add_done_callback(self._background_tasks.discard)
@@ -3503,6 +3552,7 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
+                    self._session_started_at.pop(session_key, None)
                     self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:

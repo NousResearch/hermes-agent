@@ -30,6 +30,7 @@ _is_audio_ext = _simplex._is_audio_ext
 _CORR_PREFIX = _simplex._CORR_PREFIX
 POLL_COMMAND_TIMEOUT = _simplex.POLL_COMMAND_TIMEOUT
 POLL_CONNECT_TIMEOUT = _simplex.POLL_CONNECT_TIMEOUT
+SIMPLEX_ACTIVE_SESSION_MAX_SECONDS = _simplex.SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
 _simplex_quote_name = _simplex._simplex_quote_name
 
 
@@ -67,8 +68,9 @@ def test_check_requirements_true_when_configured(monkeypatch):
     assert check_requirements() is websockets_present
 
 
-def test_validate_config_uses_env_or_extra():
+def test_validate_config_uses_env_or_extra(monkeypatch):
     from gateway.config import PlatformConfig
+    monkeypatch.delenv("SIMPLEX_WS_URL", raising=False)
     # Empty extra + no env → invalid
     cfg = PlatformConfig(enabled=True)
     assert validate_config(cfg) is False
@@ -370,6 +372,99 @@ async def test_poll_unread_uses_short_command_timeouts(monkeypatch):
     ]
     assert POLL_COMMAND_TIMEOUT <= 2.0
     assert POLL_CONNECT_TIMEOUT <= 2.0
+
+
+def test_simplex_adapter_opts_into_active_session_hard_timeout():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    assert adapter._max_active_session_seconds == SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
+    assert adapter._active_session_hard_timeout_seconds() == SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
+
+
+def test_simplex_adapter_respects_configured_active_session_hard_timeout():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "max_active_session_seconds": 12},
+    )
+    adapter = SimplexAdapter(cfg)
+
+    assert adapter._active_session_hard_timeout_seconds() == 12.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_polled_item_tracks_task_and_logs_dispatch():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    gate = _simplex.asyncio.Event()
+    handled = []
+
+    async def fake_handle(wrapper):
+        handled.append(wrapper)
+        await gate.wait()
+
+    adapter._handle_new_chat_item = fake_handle  # type: ignore[method-assign]
+    task = adapter._dispatch_polled_item({"x": 1}, "direct:4:99")
+
+    await _simplex.asyncio.sleep(0)
+    assert task in adapter._poll_dispatch_tasks
+    assert handled == [{"x": 1}]
+
+    gate.set()
+    await task
+    assert task not in adapter._poll_dispatch_tasks
+
+
+@pytest.mark.asyncio
+async def test_stale_active_simplex_session_is_cancelled_for_fresh_message():
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import MessageType
+
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "max_active_session_seconds": 0.01},
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter._max_active_session_seconds = 0.01
+
+    started = _simplex.asyncio.Event()
+    cancelled = _simplex.asyncio.Event()
+    handled_texts = []
+
+    async def handler(event):
+        handled_texts.append(event.text)
+        if event.text == "old":
+            started.set()
+            try:
+                await _simplex.asyncio.sleep(60)
+            except _simplex.asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return ""
+
+    adapter.set_message_handler(handler)
+    source = adapter.build_source(
+        chat_id="4",
+        chat_name="Elkim",
+        chat_type="dm",
+        user_id="4",
+        user_name="Elkim",
+    )
+    old = _simplex.MessageEvent(source=source, text="old", message_type=MessageType.TEXT)
+    fresh = _simplex.MessageEvent(source=source, text="fresh", message_type=MessageType.TEXT)
+
+    await adapter.handle_message(old)
+    await _simplex.asyncio.wait_for(started.wait(), timeout=1)
+    await _simplex.asyncio.sleep(0.02)
+    await adapter.handle_message(fresh)
+    await _simplex.asyncio.wait_for(cancelled.wait(), timeout=1)
+    await _simplex.asyncio.sleep(0)
+
+    assert handled_texts[:2] == ["old", "fresh"]
 
 
 # ---------------------------------------------------------------------------

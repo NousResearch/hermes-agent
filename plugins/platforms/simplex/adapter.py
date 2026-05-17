@@ -73,6 +73,7 @@ POLL_INTERVAL = 1.0
 # the 50–60s "SimpleX feels dead" delay after a few consecutive stalls.
 POLL_COMMAND_TIMEOUT = 2.0
 POLL_CONNECT_TIMEOUT = 2.0
+SIMPLEX_ACTIVE_SESSION_MAX_SECONDS = 300.0
 
 # Correlation ID prefix for requests we send so we can ignore our own echoes.
 _CORR_PREFIX = "hermes-"
@@ -150,6 +151,17 @@ class SimplexAdapter(BasePlatformAdapter):
         self._seen_item_ids: set = set()
         self._seen_items_path = get_hermes_home() / "simplex_seen_items.json"
         self._connected_at = 0.0
+        self._poll_dispatch_tasks: set[asyncio.Task] = set()
+        # SimpleX push/poll delivery should feel like chat, not a mailbox. If
+        # an old SimpleX turn stops reaching cooperative interrupt checkpoints,
+        # BasePlatformAdapter can cancel it when a fresh SimpleX message arrives
+        # instead of queueing that message for tens of minutes.
+        try:
+            self._max_active_session_seconds = float(
+                extra.get("max_active_session_seconds", SIMPLEX_ACTIVE_SESSION_MAX_SECONDS)
+            )
+        except (TypeError, ValueError):
+            self._max_active_session_seconds = SIMPLEX_ACTIVE_SESSION_MAX_SECONDS
 
         # Track sent correlation IDs to filter echoes
         self._pending_corr_ids: set = set()
@@ -221,6 +233,12 @@ class SimplexAdapter(BasePlatformAdapter):
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+
+        for task in list(self._poll_dispatch_tasks):
+            task.cancel()
+        if self._poll_dispatch_tasks:
+            await asyncio.gather(*self._poll_dispatch_tasks, return_exceptions=True)
+            self._poll_dispatch_tasks.clear()
 
         for task in self._typing_tasks.values():
             task.cancel()
@@ -467,26 +485,59 @@ class SimplexAdapter(BasePlatformAdapter):
                             item_key,
                         )
                         continue
-                    self._seen_item_ids.add(item_key)
-                    if len(self._seen_item_ids) > 1000:
-                        self._save_seen_items()
-
                     status = (meta.get("itemStatus") or {}).get("type", "")
                     if status != "rcvNew":
+                        self._seen_item_ids.add(item_key)
+                        if len(self._seen_item_ids) > 1000:
+                            self._save_seen_items()
                         continue
                     content = chat_item.get("content") or {}
                     if content.get("type") != "rcvMsgContent":
+                        self._seen_item_ids.add(item_key)
+                        if len(self._seen_item_ids) > 1000:
+                            self._save_seen_items()
                         continue
                     logger.info(
                         "SimpleX poll: dispatching unread item %s",
                         item_key,
                     )
+                    self._seen_item_ids.add(item_key)
                     self._save_seen_items()
-                    asyncio.create_task(self._handle_new_chat_item(wrapper))
+                    self._dispatch_polled_item(wrapper, item_key)
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("SimpleX poll: failed to poll unread items")
+
+    def _dispatch_polled_item(self, wrapper: dict, item_key: str) -> asyncio.Task:
+        """Dispatch a polled item and keep enough state to observe failures."""
+        started = time.time()
+
+        async def _runner() -> None:
+            try:
+                await self._handle_new_chat_item(wrapper)
+                elapsed = time.time() - started
+                if elapsed > 5.0:
+                    logger.warning(
+                        "SimpleX poll: item %s dispatch took %.2fs",
+                        item_key,
+                        elapsed,
+                    )
+                else:
+                    logger.info(
+                        "SimpleX poll: item %s handed to gateway in %.2fs",
+                        item_key,
+                        elapsed,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("SimpleX poll: item %s dispatch failed", item_key)
+
+        task = asyncio.create_task(_runner(), name=f"simplex-poll-dispatch:{item_key}")
+        self._poll_dispatch_tasks.add(task)
+        task.add_done_callback(self._poll_dispatch_tasks.discard)
+        return task
 
     async def _resolve_chat_target(self, chat_id: str) -> str:
         """Resolve Hermes IDs to simplex-chat command targets.

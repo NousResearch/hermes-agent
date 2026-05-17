@@ -1,0 +1,19 @@
+{
+  "kind": "github_pr_release",
+  "name": "Example PR release watcher",
+  "repo": "owner/repo",
+  "pr": 123,
+  "sources": ["https://github.com/owner/repo/pull/123"],
+  "condition": "PR is merged and a public non-prerelease release is published after the merge time.",
+  "baseline": {
+    "created_at": "YYYY-MM-DDTHH:MM:SSZ",
+    "latest_release_tag": null,
+    "latest_release_published_at": null
+  },
+  "success_action": "Install or update the tool from the latest release.",
+  "quiet": true,
+  "allow_prerelease": false,
+  "require_release_after_merge": true,
+  "self_remove": true,
+  "cron_job_id": "fill-after-create"
+}

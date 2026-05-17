@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Release Feature Watcher Config",
+  "type": "object",
+  "required": ["kind", "name", "sources", "condition", "success_action"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "github_pr_release",
+        "github_issue_release",
+        "github_release_phrase",
+        "changelog_phrase",
+        "package_version",
+        "model_provider_availability",
+        "docs_phrase"
+      ]
+    },
+    "name": { "type": "string" },
+    "sources": { "type": "array", "items": { "type": "string" } },
+    "condition": { "type": "string" },
+    "baseline": { "type": "object" },
+    "success_action": { "type": "string" },
+    "quiet": { "type": "boolean", "default": true },
+    "self_remove": { "type": "boolean", "default": true },
+    "cron_job_id": { "type": "string" },
+    "expires_at": { "type": "string" }
+  }
+}

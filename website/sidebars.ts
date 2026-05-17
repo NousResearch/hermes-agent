@@ -445,6 +445,7 @@ const sidebars: SidebarsConfig = {
               items: [
                 'user-guide/skills/optional/productivity/productivity-canvas',
                 'user-guide/skills/optional/productivity/productivity-memento-flashcards',
+                'user-guide/skills/optional/productivity/productivity-release-feature-watcher',
                 'user-guide/skills/optional/productivity/productivity-siyuan',
                 'user-guide/skills/optional/productivity/productivity-telephony',
               ],

@@ -6313,23 +6313,44 @@ class AIAgent:
             filtered.append(msg)
         messages = filtered
 
-        surviving_call_ids: set = set()
+        # --- Adjacency-aware orphan detection ---
+        # A tool result is only valid when it immediately follows (possibly
+        # after other tool results) the assistant message that owns its
+        # tool_call_id.  A non-assistant, non-tool message (user, system,
+        # etc.) breaks the chain, so we track the *active* set of call_ids
+        # from the most recent assistant and reset it on any gap.  This
+        # catches the Moonshot/Kimi strict-adjacency requirement and
+        # prevents tool results from dangling after thinking-only drops.
+        active_call_ids: set = set()
+        orphaned_results: set = set()
+        all_result_call_ids: set = set()
         for msg in messages:
-            if msg.get("role") == "assistant":
+            role = msg.get("role")
+            if role == "assistant":
+                # Build active set from this assistant's tool_calls
+                call_ids = set()
                 for tc in msg.get("tool_calls") or []:
                     cid = AIAgent._get_tool_call_id_static(tc)
                     if cid:
-                        surviving_call_ids.add(cid)
-
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
+                        call_ids.add(cid)
+                if call_ids:
+                    # New assistant with tool_calls — this becomes the
+                    # active set (replaces any previous one).
+                    active_call_ids = call_ids
+                # If no tool_calls, don't reset active_call_ids — the
+                # assistant might be a thinking-only turn that will be
+                # dropped later; its predecessor's calls are still valid
+                # if the turn is dropped.
+            elif role == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
-                    result_call_ids.add(cid)
+                    all_result_call_ids.add(cid)
+                    if cid not in active_call_ids:
+                        orphaned_results.add(cid)
+            else:
+                # user, system, function, developer — breaks adjacency
+                active_call_ids = set()
 
-        # 1. Drop tool results with no matching assistant call
-        orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
                 m for m in messages
@@ -6340,8 +6361,17 @@ class AIAgent:
                 len(orphaned_results),
             )
 
+        # Rebuild surviving_call_ids from the filtered message list
+        surviving_call_ids: set = set()
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    cid = AIAgent._get_tool_call_id_static(tc)
+                    if cid:
+                        surviving_call_ids.add(cid)
+
         # 2. Inject stub results for calls whose result was dropped
-        missing_results = surviving_call_ids - result_call_ids
+        missing_results = surviving_call_ids - all_result_call_ids
         if missing_results:
             patched: List[Dict[str, Any]] = []
             for msg in messages:

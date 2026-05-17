@@ -1237,23 +1237,33 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         This method removes orphaned results and inserts stub results for
         orphaned calls so the message list is always well-formed.
         """
-        surviving_call_ids: set = set()
+        # --- Adjacency-aware orphan detection ---
+        # A tool result is only valid when it immediately follows (possibly
+        # after other tool results) the assistant message that owns its
+        # tool_call_id.  A non-assistant, non-tool message breaks the chain.
+        active_call_ids: set = set()
+        orphaned_results: set = set()
+        all_result_call_ids: set = set()
         for msg in messages:
-            if msg.get("role") == "assistant":
+            role = msg.get("role")
+            if role == "assistant":
+                call_ids = set()
                 for tc in msg.get("tool_calls") or []:
                     cid = self._get_tool_call_id(tc)
                     if cid:
-                        surviving_call_ids.add(cid)
-
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
+                        call_ids.add(cid)
+                if call_ids:
+                    active_call_ids = call_ids
+            elif role == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
-                    result_call_ids.add(cid)
+                    all_result_call_ids.add(cid)
+                    if cid not in active_call_ids:
+                        orphaned_results.add(cid)
+            else:
+                active_call_ids = set()
 
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
+        # 1. Remove orphaned tool results
         if orphaned_results:
             messages = [
                 m for m in messages
@@ -1262,8 +1272,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
+        # Rebuild surviving_call_ids from the filtered message list
+        surviving_call_ids: set = set()
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    cid = self._get_tool_call_id(tc)
+                    if cid:
+                        surviving_call_ids.add(cid)
+
         # 2. Add stub results for assistant tool_calls whose results were dropped
-        missing_results = surviving_call_ids - result_call_ids
+        missing_results = surviving_call_ids - all_result_call_ids
         if missing_results:
             patched: List[Dict[str, Any]] = []
             for msg in messages:

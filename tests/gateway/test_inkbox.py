@@ -241,8 +241,89 @@ class TestWebhookRouting:
         assert ev.text.endswith("\nping")
         assert ev.text.startswith("[inkbox:sms")
         assert ev.source.chat_id == "contact-uuid-123"
+        assert ev.media_urls == []
+        assert ev.media_types == []
         # SMS does NOT mint a sub-session — same chat_id, no thread_id.
         assert ev.source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_text_webhook_surfaces_single_mms_attachment(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "mms-uuid",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "see this",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+                "media": [{
+                    "url": "https://media.example.test/mms-1.jpg",
+                    "content_type": "image/jpeg",
+                }],
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(envelope).encode()))
+        await _drain_background(adapter)
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert "[MMS attachment received: image/jpeg]" in ev.text
+        assert ev.media_urls == ["https://media.example.test/mms-1.jpg"]
+        assert ev.media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_text_webhook_surfaces_multiple_mms_attachments(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        captured = []
+
+        async def fake_handle_message(event):
+            captured.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        envelope = {
+            "event_type": "text.received",
+            "data": {"text_message": {
+                "id": "mms-multi",
+                "remote_phone_number": "+15555550101",
+                "local_phone_number": "+18005550100",
+                "text": "",
+                "direction": "inbound",
+                "created_at": "2026-04-27T20:00:00Z",
+                "media": [
+                    {
+                        "url": "https://media.example.test/mms-1.jpg",
+                        "content_type": "image/jpeg",
+                    },
+                    {
+                        "media_url": "https://media.example.test/mms-2.png",
+                        "mime_type": "image/png",
+                    },
+                ],
+            }},
+        }
+        await adapter._handle_webhook(_FakeRequest(json.dumps(envelope).encode()))
+        await _drain_background(adapter)
+
+        assert len(captured) == 1
+        ev = captured[0]
+        assert ev.text.count("[MMS attachment received:") == 2
+        assert "[MMS attachment received: image/jpeg]" in ev.text
+        assert "[MMS attachment received: image/png]" in ev.text
+        assert ev.media_urls == [
+            "https://media.example.test/mms-1.jpg",
+            "https://media.example.test/mms-2.png",
+        ]
+        assert ev.media_types == ["image/jpeg", "image/png"]
 
     @pytest.mark.asyncio
     async def test_incoming_call_webhook_returns_answer_with_ws_url(self, monkeypatch):
@@ -751,6 +832,25 @@ class TestSend:
         assert result.raw_response["mode"] == "sms"
 
     @pytest.mark.asyncio
+    async def test_send_sms_over_limit_returns_structured_failure(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        result = await adapter.send(
+            "+15555550101",
+            "x" * 1601,
+            metadata={"mode": "sms", "to_phone": "+15555550101"},
+        )
+
+        identity = adapter._inkbox.get_identity.return_value
+        identity.send_text.assert_not_called()
+        assert result.success is False
+        assert result.retryable is False
+        assert result.fallback_allowed is False
+        assert result.raw_response["error_code"] == "sms_too_long"
+        assert result.raw_response["category"] == "content_length"
+        assert result.raw_response["char_count"] == 1601
+        assert result.raw_response["max_chars"] == 1600
+
+    @pytest.mark.asyncio
     async def test_send_sms_structures_provider_error(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         identity = adapter._inkbox.get_identity.return_value
@@ -779,6 +879,34 @@ class TestSend:
         assert result.raw_response["status_code"] == 409
         assert result.raw_response["error_code"] == "messaging_profile_disabled"
         assert result.raw_response["category"] == "sender_provisioning"
+
+    @pytest.mark.asyncio
+    async def test_send_sms_classifies_provider_max_length_error(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        identity = adapter._inkbox.get_identity.return_value
+
+        class FakeInkboxAPIError(Exception):
+            status_code = 400
+            detail = {
+                "detail": {
+                    "error": "message_too_long",
+                    "message": "Message exceeds maximum length.",
+                },
+            }
+
+        identity.send_text.side_effect = FakeInkboxAPIError("too long")
+
+        result = await adapter.send(
+            "+15555550101",
+            "hello",
+            metadata={"mode": "sms", "to_phone": "+15555550101"},
+        )
+
+        assert result.success is False
+        assert result.retryable is False
+        assert result.fallback_allowed is False
+        assert result.raw_response["error_code"] == "message_too_long"
+        assert result.raw_response["category"] == "content_length"
 
     @pytest.mark.asyncio
     async def test_send_sms_marks_server_error_retryable(self, monkeypatch):
@@ -826,3 +954,27 @@ class TestSend:
         )
         assert result.success is False
         assert "active call" in (result.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_send_inkbox_direct_sms_over_limit_returns_structured_failure(self, monkeypatch):
+        _patch_sdk(monkeypatch)
+        from gateway.platforms.inkbox import send_inkbox_direct
+
+        result = await send_inkbox_direct(
+            {
+                "api_key": "ApiKey_test",
+                "identity": "inkbox-on-call-agent",
+                "base_url": "https://inkbox.ai",
+            },
+            "+15555550101",
+            "x" * 1601,
+            mode="sms",
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == "sms_too_long"
+        assert result["category"] == "content_length"
+        assert result["retryable"] is False
+        assert result["fallback_allowed"] is False
+        assert result["char_count"] == 1601
+        assert result["max_chars"] == 1600

@@ -28,7 +28,7 @@ If an SMS turn arrives while Hermes is already running for that contact, the gat
 
 Slash commands bypass SMS batching and routing markers, so a text such as `/approve` or `/deny` reaches the Hermes command parser as a command rather than tagged SMS body text. Carrier protocol words such as `START`, `STOP`, `HELP`, `YES`, `SUBSCRIBE`, `INFO`, and `UNSUBSCRIBE` are treated as SMS control traffic and are acknowledged at the webhook layer without starting an agent turn.
 
-Outbound SMS is queued with `identity.send_text(to=..., text=...)`. The adapter returns a `SendResult` with the Inkbox text id and non-body metadata such as `delivery_status`.
+Outbound SMS is queued with `identity.send_text(to=..., text=...)`. The adapter returns a `SendResult` with the Inkbox text id and non-body metadata such as `delivery_status`. Hermes does not chunk long SMS replies automatically; content over the Inkbox SMS limit fails before send with `sms_too_long` rather than being silently truncated.
 
 Important SMS gates are enforced by Inkbox and carriers:
 
@@ -36,7 +36,7 @@ Important SMS gates are enforced by Inkbox and carriers:
 - Recipients must opt in by texting `START` to an org number.
 - `STOP` opts a recipient out until they opt in again.
 - Per-number SMS sending is rate limited.
-- MMS media may appear on inbound text records; the gateway currently treats SMS/MMS turns as text-first.
+- MMS media on inbound text records is surfaced as attachment metadata and a prompt-visible attachment marker.
 
 Common structured send errors:
 
@@ -47,6 +47,7 @@ Common structured send errors:
 | `recipient_not_opted_in` | Recipient has not opted in with `START` | Do not retry |
 | `recipient_opted_out` | Recipient sent `STOP` | Do not retry |
 | `rate_limited` / send-limit errors | Per-number or provider send limit | Wait for the provider window |
+| `sms_too_long` | Hermes response exceeds the SMS size limit | Shorten the response or use another channel |
 | HTTP 5xx / transient provider errors | Provider temporarily unavailable | Retry with backoff |
 
 Hermes preserves these failures in `SendResult.raw_response` with `status_code`, `error_code`, `category`, and `retryable`. Provider-gated SMS failures disable the generic plain-text fallback because changing message formatting does not fix provisioning, consent, or carrier state.

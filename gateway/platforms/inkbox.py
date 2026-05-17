@@ -155,6 +155,14 @@ SMS_RATE_LIMIT_ERROR_CODES = frozenset({
     "carrier_rate_limit",
     "sender_rate_limited",
 })
+SMS_CONTENT_LENGTH_ERROR_CODES = frozenset({
+    "sms_too_long",
+    "message_too_long",
+    "text_too_long",
+    "content_too_long",
+    "body_too_long",
+    "sms_body_too_long",
+})
 SMS_TRANSIENT_ERROR_CODES = frozenset({
     "carrier_unavailable",
 })
@@ -319,6 +327,8 @@ def _classify_sms_error(
         return ("recipient_consent", False)
     if code in SMS_RATE_LIMIT_ERROR_CODES:
         return ("rate_limit", False)
+    if code in SMS_CONTENT_LENGTH_ERROR_CODES:
+        return ("content_length", False)
     if code in SMS_PERMANENT_ERROR_CODES:
         return ("permanent", False)
 
@@ -333,7 +343,46 @@ def _classify_sms_error(
 
     if any(marker in lower_msg for marker in ("timeout", "temporar", "connection")):
         return ("transient", True)
+    if any(marker in lower_msg for marker in ("too long", "exceeds", "max length", "maximum length")):
+        return ("content_length", False)
     return ("sdk_error", False)
+
+
+def _sms_too_long_fields(content: str, *, max_chars: int = SMS_MAX_LENGTH) -> Dict[str, Any]:
+    char_count = len(content or "")
+    return {
+        "status_code": None,
+        "error_code": "sms_too_long",
+        "message": f"SMS content is {char_count} characters; maximum is {max_chars}.",
+        "detail": None,
+        "category": "content_length",
+        "retryable": False,
+        "char_count": char_count,
+        "max_chars": max_chars,
+        "fallback_allowed": False,
+    }
+
+
+def _sms_too_long_failure(content: str, *, max_chars: int = SMS_MAX_LENGTH) -> SendResult:
+    fields = _sms_too_long_fields(content, max_chars=max_chars)
+    return SendResult(
+        success=False,
+        error=_format_inkbox_sms_error(fields),
+        raw_response={"platform": "inkbox", "mode": "sms", **fields},
+        retryable=False,
+        fallback_allowed=False,
+    )
+
+
+def _sms_too_long_failure_dict(content: str, *, max_chars: int = SMS_MAX_LENGTH) -> Dict[str, Any]:
+    fields = _sms_too_long_fields(content, max_chars=max_chars)
+    return {
+        "success": False,
+        "platform": "inkbox",
+        "mode": "sms",
+        "error": _format_inkbox_sms_error(fields),
+        **fields,
+    }
 
 
 def _extract_inkbox_sms_error(exc: Exception) -> Dict[str, Any]:
@@ -407,8 +456,52 @@ def _sms_send_failure_dict(exc: Exception) -> Dict[str, Any]:
         "platform": "inkbox",
         "mode": "sms",
         "error": _format_inkbox_sms_error(fields),
+        "fallback_allowed": False,
         **fields,
     }
+
+
+def _extract_text_media(text_msg: Dict[str, Any]) -> Tuple[list[str], list[str], list[str]]:
+    media_items = (
+        text_msg.get("media")
+        or text_msg.get("attachments")
+        or text_msg.get("media_items")
+        or []
+    )
+    if isinstance(media_items, dict):
+        media_items = [media_items]
+    if not isinstance(media_items, list):
+        media_items = [media_items]
+
+    urls: list[str] = []
+    types: list[str] = []
+    markers: list[str] = []
+    for item in media_items:
+        if not isinstance(item, dict):
+            url = _plain_value(getattr(item, "url", None) or getattr(item, "media_url", None))
+            content_type = _plain_value(
+                getattr(item, "content_type", None)
+                or getattr(item, "mime_type", None)
+                or getattr(item, "type", None)
+            )
+        else:
+            url = _plain_value(
+                item.get("url")
+                or item.get("media_url")
+                or item.get("download_url")
+                or item.get("signed_url")
+            )
+            content_type = _plain_value(
+                item.get("content_type")
+                or item.get("mime_type")
+                or item.get("type")
+            )
+        if url:
+            urls.append(url)
+        media_type = content_type or "unknown"
+        types.append(media_type)
+        markers.append(f"[MMS attachment received: {media_type}]")
+    return urls, types, markers
 
 
 def _text_message_metadata(message: Any, *, mode: str) -> Dict[str, Any]:
@@ -1019,6 +1112,9 @@ class InkboxAdapter(BasePlatformAdapter):
         if not mode:
             mode = "sms" if str(chat_id).startswith("+") else "email"
 
+        if mode == "sms" and len(content or "") > SMS_MAX_LENGTH:
+            return _sms_too_long_failure(content)
+
         # Voice replies ride the per-call WebSocket the WS handler keeps
         # open for the duration of the call.  No SDK round-trip.
         if mode == "voice":
@@ -1068,9 +1164,7 @@ class InkboxAdapter(BasePlatformAdapter):
                         error=f"No phone number on contact {chat_id}",
                     )
             try:
-                msg = await asyncio.to_thread(
-                    identity.send_text, to=to_number, text=content[:SMS_MAX_LENGTH],
-                )
+                msg = await asyncio.to_thread(identity.send_text, to=to_number, text=content)
                 raw_response = _text_message_metadata(msg, mode="sms")
                 logger.info(
                     "[Inkbox] SMS queued to %s: id=%s delivery_status=%s",
@@ -1348,6 +1442,8 @@ class InkboxAdapter(BasePlatformAdapter):
         timestamp: datetime,
         text: Optional[str] = None,
         message_type: MessageType = MessageType.TEXT,
+        media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
     ) -> MessageEvent:
         source = self.build_source(
             chat_id=str(chat_id),
@@ -1368,6 +1464,8 @@ class InkboxAdapter(BasePlatformAdapter):
             message_id=text_id,
             auto_skill="inkbox" if message_type == MessageType.TEXT else None,
             timestamp=timestamp,
+            media_urls=list(media_urls or []),
+            media_types=list(media_types or []),
         )
 
     def busy_followup_policy(self, event: MessageEvent) -> Optional[Dict[str, Any]]:
@@ -1406,6 +1504,8 @@ class InkboxAdapter(BasePlatformAdapter):
             "timestamp": event.timestamp,
             "message_id": event.message_id,
             "source": event.source,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
         })
         batch["raw_messages"].append(event.raw_message)
         batch["last_event"] = event
@@ -1444,6 +1544,16 @@ class InkboxAdapter(BasePlatformAdapter):
 
         fragments = batch["fragments"]
         event = batch["last_event"]
+        event.media_urls = [
+            url
+            for fragment in fragments
+            for url in (fragment.get("media_urls") or [])
+        ]
+        event.media_types = [
+            media_type
+            for fragment in fragments
+            for media_type in (fragment.get("media_types") or [])
+        ]
         if len(fragments) == 1:
             body = fragments[0]["text"]
             event.text = f"{batch['marker']}\n{body}"
@@ -1488,10 +1598,14 @@ class InkboxAdapter(BasePlatformAdapter):
         contact = await self._resolve_contact_full(kind="phone", value=remote)
         chat_id = (contact["id"] if contact else remote)
         contact_name = contact["name"] if contact and contact.get("name") else None
-        body = text_msg.get("text") or ""
+        raw_body = text_msg.get("text") or ""
+        body = raw_body
+        media_urls, media_types, media_markers = _extract_text_media(text_msg)
+        if media_markers:
+            body = "\n".join(part for part in [body, *media_markers] if part)
         timestamp = _parse_inkbox_timestamp(text_msg.get("created_at"))
 
-        control_word = _normalized_sms_control_word(body)
+        control_word = _normalized_sms_control_word(raw_body)
         if control_word:
             logger.info(
                 "[Inkbox] SMS control '%s' from %s handled as protocol text",
@@ -1502,7 +1616,7 @@ class InkboxAdapter(BasePlatformAdapter):
 
         self._last_inbound_modality[str(chat_id)] = "sms"
 
-        if body.lstrip().startswith("/"):
+        if raw_body.lstrip().startswith("/"):
             event = self._build_sms_text_event(
                 envelope=envelope,
                 text_id=text_id,
@@ -1512,8 +1626,10 @@ class InkboxAdapter(BasePlatformAdapter):
                 contact_name=contact_name,
                 body=body,
                 timestamp=timestamp,
-                text=body.strip(),
+                text=raw_body.strip(),
                 message_type=MessageType.COMMAND,
+                media_urls=media_urls,
+                media_types=media_types,
             )
             await self._enqueue(event)
             return web.Response(status=200, text="ok")
@@ -1527,6 +1643,8 @@ class InkboxAdapter(BasePlatformAdapter):
             contact_name=contact_name,
             body=body,
             timestamp=timestamp,
+            media_urls=media_urls,
+            media_types=media_types,
         )
         await self._enqueue_sms_text_event(event)
         return web.Response(status=200, text="ok")
@@ -2133,13 +2251,15 @@ async def send_inkbox_direct(
     base_url = (
         extra.get("base_url") or os.getenv("INKBOX_BASE_URL") or INKBOX_BASE_URL_DEFAULT
     )
+    chosen_mode = (mode or "").lower().strip()
+    if not chosen_mode:
+        chosen_mode = "sms" if str(chat_id).startswith("+") else "email"
+    if chosen_mode == "sms" and len(message or "") > SMS_MAX_LENGTH:
+        return _sms_too_long_failure_dict(message)
 
     def _do_send() -> Dict[str, Any]:
         with Inkbox(api_key=api_key, base_url=base_url) as client:
             identity = client.get_identity(handle)
-            chosen_mode = (mode or "").lower().strip()
-            if not chosen_mode:
-                chosen_mode = "sms" if str(chat_id).startswith("+") else "email"
 
             if chosen_mode == "sms":
                 target = chat_id
@@ -2152,7 +2272,7 @@ async def send_inkbox_direct(
                 if not target:
                     return {"error": f"No phone for contact {chat_id}"}
                 try:
-                    msg = identity.send_text(to=target, text=message[:SMS_MAX_LENGTH])
+                    msg = identity.send_text(to=target, text=message)
                 except Exception as exc:
                     logger.error(
                         "[Inkbox] Direct SMS send failed to %s",

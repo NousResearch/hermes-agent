@@ -485,7 +485,8 @@ PLATFORM_HINTS = {
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
-        "characters, so be brief and direct."
+        "characters, so be brief and direct. Do not split long explanations into "
+        "many messages; ask a follow-up question or offer to send details another way."
     ),
     "bluebubbles": (
         "You are chatting via iMessage (BlueBubbles). iMessage does not render "
@@ -503,7 +504,9 @@ PLATFORM_HINTS = {
         "  [inkbox:email from=... subject='...'] — write clear prose, plain "
         "text only (no markdown), the reply is delivered as a threaded email\n"
         "  [inkbox:sms from=...] — write plain text under 1600 chars, no "
-        "markdown, no greetings/sign-offs, the reply is delivered as SMS\n"
+        "markdown, no greetings/sign-offs, the reply is delivered as SMS. "
+        "If the complete answer would be long, ask a short follow-up or offer "
+        "to send details another way instead of sending a multi-message essay\n"
         "  [inkbox:sms_burst messages=N ...] — several rapid SMS fragments "
         "merged into one turn; read them in order and treat later fragments "
         "as corrections or follow-ups when applicable\n"

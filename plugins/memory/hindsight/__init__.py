@@ -1275,6 +1275,17 @@ class HindsightMemoryProvider(MemoryProvider):
                     client._ensure_started()
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write("\n=== Daemon started successfully ===\n")
+
+                    # Also start the Control Plane GUI so it's always available.
+                    # Port 19177 is the conventional UI port for the hermes profile.
+                    try:
+                        if not client._manager.is_ui_running(profile=profile, ui_port=19177):
+                            client._manager.start_ui(profile=profile, ui_port=19177)
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write("=== Hindsight UI started on :19177 ===\n")
+                    except Exception as ui_err:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"=== UI start skipped: {ui_err} ===\n")
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n=== Daemon startup failed: {e} ===\n")

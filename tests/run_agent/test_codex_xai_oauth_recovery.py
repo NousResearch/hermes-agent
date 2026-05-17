@@ -225,6 +225,62 @@ def test_summarize_api_error_passes_through_unrelated_errors():
 
 
 # ---------------------------------------------------------------------------
+# Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
+#
+# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# when the Responses stream emits a ``type=error`` SSE frame.  Before this
+# fix, classify_api_error had no match for "grok subscription" in its pattern
+# lists, so it returned FailoverReason.unknown (retryable=True) — burning
+# max_retries before the agent stopped.  _is_entitlement_failure was never
+# called because it only runs when FailoverReason.auth is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_api_error_stream_event_grok_subscription_is_auth():
+    """_StreamErrorEvent with xAI subscription message classifies as auth/non-retryable.
+
+    The SSE error path has status_code=None, so _classify_by_status is
+    skipped.  The explicit pattern added at step 1 must fire first and
+    return auth/non-retryable so _is_entitlement_failure can stop the loop.
+    """
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription. Manage subscriptions at https://grok.com",
+        code="The caller does not have permission to execute the specified operation",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+    assert result.should_fallback is True
+
+
+def test_classify_api_error_stream_event_resources_exhausted_grok_is_auth():
+    """'out of available resources' + 'grok' variant also classifies as auth."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have run out of available resources for Grok.",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+
+
+def test_classify_api_error_stream_event_unrelated_not_reclassified():
+    """An unrelated _StreamErrorEvent must not be caught by the xAI guard."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent("Internal server error — try again later")
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason != FailoverReason.auth
+
+
+# ---------------------------------------------------------------------------
 # Fix C: reasoning replay gating for xai-oauth
 # ---------------------------------------------------------------------------
 

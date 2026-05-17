@@ -5877,6 +5877,25 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        if not is_internal:
+            try:
+                from gateway.mobile_reply_bridge import handle_mobile_reply_text
+
+                mobile_reply = handle_mobile_reply_text(
+                    event.text,
+                    platform=source.platform.value if source.platform else None,
+                    chat_id=source.chat_id,
+                    user_id=source.user_id,
+                    user_name=source.user_name,
+                    message_id=event.message_id,
+                    hermes_home=_hermes_home,
+                )
+            except Exception as mobile_reply_exc:
+                logger.warning("mobile reply bridge failed: %s", mobile_reply_exc)
+                mobile_reply = None
+            if mobile_reply is not None:
+                return mobile_reply.message
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher

@@ -58,3 +58,46 @@ def test_check_version_raises_when_below_floor():
     """check_version raises ClaudeCliVersionTooOld when below the floor."""
     with pytest.raises(errors.ClaudeCliVersionTooOld, match="2.1.142.+2.1.143"):
         probe.check_version((2, 1, 142), min_version=(2, 1, 143))
+
+
+def test_check_env_hygiene_strips_anthropic_api_key():
+    """ANTHROPIC_API_KEY is removed from the returned env to prevent billing-path leak."""
+    env = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-xxx",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-yyy",
+        "HOME": "/root",
+    }
+    sanitized = probe.check_env_hygiene(env)
+    assert "ANTHROPIC_API_KEY" not in sanitized
+    assert sanitized["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-xxx"
+    assert sanitized["HOME"] == "/root"
+
+
+def test_check_env_hygiene_requires_oauth_token_by_default():
+    """Missing CLAUDE_CODE_OAUTH_TOKEN raises ClaudeCliAuthMissing."""
+    with pytest.raises(errors.ClaudeCliAuthMissing, match="CLAUDE_CODE_OAUTH_TOKEN"):
+        probe.check_env_hygiene({"HOME": "/root"})
+
+
+def test_check_env_hygiene_token_required_false_skips_token_check():
+    """When require_token=False, missing token is tolerated (for partial probes)."""
+    sanitized = probe.check_env_hygiene({"HOME": "/root"}, require_token=False)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in sanitized
+
+
+def test_check_env_hygiene_empty_token_raises():
+    """A present-but-empty CLAUDE_CODE_OAUTH_TOKEN is treated as missing."""
+    with pytest.raises(errors.ClaudeCliAuthMissing):
+        probe.check_env_hygiene({"CLAUDE_CODE_OAUTH_TOKEN": ""})
+
+
+def test_check_env_hygiene_strips_additional_vars_from_config():
+    """Configured strip_env names are removed from the returned env."""
+    env = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-xxx",
+        "FOO": "bar",
+        "BAZ": "qux",
+    }
+    sanitized = probe.check_env_hygiene(env, strip_env=["FOO", "BAZ"])
+    assert "FOO" not in sanitized
+    assert "BAZ" not in sanitized

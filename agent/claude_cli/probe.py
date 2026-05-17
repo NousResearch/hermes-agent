@@ -90,3 +90,38 @@ def check_version(
             f"adapter requires at least {'.'.join(map(str, min_version))}"
         )
     return version
+
+
+_DEFAULT_STRIP_ENV = ("ANTHROPIC_API_KEY",)
+
+
+def check_env_hygiene(
+    env: dict[str, str],
+    *,
+    require_token: bool = True,
+    strip_env: Optional[list[str]] = None,
+) -> dict[str, str]:
+    """Sanitize a subprocess environment dict before spawning ``claude``.
+
+    Strips ``ANTHROPIC_API_KEY`` (always) plus any names in ``strip_env``,
+    because their presence may redirect Claude Code to API-key billing
+    instead of the user's intended OAuth/Max-plan path.
+
+    If ``require_token`` is True (default), asserts ``CLAUDE_CODE_OAUTH_TOKEN``
+    is set to a non-empty value; raises ``ClaudeCliAuthMissing`` otherwise.
+
+    Returns a new dict; does not mutate the input.
+    """
+    to_strip = set(_DEFAULT_STRIP_ENV)
+    if strip_env:
+        to_strip.update(strip_env)
+    sanitized = {k: v for k, v in env.items() if k not in to_strip}
+    if require_token:
+        token = sanitized.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        if not token:
+            raise errors.ClaudeCliAuthMissing(
+                "CLAUDE_CODE_OAUTH_TOKEN is required for the Claude Code CLI "
+                "subprocess adapter. Wire it via Infisical or set explicitly "
+                "in /root/.hermes/.env. See docs/integrations/providers."
+            )
+    return sanitized

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
@@ -283,3 +283,60 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
 
     assert adapter.send.await_count == 1
     assert adapter.send.await_args.args[0] == "!room123:example.org"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_threaded_active_session_skips_home_fallback():
+    """A successful threaded active-session notification should not also notify home."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[gateway_run.Platform.TELEGRAM].home_channel = gateway_run.HomeChannel(
+        platform=gateway_run.Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Home",
+    )
+    source = make_restart_source(chat_id="project-chat", chat_type="group", thread_id="topic-1")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-threaded",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+    }
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    chat_id, _content, metadata = adapter.sent_calls[0]
+    assert chat_id == "project-chat"
+    assert metadata == {"thread_id": "topic-1"}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_home_fallback_only_when_active_not_notified():
+    """Home fallback remains available when every active-session delivery fails."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[gateway_run.Platform.TELEGRAM].home_channel = gateway_run.HomeChannel(
+        platform=gateway_run.Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Home",
+    )
+    session_key = "agent:main:telegram:dm:active-chat"
+    runner._running_agents[session_key] = MagicMock()
+
+    async def fail_active_succeed_home(chat_id, content, reply_to=None, metadata=None):
+        adapter.sent_calls.append((chat_id, content, metadata))
+        if chat_id == "active-chat":
+            return SendResult(success=False, error="network error")
+        return SendResult(success=True, message_id="home-message")
+
+    adapter.send = fail_active_succeed_home
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert [call[0] for call in adapter.sent_calls] == ["active-chat", "home-chat"]

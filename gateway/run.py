@@ -2529,13 +2529,17 @@ class GatewayRunner:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
-        """Send shutdown/restart notifications to active chats and home channels.
+        """Send shutdown/restart notifications to active chats, with home fallback.
 
         Called at the very start of stop() — adapters are still connected so
         messages can be delivered. Best-effort: individual send failures are
-        logged and swallowed so they never block the shutdown sequence.
+        logged and swallowed so they never block the shutdown sequence. Home
+        channels are fallback-only: if any active session target is notified,
+        avoid duplicate lifecycle noise in the configured home channel.
         """
         active = self._snapshot_running_agents()
+        if not active:
+            return
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
@@ -2547,6 +2551,7 @@ class GatewayRunner:
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
+        active_delivery_succeeded = False
         for session_key in active:
             source = None
             try:
@@ -2595,23 +2600,26 @@ class GatewayRunner:
                 result = await adapter.send(chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
-                        "Failed to send shutdown notification to %s:%s: %s",
+                        "Failed to send shutdown notification to active %s session: %s",
                         platform_str,
-                        chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
 
                 notified.add(dedup_key)
+                active_delivery_succeeded = True
                 logger.info(
-                    "Sent shutdown notification to active chat %s:%s",
-                    platform_str, chat_id,
+                    "Sent shutdown notification to active %s session",
+                    platform_str,
                 )
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to %s:%s: %s",
-                    platform_str, chat_id, e,
+                    "Failed to send shutdown notification to active %s session: %s",
+                    platform_str, e,
                 )
+
+        if active_delivery_succeeded:
+            return
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -2630,24 +2638,21 @@ class GatewayRunner:
                     result = await adapter.send(str(home.chat_id), msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
-                        "Failed to send shutdown notification to home channel %s:%s: %s",
+                        "Failed to send shutdown notification to %s home channel: %s",
                         platform.value,
-                        home.chat_id,
                         getattr(result, "error", "send returned success=False"),
                     )
                     continue
 
                 notified.add(dedup_key)
                 logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
+                    "Sent shutdown notification to %s home channel",
                     platform.value,
-                    home.chat_id,
                 )
             except Exception as e:
                 logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
+                    "Failed to send shutdown notification to %s home channel: %s",
                     platform.value,
-                    home.chat_id,
                     e,
                 )
 

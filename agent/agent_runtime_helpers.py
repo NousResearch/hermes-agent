@@ -598,6 +598,15 @@ def recover_with_credential_pool(
         return False, True
 
     if effective_reason == FailoverReason.auth:
+        if agent._is_entitlement_failure(error_context, status_code):
+            _ra().logger.info(
+                "Credential %s — entitlement-shaped 403 from %s; "
+                "skipping pool refresh (account lacks subscription, "
+                "not a transient auth failure).",
+                status_code if status_code is not None else "auth",
+                agent.provider or "provider",
+            )
+            return False, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
             _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")

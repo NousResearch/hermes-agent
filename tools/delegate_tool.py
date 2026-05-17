@@ -2248,6 +2248,14 @@ def delegate_task(
         from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
+    _agent_id = None
+    try:
+        from agent.profile import get_active_profile
+        _p = get_active_profile()
+        if _p:
+            _agent_id = _p.id
+    except Exception:
+        pass
     # Aggregate child spend here so the parent's footer/UI reflect the true
     # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
     # child's cost was captured in _run_single_child before its AIAgent was
@@ -2272,6 +2280,7 @@ def delegate_task(
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                agent_id=_agent_id,
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)

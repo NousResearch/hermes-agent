@@ -34,10 +34,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions', "prompt_injection"),
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),

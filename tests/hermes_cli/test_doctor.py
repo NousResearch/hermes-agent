@@ -320,6 +320,7 @@ class TestDoctorMemoryProviderSection:
             from hermes_cli import auth as _auth_mod
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
             monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
         except Exception:
             pass
 
@@ -426,6 +427,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -463,6 +465,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -510,6 +513,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -556,6 +560,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_auth_status", lambda provider: {"logged_in": True})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -594,6 +599,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -633,6 +639,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -681,6 +688,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except ImportError:
         pass
 
@@ -739,6 +747,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except ImportError:
         pass
 
@@ -1004,3 +1013,171 @@ class TestHasHealthyOauthFallbackForXai:
         monkeypatch.delitem(sys.modules, "hermes_cli.doctor", raising=False)
         from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
         assert _has_healthy_oauth_fallback_for_apikey_provider("gemini") is True
+
+
+# ---------------------------------------------------------------------------
+# ◆ Auth Providers — xAI OAuth display in run_doctor()
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorXaiOAuthStatus:
+    """The ◆ Auth Providers section must show xAI OAuth login state.
+
+    xAI OAuth is checked in a *separate* try/except block so that an import
+    failure (or runtime exception) cannot silence the Nous / Codex / Gemini /
+    MiniMax rows that were already printed above it.
+    """
+
+    def _run(self, monkeypatch, tmp_path, *, xai_auth_fn) -> str:
+        """Run doctor with a controlled xAI auth callable; return stdout."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", xai_auth_fn)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_logged_in_shows_ok(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            xai_auth_fn=lambda: {"logged_in": True},
+        )
+        assert "xAI OAuth" in out
+        assert "(logged in)" in out
+
+    def test_not_logged_in_shows_warn(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            xai_auth_fn=lambda: {"logged_in": False},
+        )
+        assert "xAI OAuth" in out
+        assert "(not logged in)" in out
+
+    def test_error_shown_when_not_logged_in_and_error_present(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            xai_auth_fn=lambda: {"logged_in": False, "error": "refresh token expired"},
+        )
+        assert "xAI OAuth" in out
+        assert "refresh token expired" in out
+
+    def test_no_error_line_when_error_key_absent(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            xai_auth_fn=lambda: {"logged_in": False},
+        )
+        assert "xAI OAuth" in out
+        # The check_info line is only emitted when the "error" key is present.
+        # Pick a token that would appear in no ordinary doctor output.
+        assert "refresh token expired" not in out
+
+    def test_logged_in_does_not_emit_not_logged_in_on_xai_line(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch, tmp_path,
+            xai_auth_fn=lambda: {"logged_in": True},
+        )
+        assert "xAI OAuth" in out
+        # The xAI OAuth line itself must say "(logged in)", not "(not logged in)".
+        xai_line = next(l for l in out.splitlines() if "xAI OAuth" in l)
+        assert "(logged in)" in xai_line
+        assert "(not logged in)" not in xai_line
+
+    def test_import_failure_does_not_crash_doctor(self, monkeypatch, tmp_path):
+        """Doctor must not crash when get_xai_oauth_auth_status cannot be imported."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+        # The ◆ Auth Providers header must still appear — other providers unaffected.
+        assert "Auth Providers" in out
+
+    def test_import_failure_does_not_affect_other_providers(self, monkeypatch, tmp_path):
+        """Nous / Codex / Gemini / MiniMax rows must survive an xAI import failure."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+        assert "Nous Portal auth" in out
+        assert "logged in" in out
+
+    def test_function_raises_does_not_crash_doctor(self, monkeypatch, tmp_path):
+        """A runtime exception from get_xai_oauth_auth_status must be swallowed."""
+        def _raise():
+            raise RuntimeError("simulated xAI status failure")
+
+        out = self._run(monkeypatch, tmp_path, xai_auth_fn=_raise)
+        assert "Auth Providers" in out
+
+    def test_function_returns_none_does_not_crash_doctor(self, monkeypatch, tmp_path):
+        """None return is normalised to {} via `or {}` — must not AttributeError."""
+        out = self._run(monkeypatch, tmp_path, xai_auth_fn=lambda: None)
+        # None → {} → logged_in falsy → shows not-logged-in warn
+        assert "xAI OAuth" in out
+        assert "(not logged in)" in out

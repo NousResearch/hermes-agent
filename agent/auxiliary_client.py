@@ -3431,7 +3431,21 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        # Forward gateway-auth headers + TLS-verify from the
+                        # custom_providers entry so APIM-style gateways (which
+                        # require subscription keys via custom_headers and
+                        # often run on self-signed certs) authenticate
+                        # auxiliary calls the same way the main agent does.
+                        _entry_headers = custom_entry.get("custom_headers")
+                        _entry_verify = custom_entry.get("verify", True)
+                        _build_kwargs = {}
+                        if isinstance(_entry_headers, dict) and _entry_headers:
+                            _build_kwargs["default_headers"] = dict(_entry_headers)
+                        if _entry_verify is False:
+                            _build_kwargs["verify"] = False
+                        real_client = build_anthropic_client(
+                            custom_key, custom_base, **_build_kwargs,
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="

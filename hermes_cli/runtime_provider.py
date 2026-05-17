@@ -515,7 +515,17 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         provider_key = str(entry.get("provider_key", "") or "").strip()
         provider_key_norm = _normalize_custom_provider_name(provider_key) if provider_key else ""
         provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
-        if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
+        # ``id`` is a stable slug from config.yaml — match against it so
+        # renaming the user-facing ``name`` doesn't invalidate the persisted
+        # ``model.provider: custom:<id>`` resolution.
+        entry_id = str(entry.get("id", "") or "").strip()
+        entry_id_norm = _normalize_custom_provider_name(entry_id) if entry_id else ""
+        entry_id_menu_key = f"custom:{entry_id_norm}" if entry_id_norm else ""
+        if requested_norm not in {
+            name_norm, menu_key,
+            provider_key_norm, provider_menu_key,
+            entry_id_norm, entry_id_menu_key,
+        }:
             continue
         result = {
             "name": name.strip(),
@@ -533,6 +543,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        # Forward gateway-auth headers (e.g. API-management subscription keys)
+        # and TLS-verify overrides so auxiliary clients (title generation,
+        # compression, vision, etc.) hit custom gateways with the same auth
+        # the main agent uses. Without this, auxiliary calls to
+        # custom_providers behind APIM-style gateways return 401.
+        if entry.get("custom_headers"):
+            result["custom_headers"] = dict(entry["custom_headers"])
+        if "verify" in entry:
+            result["verify"] = entry["verify"]
         return result
 
     return None
@@ -618,6 +637,15 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    # Forward gateway-auth headers and TLS-verify so downstream consumers
+    # (main agent client builder + auxiliary client title-gen / compression
+    # paths) can reach the gateway with the same headers configured in
+    # config.yaml. Without this, APIM-style gateways return 401 on
+    # auxiliary calls. See custom_providers.<name>.custom_headers /.verify.
+    if custom_provider.get("custom_headers"):
+        result["custom_headers"] = dict(custom_provider["custom_headers"])
+    if "verify" in custom_provider:
+        result["verify"] = custom_provider["verify"]
     return result
 
 

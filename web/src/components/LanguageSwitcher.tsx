@@ -69,7 +69,7 @@ export function LanguageSwitcher() {
         <div
           role="listbox"
           aria-label={t.language.switchTo}
-          className="absolute right-0 top-full mt-1 z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto"
+          className="absolute right-0 bottom-full mb-1 z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto"
         >
           {allLocales.map(([code, meta]) => {
             const selected = code === locale;

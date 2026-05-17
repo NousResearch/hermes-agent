@@ -1389,7 +1389,7 @@ class AIAgent:
         # does NOT support the Responses API — skip the upgrade for Azure
         # (openai.azure.com), even though it looks OpenAI-compatible.
         if (
-            api_mode is None
+            (api_mode is None or api_mode == "chat_completions")
             and self.api_mode == "chat_completions"
             and self.provider != "copilot-acp"
             and not str(self.base_url or "").lower().startswith("acp://copilot")

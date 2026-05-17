@@ -205,6 +205,28 @@ skills:
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
 
+### Safer shared-skill allowlists
+
+Avoid pointing production profiles at a large shared skill tree without review.
+External skills are trusted instructions: once configured, they appear in
+`skills_list`, `skill_view`, the system prompt index, and slash commands. A
+shared catalog can contain skills for other agents, stale experiments, duplicate
+names, or helper files that are not meant to be loaded directly.
+
+For long-running gateways, prefer a curated allowlist directory:
+
+1. Create a separate directory owned by the Hermes runtime user.
+2. Copy only reviewed skills into that directory.
+3. Keep a small manifest that records each skill's source path, copy time, hash,
+   and update policy.
+4. Point `skills.external_dirs` at the allowlist, not the entire shared catalog.
+5. Restart the gateway and verify `skills_list`, `skill_view`, and slash
+   commands before relying on the new skills.
+
+Use symlinks only when automatic propagation is intentional. Copying reviewed
+skills is safer when you need changes to be explicit, auditable, and easy to
+roll back.
+
 ### How it works
 
 - **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.

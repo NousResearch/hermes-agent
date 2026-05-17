@@ -35,6 +35,7 @@ import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,10 @@ def _get_session_db() -> Optional[Any]:
     if cached is not None:
         return cached
     try:
-        db = SessionDB()
+        # Pass the path explicitly: hermes_state.DEFAULT_DB_PATH is computed at
+        # module import time, while tests/profile switches can change
+        # HERMES_HOME later in the same process.
+        db = SessionDB(Path(home) / "state.db")
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None

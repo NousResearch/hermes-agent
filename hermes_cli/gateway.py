@@ -2105,35 +2105,43 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _is_accessible_dir(path: Path) -> bool:
+    """Return True only for directories the current process can stat.
+
+    System service generation can run under sudo/root-like homes in tests or
+    under a caller that cannot traverse the configured HERMES_HOME. Treat those
+    inaccessible optional PATH directories as absent instead of failing unit
+    rendering.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     """Build PATH directory list for service units, excluding non-existent dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
 
-    def _is_dir(path: Path) -> bool:
-        try:
-            return path.is_dir()
-        except OSError:
-            return False
-
     candidates = []
 
     venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
+    if _is_accessible_dir(venv_bin):
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))
 
     node_bin = project_root / "node_modules" / ".bin"
-    if _is_dir(node_bin):
+    if _is_accessible_dir(node_bin):
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
-    if _is_dir(hermes_node):
+    if _is_accessible_dir(hermes_node):
         candidates.append(str(hermes_node))
     hermes_nm = hermes_home / "node_modules" / ".bin"
-    if _is_dir(hermes_nm):
+    if _is_accessible_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
     return candidates
@@ -2533,7 +2541,7 @@ def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("start")
-    else:
+    elif is_linux() and shutil.which("systemctl") is not None:
         # Fail fast with actionable guidance if the user D-Bus session is not
         # reachable (common on fresh RHEL/Debian SSH sessions without linger).
         # Raises UserSystemdUnavailableError with a remediation message.
@@ -2575,7 +2583,7 @@ def systemd_restart(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("restart")
-    else:
+    elif is_linux() and shutil.which("systemctl") is not None:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)

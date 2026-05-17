@@ -156,40 +156,44 @@ def _snapshot_store_path() -> Path:
     return get_hermes_home() / _SNAPSHOT_STORE_NAME
 
 
-def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store_path())
+def _load_snapshots(store_path: Path | None = None) -> dict:
+    return _load_json_store(store_path or _snapshot_store_path())
 
 
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_snapshot_store_path(), data)
+def _save_snapshots(data: dict, store_path: Path | None = None) -> None:
+    _save_json_store(store_path or _snapshot_store_path(), data)
 
 
-def _get_snapshot_id(task_id: str) -> str | None:
+def _get_snapshot_id(task_id: str, store_path: Path | None = None) -> str | None:
     if not task_id:
         return None
-    snapshot_id = _load_snapshots().get(task_id)
+    snapshot_id = _load_snapshots(store_path).get(task_id)
     return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
 
 
-def _store_snapshot(task_id: str, snapshot_id: str) -> None:
+def _store_snapshot(task_id: str, snapshot_id: str, store_path: Path | None = None) -> None:
     if not task_id or not snapshot_id:
         return
-    snapshots = _load_snapshots()
+    snapshots = _load_snapshots(store_path)
     snapshots[task_id] = snapshot_id
-    _save_snapshots(snapshots)
+    _save_snapshots(snapshots, store_path)
 
 
-def _delete_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
+def _delete_snapshot(
+    task_id: str,
+    snapshot_id: str | None = None,
+    store_path: Path | None = None,
+) -> None:
     if not task_id:
         return
-    snapshots = _load_snapshots()
+    snapshots = _load_snapshots(store_path)
     existing = snapshots.get(task_id)
     if existing is None:
         return
     if snapshot_id is not None and existing != snapshot_id:
         return
     snapshots.pop(task_id, None)
-    _save_snapshots(snapshots)
+    _save_snapshots(snapshots, store_path)
 
 
 def _extract_snapshot_id(snapshot: Any) -> str | None:
@@ -260,6 +264,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         self._workspace_root = DEFAULT_VERCEL_CWD
         self._remote_home = DEFAULT_VERCEL_CWD
         self._sync_manager: FileSyncManager | None = None
+        self._snapshot_store_path = _snapshot_store_path()
         self._create_params = self._build_create_params(cpu=cpu, memory=memory, disk=disk)
 
         self._sandbox = self._create_sandbox()
@@ -299,7 +304,11 @@ class VercelSandboxEnvironment(BaseEnvironment):
         _ensure_vercel_sdk()
         from vercel.sandbox import Sandbox
 
-        snapshot_id = _get_snapshot_id(self._task_id) if self._persistent else None
+        snapshot_id = (
+            _get_snapshot_id(self._task_id, self._snapshot_store_path)
+            if self._persistent
+            else None
+        )
         if snapshot_id:
             try:
                 return _retry_vercel_call(
@@ -320,7 +329,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     self._task_id,
                     exc,
                 )
-                _delete_snapshot(self._task_id, snapshot_id)
+                _delete_snapshot(self._task_id, snapshot_id, self._snapshot_store_path)
 
         params = self._create_params
         return _retry_vercel_call(
@@ -458,7 +467,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
             )
             return None
 
-        _store_snapshot(self._task_id, snapshot_id)
+        _store_snapshot(self._task_id, snapshot_id, self._snapshot_store_path)
         logger.info(
             "Vercel: saved filesystem snapshot %s for task %s",
             snapshot_id,

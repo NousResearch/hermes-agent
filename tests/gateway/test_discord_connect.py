@@ -29,7 +29,7 @@ def _ensure_discord_mock():
     ``_build_allowed_mentions()``'s return value to have real attribute
     access regardless of which file loaded first.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
         return
 

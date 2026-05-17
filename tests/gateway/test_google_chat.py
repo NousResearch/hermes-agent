@@ -128,6 +128,12 @@ _ensure_google_mocks()
 import plugins.platforms.google_chat.adapter as _gc_mod  # noqa: E402
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
+if _gc_mod.service_account is None:
+    _gc_mod.service_account = types.SimpleNamespace(
+        Credentials=types.SimpleNamespace(
+            from_service_account_info=MagicMock(return_value=MagicMock())
+        )
+    )
 
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome  # noqa: E402
 from plugins.platforms.google_chat.adapter import (  # noqa: E402

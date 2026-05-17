@@ -670,6 +670,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
+                    blocked_detail = _ready_blockers_detail(conn, task_id)
+                    if blocked_detail:
+                        raise HTTPException(status_code=409, detail=blocked_detail)
                     ok = _set_status_direct(conn, task_id, "ready")
             elif s == "archived":
                 ok = kanban_db.archive_task(conn, task_id)
@@ -889,6 +892,23 @@ def _set_status_direct(
     return True
 
 
+def _ready_blockers_detail(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return an actionable 409 detail if a ready move is dependency-blocked."""
+    parents = conn.execute(
+        "SELECT t.id, t.title, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ? AND t.status != 'done' "
+        "ORDER BY t.id",
+        (task_id,),
+    ).fetchall()
+    if not parents:
+        return None
+    blockers = ", ".join(
+        f"{p['id']} {p['title']!r} (status={p['status']})" for p in parents
+    )
+    return f"Cannot move to 'ready'; parent dependencies are not done: {blockers}"
+
+
 # ---------------------------------------------------------------------------
 # Comments
 # ---------------------------------------------------------------------------
@@ -1100,7 +1120,13 @@ def list_diagnostics(
         if severity:
             filtered: dict[str, list[dict]] = {}
             for tid, dl in diags_by_task.items():
-                keep = [d for d in dl if kd.severity_at_or_above(d.get("severity"), severity)]
+                keep = [
+                    d for d in dl
+                    if kd.severity_at_or_above(
+                        (d.get("severity") or "").lower(),
+                        severity.lower(),
+                    )
+                ]
                 if keep:
                     filtered[tid] = keep
             diags_by_task = filtered

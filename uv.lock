@@ -1654,12 +1654,14 @@ daytona = [
 ]
 dev = [
     { name = "debugpy" },
+    { name = "fastapi" },
     { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 dingtalk = [
     { name = "alibabacloud-dingtalk" },
@@ -1827,6 +1829,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["web"], marker = "extra == 'dev'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },

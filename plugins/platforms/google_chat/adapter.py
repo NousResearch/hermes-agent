@@ -3171,7 +3171,7 @@ async def _standalone_send(
         or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     )
 
-    if service_account is None:
+    if service_account is None and not _load_google_modules():
         return {"error": "Google Chat standalone send: google-auth not installed"}
 
     try:

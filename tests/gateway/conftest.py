@@ -47,18 +47,36 @@ def _ensure_telegram_mock() -> None:
     ``setdefault`` so it wins even if a partial/broken import
     already cached a module with ``ChatType = None``.
     """
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+    existing = sys.modules.get("telegram")
+    existing_file = getattr(existing, "__file__", None)
+    if isinstance(existing_file, str):
         return  # Real library is installed — nothing to mock
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
+    class _ParseModeValue(str):
+        _name: str
+
+        def __new__(cls, name: str, value: str):
+            obj = str.__new__(cls, value)
+            obj._name = name
+            return obj
+        def __repr__(self) -> str:
+            return f"ParseMode.{self._name}"
+
+    mod.constants.ParseMode.MARKDOWN = _ParseModeValue("MARKDOWN", "Markdown")
+    mod.constants.ParseMode.MARKDOWN_V2 = _ParseModeValue("MARKDOWN_V2", "MarkdownV2")
+    mod.constants.ParseMode.HTML = _ParseModeValue("HTML", "HTML")
     mod.constants.ChatType.PRIVATE = "private"
     mod.constants.ChatType.GROUP = "group"
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
+    # ``sys.modules["telegram.constants"]`` is this same mock object, so
+    # ``from telegram.constants import ChatType`` resolves ``mod.ChatType``
+    # (not ``mod.constants.ChatType``).  Mirror the attributes at the module
+    # root to keep adapter imports and tests using the same stable sentinels.
+    mod.ParseMode = mod.constants.ParseMode
+    mod.ChatType = mod.constants.ChatType
 
     # Real exception classes so ``except (NetworkError, ...)`` clauses
     # in production code don't blow up with TypeError.
@@ -82,6 +100,22 @@ def _ensure_telegram_mock() -> None:
         sys.modules[name] = mod
     sys.modules["telegram.error"] = mod.error
 
+    imported = sys.modules.get("gateway.platforms.telegram")
+    if imported is not None:
+        for attr, value in {
+            "telegram": mod,
+            "ChatType": mod.ChatType,
+            "ParseMode": mod.ParseMode,
+            "NetworkError": mod.error.NetworkError,
+            "TimedOut": mod.error.TimedOut,
+            "BadRequest": mod.error.BadRequest,
+            "Forbidden": mod.error.Forbidden,
+            "InvalidToken": mod.error.InvalidToken,
+            "RetryAfter": mod.error.RetryAfter,
+            "Conflict": mod.error.Conflict,
+        }.items():
+            setattr(imported, attr, value)
+
 
 def _ensure_discord_mock() -> None:
     """Install a comprehensive discord mock in sys.modules.
@@ -96,12 +130,14 @@ def _ensure_discord_mock() -> None:
     this function (it short-circuits when already present) rather than
     maintaining their own mock setup.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    existing = sys.modules.get("discord")
+    existing_file = getattr(existing, "__file__", None)
+    if isinstance(existing_file, str):
         return  # Real library is installed — nothing to mock
 
     from types import SimpleNamespace
 
-    discord_mod = MagicMock()
+    discord_mod = existing if existing is not None else MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock
     discord_mod.File = MagicMock
@@ -110,6 +146,28 @@ def _ensure_discord_mock() -> None:
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
     discord_mod.Message = type("Message", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.NotFound = type("NotFound", (Exception,), {})
+    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    discord_mod.DiscordException = type("DiscordException", (Exception,), {})
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
+    discord_mod.MessageType = SimpleNamespace(
+        default="default",
+        reply="reply",
+        channel_name_change="channel_name_change",
+        pins_add="pins_add",
+        new_member="new_member",
+        premium_guild_subscription="premium_guild_subscription",
+        recipient_add="recipient_add",
+    )
+
+    class _FakeAllowedMentions:
+        def __init__(self, *, everyone=True, roles=True, users=True, replied_user=True):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+    discord_mod.AllowedMentions = _FakeAllowedMentions
 
     # Embed: accept the kwargs production code / tests use
     # (title, description, color). MagicMock auto-attributes work too,
@@ -179,6 +237,10 @@ def _ensure_discord_mock() -> None:
         success=1, primary=2, secondary=2, danger=3,
         green=1, grey=2, blurple=2, red=3,
     )
+    class _FakePermissions:
+        def __init__(self, value=0, **_):
+            self.value = value
+    discord_mod.Permissions = _FakePermissions
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
         red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
@@ -207,10 +269,12 @@ def _ensure_discord_mock() -> None:
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
+        autocomplete=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
         Group=_FakeGroup,
         Command=_FakeCommand,
     )
+    discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
 
     ext_mod = MagicMock()
     commands_mod = MagicMock()
@@ -221,6 +285,17 @@ def _ensure_discord_mock() -> None:
         sys.modules[name] = discord_mod
     sys.modules["discord.ext"] = ext_mod
     sys.modules["discord.ext.commands"] = commands_mod
+
+    imported = sys.modules.get("gateway.platforms.discord")
+    if imported is not None:
+        for attr, value in {
+            "discord": discord_mod,
+            "DiscordMessage": discord_mod.Message,
+            "Intents": discord_mod.Intents,
+            "commands": commands_mod,
+            "DISCORD_AVAILABLE": True,
+        }.items():
+            setattr(imported, attr, value)
 
 
 # Run at collection time — before any test file's module-level imports.

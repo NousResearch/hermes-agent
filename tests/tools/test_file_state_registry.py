@@ -29,6 +29,7 @@ from tools.file_tools import (
     write_file_tool,
     patch_tool,
 )
+from tools.terminal_tool import cleanup_vm
 
 
 def _tmp_file(content: str = "initial\n") -> str:
@@ -215,11 +216,15 @@ class FileToolsIntegrationTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        for task_id in ("default", "agentA", "agentB", "agentC"):
+            cleanup_vm(task_id)
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_", dir="/tmp")
 
     def tearDown(self) -> None:
         import shutil
+        for task_id in ("default", "agentA", "agentB", "agentC"):
+            cleanup_vm(task_id)
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         file_state.get_registry().clear()
 

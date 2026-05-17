@@ -750,6 +750,8 @@ class _CodexCompletionsAdapter:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
         def _close_client_on_timeout() -> None:
+            if timed_out.is_set():
+                return
             timed_out.set()
             close = getattr(self._client, "close", None)
             if callable(close):
@@ -770,8 +772,7 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                if not timed_out.is_set():
-                    _close_client_on_timeout()
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted

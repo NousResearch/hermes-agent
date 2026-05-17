@@ -3750,8 +3750,9 @@ class AIAgent:
         kimi-reasoning replay when the request actually targets a
         kimi/moonshot endpoint or the dedicated kimi-coding provider.
         """
+        provider = (self.provider or "").lower()
         return (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
+            provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")

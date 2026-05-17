@@ -17,11 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import (
-    _UpdateOutputStream,
-    _finalize_update_output,
-    _install_hangup_protection,
-)
+import hermes_cli.main as cli_main
+
+SIGHUP = getattr(signal, "SIGHUP", None)
 
 
 # -----------------------------------------------------------------------------
@@ -33,7 +31,7 @@ class TestUpdateOutputStream:
     def test_write_mirrors_to_both_original_and_log(self):
         original = io.StringIO()
         log = io.StringIO()
-        stream = _UpdateOutputStream(original, log)
+        stream = cli_main._UpdateOutputStream(original, log)
 
         stream.write("hello world\n")
 
@@ -55,7 +53,7 @@ class TestUpdateOutputStream:
             def flush(self):
                 raise BrokenPipeError("terminal gone")
 
-        stream = _UpdateOutputStream(_BrokenStream(), log)
+        stream = cli_main._UpdateOutputStream(_BrokenStream(), log)
 
         # First write triggers the broken-pipe path.
         stream.write("first line\n")
@@ -80,7 +78,7 @@ class TestUpdateOutputStream:
                 raise self._exc
 
         for exc in (OSError("EIO"), ValueError("closed file")):
-            stream = _UpdateOutputStream(_RaisingStream(exc), log)
+            stream = cli_main._UpdateOutputStream(_RaisingStream(exc), log)
             stream.write("x\n")
             assert stream._original_broken is True
 
@@ -94,7 +92,7 @@ class TestUpdateOutputStream:
                 raise OSError("disk full")
 
         original = io.StringIO()
-        stream = _UpdateOutputStream(original, _BrokenLog())
+        stream = cli_main._UpdateOutputStream(original, _BrokenLog())
 
         stream.write("data\n")
 
@@ -109,7 +107,7 @@ class TestUpdateOutputStream:
                 raise BrokenPipeError("gone")
 
         log = io.StringIO()
-        stream = _UpdateOutputStream(_BrokenStream(), log)
+        stream = cli_main._UpdateOutputStream(_BrokenStream(), log)
         stream.flush()  # must not raise
         assert stream._original_broken is True
 
@@ -124,7 +122,7 @@ class TestUpdateOutputStream:
             def flush(self):
                 return None
 
-        stream = _UpdateOutputStream(_TtyStream(), io.StringIO())
+        stream = cli_main._UpdateOutputStream(_TtyStream(), io.StringIO())
         assert stream.isatty() is True
 
     def test_isatty_returns_false_after_broken(self):
@@ -138,7 +136,7 @@ class TestUpdateOutputStream:
             def flush(self):
                 return None
 
-        stream = _UpdateOutputStream(_BrokenStream(), io.StringIO())
+        stream = cli_main._UpdateOutputStream(_BrokenStream(), io.StringIO())
         stream.write("x")  # marks broken
         assert stream.isatty() is False
 
@@ -152,7 +150,7 @@ class TestUpdateOutputStream:
             def flush(self):
                 return None
 
-        stream = _UpdateOutputStream(_StreamWithEncoding(), io.StringIO())
+        stream = cli_main._UpdateOutputStream(_StreamWithEncoding(), io.StringIO())
         assert stream.encoding == "utf-8"
 
 
@@ -165,40 +163,41 @@ class TestInstallHangupProtection:
     def test_gateway_mode_is_noop(self):
         """In gateway mode the process is already detached — don't touch stdio or signals."""
         prev_out, prev_err = sys.stdout, sys.stderr
-        prev_sighup = signal.getsignal(signal.SIGHUP) if hasattr(signal, "SIGHUP") else None
+        prev_sighup = signal.getsignal(SIGHUP) if SIGHUP is not None else None
 
-        state = _install_hangup_protection(gateway_mode=True)
+        state = cli_main._install_hangup_protection(gateway_mode=True)
 
         try:
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
             assert state["log_file"] is None
             assert state["installed"] is False
-            if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == prev_sighup
+            if SIGHUP is not None:
+                assert signal.getsignal(SIGHUP) == prev_sighup
         finally:
-            _finalize_update_output(state)
+            cli_main._finalize_update_output(state)
 
     @pytest.mark.skipif(
-        not hasattr(signal, "SIGHUP"), reason="SIGHUP not available on this platform"
+        SIGHUP is None, reason="SIGHUP not available on this platform"
     )
     def test_installs_sighup_ignore(self, tmp_path, monkeypatch):
         """SIGHUP should be set to SIG_IGN so SSH disconnect doesn't kill the update."""
+        assert SIGHUP is not None
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Clear cached get_hermes_home if present
         import hermes_cli.config as _cfg
         if hasattr(_cfg, "_HERMES_HOME_CACHE"):
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
-        original_handler = signal.getsignal(signal.SIGHUP)
-        state = _install_hangup_protection(gateway_mode=False)
+        original_handler = signal.getsignal(SIGHUP)
+        state = cli_main._install_hangup_protection(gateway_mode=False)
 
         try:
-            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+            assert signal.getsignal(SIGHUP) == signal.SIG_IGN
         finally:
-            _finalize_update_output(state)
+            cli_main._finalize_update_output(state)
             # Restore whatever was there before so we don't leak to other tests.
-            signal.signal(signal.SIGHUP, original_handler)
+            signal.signal(SIGHUP, original_handler)
 
     def test_wraps_stdout_and_stderr_with_mirror(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -208,13 +207,13 @@ class TestInstallHangupProtection:
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
         prev_out, prev_err = sys.stdout, sys.stderr
-        state = _install_hangup_protection(gateway_mode=False)
+        state = cli_main._install_hangup_protection(gateway_mode=False)
 
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            assert isinstance(sys.stdout, cli_main._UpdateOutputStream)
+            assert isinstance(sys.stderr, cli_main._UpdateOutputStream)
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")
@@ -226,7 +225,7 @@ class TestInstallHangupProtection:
             assert "checking mirror" in contents
             assert "hermes update started" in contents
         finally:
-            _finalize_update_output(state)
+            cli_main._finalize_update_output(state)
             # Sanity-check restoration
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
@@ -240,12 +239,12 @@ class TestInstallHangupProtection:
         # No logs/ dir yet.
         assert not (tmp_path / "logs").exists()
 
-        state = _install_hangup_protection(gateway_mode=False)
+        state = cli_main._install_hangup_protection(gateway_mode=False)
         try:
             assert (tmp_path / "logs").is_dir()
             assert (tmp_path / "logs" / "update.log").exists()
         finally:
-            _finalize_update_output(state)
+            cli_main._finalize_update_output(state)
 
     def test_non_fatal_if_log_setup_fails(self, monkeypatch):
         """If get_hermes_home() raises, stdio must be left untouched but SIGHUP still handled."""
@@ -259,23 +258,21 @@ class TestInstallHangupProtection:
             "hermes_cli.config.get_hermes_home", _boom, raising=True
         )
 
-        original_handler = (
-            signal.getsignal(signal.SIGHUP) if hasattr(signal, "SIGHUP") else None
-        )
+        original_handler = signal.getsignal(SIGHUP) if SIGHUP is not None else None
 
-        state = _install_hangup_protection(gateway_mode=False)
+        state = cli_main._install_hangup_protection(gateway_mode=False)
 
         try:
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
             assert state["installed"] is False
             # SIGHUP must still be installed even when log setup fails.
-            if hasattr(signal, "SIGHUP"):
-                assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+            if SIGHUP is not None:
+                assert signal.getsignal(SIGHUP) == signal.SIG_IGN
         finally:
-            _finalize_update_output(state)
-            if hasattr(signal, "SIGHUP") and original_handler is not None:
-                signal.signal(signal.SIGHUP, original_handler)
+            cli_main._finalize_update_output(state)
+            if SIGHUP is not None and original_handler is not None:
+                signal.signal(SIGHUP, original_handler)
 
 
 # -----------------------------------------------------------------------------
@@ -285,7 +282,7 @@ class TestInstallHangupProtection:
 
 class TestFinalizeUpdateOutput:
     def test_none_state_is_noop(self):
-        _finalize_update_output(None)  # must not raise
+        cli_main._finalize_update_output(None)  # must not raise
 
     def test_restores_streams_and_closes_log(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -294,13 +291,13 @@ class TestFinalizeUpdateOutput:
             _cfg._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
 
         prev_out = sys.stdout
-        state = _install_hangup_protection(gateway_mode=False)
+        state = cli_main._install_hangup_protection(gateway_mode=False)
         log_file = state["log_file"]
 
         assert sys.stdout is not prev_out
         assert log_file is not None
 
-        _finalize_update_output(state)
+        cli_main._finalize_update_output(state)
 
         assert sys.stdout is prev_out
         # The log file handle should be closed.
@@ -319,7 +316,7 @@ class TestFinalizeUpdateOutput:
         }
         before_out, before_err = sys.stdout, sys.stderr
 
-        _finalize_update_output(state)
+        cli_main._finalize_update_output(state)
 
         assert sys.stdout is before_out
         assert sys.stderr is before_err

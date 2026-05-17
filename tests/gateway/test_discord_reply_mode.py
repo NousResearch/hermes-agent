@@ -20,7 +20,7 @@ from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_o
 
 def _ensure_discord_mock():
     """Install a mock discord module when discord.py isn't available."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         return
 
     discord_mod = MagicMock()

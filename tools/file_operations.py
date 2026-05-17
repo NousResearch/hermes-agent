@@ -619,6 +619,34 @@ class ShellFileOperations(FileOperations):
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
+
+    def _check_git_baseline(self, path: str) -> Optional[str]:
+        """Return a warning when ``path`` is in a dirty git worktree."""
+        try:
+            if not self._has_command("git"):
+                return None
+
+            git_cwd = os.path.dirname(path) or None
+            inside = self._exec("git rev-parse --is-inside-work-tree", cwd=git_cwd)
+            if inside.exit_code != 0 or inside.stdout.strip() != "true":
+                return None
+
+            status = self._exec("git status --porcelain", cwd=git_cwd)
+            if status.exit_code != 0 or not status.stdout.strip():
+                return None
+
+            branch_result = self._exec(
+                "git rev-parse --abbrev-ref HEAD",
+                cwd=git_cwd,
+            )
+            branch = branch_result.stdout.strip() if branch_result.exit_code == 0 else ""
+            branch_label = f" on branch {branch}" if branch else ""
+            return (
+                f"Git working tree is dirty{branch_label}; uncommitted changes "
+                "existed before this write."
+            )
+        except Exception:
+            return None
     
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
@@ -947,6 +975,8 @@ class ShellFileOperations(FileOperations):
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
+        git_warning = self._check_git_baseline(path)
+
         # Capture pre-write content.  Two consumers want it:
         #
         #   1. The lint-delta layer (for in-process linters like ast.parse
@@ -1031,6 +1061,7 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            warning=git_warning,
         )
     
     # =========================================================================

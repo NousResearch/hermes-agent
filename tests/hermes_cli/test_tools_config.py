@@ -1150,7 +1150,7 @@ def test_reconfigure_provider_runs_post_setup_for_env_var_providers(
 
     provider = next(
         p
-        for p in TOOL_CATEGORIES["browser"]["providers"]
+        for p in _visible_providers(TOOL_CATEGORIES["browser"], {})
         if p["name"] == provider_name
     )
     _reconfigure_provider(provider, {})

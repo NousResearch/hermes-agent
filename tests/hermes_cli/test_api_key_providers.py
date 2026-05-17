@@ -1,6 +1,7 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import os
+from unittest.mock import patch
 
 import pytest
 
@@ -319,13 +320,17 @@ class TestResolveProvider:
         # ~/.aws/credentials on developer machines that aren't blanked by
         # the hermetic conftest. Force-disable it so this test exercises
         # the specific "GitHub token alone shouldn't auto-pick copilot"
-        # behavior, not the Bedrock fallback.
-        monkeypatch.setattr(
-            "agent.bedrock_adapter.has_aws_credentials",
-            lambda env=None: False,
-        )
+        # behavior, not the Bedrock fallback. Also clear all API-key env vars
+        # so a developer shell cannot influence the auto-provider result.
+        for pconfig in PROVIDER_REGISTRY.values():
+            for env_var in pconfig.api_key_env_vars:
+                monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
-        with pytest.raises(AuthError, match="No inference provider configured"):
+        with patch("hermes_cli.auth._load_auth_store", return_value={}), \
+             patch("agent.bedrock_adapter.has_aws_credentials", return_value=False), \
+             pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
 
 

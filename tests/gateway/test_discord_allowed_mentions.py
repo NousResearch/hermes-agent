@@ -40,7 +40,7 @@ def _ensure_discord_mock():
     ``AllowedMentions`` onto whatever is currently in ``sys.modules["discord"]``;
     that's the only attribute this test file actually needs real behavior from.
     """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
         return
 

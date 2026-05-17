@@ -48,18 +48,23 @@ def has_xai_credentials() -> bool:
 def get_env_value(name: str, default=None):
     """Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.
 
-    Wraps :func:`hermes_cli.config.get_env_value` so tests can patch
-    ``tools.xai_http.get_env_value`` to inject dotenv-only secrets into the
-    xAI credential resolver.
+    Resolve the Hermes config helper dynamically so tests or setup flows that
+    temporarily patch ``hermes_cli.config.get_env_value`` before importing this
+    module do not freeze that temporary helper for the rest of the process.
+    Tests can still patch ``tools.xai_http.get_env_value`` directly to inject
+    dotenv-only secrets into the xAI credential resolver.
     """
     try:
-        from hermes_cli.config import get_env_value as _hermes_get_env_value
-
-        value = _hermes_get_env_value(name)
+        from hermes_cli.config import get_env_value as hermes_get_env_value
+    except (ImportError, RuntimeError):
+        hermes_get_env_value = None
+    if hermes_get_env_value is not None:
+        try:
+            value = hermes_get_env_value(name)
+        except Exception:
+            value = None
         if value is not None:
             return value
-    except Exception:
-        pass
     return os.environ.get(name, default)
 
 

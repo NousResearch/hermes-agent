@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
+import signal
 import re
 import sys
 from pathlib import Path
@@ -473,6 +474,52 @@ def _ensure_current_event_loop(request):
                 asyncio.set_event_loop(None)
 
 
+def _timeout_handler(signum, frame):
+    raise TimeoutError("Test exceeded 30 second timeout")
+
+
+@pytest.fixture(autouse=True)
+def _enforce_test_timeout():
+    """Kill any individual test that takes longer than 30 seconds.
+    SIGALRM is Unix-only; skip on Windows."""
+    if sys.platform == "win32":
+        yield
+        return
+    old = signal.signal(signal.SIGALRM, _timeout_handler)  # windows-footgun: ok
+    signal.alarm(30)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)  # windows-footgun: ok
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_registry_caches():
+    """Clear tool-registry-level caches between tests.
+
+    The production registry caches ``check_fn()`` results for 30 s
+    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
+    its result (see model_tools.py). Both are keyed on state that tests
+    routinely mutate (env vars, registry._generation, config.yaml mtime)
+    — but a stale result from test A can still be served to test B
+    because 30 s covers the entire suite, and worker reuse means one
+    test's cache lands in another's process. Clearing before every test
+    keeps hermetic behavior.
+    """
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except ImportError:
+        pass
+    try:
+        from model_tools import _clear_tool_defs_cache
+        _clear_tool_defs_cache()
+    except ImportError:
+        pass
+
+
+
 # ── Live-system guard ──────────────────────────────────────────────────────
 #
 # Several test files exercise the gateway-restart / kill code paths
@@ -543,6 +590,7 @@ def _live_system_guard(request, monkeypatch):
 
     import os as _os
     import shlex as _shlex
+    import shutil as _shutil
     import subprocess as _subprocess
 
     test_pid = _os.getpid()
@@ -557,6 +605,7 @@ def _live_system_guard(request, monkeypatch):
     except Exception:
         _psutil = None
         _initial_children = set()
+    _spawned_children = set()
 
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
@@ -567,7 +616,7 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
-        if pid == test_pid or pid in _initial_children:
+        if pid == test_pid or pid in _initial_children or pid in _spawned_children:
             return True
         if _psutil is None:
             return False
@@ -616,7 +665,7 @@ def _live_system_guard(request, monkeypatch):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
-                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
+                f"os.killpg({pgid}, {sig}) — PGID is outside the test "  # windows-footgun: ok
                 "process group. See _live_system_guard for the why."
             )
 
@@ -712,9 +761,24 @@ def _live_system_guard(request, monkeypatch):
                 "intentional."
             )
 
+    def _missing_systemctl_result(cmd):
+        cmd_str = _cmd_to_string(cmd)
+        if "systemctl" not in cmd_str or _shutil.which("systemctl") is not None:
+            return None
+        return _subprocess.CompletedProcess(
+            cmd,
+            127,
+            "",
+            "systemctl is not available on this system\n",
+        )
+
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
             _check_subprocess_cmd(name, cmd)
+            if name == "run":
+                missing_systemctl = _missing_systemctl_result(cmd)
+                if missing_systemctl is not None:
+                    return missing_systemctl
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -734,6 +798,7 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd)
                 super().__init__(cmd, *args, **kwargs)
+                _spawned_children.add(self.pid)
 
         _GuardedPopen.__name__ = "Popen"
         _GuardedPopen.__qualname__ = "Popen"

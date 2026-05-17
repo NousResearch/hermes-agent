@@ -10,7 +10,7 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         # Real discord is installed — nothing to do.
         return
 

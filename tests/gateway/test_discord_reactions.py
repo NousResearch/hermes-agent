@@ -13,7 +13,7 @@ from gateway.session import SessionSource, build_session_key
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         return
 
     discord_mod = MagicMock()

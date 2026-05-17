@@ -2800,8 +2800,8 @@
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPatch),
-      }).then(function () { load(); props.onRefresh(); })
-        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+      }).then(function () { setPatchErr(null); load(); props.onRefresh(); })
+        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); throw e; });
     };
 
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
@@ -2936,6 +2936,8 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          patchErr: patchErr,
+          setPatchErr: setPatchErr,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
           onAddParent: addLink,
@@ -3010,6 +3012,8 @@
       h(StatusActions, {
         task: t,
         onPatch: props.onPatch,
+        patchErr: props.patchErr,
+        setPatchErr: props.setPatchErr,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
@@ -3480,7 +3484,9 @@
     const [decomposeMsg, setDecomposeMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
-        onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
+        onClick: function () {
+          if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }).catch(function () {});
+        },
         disabled: enabled === false,
         size: "sm",
       }, label);
@@ -3599,6 +3605,9 @@
           ? "hermes-kanban-msg-ok"
           : "hermes-kanban-msg-err",
       }, decomposeMsg.text) : null,
+      props.patchErr ? h("div", {
+        className: "hermes-kanban-msg-err",
+      }, props.patchErr) : null,
     );
   }
 

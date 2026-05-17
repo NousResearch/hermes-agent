@@ -5639,19 +5639,18 @@ class GatewayRunner:
                 self._running_agent_count(),
             )
 
-            if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+            # Clear pre-drain markers for sessions that completed during the
+            # drain window. Keep markers only for sessions that are still
+            # running when the drain times out.
+            for _sk in _pre_drain_keys:
+                if _sk not in self._running_agents:
+                    try:
+                        self.session_store.clear_resume_pending(_sk)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending after drain failed for %s: %s",
+                            _sk, _e,
+                        )
 
             if timed_out:
                 logger.warning(

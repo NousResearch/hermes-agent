@@ -2,24 +2,15 @@
 
 import importlib
 
-import pytest
-
-from model_tools import get_tool_definitions
+from model_tools import _clear_tool_defs_cache, get_tool_definitions
+from tools.registry import invalidate_check_fn_cache
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 
-@pytest.fixture(autouse=True)
-def _clear_caches():
-    """Invalidate check_fn and tool-definitions caches before each test
-    so that monkeypatched env vars / config take effect."""
-    from tools.registry import invalidate_check_fn_cache
-    from model_tools import _clear_tool_defs_cache
-    invalidate_check_fn_cache()
+def _clear_tool_availability_cache() -> None:
     _clear_tool_defs_cache()
-    yield
     invalidate_check_fn_cache()
-    _clear_tool_defs_cache()
 
 
 class TestTerminalRequirements:
@@ -37,6 +28,7 @@ class TestTerminalRequirements:
             "_get_env_config",
             lambda: {"env_type": "local"},
         )
+        _clear_tool_availability_cache()
         tools = get_tool_definitions(enabled_toolsets=["terminal", "file"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
         assert "terminal" in names
@@ -59,6 +51,7 @@ class TestTerminalRequirements:
             "is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
+        _clear_tool_availability_cache()
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
@@ -77,6 +70,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
+        _clear_tool_availability_cache()
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
@@ -99,6 +93,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
+        _clear_tool_availability_cache()
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 
@@ -124,6 +119,7 @@ class TestTerminalRequirements:
             "find_spec",
             lambda _name: object(),
         )
+        _clear_tool_availability_cache()
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 

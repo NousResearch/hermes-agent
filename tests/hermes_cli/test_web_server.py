@@ -2066,9 +2066,14 @@ import sys
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
 )
+skip_without_ptyprocess = pytest.mark.skipif(
+    sys.platform != "win32" and __import__("importlib.util").util.find_spec("ptyprocess") is None,
+    reason="PTY bridge tests require optional ptyprocess dependency",
+)
 
 
 @skip_on_windows
+@skip_without_ptyprocess
 class TestPtyWebSocket:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, _isolate_hermes_home):

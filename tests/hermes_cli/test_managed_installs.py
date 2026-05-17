@@ -1,26 +1,22 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.config import (
-    format_managed_message,
-    get_managed_system,
-    recommended_update_command,
-)
-from hermes_cli.main import cmd_update
+import hermes_cli.config as cli_config
+import hermes_cli.main as cli_main
 from tools.skills_hub import OptionalSkillSource
 
 
 def test_get_managed_system_homebrew(monkeypatch):
     monkeypatch.setenv("HERMES_MANAGED", "homebrew")
 
-    assert get_managed_system() == "Homebrew"
-    assert recommended_update_command() == "brew upgrade hermes-agent"
+    assert cli_config.get_managed_system() == "Homebrew"
+    assert cli_config.recommended_update_command() == "brew upgrade hermes-agent"
 
 
 def test_format_managed_message_homebrew(monkeypatch):
     monkeypatch.setenv("HERMES_MANAGED", "homebrew")
 
-    message = format_managed_message("update Hermes Agent")
+    message = cli_config.format_managed_message("update Hermes Agent")
 
     assert "managed by Homebrew" in message
     assert "brew upgrade hermes-agent" in message
@@ -34,16 +30,16 @@ def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
     # somewhere with that marker, which would make get_managed_update_command()
     # return "Update your Nix flake input ..." instead of falling through to
     # detect_install_method().
-    with patch("hermes_cli.config.get_managed_update_command", return_value=None), \
-         patch("hermes_cli.config.detect_install_method", return_value="git"):
-        assert recommended_update_command() == "hermes update"
+    with patch.object(cli_config, "get_managed_update_command", return_value=None), \
+         patch.object(cli_config, "detect_install_method", return_value="git"):
+        assert cli_config.recommended_update_command() == "hermes update"
 
 
 def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_MANAGED", "homebrew")
 
-    with patch("hermes_cli.main.subprocess.run") as mock_run:
-        cmd_update(SimpleNamespace())
+    with patch.object(cli_main.subprocess, "run") as mock_run:
+        cli_main.cmd_update(SimpleNamespace())
 
     assert not mock_run.called
     captured = capsys.readouterr()

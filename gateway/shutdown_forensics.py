@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -203,9 +204,9 @@ def spawn_async_diagnostic(
     """Fire-and-forget ``ps``-style snapshot written to ``log_path``.
 
     Runs as a detached subprocess so it can't block the asyncio event loop
-    or compete with platform teardown.  The subprocess uses its own
-    ``timeout`` so a wedged ``ps`` still self-cleans within
-    ``timeout_seconds``.
+    or compete with platform teardown.  The subprocess arms its own shell
+    watchdog, and uses the platform ``timeout`` binary when available, so a
+    wedged ``ps`` still self-cleans within ``timeout_seconds``.
 
     Returns the subprocess PID on success, ``None`` on failure.  Never
     raises.
@@ -227,6 +228,8 @@ def spawn_async_diagnostic(
         return None
 
     script = (
+        f"_hermes_diag_pid=$$; (sleep {timeout_seconds:.0f}; kill -TERM -- -\"$_hermes_diag_pid\" 2>/dev/null) & "
+        "_hermes_diag_watchdog=$!; trap 'kill \"$_hermes_diag_watchdog\" 2>/dev/null || true' EXIT; "
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
         "echo '--- ps auxf (top 60 by cpu) ---'; "
@@ -254,8 +257,12 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        argv = ["bash", "-c", script]
+        timeout_bin = shutil.which("timeout")
+        if timeout_bin:
+            argv = [timeout_bin, f"{timeout_seconds:.0f}", *argv]
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            argv,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

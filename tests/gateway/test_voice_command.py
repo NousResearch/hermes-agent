@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 def _ensure_discord_mock():
     """Install a lightweight discord mock when discord.py isn't available."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    if "discord" in sys.modules and isinstance(getattr(sys.modules["discord"], "__file__", None), str):
         return
 
     discord_mod = MagicMock()
@@ -460,8 +460,8 @@ class TestSendVoiceReply:
         assert call_kwargs["reply_to"] == "462"
         assert call_kwargs["metadata"] == {
             "thread_id": "20197",
-            "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
             # Final voice reply is notify-worthy (issue #27970 Bug 2):
             # mirrors the final-text path in gateway/platforms/base.py.

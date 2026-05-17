@@ -450,6 +450,36 @@ class TestLoadGatewayConfig:
             "789": "Creative writing",
         }
 
+    def test_bridges_telegram_group_topics_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  group_topics:\n"
+            "    - chat_id: -1001234567\n"
+            "      topics:\n"
+            "        - thread_id: 26\n"
+            "          name: Supplier email search\n"
+            "        - thread_id: \"1434\"\n"
+            "          name: Product price research\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["group_topics"] == [
+            {
+                "chat_id": -1001234567,
+                "topics": [
+                    {"thread_id": 26, "name": "Supplier email search"},
+                    {"thread_id": "1434", "name": "Product price research"},
+                ],
+            }
+        ]
+
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

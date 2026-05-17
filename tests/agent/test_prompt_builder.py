@@ -47,6 +47,7 @@ class TestGuidanceConstants:
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "Do not use session_search for questions about the current chat" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 
@@ -809,6 +810,12 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_telegram_hint_prefers_concise_replies(self):
+        hint = PLATFORM_HINTS["telegram"]
+        assert "Keep replies short" in hint
+        assert "one main next step" in hint
+        assert "no long essays" in hint
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint
@@ -1186,6 +1193,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
 

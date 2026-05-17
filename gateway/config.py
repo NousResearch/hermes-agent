@@ -850,6 +850,24 @@ def load_gateway_config() -> GatewayConfig:
                     else:
                         bridged["channel_prompts"] = channel_prompts
                 enabled_was_explicit = "enabled" in platform_cfg
+                if "workrooms" in platform_cfg:
+                    workrooms = platform_cfg["workrooms"]
+                    if isinstance(workrooms, dict):
+                        bridged["workrooms"] = {str(k): v for k, v in workrooms.items()}
+                    else:
+                        bridged["workrooms"] = workrooms
+                if plat == Platform.TELEGRAM and "group_topics" in platform_cfg:
+                    group_topics = platform_cfg["group_topics"]
+                    bridged["group_topics"] = group_topics
+                if plat == Platform.TELEGRAM and "dm_topics" in platform_cfg:
+                    dm_topics = platform_cfg["dm_topics"]
+                    bridged["dm_topics"] = dm_topics
+                if "project_groups" in platform_cfg:
+                    project_groups = platform_cfg["project_groups"]
+                    if isinstance(project_groups, dict):
+                        bridged["project_groups"] = {str(k): v for k, v in project_groups.items()}
+                    else:
+                        bridged["project_groups"] = project_groups
                 if not bridged and not enabled_was_explicit:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)

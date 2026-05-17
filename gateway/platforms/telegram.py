@@ -1355,7 +1355,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -1388,7 +1388,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                     error_callback=_polling_error_callback,
                 )
             
@@ -1599,16 +1599,20 @@ class TelegramAdapter(BasePlatformAdapter):
                         # (not transient network issues). Detect and handle
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
-                            if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                # Thread doesn't exist — retry without
-                                # message_thread_id so the message still
-                                # reaches the chat.
+                            if self._is_thread_not_found_error(send_err) and (
+                                effective_thread_id is not None or reply_to_id is not None
+                            ):
+                                # Closed/deleted Telegram topics can be selected either by
+                                # message_thread_id or by replying to a message inside the
+                                # topic. Clear both routing hints so the fallback reaches the
+                                # parent chat instead of failing with Topic_closed again.
                                 logger.warning(
-                                    "[%s] Thread %s not found, retrying without message_thread_id",
-                                    self.name, effective_thread_id,
+                                    "[%s] Thread/reply route rejected (%s), retrying in parent chat without message_thread_id/reply_to",
+                                    self.name, send_err,
                                 )
                                 effective_thread_id = None
                                 thread_kwargs = {"message_thread_id": None}
+                                reply_to_id = None
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
@@ -4689,6 +4693,10 @@ class TelegramAdapter(BasePlatformAdapter):
                             topic_skill = topic.get("skill")
                             break
                     break
+            if not chat_topic and hasattr(message, "forum_topic_created") and message.forum_topic_created:
+                created_name = message.forum_topic_created.name
+                if created_name:
+                    chat_topic = created_name
 
         # Build source
         source = self.build_source(

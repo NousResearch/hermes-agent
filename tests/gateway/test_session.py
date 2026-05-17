@@ -2,12 +2,14 @@
 
 import json
 import pytest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
+    SessionEntry,
     SessionStore,
     build_session_context,
     build_session_context_prompt,
@@ -429,6 +431,139 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+
+    def test_thread_prompt_scopes_current_session(self):
+        """Threaded chats should tell the model not to infer from other sessions."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Hermes",
+            chat_type="group",
+            thread_id="17585",
+            chat_topic="Product price research",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Channel Topic:** Product price research" in prompt
+        assert "**Session scope:**" in prompt
+        assert "not from other sessions" in prompt
+
+
+class TestSessionContextPersistence:
+    def test_existing_session_persists_later_discovered_topic(self, tmp_path):
+        """A topic name discovered after session creation should stick."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+
+        base_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="Hermes",
+            chat_type="group",
+            thread_id="42",
+            user_id="7",
+        )
+        entry = store.get_or_create_session(base_source)
+        assert entry.origin.chat_topic is None
+
+        discovered_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="Hermes",
+            chat_type="group",
+            thread_id="42",
+            user_id="7",
+            chat_topic="Supplier email search",
+        )
+        same_entry = store.get_or_create_session(discovered_source)
+        assert same_entry.session_id == entry.session_id
+        assert same_entry.origin.chat_topic == "Supplier email search"
+
+        later_source_without_topic = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="Hermes",
+            chat_type="group",
+            thread_id="42",
+            user_id="7",
+        )
+        ctx = build_session_context(later_source_without_topic, config, same_entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Channel Topic:** Supplier email search" in prompt
+
+
+class TestSessionStoreSave:
+    def test_save_merges_existing_entries_by_default(self, tmp_path):
+        """A stale writer with one loaded key must not wipe other topics."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        sessions_file = tmp_path / "sessions.json"
+        sessions_file.write_text(
+            json.dumps(
+                {
+                    "agent:main:telegram:group:-1001:old": {
+                        "session_key": "agent:main:telegram:group:-1001:old",
+                        "session_id": "old_sid",
+                        "created_at": "2026-05-16T20:00:00",
+                        "updated_at": "2026-05-16T20:00:00",
+                        "platform": "telegram",
+                        "chat_type": "group",
+                        "origin": {
+                            "platform": "telegram",
+                            "chat_id": "-1001",
+                            "chat_type": "group",
+                            "thread_id": "old",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._entries = {
+            "agent:main:telegram:group:-1001:new": SessionEntry(
+                session_key="agent:main:telegram:group:-1001:new",
+                session_id="new_sid",
+                created_at=datetime.fromisoformat("2026-05-16T21:00:00"),
+                updated_at=datetime.fromisoformat("2026-05-16T21:00:00"),
+                origin=SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id="-1001",
+                    chat_type="group",
+                    thread_id="new",
+                ),
+                platform=Platform.TELEGRAM,
+                chat_type="group",
+            )
+        }
+        store._loaded = True
+
+        store._save()
+
+        saved = json.loads(sessions_file.read_text(encoding="utf-8"))
+        assert set(saved) == {
+            "agent:main:telegram:group:-1001:old",
+            "agent:main:telegram:group:-1001:new",
+        }
+        assert saved["agent:main:telegram:group:-1001:new"]["session_id"] == "new_sid"
 
 
 class TestSenderPrefixWithBackfill:

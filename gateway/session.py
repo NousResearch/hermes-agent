@@ -14,9 +14,10 @@ import os
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,31 @@ from .whatsapp_identity import (
 from utils import atomic_replace
 
 
+@contextmanager
+def _session_index_file_lock(sessions_dir: Path):
+    """Serialize cross-process writes to the session index on POSIX hosts."""
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = sessions_dir / "sessions.json.lock"
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        fcntl_module = None
+        try:
+            import fcntl as fcntl_module
+
+            fcntl_module.flock(lock_file.fileno(), fcntl_module.LOCK_EX)
+        except ImportError:
+            # Windows does not provide fcntl; keep the existing atomic-write
+            # behavior there and use the lock where the gateway is deployed.
+            pass
+        try:
+            yield
+        finally:
+            if fcntl_module is not None:
+                try:
+                    fcntl_module.flock(lock_file.fileno(), fcntl_module.LOCK_UN)
+                except Exception:
+                    pass
+
+
 @dataclass
 class SessionSource:
     """
@@ -91,6 +117,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    workroom_cwd: Optional[str] = None  # Optional per-chat/topic working directory
     
     @property
     def description(self) -> str:
@@ -123,6 +150,7 @@ class SessionSource:
             "user_name": self.user_name,
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
+            "workroom_cwd": self.workroom_cwd,
         }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
@@ -152,6 +180,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            workroom_cwd=data.get("workroom_cwd"),
         )
     
 
@@ -292,6 +321,15 @@ def build_session_context_prompt(
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+    if context.source.workroom_cwd:
+        lines.append(f"**Working folder:** {context.source.workroom_cwd}")
+    if context.source.thread_id:
+        lines.append(
+            "**Session scope:** This conversation is scoped to this chat/thread. "
+            "When asked what this session or topic is about, answer from this "
+            "conversation history and the Channel Topic if present, not from "
+            "other sessions."
+        )
 
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
@@ -718,28 +756,48 @@ class SessionStore:
 
         self._loaded = True
     
-    def _save(self) -> None:
+    def _save(self, *, allow_deletions: bool = False) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
 
-        data = {key: entry.to_dict() for key, entry in self._entries.items()}
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, sessions_file)
-        except BaseException:
+        with _session_index_file_lock(self.sessions_dir):
+            data = {key: entry.to_dict() for key, entry in self._entries.items()}
+            if not allow_deletions and sessions_file.exists():
+                try:
+                    with open(sessions_file, "r", encoding="utf-8") as f:
+                        existing = json.load(f) or {}
+                    if isinstance(existing, dict):
+                        missing_count = 0
+                        for key, value in existing.items():
+                            if key not in data:
+                                missing_count += 1
+                            data.setdefault(key, value)
+                        if missing_count:
+                            logger.warning(
+                                "Merged %d existing session index entries absent from memory before save",
+                                missing_count,
+                            )
+                except Exception as e:
+                    logger.warning(
+                        "Could not merge existing session index before save: %s", e,
+                    )
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
+            )
             try:
-                os.unlink(tmp_path)
-            except OSError as e:
-                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, sessions_file)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError as e:
+                    logger.debug("Could not remove temp file %s: %s", tmp_path, e)
+                raise
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
@@ -748,6 +806,18 @@ class SessionStore:
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
+
+    @staticmethod
+    def _refresh_origin_context(entry: SessionEntry, source: SessionSource) -> bool:
+        """Persist newly discovered stable context for an existing session."""
+        changed = False
+        if source.chat_topic and source.chat_topic != entry.origin.chat_topic:
+            entry.origin.chat_topic = source.chat_topic
+            changed = True
+        if source.workroom_cwd and source.workroom_cwd != entry.origin.workroom_cwd:
+            entry.origin.workroom_cwd = source.workroom_cwd
+            changed = True
+        return changed
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -893,12 +963,14 @@ class SessionStore:
                     # the NEXT successful turn completes (not here), which
                     # means a re-interrupted retry keeps trying — the
                     # stuck-loop counter handles terminal escalation.
+                    self._refresh_origin_context(entry, source)
                     entry.updated_at = now
                     self._save()
                     return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
+                    self._refresh_origin_context(entry, source)
                     entry.updated_at = now
                     self._save()
                     return entry
@@ -1082,7 +1154,7 @@ class SessionStore:
             for key in removed_keys:
                 self._entries.pop(key, None)
             if removed_keys:
-                self._save()
+                self._save(allow_deletions=True)
 
         if removed_keys:
             logger.info(
@@ -1378,6 +1450,17 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    if session_entry:
+        origin = session_entry.origin
+        if (not source.chat_topic and origin.chat_topic) or (
+            not source.workroom_cwd and origin.workroom_cwd
+        ):
+            source = replace(
+                source,
+                chat_topic=source.chat_topic or origin.chat_topic,
+                workroom_cwd=source.workroom_cwd or origin.workroom_cwd,
+            )
+
     context = SessionContext(
         source=source,
         connected_platforms=connected,

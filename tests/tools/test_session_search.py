@@ -36,6 +36,8 @@ class TestSessionSearchSchema:
     def test_keeps_cross_session_recall_guidance_without_current_session_nudge(self):
         description = SESSION_SEARCH_SCHEMA["description"]
         assert "past conversations" in description
+        assert "EXCLUDES the current session" in description
+        assert "Do NOT use this tool to answer what is happening in the current chat" in description
         assert "recent turns of the current session" not in description
 
 

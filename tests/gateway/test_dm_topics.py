@@ -706,6 +706,25 @@ def test_group_topic_no_config():
     assert event.source.chat_topic is None
 
 
+def test_group_forum_topic_created_sets_chat_topic_without_config():
+    """Telegram service messages can seed the topic name even without config."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=42,
+        text="",
+        forum_topic_created=SimpleNamespace(name="Supplier email search"),
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic == "Supplier email search"
+
+
 def test_group_topic_chat_id_int_string_coercion():
     """chat_id as string in config should match integer chat.id via str() coercion."""
     from gateway.platforms.base import MessageType

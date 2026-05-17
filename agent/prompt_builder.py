@@ -173,7 +173,9 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. Do not use session_search for questions "
+    "about the current chat/thread/topic/session; the current transcript and "
+    "Current Session Context are the source of truth for those."
 )
 
 SKILLS_GUIDANCE = (
@@ -421,6 +423,10 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
+        "Keep replies short and conversational by default: one clear answer, "
+        "one main next step, no long essays, and no broad option lists unless "
+        "the user explicitly asks for detail. If tool work produced many "
+        "results, report only the main outcome and where it was saved. "
         "Standard markdown is automatically converted to Telegram format. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "

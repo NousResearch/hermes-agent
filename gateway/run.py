@@ -1728,13 +1728,21 @@ class GatewayRunner:
         self, session_key: str, text: str
     ) -> str | None:
         """Return the selected prompt if `text` is a valid numbered selection,
-        or None if it's not. Clears stale (120s+) state."""
-        state = self._pending_history_selection.get(session_key)
+        or None if it's not. Clears stale (120s+) state.
+
+        Tolerates bare ``GatewayRunner`` instances created with
+        ``object.__new__`` (common in unit-test fixtures) by returning None
+        when ``_pending_history_selection`` has not been initialized.
+        """
+        pending = getattr(self, "_pending_history_selection", None)
+        if pending is None:
+            return None
+        state = pending.get(session_key)
         if not state:
             return None
         import time as _time
         if _time.time() - state.get("timestamp", 0) > 120:
-            self._pending_history_selection.pop(session_key, None)
+            pending.pop(session_key, None)
             return None
         try:
             idx = int(text.strip())
@@ -1743,7 +1751,7 @@ class GatewayRunner:
         if idx < 1 or idx > len(state["prompts"]):
             return None
         selected = state["prompts"][idx - 1]
-        self._pending_history_selection.pop(session_key, None)
+        pending.pop(session_key, None)
         return selected
 
     # Telegram's General (pinned top) topic in forum-enabled private chats.

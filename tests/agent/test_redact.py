@@ -886,3 +886,25 @@ class TestFileReadNonReusableRedaction:
         out = redact_sensitive_text(f"key: {self.SK}", force=True, file_read=True)
         assert "«redacted:sk-…»" in out
         assert self.SK not in out
+
+
+class TestFireworksToken:
+    KEY = "fw_" + "A" * 40
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "fw_AA" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"FIREWORKS_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "fw_tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("fw_AA")

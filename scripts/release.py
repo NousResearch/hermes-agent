@@ -1113,6 +1113,19 @@ AUTHOR_MAP = {
     "hermesagent26@gmail.com": "hermesagent26",  # PR #26438 (kimi model-name reasoning pad)
     "276067471+hermesagent26@users.noreply.github.com": "hermesagent26",
     "71590782+kriscolab@users.noreply.github.com": "kriscolab",  # PR #26926 (deepseek default_aux_model)
+    # batch salvage (May 2026 LHF run, group 3)
+    "darvsum@users.noreply.github.com": "darvsum",  # PR #26766 (preserve discover_models in normalize)
+    "peter@Peters-Mac-mini.local": "hueilau",  # PR #26498 (strip image parts for non-vision)
+    "33933019+hueilau@users.noreply.github.com": "hueilau",
+    "32297275+Timur00Kh@users.noreply.github.com": "Timur00Kh",  # PR #27114 (telegram DM topic for synthetic events)
+    "al.bellemare@gmail.com": "Grogger",  # PR #27061 (windows console flash suppress)
+    "clement@nousresearch.com": "lemassykoi",  # PR #27042 (model-switch probe keyless providers)
+    "16377344+lemassykoi@users.noreply.github.com": "lemassykoi",
+    "draplater@icloud.com": "draplater",  # PR #26707 (goal judge current time)
+    "6349758+draplater@users.noreply.github.com": "draplater",
+    "pr7426@users.noreply.github.com": "pr7426",  # PR #27048 (cron parallel job loss)
+    "rahulnilvan43@gmail.com": "therahul-yo",  # PR #26215 (mock keychain in tests)
+    "kingsleyemeka117@gmail.com": "flamiinngo",  # PR #27205 (UnicodeEncodeError footgun checker)
 }
 
 

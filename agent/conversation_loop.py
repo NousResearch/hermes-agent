@@ -4007,6 +4007,29 @@ def run_conversation(
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
                 
+                # Close streaming display (response box, reasoning box)
+                # before processing the final response.  The tool-call
+                # path does this via stream_delta_callback(None) before
+                # executing tools; the text-only path must do it here
+                # so buffered content is flushed and the response box
+                # footer (╰─...╯) is drawn.
+                if agent.stream_delta_callback:
+                    try:
+                        agent.stream_delta_callback(None)
+                    except Exception:
+                        pass
+                    # Mark the response as already previewed (streamed live)
+                    # so the CLI skips the second Rich Panel render.  The
+                    # flush above calls _flush_stream (footer drawn) but also
+                    # _reset_stream_state, which clears _stream_started and
+                    # _stream_box_opened — without this flag the CLI thinks
+                    # nothing was streamed and renders the response again.
+                    # IMPORTANT: This must stay inside the stream_delta_callback
+                    # check — gateway platforms (Telegram, Discord, etc.) do NOT
+                    # set stream_delta_callback, so setting this flag would
+                    # cause the gateway to suppress the final response delivery.
+                    agent._response_was_previewed = True
+                
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

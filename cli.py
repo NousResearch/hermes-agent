@@ -4951,6 +4951,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""
 
+        # Recover any text held back by partial-tag detection.  _stream_delta
+        # holds characters that could be the start of a <think>/<reasoning>
+        # tag (e.g. a trailing "<" or "<t" at a chunk boundary).  When the
+        # stream ends without more chunks, this held text must be emitted
+        # rather than silently dropped.
+        if not getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
+            self._emit_stream_text(self._stream_prefilt)
+            self._stream_prefilt = ""
+
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 

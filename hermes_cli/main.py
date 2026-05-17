@@ -10120,6 +10120,12 @@ def main():
     slack_parser.set_defaults(func=cmd_slack)
 
     # =========================================================================
+    # send command — pipe shell-script output to any configured platform
+    # =========================================================================
+    from hermes_cli.send_cmd import register_send_subparser
+    register_send_subparser(subparsers)
+
+    # =========================================================================
     # login command
     # =========================================================================
     login_parser = subparsers.add_parser(

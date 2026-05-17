@@ -108,6 +108,44 @@ class TestHistoryCommand:
         assert "nonexistent" in result
 
     @pytest.mark.asyncio
+    async def test_search_uses_fts5_when_available(self):
+        """When _session_db is set, search_messages() should be called."""
+        from unittest.mock import MagicMock
+
+        msgs = _sample_transcript()
+        runner, store = _make_runner(transcript=msgs)
+
+        # Wire a mock _session_db with FTS5 search
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"content": "FTS5 matched result", "role": "user"}
+        ]
+        runner._session_db = mock_db
+
+        event = _make_event(args="fts5 keyword")
+        result = await runner._handle_history_command(event)
+
+        mock_db.search_messages.assert_called_once()
+        assert "FTS5 matched result" in result
+
+    @pytest.mark.asyncio
+    async def test_search_fts5_fallback_to_substring_on_error(self):
+        """When FTS5 raises an exception, fall back to substring matching."""
+        from unittest.mock import MagicMock
+
+        msgs = _sample_transcript()
+        runner, store = _make_runner(transcript=msgs)
+
+        mock_db = MagicMock()
+        mock_db.search_messages.side_effect = RuntimeError("FTS5 failed")
+        runner._session_db = mock_db
+
+        event = _make_event(args="prompt number 3")
+        result = await runner._handle_history_command(event)
+
+        assert "User prompt number 3" in result
+
+    @pytest.mark.asyncio
     async def test_page_out_of_range_clamps_to_last_page(self):
         msgs = _sample_transcript()
         runner, store = _make_runner(transcript=msgs)

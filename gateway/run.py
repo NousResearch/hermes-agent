@@ -12077,12 +12077,48 @@ class GatewayRunner:
                 if content and isinstance(content, str):
                     user_prompts.append(content.strip())
 
-        # If searching, filter by keyword (simple substring match for now)
+        # If searching, use FTS5 if available, else substring match
         if search_query:
-            q = search_query.lower()
-            user_prompts = [p for p in user_prompts if q in p.lower()]
-            if not user_prompts:
-                return f"No history items found matching \"{search_query}\".\\n\\nTo see all recent history: /history"
+            _fts5_db = getattr(self, "_session_db", None)
+            if _fts5_db is not None:
+                try:
+                    _results = _fts5_db.search_messages(
+                        query=search_query,
+                        role_filter=["user"],
+                        limit=100,
+                    )
+                    user_prompts = []
+                    for r in _results:
+                        content = r.get("content", "")
+                        if content and isinstance(content, str):
+                            user_prompts.append(content.strip())
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+                except Exception as _fts5_err:
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        "history: FTS5 search failed, falling back: %s", _fts5_err
+                    )
+                    # Fall through to substring matching below
+                    q = search_query.lower()
+                    user_prompts = [p for p in user_prompts if q in p.lower()]
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+            else:
+                # Fallback: substring matching when session_db unavailable
+                q = search_query.lower()
+                user_prompts = [p for p in user_prompts if q in p.lower()]
+                if not user_prompts:
+                    return (
+                        f"No history items found matching \"{search_query}\"."
+                        f"\n\nTo see all recent history: /history"
+                    )
 
         if not user_prompts:
             return "(._.) No conversation history yet."

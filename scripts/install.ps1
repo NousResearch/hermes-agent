@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
@@ -10,6 +10,26 @@
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
 #
+# ----------------------------------------------------------------------------
+# !!! FILE ENCODING REQUIREMENT !!!
+# This file MUST be saved as pure ASCII (or UTF-8 WITHOUT BOM).  A leading
+# UTF-8 BOM (EF BB BF) breaks the one-line installer:
+#
+#   irm <url> | iex
+#       -> The body bytes are decoded into a .NET string that still
+#          contains U+FEFF at position 0.  PowerShell's expression-context
+#          parser (used by Invoke-Expression / [scriptblock]::Create) does
+#          NOT strip that character the way the script-file loader does,
+#          so the `param` keyword is no longer recognised, and the param
+#          block lines are parsed as bare assignments -- producing the
+#          "The assignment expression is not valid" error from #27397.
+#
+# Direct `.\install.ps1` invocation tolerates the BOM (PowerShell's file
+# host strips it), so the failure only shows up via the canonical one-line
+# installer -- which is exactly the path the README points new users at.
+#
+# When editing this file: keep it ASCII (or UTF-8 *without* BOM).  The
+# CI test in tests/scripts/test_install_ps1_encoding.py guards this.
 # ============================================================================
 
 param(

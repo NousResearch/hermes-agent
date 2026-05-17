@@ -129,6 +129,9 @@ class PooledCredential:
     def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
+        # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
+        if "last_status_at" in data and isinstance(data["last_status_at"], str):
+            data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
         extra = {k: payload[k] for k in _EXTRA_KEYS if k in payload and payload[k] is not None}
         data["extra"] = extra
         data.setdefault("id", uuid.uuid4().hex[:6])

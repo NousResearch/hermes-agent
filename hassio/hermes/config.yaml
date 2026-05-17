@@ -1,0 +1,38 @@
+name: "Hermes Agent"
+version: "0.13.0"
+slug: "hermes"
+description: "The self-improving AI agent by Nous Research"
+url: "https://github.com/NousResearch/hermes-agent"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+ingress: true
+ingress_port: 9119
+panel_icon: "mdi:robot-assistant"
+panel_title: "Hermes Agent"
+hassio_api: true
+homeassistant_api: true
+docker_api: true
+ports:
+  8642/tcp: 8642
+  9119/tcp: 9119
+ports_description:
+  8642/tcp: "Hermes Gateway API (OpenAI compatible)"
+  9119/tcp: "Hermes Dashboard"
+map:
+  - type: addon_config
+    read_only: false
+options:
+  openrouter_api_key: ""
+  openai_api_key: ""
+  anthropic_api_key: ""
+  enable_dashboard: true
+  busy_input_mode: "interrupt"
+schema:
+  openrouter_api_key: "password?"
+  openai_api_key: "password?"
+  anthropic_api_key: "password?"
+  enable_dashboard: "bool"
+  busy_input_mode: "list(interrupt|queue|steer)"

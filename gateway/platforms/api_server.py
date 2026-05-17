@@ -1067,8 +1067,21 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any = ""
         history = []
         if conversation_messages:
-            user_message = conversation_messages[-1].get("content", "")
-            history = conversation_messages[:-1]
+            # Search backwards for the last user message to ensure robustness
+            # when the trailing message is from a different role.
+            user_msg_idx = -1
+            for i in range(len(conversation_messages) - 1, -1, -1):
+                if conversation_messages[i].get("role") == "user":
+                    user_msg_idx = i
+                    break
+
+            if user_msg_idx != -1:
+                user_message = conversation_messages[user_msg_idx].get("content", "")
+                history = conversation_messages[:user_msg_idx]
+            else:
+                # Fallback to the absolute last message if no user role found
+                user_message = conversation_messages[-1].get("content", "")
+                history = conversation_messages[:-1]
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(
@@ -1268,13 +1281,14 @@ class APIServerAdapter(BasePlatformAdapter):
         completed = bool(result.get("completed", True))
         err_msg = result.get("error")
 
-        # Decide finish_reason. OpenAI uses "length" for truncation, "stop"
-        # for normal completion, and downstream SDKs accept "error" / custom
-        # codes. See issue #22496.
+        # Decide finish_reason. OpenAI uses "length" for truncation and "stop"
+        # for normal completion. Some SDKs reject custom codes like "error",
+        # so we use "stop" for failed runs that still produced text (the
+        # "hermes" block below carries the failure detail). See issue #22496.
         if is_partial and err_msg and "truncat" in err_msg.lower():
             finish_reason = "length"
         elif is_failed or (not completed and err_msg):
-            finish_reason = "error"
+            finish_reason = "stop"
         else:
             finish_reason = "stop"
 
@@ -2345,8 +2359,8 @@ class APIServerAdapter(BasePlatformAdapter):
             "model": body.get("model", self._model_name),
             "output": output_items,
             "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
+                "prompt_tokens": usage.get("input_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
@@ -2886,7 +2900,26 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        if isinstance(raw_input, str):
+            user_message = raw_input
+        elif isinstance(raw_input, list):
+            # Search backwards for the last user message
+            user_message = ""
+            for i in range(len(raw_input) - 1, -1, -1):
+                item = raw_input[i]
+                if isinstance(item, str):
+                    user_message = item
+                    break
+                if isinstance(item, dict) and item.get("role") == "user":
+                    user_message = item.get("content", "")
+                    break
+            if not user_message and raw_input:
+                # Fallback to absolute last
+                last = raw_input[-1]
+                user_message = last if isinstance(last, str) else last.get("content", "")
+        else:
+            user_message = ""
+
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 

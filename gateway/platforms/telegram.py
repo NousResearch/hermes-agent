@@ -1660,24 +1660,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
                 )
 
-            # Build recency button rows (one per recent model, max 8 shown)
-            import urllib.parse as _urlparse
+            # Add Recents button at the top (if we have recents)
+            if _recents:
+                buttons.insert(0, InlineKeyboardButton(f"🕒 Recents ({len(_recents)})", callback_data="mp:__recents__"))
 
-            _recents_rows: list = []
-            for _ri in range(min(len(_recents), 8)):
-                entry = _recents[_ri]
-                model_name = entry["model"]
-                # Truncate for button width (Telegram inline buttons have visual limits)
-                label = model_name if len(model_name) <= 28 else model_name[:25] + "..."
-                # Encode model name in callback to handle slashes/spaces safely
-                enc = _urlparse.quote(model_name, safe="")
-                mr_cb = f"mr:{enc}"  # e.g., "mr:gpt-4"
-                if len(mr_cb) <= 64:
-                    _recents_rows.append([InlineKeyboardButton(label, callback_data=mr_cb)])
-            if _recents_rows:
-                _recents_rows.insert(0, [InlineKeyboardButton(f"🕒 Recent ({len(_recents_rows)})", callback_data="mx:noop")])
-
-            rows = list(_recents_rows) + [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
             rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
             keyboard = InlineKeyboardMarkup(rows)
 
@@ -1777,6 +1764,46 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith("mp:"):
             # --- Provider selected: show model buttons (page 0) ---
             provider_slug = data[3:]
+            
+            # Special case: Recents pseudo-provider
+            if provider_slug == "__recents__":
+                _recents = state.get("_recents", [])
+                if not _recents:
+                    await query.answer(text="No recent models.")
+                    return
+                
+                # Build a flat list of recent models for display
+                import urllib.parse as _urlparse
+                
+                recent_models: list = []
+                for entry in _recents[:8]:  # Max 8 recents
+                    model_name = entry["model"]
+                    provider = entry.get("provider", "unknown")
+                    # Store provider alongside model for resolution
+                    recent_models.append((model_name, provider))
+                
+                # Store in state for mm: handler to use
+                state["selected_provider"] = "__recents__"
+                state["selected_provider_name"] = "Recents"
+                state["model_list"] = [m[0] for m in recent_models]
+                state["model_providers"] = [m[1] for m in recent_models]  # Parallel list
+                state["model_page"] = 0
+                
+                # Build keyboard using same pattern as normal model list
+                keyboard, page_info = self._build_model_keyboard(state["model_list"], 0)
+                
+                await query.edit_message_text(
+                    text=(
+                        f"⚙ *Model Configuration*\n\n"
+                        f"Provider: *Recents*{page_info}\n"
+                        f"Select a recent model:"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+                await query.answer()
+                return
+            
             provider = next(
                 (p for p in state["providers"] if p["slug"] == provider_slug),
                 None,
@@ -1858,6 +1885,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
             model_id = model_list[idx]
             provider_slug = state.get("selected_provider", "")
+            
+            # Special handling for Recents mode: look up provider from parallel list
+            if provider_slug == "__recents__":
+                model_providers = state.get("model_providers", [])
+                if idx < len(model_providers):
+                    provider_slug = model_providers[idx]
+                else:
+                    provider_slug = ""
+            
             callback = state.get("on_model_selected")
 
             if not callback:
@@ -1934,54 +1970,6 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
-        elif data.startswith("mr:"):
-            # --- Recent model selected: perform switch ---
-            import urllib.parse as _urlparse
-
-            encoded_model = data[3:]
-            try:
-                model_id = _urlparse.unquote(encoded_model)
-            except Exception as e:
-                logger.warning("Recents callback decode failed: %s", e)
-                await query.answer(text="Invalid selection.")
-                return
-
-            # Find provider from stored recency data
-            provider_slug = state.get("_recents_map", {}).get(model_id, "")
-            if not provider_slug:
-                await query.answer(text="Recent model not found.")
-                return
-
-            callback = state.get("on_model_selected")
-            if not callback:
-                await query.answer(text="Picker expired.")
-                return
-
-            try:
-                result_text = await callback(chat_id, model_id, provider_slug)
-            except Exception as exc:
-                logger.error("Model picker recents switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
-
-            # Confirm and remove buttons
-            try:
-                await query.edit_message_text(
-                    text=result_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=None,
-                )
-            except Exception:
-                try:
-                    await query.edit_message_text(
-                        text=result_text,
-                        parse_mode=None,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-            await query.answer(text="Switched!")
-            self._model_picker_state.pop(chat_id, None)
-
         else:
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
@@ -2002,7 +1990,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mm:", "mb", "mx", "mg:", "mr:")):
+        if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

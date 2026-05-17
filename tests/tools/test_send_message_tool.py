@@ -12,6 +12,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _derive_forum_thread_name,
     _parse_target_ref,
+    _send_bluebubbles,
     _send_discord,
     _send_matrix_via_adapter,
     _send_telegram,
@@ -487,6 +488,70 @@ class TestSendToPlatformChunking:
         assert len(sent_calls) >= 3
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
+
+    def test_bluebubbles_standalone_send_does_not_bind_webhook_port(self, monkeypatch):
+        """send_message's BlueBubbles path should not start a second webhook listener."""
+        state = {"connect_called": False, "closed": False}
+
+        class FakeClient:
+            async def aclose(self):
+                state["closed"] = True
+
+        class FakeLimits:
+            pass
+
+        class FakeAdapter:
+            def __init__(self, pconfig):
+                self.client = None
+                self.server_url = pconfig.extra["server_url"]
+                self.password = pconfig.extra["password"]
+                self._private_api_enabled = False
+                self._helper_connected = False
+
+            async def connect(self):
+                state["connect_called"] = True
+                raise OSError("[Errno 48] address already in use")
+
+            async def _api_get(self, path):
+                assert self.client is not None
+                if path == "/api/v1/server/info":
+                    return {"data": {"private_api": True, "helper_connected": True}}
+                return {"status": 200}
+
+            async def send(self, chat_id, message):
+                assert chat_id == "any;+;chat"
+                assert message == "hello"
+                assert self._private_api_enabled is True
+                assert self._helper_connected is True
+                return SimpleNamespace(success=True, message_id="GUID-1", error=None)
+
+        fake_bluebubbles = SimpleNamespace(
+            BlueBubblesAdapter=FakeAdapter,
+            check_bluebubbles_requirements=lambda: True,
+        )
+        fake_httpx = SimpleNamespace(AsyncClient=lambda **_kwargs: FakeClient())
+        fake_limits = SimpleNamespace(platform_httpx_limits=lambda: FakeLimits())
+
+        monkeypatch.setitem(sys.modules, "gateway.platforms.bluebubbles", fake_bluebubbles)
+        monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+        monkeypatch.setitem(sys.modules, "gateway.platforms._http_client_limits", fake_limits)
+
+        result = asyncio.run(
+            _send_bluebubbles(
+                {"server_url": "http://bb", "password": "pw"},
+                "any;+;chat",
+                "hello",
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "any;+;chat",
+            "message_id": "GUID-1",
+        }
+        assert state["connect_called"] is False
+        assert state["closed"] is True
 
     def test_matrix_media_uses_native_adapter_helper(self):
 

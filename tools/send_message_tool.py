@@ -1401,19 +1401,39 @@ async def _send_bluebubbles(extra, chat_id, message):
         return {"error": "BlueBubbles adapter not available."}
 
     try:
+        import httpx
         from gateway.config import PlatformConfig
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+
         pconfig = PlatformConfig(extra=extra)
         adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("BlueBubbles: failed to connect to server")
+        if not adapter.server_url or not adapter.password:
+            return _error("BlueBubbles: BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
+
+        # Do not call adapter.connect() here: that starts the inbound webhook
+        # listener and binds BLUEBUBBLES_WEBHOOK_PORT (8645 by default).  The
+        # real gateway already owns that port, so out-of-process send_message
+        # calls must create only a lightweight REST client for outbound sends.
+        limits = platform_httpx_limits()
+        if limits is not None:
+            adapter.client = httpx.AsyncClient(timeout=30.0, limits=limits)
+        else:
+            adapter.client = httpx.AsyncClient(timeout=30.0)
         try:
+            await adapter._api_get("/api/v1/ping")
+            info = await adapter._api_get("/api/v1/server/info")
+            server_data = (info or {}).get("data", {})
+            adapter._private_api_enabled = bool(server_data.get("private_api"))
+            adapter._helper_connected = bool(server_data.get("helper_connected"))
+
             result = await adapter.send(chat_id, message)
             if not result.success:
                 return _error(f"BlueBubbles send failed: {result.error}")
             return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
         finally:
-            await adapter.disconnect()
+            if adapter.client:
+                await adapter.client.aclose()
+                adapter.client = None
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
 

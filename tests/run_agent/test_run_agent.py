@@ -151,6 +151,44 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_aiagent_logging_uses_runtime_hermes_home_not_import_cache(monkeypatch, tmp_path):
+    """AIAgent logging must follow the active profile at init time.
+
+    run_agent._hermes_home is captured when run_agent is imported. Long-lived
+    hosts such as the Web UI bridge can import run_agent while the default
+    profile is active, then switch HERMES_HOME before creating an AIAgent for a
+    named profile. Logging setup must use the current HERMES_HOME, otherwise
+    agent.log/errors.log continue landing in the default profile.
+    """
+    import_home = tmp_path / "default-home"
+    runtime_home = tmp_path / "profiles" / "work"
+    import_home.mkdir(parents=True)
+    runtime_home.mkdir(parents=True)
+    monkeypatch.setattr(run_agent, "_hermes_home", import_home)
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+
+    with (
+        patch("hermes_logging.setup_logging") as setup_logging,
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    setup_logging.assert_called()
+    assert setup_logging.call_args.kwargs["hermes_home"] == runtime_home
+    assert setup_logging.call_args.kwargs["hermes_home"] != import_home
+
+
 class TestProviderModelNormalization:
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (

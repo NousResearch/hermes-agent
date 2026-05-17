@@ -79,6 +79,7 @@ class HonchoSessionManager:
         context_tokens: int | None = None,
         config: Any | None = None,
         runtime_user_peer_name: str | None = None,
+        runtime_user_peer_name_alt: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -89,11 +90,13 @@ class HonchoSessionManager:
             config: HonchoClientConfig from global config (provides peer_name, ai_peer,
                     write_frequency, observation, etc.).
             runtime_user_peer_name: Gateway user identity for per-user memory scoping.
+            runtime_user_peer_name_alt: Optional stable alternate gateway identity.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
         self._runtime_user_peer_name = runtime_user_peer_name
+        self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
@@ -267,6 +270,55 @@ class HonchoSessionManager:
         """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
         return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
 
+    def _runtime_user_ids(self) -> list[str]:
+        """Return runtime identity candidates in lookup order."""
+        candidates: list[str] = []
+        for value in (self._runtime_user_peer_name, self._runtime_user_peer_name_alt):
+            if value is None:
+                continue
+            candidate = str(value).strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def _session_key_fallback_peer_id(self, key: str) -> str:
+        parts = key.split(":", 1)
+        channel = parts[0] if len(parts) > 1 else "default"
+        chat_id = parts[1] if len(parts) > 1 else key
+        return self._sanitize_id(f"user-{channel}-{chat_id}")
+
+    def _resolve_user_peer_id(self, key: str) -> str:
+        """Resolve the Honcho user peer ID for this manager/session."""
+        pin_peer_name = (
+            self._config is not None
+            and bool(getattr(self._config, "peer_name", None))
+            and getattr(self._config, "pin_peer_name", False) is True
+        )
+        if pin_peer_name:
+            return self._sanitize_id(self._config.peer_name)
+
+        runtime_ids = self._runtime_user_ids()
+        if runtime_ids:
+            aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
+            if not isinstance(aliases, dict):
+                aliases = {}
+            for runtime_id in runtime_ids:
+                alias = aliases.get(runtime_id)
+                if isinstance(alias, str) and alias.strip():
+                    return self._sanitize_id(alias.strip())
+
+            primary_runtime_id = runtime_ids[0]
+            prefix = getattr(self._config, "runtime_peer_prefix", "") if self._config else ""
+            prefix = prefix.strip() if isinstance(prefix, str) else ""
+            if prefix:
+                return self._sanitize_id(f"{prefix}{primary_runtime_id}")
+            return self._sanitize_id(primary_runtime_id)
+
+        if self._config and self._config.peer_name:
+            return self._sanitize_id(self._config.peer_name)
+
+        return self._session_key_fallback_peer_id(key)
+
     def get_or_create(self, key: str) -> HonchoSession:
         """
         Get an existing session or create a new one.
@@ -285,31 +337,11 @@ class HonchoSessionManager:
         # Determine peer IDs — no lock needed (read-only, no shared state mutation).
         # Gateway sessions normally use the runtime user identity (the
         # platform-native ID: Telegram UID, Discord snowflake, Slack user,
-        # etc.) so multi-user bots scope memory per user.  For a single-user
-        # deployment the config-supplied ``peer_name`` is an unambiguous
-        # identity and we should keep it unified across platforms — see
-        # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
-        # ``honcho.json`` (or root-level ``pinPeerName: true``).
-        # `is True` (not `bool(...)`) is deliberate: several multi-user tests
-        # pass a ``MagicMock`` for ``config`` where ``mock.pin_peer_name``
-        # silently returns another MagicMock — truthy by default.  Requiring
-        # strict ``True`` keeps pinning as opt-in even for callers that
-        # haven't updated their mocks yet; real configs built via
-        # ``from_global_config`` always produce a proper boolean.
-        pin_peer_name = (
-            self._config is not None
-            and bool(getattr(self._config, "peer_name", None))
-            and getattr(self._config, "pin_peer_name", False) is True
-        )
-        if self._runtime_user_peer_name and not pin_peer_name:
-            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
-        elif self._config and self._config.peer_name:
-            user_peer_id = self._sanitize_id(self._config.peer_name)
-        else:
-            parts = key.split(":", 1)
-            channel = parts[0] if len(parts) > 1 else "default"
-            chat_id = parts[1] if len(parts) > 1 else key
-            user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
+        # etc.) so multi-user bots scope memory per user.  Config can alias
+        # known runtime IDs or prefix unknown IDs.  For a single-user
+        # deployment, ``pinPeerName`` still pins all runtime identities to
+        # ``peerName`` (see #14984).
+        user_peer_id = self._resolve_user_peer_id(key)
 
         assistant_peer_id = self._sanitize_id(
             self._config.ai_peer if self._config else "hermes-assistant"

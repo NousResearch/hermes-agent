@@ -122,6 +122,34 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
     return default
 
 
+def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
+    """Parse a string-to-string map with host-level whole-map override."""
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    if not isinstance(source, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_key, raw_value in source.items():
+        alias_key = str(raw_key).strip()
+        alias_value = str(raw_value).strip() if raw_value is not None else ""
+        if alias_key and alias_value:
+            result[alias_key] = alias_value
+    return result
+
+
+def _parse_optional_string(
+    host_obj: dict, root_obj: dict, key: str, default: str = ""
+) -> str:
+    """Parse a string field where host-level empty string can override root."""
+    if key in host_obj:
+        value = host_obj.get(key)
+    else:
+        value = root_obj.get(key, default)
+    if value is None:
+        return default
+    return str(value).strip()
+
+
 def _parse_dialectic_depth(host_val, root_val) -> int:
     """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
     for val in (host_val, root_val):
@@ -259,6 +287,12 @@ class HonchoClientConfig:
     # each platform would fork memory into its own peer (#14984).  Default
     # ``False`` preserves existing multi-user behaviour.
     pin_peer_name: bool = False
+    # Map gateway runtime user IDs to stable Honcho user peers. Host-level
+    # config replaces the root map as a whole so profiles can intentionally
+    # own their identity mappings.
+    user_peer_aliases: dict[str, str] = field(default_factory=dict)
+    # Optional prefix for unknown gateway runtime user IDs, e.g. "telegram_".
+    runtime_peer_prefix: str = ""
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -457,6 +491,16 @@ class HonchoClientConfig:
                 host_block.get("pinPeerName"),
                 raw.get("pinPeerName"),
                 default=False,
+            ),
+            user_peer_aliases=_parse_string_map(
+                host_block,
+                raw,
+                "userPeerAliases",
+            ),
+            runtime_peer_prefix=_parse_optional_string(
+                host_block,
+                raw,
+                "runtimePeerPrefix",
             ),
             enabled=enabled,
             save_messages=save_messages,

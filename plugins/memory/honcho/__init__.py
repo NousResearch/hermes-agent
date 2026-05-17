@@ -360,6 +360,7 @@ class HonchoMemoryProvider(MemoryProvider):
             config=cfg,
             context_tokens=cfg.context_tokens,
             runtime_user_peer_name=kwargs.get("user_id") or None,
+            runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
         )
 
         # ----- B3: resolve_session_name -----

@@ -26,19 +26,10 @@ import re
 import signal
 import sys
 import tempfile
-import warnings
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-# Suppress known deprecation from asyncio when tests use get_event_loop() without a running loop
-warnings.filterwarnings(
-    "ignore",
-    message="There is no current event loop",
-    category=DeprecationWarning,
-    module="asyncio",
-)
 
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -572,12 +563,10 @@ def _ensure_current_event_loop(request):
         except RuntimeError:
             loop = None
 
-    if loop is None or loop.is_closed():
+    created = loop is None or loop.is_closed()
+    if created:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        created = True
-    else:
-        created = False
 
     try:
         yield

@@ -898,8 +898,20 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                has_channel_overrides = "channel_overrides" in platform_cfg
+                if has_channel_overrides:
+                    raw_overrides = platform_cfg.get("channel_overrides")
+                    if isinstance(raw_overrides, dict):
+                        plat_data, _extra = _ensure_platform_extra_dict(
+                            platforms_data, plat.value
+                        )
+                        plat_data["channel_overrides"] = {
+                            str(cid): ov_data
+                            for cid, ov_data in raw_overrides.items()
+                            if isinstance(ov_data, dict)
+                        }
                 enabled_was_explicit = "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit:
+                if not bridged and not enabled_was_explicit and not has_channel_overrides:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:

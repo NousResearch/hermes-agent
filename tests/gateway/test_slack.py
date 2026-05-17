@@ -65,9 +65,6 @@ _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
-# Suppress AsyncMock "coroutine was never awaited" RuntimeWarning in this module
-pytestmark = pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:RuntimeWarning")
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -77,12 +74,9 @@ pytestmark = pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:Run
 def adapter():
     config = PlatformConfig(enabled=True, token="xoxb-fake-token")
     a = SlackAdapter(config)
-    # Mock the Slack app client; default users_info so _resolve_user_name gets a valid awaited response
+    # Mock the Slack app client
     a._app = MagicMock()
     a._app.client = AsyncMock()
-    a._app.client.users_info = AsyncMock(return_value={
-        "user": {"profile": {"display_name": "TestUser", "real_name": "TestUser"}, "real_name": "TestUser", "name": "TestUser"},
-    })
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them

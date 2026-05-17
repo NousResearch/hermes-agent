@@ -2804,6 +2804,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
+                    # Full structured arguments — lets /v1/runs SSE consumers
+                    # render an expandable tool-call card without falling back
+                    # to the chat-completions Responses API. Empty dict if the
+                    # caller didn't supply args (matches existing semantics in
+                    # the chat-completions branch's _on_tool_start).
+                    "arguments": args or {},
                 })
             elif event_type == "tool.completed":
                 _push({
@@ -2813,6 +2819,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "tool": tool_name,
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
+                    # Pair with `arguments` on tool.started so the run-events
+                    # stream is self-sufficient for tool-card UIs.
+                    "result": kwargs.get("result"),
                 })
             elif event_type == "reasoning.available":
                 _push({

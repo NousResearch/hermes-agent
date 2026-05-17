@@ -125,6 +125,62 @@ def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_m
     assert "homeassistant" not in cron_enabled
 
 
+def test_get_platform_tools_x_search_auto_enabled_when_xai_oauth_present(monkeypatch):
+    """x_search toolset auto-enables across platforms when xAI Grok OAuth
+    tokens are present, mirroring the HASS_TOKEN → homeassistant rule.
+
+    The user already authenticated via SuperGrok OAuth; they shouldn't have
+    to also click through `hermes tools` → X (Twitter) Search to flip the
+    toolset on. Tool's check_fn still gates schema registration if creds
+    later go missing.
+    """
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    for plat in ("cli", "cron", "telegram"):
+        enabled = _get_platform_tools({}, plat)
+        assert "x_search" in enabled, f"x_search missing for {plat}"
+
+
+def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
+    """x_search toolset auto-enables when XAI_API_KEY is set, even without
+    OAuth tokens — the API-key path is a supported credential source."""
+    monkeypatch.setenv("XAI_API_KEY", "fake-xai-key")
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" in cli_enabled
+
+
+def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
+    """Without any xAI credentials, x_search stays off — preserves the
+    "don't ship the schema to users who can't use it" default."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" not in cli_enabled
+
+
+def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
+    """Once the user has saved an explicit toolset list via `hermes tools`,
+    that list is authoritative — x_search auto-enable does NOT fire even
+    when xAI creds exist. The saved list represents deliberate choices."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    # User explicitly opted into spotify but not x_search via `hermes tools`.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "x_search" not in enabled
+    assert "spotify" in enabled
+
+
 def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
     """``[hermes-cli, spotify]`` (composite + configurable) must keep the full
     ``hermes-cli`` toolset alongside the explicit Spotify opt-in. The

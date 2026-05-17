@@ -33,6 +33,12 @@ function serializeListItem(item: unknown): string {
 /**
  * Split a user-edited list string on commas that are NOT inside JSON
  * objects/arrays, then attempt to parse each token back to its original type.
+ *
+ * JSON.parse is intentionally restricted to tokens that start with `{` or `[`
+ * — i.e. structured items. Primitive-looking tokens (numbers, `true`,
+ * `null`, bare strings) are kept verbatim as strings so that pre-existing
+ * string-list fields (e.g. `enabled_toolsets: ["web", "terminal"]`) are not
+ * silently coerced into other types and corrupt unrelated config.
  */
 function parseListInput(raw: string): unknown[] {
   const tokens = raw.split(/,(?![^{\[]*[}\]])/g);
@@ -40,11 +46,14 @@ function parseListInput(raw: string): unknown[] {
     .map((s) => {
       const t = s.trim();
       if (!t) return undefined;
-      try {
-        return JSON.parse(t);
-      } catch {
-        return t;
+      if (t.startsWith("{") || t.startsWith("[")) {
+        try {
+          return JSON.parse(t);
+        } catch {
+          return t;
+        }
       }
+      return t;
     })
     .filter((v) => v !== undefined && v !== "");
 }

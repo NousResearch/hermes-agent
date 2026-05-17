@@ -444,3 +444,50 @@ def test_strip_responses_idempotent():
     # Pass 2 - idempotent
     _, second = strip_pattern_and_format(tools)
     assert second == 0, f"Expected 0 on second pass, got {second}"
+
+
+def test_strip_responses_mixed_formats():
+    """Mixed list of OpenAI-format and Responses-format tools should both be sanitized."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "pattern": "^[a-z]+$"}
+                    }
+                }
+            }
+        },
+        # Responses-format: {"name": "...", "parameters": {...}}
+        {
+            "name": "get_time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tz": {"type": "string", "format": "date-time"}
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 2, f"Expected 2 stripped (1 pattern + 1 format), got {stripped}"
+
+    # OpenAI-format tool: pattern stripped from parameters
+    openai_params = result[0]["function"]["parameters"]["properties"]["query"]
+    assert "pattern" not in openai_params, f"pattern should be stripped: {openai_params}"
+
+    # Responses-format tool: format stripped
+    resp_params = result[1]["parameters"]["properties"]["tz"]
+    assert "format" not in resp_params, f"format should be stripped: {resp_params}"
+
+    # Verify structure preserved
+    assert result[0]["function"]["parameters"]["type"] == "object"
+    assert result[1]["parameters"]["type"] == "object"

@@ -284,6 +284,45 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+class _StreamErrorEvent(Exception):
+    """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
+
+    Some Codex-style Responses backends (xAI for subscription/quota
+    failures, custom relays under malformed-tool-call conditions) emit a
+    standalone ``type=error`` frame instead of routing the failure
+    through ``response.failed`` or returning an HTTP 4xx.  The fallback
+    streaming path raises this exception so ``_summarize_api_error`` and
+    ``_extract_api_error_context`` see a familiar ``.body`` /
+    ``.status_code`` shape and the entitlement detector can match the
+    underlying provider message ("do not have an active Grok
+    subscription", etc.).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        param: Optional[str] = None,
+        status_code: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.param = param
+        self.status_code = status_code
+        # OpenAI SDK-shaped body so _extract_api_error_context /
+        # _summarize_api_error / classify_api_error all pick it up.
+        self.body: Dict[str, Any] = {
+            "error": {
+                "message": message,
+                "code": code,
+                "param": param,
+                "type": "error",
+            }
+        }
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.

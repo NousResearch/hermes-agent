@@ -757,6 +757,14 @@ class TurnController {
     }, this.streamDelay)
   }
 
+  hydrateStreamingText(text: string) {
+    this.streamTimer = clear(this.streamTimer)
+    this.bufRef = text
+    const raw = this.bufRef.trimStart()
+    const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
+    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+  }
+
   startMessage() {
     this.endReasoningPhase()
     this.clearReasoning()

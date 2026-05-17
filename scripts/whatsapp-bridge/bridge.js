@@ -421,6 +421,12 @@ async function startSocket() {
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }
+
+      // Send read receipt back to WhatsApp so the sender sees blue ticks.
+      // Only for messages from other users (not echo-backs of our own replies).
+      if (!msg.key.fromMe) {
+        try { await sock.readMessages([msg.key]); } catch {}
+      }
     }
   });
 }

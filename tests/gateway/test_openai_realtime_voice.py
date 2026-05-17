@@ -83,6 +83,16 @@ def test_load_realtime_voice_config_supports_response_start_timeout():
     assert rt.response_start_timeout_ms == 2500
 
 
+def test_load_realtime_voice_config_aliases_codex_auth_to_managed():
+    from gateway.openai_realtime_voice import load_realtime_voice_config
+
+    cfg = {"voice": {"realtime": {"enabled": True, "auth_mode": "codex"}}}
+
+    rt = load_realtime_voice_config(cfg)
+
+    assert rt.auth_mode == "managed"
+
+
 def test_resolve_realtime_auth_direct(monkeypatch):
     import gateway.openai_realtime_voice as rt
 
@@ -139,6 +149,19 @@ def test_discord_pcm_to_realtime_pcm_downmixes_and_decimates():
     converted = discord_pcm_to_realtime_pcm(frame_1 + frame_2)
 
     assert converted == (2000).to_bytes(2, "little", signed=True)
+
+
+def test_discord_pcm_to_realtime_pcm_resamples_non_default_rate():
+    from gateway.openai_realtime_voice import discord_pcm_to_realtime_pcm
+
+    converted = discord_pcm_to_realtime_pcm(
+        b"\x01\x00" * 160,
+        src_rate=16000,
+        src_channels=1,
+        dst_rate=24000,
+    )
+
+    assert len(converted) >= 470
 
 
 def test_pcm_rms_reads_s16le_samples():

@@ -20,8 +20,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import warnings
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import audioop as _audioop
+except ImportError:  # pragma: no cover - audioop is absent in newer Python runtimes.
+    _audioop = None
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +83,34 @@ class _RealtimePCMAudioSource(_DiscordAudioSourceBase):
         elif cls._DISCORD_SAMPLE_RATE % sample_rate == 0:
             repeat = max(1, cls._DISCORD_SAMPLE_RATE // sample_rate)
         else:
-            repeat = 1
+            if _audioop is None:
+                logger.warning(
+                    "Cannot resample Realtime PCM from %dHz to Discord %dHz: audioop unavailable",
+                    sample_rate,
+                    cls._DISCORD_SAMPLE_RATE,
+                )
+                return b""
+            source_pcm = pcm[:usable]
+            try:
+                if channels >= 2:
+                    source_pcm = _audioop.tomono(source_pcm, 2, 0.5, 0.5)
+                resampled, _ = _audioop.ratecv(
+                    source_pcm,
+                    2,
+                    1,
+                    sample_rate,
+                    cls._DISCORD_SAMPLE_RATE,
+                    None,
+                )
+                return _audioop.tostereo(resampled, 2, 1.0, 1.0)
+            except Exception:
+                logger.warning(
+                    "Failed to resample Realtime PCM from %dHz to Discord %dHz",
+                    sample_rate,
+                    cls._DISCORD_SAMPLE_RATE,
+                    exc_info=True,
+                )
+                return b""
 
         out = bytearray()
         for offset in range(0, usable, frame_width):
@@ -2361,7 +2396,15 @@ class DiscordAdapter(BasePlatformAdapter):
             vc.play(source, after=_after)
         except asyncio.TimeoutError:
             logger.warning("Realtime voice playback timed out after %ds", self.PLAYBACK_TIMEOUT)
+            if playback_sources.get(guild_id) is source:
+                playback_sources.pop(guild_id, None)
             vc.stop()
+            return False
+        except Exception:
+            logger.exception("Realtime voice playback failed to start")
+            if playback_sources.get(guild_id) is source:
+                playback_sources.pop(guild_id, None)
+            return False
         self._reset_voice_timeout(guild_id)
         return True
 

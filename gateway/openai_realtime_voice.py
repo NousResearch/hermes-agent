@@ -16,11 +16,19 @@ import os
 import queue
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional
 from urllib.parse import urlencode
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import audioop as _audioop
+except ImportError:  # pragma: no cover - audioop is absent in newer Python runtimes.
+    _audioop = None
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +109,8 @@ def load_realtime_voice_config(user_config: Optional[Dict[str, Any]] = None) -> 
     auth_mode = str(pick("auth_mode", "auto") or "auto").strip().lower()
     if auth_mode not in _VALID_AUTH_MODES:
         auth_mode = "auto"
+    if auth_mode == "codex":
+        auth_mode = "managed"
 
     return RealtimeVoiceConfig(
         enabled=enabled,
@@ -196,8 +206,7 @@ def discord_pcm_to_realtime_pcm(
     """Convert Discord s16le PCM to mono s16le PCM for Realtime input.
 
     Discord provides 48kHz stereo PCM. Realtime voice sessions commonly use
-    24kHz mono PCM. This lightweight converter downmixes stereo and keeps
-    every other sample for 48k -> 24k. Other rates fall back to downmix-only.
+    24kHz mono PCM.
     """
     if not pcm:
         return b""
@@ -205,6 +214,22 @@ def discord_pcm_to_realtime_pcm(
     usable = len(pcm) - (len(pcm) % frame_width)
     if usable <= 0:
         return b""
+    pcm = pcm[:usable]
+
+    if _audioop is not None:
+        try:
+            if src_channels >= 2:
+                mono = _audioop.tomono(pcm, 2, 0.5, 0.5)
+            else:
+                mono = pcm
+            if src_rate != dst_rate:
+                mono, _ = _audioop.ratecv(mono, 2, 1, int(src_rate), int(dst_rate), None)
+            return mono
+        except Exception:
+            logger.debug(
+                "Falling back to Python PCM conversion",
+                exc_info=True,
+            )
 
     samples: List[int] = []
     step_frames = 2 if src_rate == 48000 and dst_rate == 24000 else 1
@@ -226,6 +251,8 @@ def pcm_rms(pcm: bytes) -> float:
     usable = len(pcm) - (len(pcm) % 2)
     if usable <= 0:
         return 0.0
+    if _audioop is not None:
+        return float(_audioop.rms(pcm[:usable], 2))
     total = 0
     count = 0
     for offset in range(0, usable, 2):

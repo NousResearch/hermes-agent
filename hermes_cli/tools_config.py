@@ -1281,6 +1281,20 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
+def get_platform_tools(
+    config: dict,
+    platform: str,
+    *,
+    include_default_mcp_servers: bool = True,
+) -> Set[str]:
+    """Resolve which individual toolset names are enabled for a platform."""
+    return _get_platform_tools(
+        config,
+        platform,
+        include_default_mcp_servers=include_default_mcp_servers,
+    )
+
+
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 

@@ -10308,11 +10308,11 @@ class GatewayRunner:
                 auth.mode,
             )
 
-            from hermes_cli.tools_config import _get_platform_tools
+            from hermes_cli.tools_config import get_platform_tools
             from model_tools import get_tool_definitions
 
             platform_key = _platform_config_key(event.source.platform)
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = sorted(get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
             tool_schemas = get_tool_definitions(

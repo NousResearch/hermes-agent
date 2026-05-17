@@ -857,7 +857,7 @@ class TestVoiceChannelCommands:
                 mode="managed",
             ),
         )
-        monkeypatch.setattr(tools_config, "_get_platform_tools", lambda _config, _platform: {"core"})
+        monkeypatch.setattr(tools_config, "get_platform_tools", lambda _config, _platform: {"core"})
         terminal_schema = {
             "type": "function",
             "function": {
@@ -1432,7 +1432,7 @@ class TestDiscordVoiceChannelMethods:
         await asyncio.wait_for(queue.join(), timeout=1)
         mock_vc.stop.assert_called_once()
 
-    def test_realtime_pcm_audio_source_converts_to_discord_frame(self):
+    def test_realtime_pcm_audio_source_doubles_samples_for_24khz_input(self):
         from gateway.platforms.discord import _RealtimePCMAudioSource
 
         pcm_20ms_24khz_mono = (100).to_bytes(2, "little", signed=True) * 480
@@ -1456,7 +1456,7 @@ class TestDiscordVoiceChannelMethods:
 
         session.send_discord_pcm.assert_called_once_with(b"pcm")
 
-    def test_realtime_pcm_audio_source_converts_to_discord_frames(self):
+    def test_realtime_pcm_audio_source_pads_short_frame(self):
         from gateway.platforms.discord import _RealtimePCMAudioSource
 
         # 10ms of 24kHz mono s16le should upsample to one padded 20ms Discord frame.
@@ -1468,6 +1468,16 @@ class TestDiscordVoiceChannelMethods:
         assert len(frame) == 3840
         assert frame[:8] == b"\x01\x00\x01\x00\x01\x00\x01\x00"
         assert source.read() == b""
+
+    def test_realtime_pcm_audio_source_resamples_non_divisor_rate(self):
+        from gateway.platforms.discord import _RealtimePCMAudioSource
+
+        source = _RealtimePCMAudioSource(b"\x01\x00" * 441, sample_rate=44100, channels=1)
+
+        frame = source.read()
+
+        assert len(frame) == _RealtimePCMAudioSource._FRAME_BYTES
+        assert frame.startswith(b"\x01\x00\x01\x00")
 
     def test_realtime_pcm_queue_audio_source_bridges_partial_chunks(self):
         from gateway.platforms.discord import _RealtimePCMQueueAudioSource
@@ -1536,6 +1546,25 @@ class TestDiscordVoiceChannelMethods:
         assert result is True
         source.feed.assert_called_once_with(b"\x00\x00" * 240, sample_rate=24000, channels=1)
         mock_vc.play.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_realtime_pcm_playback_clears_source_when_play_fails(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        mock_vc.play.side_effect = RuntimeError("play failed")
+        adapter._voice_clients[111] = mock_vc
+
+        result = await adapter._play_realtime_pcm_response(
+            111,
+            b"\x00\x00" * 240,
+            sample_rate=24000,
+            channels=1,
+        )
+
+        assert result is False
+        assert 111 not in adapter._voice_realtime_playback_sources
 
     def test_is_allowed_user_not_in_list(self):
         adapter = self._make_adapter()

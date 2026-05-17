@@ -1126,6 +1126,17 @@ AUTHOR_MAP = {
     "pr7426@users.noreply.github.com": "pr7426",  # PR #27048 (cron parallel job loss)
     "rahulnilvan43@gmail.com": "therahul-yo",  # PR #26215 (mock keychain in tests)
     "kingsleyemeka117@gmail.com": "flamiinngo",  # PR #27205 (UnicodeEncodeError footgun checker)
+    # batch salvage (May 2026 LHF run, group 4)
+    "283442588+EloquentBrush0x@users.noreply.github.com": "EloquentBrush0x",  # PR #26657 (trust_env aiohttp)
+    "205509009+subtract0@users.noreply.github.com": "subtract0",  # PR #25658 (zsh $status -> $rc)
+    "patryk@jarmakowicz.me": "zwolniony",  # PR #26961 (gemini x-goog-api-key)
+    "12735938+zwolniony@users.noreply.github.com": "zwolniony",
+    "ambuj@dodopayments.com": "that-ambuj",  # PR #26582 (preserve underscores)
+    "zccyman@163.com": "zccyman",  # PR #25294 (custom provider api_key_env alias)
+    "bitkyc08@gmail.com": "lidge-jun",  # PR #26814 (api server browser security headers)
+    "sp_ps@Mac-mini.lan": "phoenixshen",  # PR #26768 (respect user-configured vision model)
+    "1594534+phoenixshen@users.noreply.github.com": "phoenixshen",
+    "147827411+AhmetArif0@users.noreply.github.com": "AhmetArif0",  # PR #26635 (line proxy env vars)
 }
 
 

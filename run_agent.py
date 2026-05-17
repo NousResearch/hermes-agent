@@ -7711,6 +7711,69 @@ class AIAgent:
 
         return False, has_retried_429
 
+    # Codex soft-failure classification patterns.  These match the same
+    # billing / rate-limit signals used in agent/error_classifier.py but
+    # operate on the plain-text error message from response.error instead
+    # of on a structured exception.
+    _CODEX_BILLING_SIGNALS = (
+        "insufficient",
+        "credits have been exhausted",
+        "billing",
+        "payment required",
+        "exceeded your current quota",
+        "plan does not include",
+        "account is deactivated",
+        "exceeded the usage limit",
+        "usage limit",
+        "credit balance",
+        "top up your credits",
+        "quota",
+    )
+    _CODEX_RATE_LIMIT_SIGNALS = (
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "throttl",
+        "try again",
+        "retry",
+        "slow down",
+        "quota exceeded",
+        "requests per",
+        "tokens per",
+    )
+
+    def _classify_codex_soft_failure(
+        self,
+        error_msg: str,
+    ) -> "FailoverReason | None":
+        """Classify a Codex Responses API soft-failure message.
+
+        The Responses API returns HTTP 200 with ``response.status =
+        "failed"`` for quota exhaustion.  The error message from
+        ``response.error`` is a free-form string that we pattern-match to
+        decide whether credential pool rotation is warranted.
+
+        Returns a ``FailoverReason`` suitable for
+        ``_recover_with_credential_pool``, or ``None`` if the error is
+        not quota-related (e.g. content policy) and pool rotation should
+        not fire.
+        """
+        msg_lower = (error_msg or "").lower()
+
+        # Check billing exhaustion first — immediate rotation.
+        for _pat in self._CODEX_BILLING_SIGNALS:
+            if _pat in msg_lower:
+                return FailoverReason.billing
+
+        # Check rate-limit signals — backoff-then-rotate.
+        for _pat in self._CODEX_RATE_LIMIT_SIGNALS:
+            if _pat in msg_lower:
+                return FailoverReason.rate_limit
+
+        # Unknown soft failure (content policy, safety, etc.) — don't
+        # rotate; fall through to cross-provider fallback / retry.
+        return None
+
     def _credential_pool_may_recover_rate_limit(self) -> bool:
         """Whether a rate-limit retry should wait for same-provider credentials."""
         pool = self._credential_pool
@@ -13155,6 +13218,40 @@ class AIAgent:
                         # Invalid response — could be rate limiting, provider timeout,
                         # upstream server error, or malformed response.
                         retry_count += 1
+
+                        # ── Same-provider credential pool recovery ──
+                        # For Codex Responses API soft failures (HTTP 200 with
+                        # status=failed/cancelled), the exception handler never
+                        # fires, so pool rotation was dead.  Classify the error
+                        # message and attempt rotation before falling through to
+                        # cross-provider fallback.  Fixes #24159.
+                        _codex_soft_failure_msg = None
+                        if (
+                            self.api_mode == "codex_responses"
+                            and error_details
+                            and any("response.status=" in d for d in error_details)
+                        ):
+                            # Extract the error message captured earlier.
+                            for _d in error_details:
+                                if _d.startswith("response.status="):
+                                    _codex_soft_failure_msg = _d.split(": ", 1)[-1] if ": " in _d else ""
+                                    break
+
+                        if _codex_soft_failure_msg is not None:
+                            _pool_reason = self._classify_codex_soft_failure(
+                                _codex_soft_failure_msg,
+                            )
+                            if _pool_reason is not None:
+                                _recovered, has_retried_429 = self._recover_with_credential_pool(
+                                    status_code=None,
+                                    has_retried_429=has_retried_429,
+                                    classified_reason=_pool_reason,
+                                )
+                                if _recovered:
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    primary_recovery_attempted = False
+                                    continue
                         
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately

@@ -22,14 +22,23 @@ from playwright.async_api import Page, expect
 from tests.ui.conftest import MODELS_PAGE_URL
 
 
+async def _go_to_fallback_chain(page: Page):
+    """Navigate to Models page and switch to the Fallback Chain inner tab."""
+    await page.goto(MODELS_PAGE_URL)
+    await page.wait_for_timeout(2000)  # Wait for data to load
+    # Click the "Fallback Chain" inner tab
+    await page.locator("button:has-text('Fallback Chain')").click()
+    # Wait for React to render the new tab content
+    await page.wait_for_timeout(1000)
+
+
 class TestFallbackChainBasicUI:
     """Test basic UI elements of the fallback chain section."""
 
     @pytest.mark.asyncio
     async def test_fallback_chain_section_visible(self, page: Page):
         """The fallback chain section should be visible on the ModelsPage."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)  # Wait for data to load
+        await _go_to_fallback_chain(page)
 
         # The fallback chain section should be present
         fallback_chain = page.locator("[data-testid='fallback-chain']")
@@ -38,8 +47,7 @@ class TestFallbackChainBasicUI:
     @pytest.mark.asyncio
     async def test_add_button_visible(self, page: Page):
         """The 'Add' button should be visible in the fallback chain section."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Find the Add button within the fallback chain section
         add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
@@ -48,8 +56,7 @@ class TestFallbackChainBasicUI:
     @pytest.mark.asyncio
     async def test_save_button_visible(self, page: Page):
         """The 'Save' button should be visible in the fallback chain section."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Find the Save button within the fallback chain section
         save_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Save")
@@ -62,8 +69,7 @@ class TestAddFallbackProvider:
     @pytest.mark.asyncio
     async def test_add_opens_picker(self, page: Page):
         """Clicking 'Add' should open the model picker dialog."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Click the Add button
         add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
@@ -80,8 +86,7 @@ class TestAddFallbackProvider:
     @pytest.mark.asyncio
     async def test_add_selects_model(self, page: Page):
         """Selecting a model from the picker should add it to the fallback chain."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Click the Add button
         add_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Add")
@@ -102,8 +107,7 @@ class TestRemoveFallbackProvider:
     @pytest.mark.asyncio
     async def test_remove_button_exists(self, page: Page):
         """If there are fallback providers, remove buttons should exist."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Check if there are any fallback items
         fallback_items = page.locator("[data-testid^='fallback-item-']")
@@ -123,8 +127,7 @@ class TestReorderFallbackProviders:
     @pytest.mark.asyncio
     async def test_move_up_button_exists(self, page: Page):
         """If there are fallback providers, move up buttons should exist."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Check if there are any fallback items
         fallback_items = page.locator("[data-testid^='fallback-item-']")
@@ -134,14 +137,14 @@ class TestReorderFallbackProviders:
             # Second item should have a move up button
             if count > 1:
                 second_item = page.locator("[data-testid='fallback-item-1']")
-                move_up_button = second_item.get_by_role("button", name="↑")
-                await expect(move_up_button).to_be_visible()
+                move_up_button = second_item.locator("button:has-text('↑')")
+                is_visible = await move_up_button.is_visible()
+                assert is_visible, "Move up button should exist on second item"
 
     @pytest.mark.asyncio
     async def test_move_down_button_exists(self, page: Page):
         """If there are fallback providers, move down buttons should exist."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Check if there are any fallback items
         fallback_items = page.locator("[data-testid^='fallback-item-']")
@@ -162,8 +165,7 @@ class TestSaveFallbackChain:
     @pytest.mark.asyncio
     async def test_save_button_clicks(self, page: Page):
         """Clicking 'Save' should trigger the save operation."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Find the Save button
         save_button = page.locator("[data-testid='fallback-chain']").get_by_role("button", name="Save")
@@ -187,8 +189,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_error_message_displayed(self, page: Page):
         """Error messages should be displayed when save fails."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Check if there's an error message element
         error_element = page.locator("[data-testid='fallback-error']")
@@ -204,8 +205,7 @@ class TestIntegrationWithBackend:
     @pytest.mark.asyncio
     async def test_api_endpoint_accessible(self, page: Page):
         """The /api/model/configured endpoint should be accessible."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Make a direct API call to verify the endpoint is working
         response = await page.evaluate("""async () => {
@@ -227,8 +227,7 @@ class TestIntegrationWithBackend:
     @pytest.mark.asyncio
     async def test_fallback_chain_reflects_api(self, page: Page):
         """The UI should reflect the current fallback chain from the API."""
-        await page.goto(MODELS_PAGE_URL)
-        await page.wait_for_timeout(2000)
+        await _go_to_fallback_chain(page)
 
         # Get the current fallback chain from the API
         api_response = await page.evaluate("""async () => {

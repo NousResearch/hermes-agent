@@ -238,11 +238,12 @@ function UseAsMenu({
         disabled={busy}
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
+        data-testid="used-model-use-as-button"
       >
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg" data-testid="used-model-use-as-menu">
           <button
             type="button"
             onClick={() => assign("main", "")}
@@ -337,7 +338,7 @@ function ModelCard({
     )?.task ?? null;
 
   return (
-    <Card className={isMain ? "ring-1 ring-primary/40" : undefined}>
+    <Card className={isMain ? "ring-1 ring-primary/40" : undefined} data-testid="used-model-card">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -831,6 +832,7 @@ export default function ModelsPage() {
                 value="settings"
                 active={activeTab === "settings"}
                 onClick={() => setActiveTab("settings")}
+                data-testid="models-settings-tab"
               >
                 Settings
               </TabsTrigger>
@@ -838,6 +840,7 @@ export default function ModelsPage() {
                 value="used-models"
                 active={activeTab === "used-models"}
                 onClick={() => setActiveTab("used-models")}
+                data-testid="models-used-models-tab"
               >
                 Used Models
               </TabsTrigger>
@@ -930,7 +933,7 @@ export default function ModelsPage() {
                       )}
 
                       {(_active === "fallback-chain") && (
-                        <Card>
+                        <Card data-testid="fallback-chain">
                           <CardHeader className="pb-3">
                             <div className="flex items-center justify-between gap-3 flex-wrap">
                               <div className="flex items-center gap-2">
@@ -1179,7 +1182,7 @@ export default function ModelsPage() {
             )}
 
             {activeTab === "used-models" && (
-              <>
+              <div data-testid="used-models-tab-panel" className="contents">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-1.5">
                     {PERIODS.map((p) => (
@@ -1189,6 +1192,7 @@ export default function ModelsPage() {
                         size="sm"
                         outlined={days !== p.days}
                         onClick={() => setDays(p.days)}
+                        data-testid={`used-models-period-${p.days}`}
                       >
                         {p.label}
                       </Button>
@@ -1201,6 +1205,7 @@ export default function ModelsPage() {
                     onClick={load}
                     disabled={loading}
                     prefix={loading ? <Spinner /> : <RefreshCw />}
+                    data-testid="used-models-refresh-button"
                   >
                     {t.common.refresh}
                   </Button>
@@ -1223,7 +1228,7 @@ export default function ModelsPage() {
                 {data && (
                   <>
                     {data.models.length > 0 ? (
-                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="used-models-grid">
                         {data.models.map((m, i) => (
                           <ModelCard
                             key={`${m.model}:${m.provider}`}
@@ -1237,7 +1242,7 @@ export default function ModelsPage() {
                         ))}
                       </div>
                     ) : (
-                      <Card>
+                      <Card data-testid="used-models-empty-state">
                         <CardContent className="py-12">
                           <div className="flex flex-col items-center text-muted-foreground">
                             <Cpu className="h-8 w-8 mb-3 opacity-40" />
@@ -1251,7 +1256,7 @@ export default function ModelsPage() {
                     )}
                   </>
                 )}
-              </>
+              </div>
             )}
           </>
         )}

@@ -15,10 +15,34 @@ with yaml.safe_load() — they do NOT rely on the API response alone.
 """
 from __future__ import annotations
 
+from pathlib import Path
+import fcntl
+import tempfile
+
 import pytest
 from playwright.async_api import Page, expect
 
 from tests.ui.conftest import MODELS_PAGE_URL
+
+pytestmark = pytest.mark.xdist_group("models_page_config")
+
+
+@pytest.fixture(autouse=True)
+def _serialize_dashboard_config_tests():
+    """Serialize tests that mutate the shared live dashboard config.
+
+    These Playwright tests intentionally exercise the running dashboard on
+    127.0.0.1:9119, so all xdist workers hit the same config.yaml.  Without a
+    process-wide lock, parallel tests race by overwriting fallback_providers and
+    assertions read another test's data.
+    """
+    lock_path = Path(tempfile.gettempdir()) / "hermes-models-page-config-tests.lock"
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 async def _go_to_fallback_chain(page: Page) -> None:

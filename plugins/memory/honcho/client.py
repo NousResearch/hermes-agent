@@ -161,7 +161,7 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 # run_conversation; without a cap the agent can block indefinitely when
 # the Honcho backend is unreachable, preventing the gateway from
 # delivering the already-generated response.
-_DEFAULT_HTTP_TIMEOUT = 30.0
+_DEFAULT_HTTP_TIMEOUT = 4.0
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -249,6 +249,9 @@ class HonchoClientConfig:
     base_url: str | None = None
     # Optional request timeout in seconds for Honcho SDK HTTP calls
     timeout: float | None = None
+    # SDK retry count. Default is zero so Hermes does not block the reply path
+    # behind Honcho retry backoff when memory is slow or unreachable.
+    max_retries: int = 0
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
@@ -333,6 +336,11 @@ class HonchoClientConfig:
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+        max_retries = _parse_int_config(
+            os.environ.get("HONCHO_MAX_RETRIES"),
+            None,
+            0,
+        )
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
@@ -340,6 +348,7 @@ class HonchoClientConfig:
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
             timeout=timeout,
+            max_retries=max_retries,
             ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
         )
@@ -405,6 +414,15 @@ class HonchoClientConfig:
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),
         )
+        max_retries = _parse_int_config(
+            host_block.get("maxRetries")
+            if host_block.get("maxRetries") is not None
+            else host_block.get("max_retries"),
+            raw.get("maxRetries")
+            if raw.get("maxRetries") is not None
+            else raw.get("max_retries", os.environ.get("HONCHO_MAX_RETRIES")),
+            0,
+        )
 
         # Auto-enable when API key or base_url is present (unless explicitly disabled)
         # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
@@ -451,6 +469,7 @@ class HonchoClientConfig:
             environment=environment,
             base_url=base_url,
             timeout=timeout,
+            max_retries=max_retries,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             pin_peer_name=_resolve_bool(
@@ -717,6 +736,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     # requiring the server to live on localhost.
     resolved_base_url = config.base_url
     resolved_timeout = config.timeout
+    resolved_max_retries = config.max_retries
     if not resolved_base_url or resolved_timeout is None:
         try:
             from hermes_cli.config import load_config
@@ -730,6 +750,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                         honcho_cfg.get("timeout"),
                         honcho_cfg.get("request_timeout"),
                     )
+                resolved_max_retries = _parse_int_config(
+                    honcho_cfg.get("maxRetries"),
+                    honcho_cfg.get("max_retries"),
+                    resolved_max_retries,
+                )
         except Exception:
             pass
 
@@ -771,6 +796,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         kwargs["base_url"] = resolved_base_url
     if resolved_timeout is not None:
         kwargs["timeout"] = resolved_timeout
+    kwargs["max_retries"] = resolved_max_retries
 
     _honcho_client = Honcho(**kwargs)
 

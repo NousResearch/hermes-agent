@@ -574,19 +574,16 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # On first call, fetch synchronously so turn 1 isn't empty.
-        # After that, serve from cache and refresh in background on cadence.
+        # Never perform first-turn Honcho I/O synchronously. Serve cached
+        # context immediately; if empty, trigger a background refresh and let a
+        # later turn consume it.
         with self._base_context_lock:
-            if self._base_context_cache is None:
-                # First call — synchronous fetch
-                try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
-                    self._last_context_turn = self._turn_count
-                except Exception as e:
-                    logger.debug("Honcho base context fetch failed: %s", e)
-                    self._base_context_cache = ""
-            base_context = self._base_context_cache
+            base_context = self._base_context_cache or ""
+        if not base_context and self._manager:
+            try:
+                self._manager.prefetch_context(self._session_key, query)
+            except Exception as e:
+                logger.debug("Honcho base context prefetch failed: %s", e)
 
         # Check if background context prefetch has a fresher result
         if self._manager:
@@ -644,16 +641,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
             )
             self._prefetch_thread.start()
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
-                logger.debug(
-                    "Honcho first-turn dialectic still running after %.1fs — "
-                    "will surface on next turn",
-                    _first_turn_timeout,
-                )
+            logger.debug("Honcho first-turn dialectic started in background")
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
             fired_at = self._prefetch_result_fired_at
@@ -1125,6 +1114,8 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        if self._config and getattr(self._config, "save_messages", True) is False:
+            return
         if not self._manager or not self._session_key:
             return
 
@@ -1139,7 +1130,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     session.add_message("user", chunk)
                 for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
-                self._manager._flush_session(session)
+                self._manager.save(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)
 
@@ -1183,6 +1174,8 @@ class HonchoMemoryProvider(MemoryProvider):
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
+            return
+        if self._config and getattr(self._config, "save_messages", True) is False:
             return
         if not self._manager:
             return
@@ -1312,7 +1305,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         # Flush any remaining messages
-        if self._manager:
+        if self._manager and not (self._config and getattr(self._config, "save_messages", True) is False):
             try:
                 self._manager.flush_all()
             except Exception:

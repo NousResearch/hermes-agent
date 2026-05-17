@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
+    _ASYNC_SHUTDOWN,
 )
 from plugins.memory.honcho import HonchoMemoryProvider
 
@@ -162,6 +163,44 @@ class TestFormatMigrationTranscript:
 
 
 class TestManagerCacheOps:
+    def test_save_messages_false_disables_writer_and_save(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(write_frequency="async", save_messages=False)
+        mgr = HonchoSessionManager(config=cfg)
+        session = HonchoSession(key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s")
+        session.add_message("user", "hi")
+        mgr._flush_session = MagicMock(return_value=True)
+
+        mgr.save(session)
+        mgr.flush_all()
+
+        assert mgr._async_queue is None
+        assert mgr._async_thread is None
+        assert mgr._turn_counter == 0
+        mgr._flush_session.assert_not_called()
+
+    def test_save_enabled_async_enqueues_without_direct_flush(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(write_frequency="async", save_messages=True)
+        mgr = HonchoSessionManager(config=cfg)
+        real_queue = mgr._async_queue
+        session = HonchoSession(key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s")
+        mgr._flush_session = MagicMock(return_value=True)
+        mgr._async_queue = MagicMock()
+
+        try:
+            mgr.save(session)
+
+            assert mgr._turn_counter == 1
+            mgr._async_queue.put.assert_called_once_with(session)
+            mgr._flush_session.assert_not_called()
+        finally:
+            if real_queue is not None and mgr._async_thread is not None:
+                real_queue.put(_ASYNC_SHUTDOWN)
+                mgr._async_thread.join(timeout=2.0)
+
     def test_delete_cached_session(self):
         mgr = HonchoSessionManager()
         session = HonchoSession(
@@ -557,6 +596,30 @@ class TestConcludeToolDispatch:
 
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+        provider._manager.save.assert_called_once_with(session)
+        provider._manager._flush_session.assert_not_called()
+
+    def test_sync_turn_save_messages_false_skips_all_writes(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = SimpleNamespace(message_max_chars=25000, save_messages=False)
+
+        provider.sync_turn("user", "assistant")
+
+        provider._manager.get_or_create.assert_not_called()
+        provider._manager.save.assert_not_called()
+        provider._manager._flush_session.assert_not_called()
+
+    def test_on_session_end_save_messages_false_skips_flush(self):
+        provider = HonchoMemoryProvider()
+        provider._manager = MagicMock()
+        provider._config = SimpleNamespace(save_messages=False)
+
+        provider.on_session_end([{"role": "user", "content": "hi"}])
+
+        provider._manager.flush_all.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +976,44 @@ class TestDialecticCadenceDefaults:
 
 class TestBaseContextSummary:
     """Base context injection should include session summary when available."""
+
+    def test_prefetch_does_not_block_on_first_base_context_fetch(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._manager.pop_context_result.return_value = {}
+        provider._base_context_cache = None
+        provider._turn_count = 1
+        provider._last_dialectic_turn = 0
+        provider._config = SimpleNamespace(context_tokens=None)
+
+        assert provider.prefetch("substantive request") == ""
+
+        provider._manager.get_prefetch_context.assert_not_called()
+        provider._manager.prefetch_context.assert_called_once_with("test", "substantive request")
+
+    def test_prefetch_does_not_join_first_turn_dialectic_thread(self):
+        import time
+
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._manager.pop_context_result.return_value = {}
+        provider._manager.dialectic_query.side_effect = lambda *a, **kw: time.sleep(0.25) or "late"
+        provider._base_context_cache = None
+        provider._turn_count = 1
+        provider._last_dialectic_turn = -999
+        provider._config = SimpleNamespace(context_tokens=None, timeout=1)
+
+        start = time.monotonic()
+        assert provider.prefetch("substantive request") == ""
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.2
+        assert provider._prefetch_thread is not None
+        provider._prefetch_thread.join(timeout=1.0)
 
     def test_format_includes_summary(self):
         """Session summary should appear first in the formatted context."""

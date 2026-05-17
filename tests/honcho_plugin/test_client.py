@@ -278,6 +278,31 @@ class TestFromGlobalConfig:
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.timeout == 82.5
 
+    def test_max_retries_defaults_to_zero(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.max_retries == 0
+
+    def test_max_retries_from_camel_config(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "***", "maxRetries": 2}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.max_retries == 2
+
+    def test_max_retries_host_block_wins(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "***",
+            "maxRetries": 3,
+            "hosts": {"hermes": {"maxRetries": 0}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.max_retries == 0
+
 
 class TestResolveSessionName:
     def test_manual_override(self):
@@ -652,6 +677,28 @@ class TestGetHonchoClient:
         assert client is fake_honcho
         mock_honcho.assert_called_once()
         assert mock_honcho.call_args.kwargs["timeout"] == _DEFAULT_HTTP_TIMEOUT
+        assert mock_honcho.call_args.kwargs["max_retries"] == 0
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_passes_max_retries_from_config(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            max_retries=2,
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["max_retries"] == 2
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),

@@ -1215,13 +1215,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
-    _cron_delivery_vars = (
-        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
-        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
-        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    _cron_context_vars = (
+        ("HERMES_CRON_SESSION", "1"),
+        ("HERMES_CRON_AUTO_DELIVER_PLATFORM", ""),
+        ("HERMES_CRON_AUTO_DELIVER_CHAT_ID", ""),
+        ("HERMES_CRON_AUTO_DELIVER_THREAD_ID", ""),
     )
-    for _var_name in _cron_delivery_vars:
-        _VAR_MAP[_var_name].set("")
+    for _var_name, _var_value in _cron_context_vars:
+        _VAR_MAP[_var_name].set(_var_value)
 
     # Per-job working directory. Use a ContextVar-backed TERMINAL_CWD
     # override so this cron job sees its project cwd without exposing that
@@ -1331,8 +1332,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Persisted cron records may contain legacy base_url values created
+            # from model-callable tool args. Never pass them as explicit URLs,
+            # because the resolver would pair arbitrary endpoints with the
+            # operator's ambient API keys. Custom endpoints must come from the
+            # operator-controlled provider configuration instead.
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
@@ -1597,7 +1601,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             reset_terminal_cwd(_terminal_cwd_token)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
-        for _var_name in _cron_delivery_vars:
+        for _var_name, _ in _cron_context_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
             try:

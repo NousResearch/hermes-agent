@@ -132,6 +132,22 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
 
 
+def get_explicit_session_env(name: str) -> str | None:
+    """Return a context-local session value, or ``None`` if unset.
+
+    Unlike ``get_session_env()``, this never falls back to ``os.environ``.
+    Use it when process-global compatibility flags must not override a
+    live task-local gateway or cron context.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return None
+    value = var.get()
+    if value is _UNSET:
+        return None
+    return value
+
+
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session context variable by its legacy ``HERMES_SESSION_*`` name.
 

@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -1068,6 +1069,12 @@ class TestFindGatewayPidsExclude:
 
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        # Force the subprocess(ps) branch by hiding /proc from the scanner.
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            "os.path.isdir",
+            lambda p: False if p == "/proc" else _real_isdir(p),
+        )
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1088,6 +1095,11 @@ class TestFindGatewayPidsExclude:
 
     def test_no_exclude_returns_all(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            "os.path.isdir",
+            lambda p: False if p == "/proc" else _real_isdir(p),
+        )
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1111,6 +1123,11 @@ class TestFindGatewayPidsExclude:
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        _real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            "os.path.isdir",
+            lambda p: False if p == "/proc" else _real_isdir(p),
+        )
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1133,6 +1150,86 @@ class TestFindGatewayPidsExclude:
 
 
 # ---------------------------------------------------------------------------
+
+
+class TestDetachedProfileGatewayRestartEnv:
+    def test_default_profile_run_args_are_explicit(self, monkeypatch):
+        """Default restarts must not depend on inherited profile state."""
+        monkeypatch.setattr(
+            gateway_cli, "get_python_path", lambda: "/venv/bin/python"
+        )
+
+        args = gateway_cli._gateway_run_args_for_profile("default")
+
+        assert args == [
+            "/venv/bin/python",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "default",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+
+    def test_restart_env_uses_target_profile_without_inherited_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        """Restarted profiles get a small env plus target HERMES_HOME."""
+        target_home = tmp_path / ".hermes" / "profiles" / "victim"
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda profile: target_home
+        )
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "updater")
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "updater-secret")
+        monkeypatch.setenv("UPDATER_ONLY_SECRET", "updater-secret")
+
+        env = gateway_cli._profile_gateway_restart_env("victim")
+
+        assert env["HERMES_HOME"] == str(target_home)
+        assert env["PATH"] == "/usr/bin"
+        assert "OPENAI_API_KEY" not in env
+        assert "UPDATER_ONLY_SECRET" not in env
+
+    def test_detached_restart_passes_clean_env_to_watcher(
+        self, tmp_path, monkeypatch
+    ):
+        """Watcher and final gateway child must not inherit updater secrets."""
+        target_home = tmp_path / ".hermes" / "profiles" / "victim"
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda profile: target_home
+        )
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "updater")
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "updater-secret")
+
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return MagicMock()
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        assert (
+            gateway_cli.launch_detached_profile_gateway_restart("victim", 12345)
+            is True
+        )
+
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert cmd[3] == "12345"
+        assert "--profile" in cmd
+        assert "victim" in cmd
+        assert kwargs["env"]["HERMES_HOME"] == str(target_home)
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        assert "env=os.environ.copy()" in cmd[2]
+
+
 # Gateway mode writes exit code before restart (#8300)
 # ---------------------------------------------------------------------------
 

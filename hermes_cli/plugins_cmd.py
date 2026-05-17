@@ -634,24 +634,24 @@ def cmd_enable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    config_name = _resolve_plugin_config_name(name)
-    if config_name is None:
+    # Discover the plugin — check installed (user) AND bundled.
+    if not _plugin_exists(name):
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if config_name in enabled and config_name not in disabled:
-        console.print(f"[dim]Plugin '{config_name}' is already enabled.[/dim]")
+    if name in enabled and name not in disabled:
+        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
         return
 
-    enabled.add(config_name)
-    disabled.discard(config_name)
+    enabled.add(name)
+    disabled.discard(name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[green]✓[/green] Plugin [bold]{config_name}[/bold] enabled. "
+        f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
         "Takes effect on next session."
     )
 
@@ -661,59 +661,25 @@ def cmd_disable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    config_name = _resolve_plugin_config_name(name)
-    if config_name is None:
+    if not _plugin_exists(name):
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if config_name not in enabled and config_name in disabled:
-        console.print(f"[dim]Plugin '{config_name}' is already disabled.[/dim]")
+    if name not in enabled and name in disabled:
+        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
         return
 
-    enabled.discard(config_name)
-    disabled.add(config_name)
+    enabled.discard(name)
+    disabled.add(name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{config_name}[/bold] disabled. "
+        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
         "Takes effect on next session."
     )
-
-
-def _resolve_plugin_config_name(name: str) -> Optional[str]:
-    """Return the stable config key for an installed or bundled plugin."""
-    user_dir = _plugins_dir()
-    if user_dir.is_dir():
-        candidate = user_dir / name
-        if candidate.is_dir():
-            return candidate.name
-        for child in user_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
-            if manifest.get("name") == name:
-                return child.name
-
-    from hermes_cli.plugins import get_bundled_plugins_dir
-
-    repo_plugins = get_bundled_plugins_dir()
-    if repo_plugins.is_dir():
-        candidate = repo_plugins / name
-        if candidate.is_dir() and (
-            (candidate / "plugin.yaml").exists()
-            or (candidate / "plugin.yml").exists()
-        ):
-            return candidate.name
-        for child in repo_plugins.iterdir():
-            if not child.is_dir():
-                continue
-            manifest = _read_manifest(child)
-            if manifest.get("name") == name:
-                return child.name
-    return None
 
 
 def _plugin_exists(name: str) -> bool:
@@ -776,7 +742,7 @@ def _discover_all_plugins() -> list:
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # key -> (key, version, description, source, path)
+    seen: dict = {}  # name -> (name, version, description, source, path)
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
     from hermes_cli.plugins import get_bundled_plugins_dir
@@ -796,13 +762,14 @@ def _discover_all_plugins() -> list:
             has_plugin_manifest = manifest_file.exists()
             if not has_plugin_manifest and not dashboard_manifest.exists():
                 continue
-            key = d.name
+            name = d.name
             version = ""
             description = ""
             if has_plugin_manifest and yaml:
                 try:
                     with open(manifest_file, encoding="utf-8") as f:
                         manifest = yaml.safe_load(f) or {}
+                    name = manifest.get("name", d.name)
                     version = manifest.get("version", "")
                     description = manifest.get("description", "")
                 except Exception:
@@ -820,7 +787,7 @@ def _discover_all_plugins() -> list:
             src_label = source
             if source == "user" and (d / ".git").exists():
                 src_label = "git"
-            seen[key] = (key, version, description, src_label, d)
+            seen[name] = (name, version, description, src_label, d)
     return list(seen.values())
 
 

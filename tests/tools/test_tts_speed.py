@@ -108,6 +108,79 @@ class TestOpenaiTtsSpeed:
         kwargs = create.call_args[1]
         assert kwargs["speed"] == 4.0
 
+    def test_custom_base_url_requires_custom_key(self, tmp_path, monkeypatch):
+        """Do not send the shared OpenAI voice key to custom TTS endpoints."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", raising=False)
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="VOICE_TOOLS_OPENAI_CUSTOM_KEY"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "https://tts.example.test/v1"}},
+                )
+
+    def test_custom_base_url_uses_endpoint_specific_key(self, tmp_path, monkeypatch):
+        """Custom OpenAI-compatible TTS endpoints use a separate credential."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            _generate_openai_tts(
+                "Hello",
+                str(tmp_path / "out.mp3"),
+                {"openai": {"base_url": "https://tts.example.test/v1"}},
+            )
+
+        assert mock_cls.call_args.kwargs["api_key"] == "custom-key"
+        assert mock_cls.call_args.kwargs["base_url"] == "https://tts.example.test/v1"
+
+    def test_custom_base_url_rejects_remote_http(self, tmp_path, monkeypatch):
+        """Remote custom endpoints must use HTTPS."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="must use HTTPS"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "http://tts.example.test/v1"}},
+                )
+
+    def test_custom_base_url_rejects_embedded_credentials(self, tmp_path, monkeypatch):
+        """base_url with embedded user:password must be rejected."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="embedded credentials"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "https://user:pass@tts.example.test/v1"}},
+                )
+
+    def test_custom_base_url_rejects_non_absolute_url(self, tmp_path, monkeypatch):
+        """Non-absolute or non-http(s) base_url must be rejected."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_CUSTOM_KEY", "custom-key")
+        with patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("shared-key", "https://api.openai.com/v1")):
+            from tools.tts_tool import _generate_openai_tts
+            with pytest.raises(ValueError, match="absolute http"):
+                _generate_openai_tts(
+                    "Hello",
+                    str(tmp_path / "out.mp3"),
+                    {"openai": {"base_url": "ftp://tts.example.test/v1"}},
+                )
+
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS (new API: raw audio, no speed/voice_setting)

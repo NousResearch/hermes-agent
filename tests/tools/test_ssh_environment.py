@@ -37,8 +37,6 @@ class TestBuildSSHCommand:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.shutil.which",
-                            lambda cmd: f"/usr/bin/{cmd}" if cmd in ("ssh", "scp") else None)
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
@@ -46,8 +44,6 @@ class TestBuildSSHCommand:
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
-        monkeypatch.setattr("tools.environments.ssh.FileSyncManager",
-                            lambda **kw: MagicMock(sync=lambda force=False: None))
 
     def test_base_flags(self):
         env = SSHEnvironment(host="h", user="u")
@@ -83,8 +79,6 @@ class TestControlSocketPath:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
-        monkeypatch.setattr("tools.environments.ssh.shutil.which",
-                            lambda cmd: f"/usr/bin/{cmd}" if cmd in ("ssh", "scp") else None)
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
@@ -92,8 +86,6 @@ class TestControlSocketPath:
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
-        monkeypatch.setattr("tools.environments.ssh.FileSyncManager",
-                            lambda **kw: MagicMock(sync=lambda force=False: None))
 
     # SSH appends ``.XXXXXXXXXXXXXXXX`` (17 bytes) to the ControlPath in
     # ControlMaster mode; the macOS sun_path field is 104 bytes including
@@ -144,12 +136,12 @@ class TestControlSocketPath:
 
 
 class TestTerminalToolConfig:
-    def test_ssh_persistent_default_false(self, monkeypatch):
-        """SSH persistent shell defaults to off to avoid stateful approval bypasses."""
+    def test_ssh_persistent_default_true(self, monkeypatch):
+        """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
         from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is False
+        assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_explicit_false(self, monkeypatch):
         """Per-backend env var overrides the global default."""
@@ -163,13 +155,7 @@ class TestTerminalToolConfig:
         assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
-        """TERMINAL_PERSISTENT_SHELL=true opts SSH into persistent mode."""
-        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
-        monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "true")
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
-
-    def test_ssh_persistent_config_false_keeps_default_off(self, monkeypatch):
+        """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
         from tools.terminal_tool import _get_env_config

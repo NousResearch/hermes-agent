@@ -64,6 +64,7 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
                 turn_id="",
                 api_request_id="",
+                agent_id=None,
             ),
             call(
                 "post_tool_call",
@@ -79,6 +80,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                agent_id=None,
             ),
             call(
                 "transform_tool_result",
@@ -94,6 +96,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                agent_id=None,
             ),
         ]
 

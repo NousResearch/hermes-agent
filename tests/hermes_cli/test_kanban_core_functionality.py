@@ -3179,6 +3179,22 @@ def test_config_default_dispatch_in_gateway_is_true():
     )
 
 
+def test_config_default_auto_decompose_is_enabled_and_bounded():
+    """Auto-decompose should be on by default, with a conservative per-tick cap.
+    That keeps fresh triage graphs moving while avoiding surprise LLM bursts."""
+    from hermes_cli.config import DEFAULT_CONFIG
+    kanban = DEFAULT_CONFIG.get("kanban", {})
+    assert kanban.get("auto_decompose") is True, (
+        "kanban.auto_decompose default should be True; got "
+        f"{kanban.get('auto_decompose')!r}"
+    )
+    per_tick = kanban.get("auto_decompose_per_tick")
+    assert per_tick == 3, (
+        "kanban.auto_decompose_per_tick default should stay at 3; got "
+        f"{per_tick!r}"
+    )
+
+
 def test_check_dispatcher_presence_silent_when_gateway_running(monkeypatch):
     from hermes_cli import kanban as kb_cli
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
@@ -3958,6 +3974,8 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         conn.close()
 
 
+@pytest.mark.skipif("linux" not in __import__("sys").platform,
+                    reason="clean-exit protocol-violation handling is Linux-specific")
 def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
     """A worker that exited rc=0 while its task was still ``running``
     is a protocol violation (agent answered conversationally without
@@ -3969,7 +3987,7 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
     against small local models (gemma4-e2b q4) where the model writes
     the answer as plain text and the CLI exits rc=0 cleanly.
     """
-    import hermes_cli.kanban_db as _kb
+
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="quiet", assignee="worker")

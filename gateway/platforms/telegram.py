@@ -3995,6 +3995,30 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _log_incoming_update(self, message: Message, *, update_id: Any, kind: str, accepted: Optional[bool] = None) -> None:
+        chat = getattr(message, "chat", None)
+        user = getattr(message, "from_user", None)
+        text = (
+            getattr(message, "text", None)
+            or getattr(message, "caption", None)
+            or f"<{kind}>"
+        )
+        preview = str(text).replace("\n", " ")[:120]
+        logger.info(
+            "[%s] Telegram inbound update: kind=%s accepted=%s update_id=%s message_id=%s chat_id=%s chat_type=%s user_id=%s is_bot=%s thread_id=%s text=%r",
+            self.name,
+            kind,
+            accepted,
+            update_id,
+            getattr(message, "message_id", None),
+            getattr(chat, "id", None),
+            getattr(chat, "type", None),
+            getattr(user, "id", None),
+            getattr(user, "is_bot", None),
+            getattr(message, "message_thread_id", None),
+            preview,
+        )
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4004,7 +4028,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not update.message or not update.message.text:
             return
-        if not self._should_process_message(update.message):
+        accepted = self._should_process_message(update.message)
+        self._log_incoming_update(update.message, update_id=update.update_id, kind="text", accepted=accepted)
+        if not accepted:
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
@@ -4015,7 +4041,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
             return
-        if not self._should_process_message(update.message, is_command=True):
+        accepted = self._should_process_message(update.message, is_command=True)
+        self._log_incoming_update(update.message, update_id=update.update_id, kind="command", accepted=accepted)
+        if not accepted:
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)

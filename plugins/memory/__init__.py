@@ -27,7 +27,6 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
-from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +97,15 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
+
+def _is_bundled_provider_dir(path: Path) -> bool:
+    """Return True when *path* is one of the bundled memory providers."""
+    try:
+        return path.resolve().parent == _MEMORY_PLUGINS_DIR.resolve()
+    except Exception:
+        return path.parent == _MEMORY_PLUGINS_DIR
+
+
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory.
 
@@ -141,16 +149,20 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
             except Exception:
                 pass
 
-        # Quick availability check — try loading and calling is_available()
-        available = True
-        try:
-            provider = _load_provider_from_dir(child)
-            if provider:
-                available = provider.is_available()
-            else:
+        if _is_bundled_provider_dir(child):
+            # Bundled providers are trusted application code, so preserve the
+            # historical availability check for setup/status output.
+            try:
+                provider = _load_provider_from_dir(child)
+                available = bool(provider and provider.is_available())
+            except Exception:
                 available = False
-        except Exception:
-            available = False
+        else:
+            # Do not import user-installed providers during discovery. Loading
+            # them can execute arbitrary top-level code before the user selects
+            # a provider. The selected provider is validated when explicitly
+            # loaded via load_memory_provider().
+            available = True
 
         results.append((name, desc, available))
 
@@ -313,7 +325,7 @@ def _get_active_memory_provider() -> Optional[str]:
     no plugin loading.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import cfg_get, load_config
         config = load_config()
         return cfg_get(config, "memory", "provider") or None
     except Exception:

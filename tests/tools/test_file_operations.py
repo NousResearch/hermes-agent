@@ -455,6 +455,29 @@ class TestShellFileOpsWriteDenied:
         assert result.error is not None
         assert "denied" in result.error.lower()
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "~/.ssh/authorized_keys",
+            "~/.hermes/.env",
+            "~/.aws/credentials",
+            "/tmp/remote-home/.ssh/authorized_keys",
+        ],
+    )
+    def test_write_file_denies_remote_home_sensitive_paths(self, mock_env, path):
+        mock_env.execute.side_effect = lambda command, **kwargs: {
+            "output": "/tmp/remote-home\n" if command == "echo $HOME" else "",
+            "returncode": 0,
+        }
+        ops = ShellFileOperations(mock_env)
+
+        result = ops.write_file(path, "secret")
+
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+        executed_commands = [call.args[0] for call in mock_env.execute.call_args_list]
+        assert not any(command.startswith("cat >") for command in executed_commands)
+
     def test_patch_replace_denied_path(self, file_ops):
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None

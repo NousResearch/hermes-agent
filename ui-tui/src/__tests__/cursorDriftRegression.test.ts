@@ -21,8 +21,8 @@
  * the end-of-text position that wrap-ansi would render. Any future
  * regression that lets the two diverge re-introduces the drift.
  */
+import { wrapAnsi } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
-import wrapAnsi from 'wrap-ansi'
 
 import { cursorLayout, inputVisualHeight } from '../lib/inputMetrics.js'
 

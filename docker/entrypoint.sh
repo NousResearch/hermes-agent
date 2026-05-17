@@ -43,6 +43,17 @@ if [ "$(id -u)" = "0" ]; then
         # lazy_deps.py cannot install platform packages (discord.py, etc.).
         chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
             echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
+
+        # usermod -u only auto-updates ownership of files inside the user's
+        # home directory ($HERMES_HOME).  When HERMES_UID is remapped, the
+        # install directory retains build-time ownership (UID 10000), causing
+        # EACCES on TUI dist writes (esbuild) and gateway __pycache__ creation.
+        for _dir in "$INSTALL_DIR/ui-tui" "$INSTALL_DIR/gateway"; do
+            if [ -d "$_dir" ] && [ "$(stat -c %u "$_dir" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+                echo "Fixing ownership of $_dir to hermes ($actual_hermes_uid)"
+                chown -R hermes:hermes "$_dir" 2>/dev/null || true
+            fi
+        done
     fi
 
     # Ensure config.yaml is readable by the hermes runtime user even if it was

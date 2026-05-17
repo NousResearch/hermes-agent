@@ -125,12 +125,14 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, msg_type=None, raw_role_mentions=None, role_mentions=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        raw_role_mentions=list(raw_role_mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -345,6 +347,62 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_configured_role_mention_counts_as_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_MENTION_ROLE_IDS", raising=False)
+    adapter.config.extra["mention_role_ids"] = [1497263259810533479]
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&1497263259810533479> como está o merchant da sartoratto?",
+        raw_role_mentions=[1497263259810533479],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "como está o merchant da sartoratto?"
+
+
+@pytest.mark.asyncio
+async def test_discord_unconfigured_role_mention_does_not_count_as_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["mention_role_ids"] = [111]
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&222> ignored role mention",
+        raw_role_mentions=[222],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_role_mention_ids_can_come_from_env(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_MENTION_ROLE_IDS", "1497263259810533479")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&1497263259810533479> oi",
+        raw_role_mentions=[1497263259810533479],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "oi"
 
 
 @pytest.mark.asyncio

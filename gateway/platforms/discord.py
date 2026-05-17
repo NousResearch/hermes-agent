@@ -3564,6 +3564,18 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_csv_id_set(self, config_key: str, env_key: str) -> set:
+        """Return a set of ID-like strings from config.yaml or a CSV env var."""
+        raw = self.config.extra.get(config_key)
+        if raw is None:
+            raw = os.getenv(env_key, "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -3571,21 +3583,16 @@ class DiscordAdapter(BasePlatformAdapter):
         string) is preserved in the returned set so callers can short-circuit
         on wildcard membership, consistent with ``allowed_channels``.
         """
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # Coerce non-list scalars (str/int/float) to str before splitting.
-        # YAML parses a bare numeric value such as
-        # `free_response_channels: 1491973769726791812` as int, which was
-        # previously falling through the isinstance(str) branch and silently
-        # returning an empty set.  str() here accepts whatever scalar the YAML
-        # loader hands us without changing existing string/CSV semantics.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return self._discord_csv_id_set("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS")
+
+    def _discord_mention_role_ids(self) -> set:
+        """Return Discord role IDs that should count as mentioning this bot.
+
+        Some servers mention Hermes via an assigned role (``<@&role_id>``)
+        instead of the bot user itself. Discord exposes those as role mentions,
+        not user mentions, so they need an explicit allowlist.
+        """
+        return self._discord_csv_id_set("mention_role_ids", "DISCORD_MENTION_ROLE_IDS")
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -4417,6 +4424,27 @@ class DiscordAdapter(BasePlatformAdapter):
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+
+        # Optional role-based trigger: allow servers to mention Hermes through
+        # a configured role (e.g. <@&1497263259810533479>) instead of the bot
+        # user. Discord role mentions do not appear in message.mentions, so
+        # require_mention would otherwise drop these messages silently.
+        trigger_role_ids = self._discord_mention_role_ids()
+        if trigger_role_ids:
+            raw_role_mentions = {str(rid) for rid in getattr(message, "raw_role_mentions", [])}
+            role_mentions = {
+                str(getattr(role, "id", ""))
+                for role in getattr(message, "role_mentions", [])
+                if getattr(role, "id", None) is not None
+            }
+            content_role_mentions = set(re.findall(r"<@&(\d+)>", raw_content))
+            matched_role_ids = trigger_role_ids & (raw_role_mentions | role_mentions | content_role_mentions)
+            if matched_role_ids:
+                mention_prefix = True
+                for role_id in matched_role_ids:
+                    normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
+
+        if mention_prefix:
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

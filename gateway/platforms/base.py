@@ -815,6 +815,7 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
+    ".markdown": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".log": "text/plain",
@@ -2141,7 +2142,7 @@ class BasePlatformAdapter(ABC):
         # snippets that previously triggered bogus send_document attempts.
         _media_exts = (
             "png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|"
-            "m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa"
+            "m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|md|markdown"
         )
         bare_path_pattern = re.compile(
             r'(?P<path>(?:~/|/)[^\n`"\',;:)\]}\\]+?'
@@ -3081,6 +3082,53 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _maybe_package_prompt_forge_response(self, event: "MessageEvent", response: str) -> str:
+        """Package a long Prompt Forge response as a Desktop Markdown file.
+
+        Fires only when all four conditions hold:
+          - platform is discord
+          - event.channel_prompt contains "prompt forge" or "prompt-forge"
+          - response length exceeds _SPLIT_THRESHOLD (default 1900)
+          - the response carries no existing MEDIA tag
+
+        Returns a short acknowledgement string with a MEDIA:<path> pointer,
+        or the original response unchanged.
+        """
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None) or self.platform
+        if _platform_name(platform) != "discord":
+            return response
+        channel_prompt = (getattr(event, "channel_prompt", None) or "").lower()
+        if "prompt forge" not in channel_prompt and "prompt-forge" not in channel_prompt:
+            return response
+        threshold = getattr(self, "_SPLIT_THRESHOLD", 1900)
+        if len(response) <= threshold:
+            return response
+        existing_media, _ = self.extract_media(response)
+        if existing_media:
+            return response
+        try:
+            from datetime import datetime as _dt
+            from pathlib import Path as _Path
+            ts = _dt.now().strftime("%Y%m%d-%H%M%S-%f")
+            out_path = (
+                _Path.home()
+                / "Desktop"
+                / "Athena Outputs"
+                / "Prompt Forge"
+                / f"prompt-forge-output-{ts}.md"
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            content = response if response.endswith("\n") else response + "\n"
+            out_path.write_text(content, encoding="utf-8")
+        except Exception as e:
+            logger.warning("[%s] Failed to package Prompt Forge response as attachment: %s", self.name, e)
+            return response
+        return (
+            "Done — Prompt Forge output attached as one Markdown file for one-shot copy/paste."
+            f"\n\nMEDIA:{out_path}"
+        )
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -3164,6 +3212,8 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                response = self._maybe_package_prompt_forge_response(event, response)
+
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
                 # through send_document instead of send_multiple_images. Used

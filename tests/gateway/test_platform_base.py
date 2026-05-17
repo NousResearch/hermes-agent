@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -10,10 +11,12 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SendResult,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource
 
 
 class TestSecretCaptureGuidance:
@@ -347,6 +350,15 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_markdown_documents(self):
+        content = "MEDIA:/tmp/report.md\nMEDIA:/tmp/brief.markdown"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/report.md", False),
+            ("/tmp/brief.markdown", False),
+        ]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
@@ -377,6 +389,106 @@ class TestExtractMedia:
         # Both directives stripped from cleaned text
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
+
+
+# ---------------------------------------------------------------------------
+# Prompt Forge long-response packaging
+# ---------------------------------------------------------------------------
+
+
+class TestPromptForgePackaging:
+    def _adapter(self, platform=None, split_threshold=80):
+        class StubAdapter(BasePlatformAdapter):
+            _SPLIT_THRESHOLD = split_threshold
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                return SendResult(success=True)
+
+            async def get_chat_info(self, chat_id: str):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(enabled=True, token="test")
+        return StubAdapter(config=config, platform=platform or Platform.DISCORD)
+
+    def _event(self, prompt="Prompt Forge lane"):
+        from gateway.config import Platform
+
+        return MessageEvent(
+            text="rough idea",
+            channel_prompt=prompt,
+            source=SessionSource(platform=Platform.DISCORD, chat_id="123"),
+        )
+
+    def test_long_discord_prompt_forge_response_is_packaged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        adapter = self._adapter(split_threshold=60)
+        original = "## Final Prompt To Paste Into Hermes\n" + ("x" * 80)
+
+        packaged = adapter._maybe_package_prompt_forge_response(self._event(), original)
+
+        assert packaged != original
+        assert "Done — Prompt Forge output attached" in packaged
+        media, cleaned = BasePlatformAdapter.extract_media(packaged)
+        assert len(media) == 1
+        output_path = Path(media[0][0])
+        assert output_path.parent == tmp_path / "Desktop" / "Athena Outputs" / "Prompt Forge"
+        assert output_path.name.startswith("prompt-forge-output-")
+        assert output_path.suffix == ".md"
+        assert output_path.read_text(encoding="utf-8") == original + "\n"
+        assert "MEDIA:" not in cleaned
+
+    def test_short_prompt_forge_response_stays_inline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        adapter = self._adapter(split_threshold=500)
+        original = "Short prompt."
+
+        packaged = adapter._maybe_package_prompt_forge_response(self._event(), original)
+
+        assert packaged == original
+        assert not (tmp_path / "Desktop" / "Athena Outputs" / "Prompt Forge").exists()
+
+    def test_non_prompt_forge_channel_stays_inline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        adapter = self._adapter(split_threshold=20)
+        original = "x" * 80
+
+        packaged = adapter._maybe_package_prompt_forge_response(
+            self._event(prompt="General project lane"),
+            original,
+        )
+
+        assert packaged == original
+
+    def test_non_discord_platform_stays_inline(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        from gateway.config import Platform
+
+        adapter = self._adapter(platform=Platform.TELEGRAM, split_threshold=20)
+        original = "x" * 80
+        event = self._event()
+        event.source.platform = Platform.TELEGRAM
+
+        packaged = adapter._maybe_package_prompt_forge_response(event, original)
+
+        assert packaged == original
+
+    def test_existing_media_attachment_skips_packaging(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        adapter = self._adapter(split_threshold=20)
+        original = ("x" * 80) + "\nMEDIA:/tmp/existing.md"
+
+        packaged = adapter._maybe_package_prompt_forge_response(self._event(), original)
+
+        assert packaged == original
+        assert not (tmp_path / "Desktop" / "Athena Outputs" / "Prompt Forge").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -439,9 +551,9 @@ class TestTruncateMessage:
                 pass
 
             async def send(self, *a, **kw):
-                pass
+                return SendResult(success=True)
 
-            async def get_chat_info(self, *a):
+            async def get_chat_info(self, chat_id: str):
                 return {}
 
         from gateway.config import Platform, PlatformConfig

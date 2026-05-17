@@ -1926,7 +1926,17 @@ $InstallStages = @(
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
 function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
 function Stage-Git              { if (-not (Install-Git))    { throw "Git not available and auto-install failed -- install from https://git-scm.com/download/win then re-run" } }
-function Stage-Node             { [void](Test-Node) }
+# Node is optional (browser tools degrade gracefully without it).  Surface
+# failure to the JSON contract as skipped=true / reason rather than ok=true,
+# so a GUI driver consuming the manifest can distinguish "node ready" from
+# "node missing".  Install flow continues either way -- matches the
+# existing Write-Completion behavior that prints a "Note: Node.js could
+# not be installed" hint instead of aborting.
+function Stage-Node             {
+    if (-not (Test-Node)) {
+        $script:_StageSkippedReason = "Node.js not available; browser tools will be unavailable until node is installed manually from https://nodejs.org/en/download/"
+    }
+}
 function Stage-SystemPackages   { Install-SystemPackages }
 function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
@@ -1975,6 +1985,15 @@ function Invoke-Stage {
     # foreach pass; cross-process drivers get the necessary freshening).
     Sync-EnvPath
 
+    # Per-stage soft-skip channel.  A worker can populate
+    # $script:_StageSkippedReason to surface "ran, but the thing it was
+    # supposed to set up is not available" as skipped=true in the JSON
+    # frame, without throwing.  Used by Stage-Node so the install flow
+    # doesn't abort when an optional capability is missing while still
+    # being honest in the protocol contract.  Reset before each stage so
+    # a prior stage's reason can never leak into a later stage's frame.
+    $script:_StageSkippedReason = $null
+
     $start = [DateTime]::UtcNow
     $result = @{
         stage        = $StageDef.Name
@@ -1987,6 +2006,10 @@ function Invoke-Stage {
     try {
         & $StageDef.Worker
         $result.ok = $true
+        if ($script:_StageSkippedReason) {
+            $result.skipped = $true
+            $result.reason  = $script:_StageSkippedReason
+        }
     } catch {
         $result.ok = $false
         $result.reason = "$_"
@@ -2060,7 +2083,12 @@ try {
         exit 0
     }
 
-    if ($Stage) {
+    # Use PSBoundParameters rather than $Stage truthiness so that an
+    # explicit `-Stage ""` from a misbehaving driver doesn't fall through
+    # to the full-install Main path and silently kick off a destructive
+    # operation.  Empty string is a contract violation; surface it as
+    # unknown-stage exit 2 with a structured JSON frame.
+    if ($PSBoundParameters.ContainsKey("Stage")) {
         $def = Get-InstallStage -Name $Stage
         if (-not $def) {
             $err = @{

@@ -1535,6 +1535,279 @@ def switch_board(slug: str):
 _EVENT_POLL_SECONDS = 0.3
 
 
+# ---------------------------------------------------------------------------
+# Profile metadata & description editing (consumed by the kanban orchestrator)
+# ---------------------------------------------------------------------------
+
+class DescribeBody(BaseModel):
+    description: Optional[str] = None  # explicit user-authored text
+
+
+class DescribeAutoBody(BaseModel):
+    overwrite: bool = False
+
+
+@router.get("/profiles")
+def list_profile_roster():
+    """Return every installed profile with its description.
+
+    Consumed by the dashboard's settings panel (orchestrator picker)
+    and the profile-description editing UI. Profiles without a
+    description still appear here — they're routable on name alone,
+    just less precisely.
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        profiles = profiles_mod.list_profiles()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to list profiles: {exc}")
+    return {
+        "profiles": [
+            {
+                "name": p.name,
+                "is_default": bool(p.is_default),
+                "model": p.model or "",
+                "provider": p.provider or "",
+                "description": p.description or "",
+                "description_auto": bool(p.description_auto),
+                "skill_count": int(p.skill_count or 0),
+            }
+            for p in profiles
+        ],
+    }
+
+
+@router.patch("/profiles/{profile_name}")
+def update_profile_description(profile_name: str, payload: DescribeBody):
+    """Set or clear the description of a profile.
+
+    Empty string clears the description; non-empty stores it as a
+    user-authored description (``description_auto: false``) so the
+    auto-describer won't overwrite it on a sweep without
+    ``--overwrite``.
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        canon = profiles_mod.normalize_profile_name(profile_name)
+        if canon == "default":
+            from hermes_constants import get_hermes_home  # type: ignore
+            from pathlib import Path as _Path
+            profile_dir = _Path(get_hermes_home())
+        else:
+            profile_dir = profiles_mod.get_profile_dir(canon)
+        if not profile_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found")
+        text = (payload.description or "").strip()
+        profiles_mod.write_profile_meta(
+            profile_dir,
+            description=text,
+            description_auto=False,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to update profile: {exc}")
+    return {"ok": True, "profile": canon, "description": text}
+
+
+@router.post("/profiles/{profile_name}/describe-auto")
+def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
+    """Generate a description for the named profile via the auxiliary
+    LLM (``auxiliary.profile_describer``). Persists with
+    ``description_auto: true`` so the dashboard can surface a "review"
+    badge.
+
+    Maps 1:1 to ``hermes profile describe <name> --auto``. Non-OK
+    outcomes are NOT HTTP errors — the UI renders the reason inline
+    (e.g. "no auxiliary client configured") so the operator can fix
+    config and retry without a page reload.
+    """
+    try:
+        from hermes_cli import profile_describer  # noqa: WPS433 (intentional)
+        outcome = profile_describer.describe_profile(
+            profile_name,
+            overwrite=bool(payload.overwrite),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"describer crashed: {exc}")
+    return {
+        "ok": bool(outcome.ok),
+        "profile": outcome.profile_name,
+        "reason": outcome.reason,
+        "description": outcome.description,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Decompose endpoint (orchestrator-driven fan-out)
+# ---------------------------------------------------------------------------
+
+class DecomposeBody(BaseModel):
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/decompose")
+def decompose_task_endpoint(
+    task_id: str,
+    payload: DecomposeBody,
+    board: Optional[str] = Query(None),
+):
+    """Fan a triage-column task out into a graph of child tasks via the
+    auxiliary LLM, routed to specialist profiles by description. Maps
+    1:1 to ``hermes kanban decompose <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    fanout, child_ids, new_title}``. A non-OK outcome is NOT an HTTP
+    error — the UI renders the reason inline.
+
+    Runs in FastAPI's threadpool (sync ``def``) because the LLM call
+    can take minutes on reasoning models.
+    """
+    board = _resolve_board(board)
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        from hermes_cli import kanban_decompose  # noqa: WPS433 (intentional)
+        outcome = kanban_decompose.decompose_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "fanout": bool(outcome.fanout),
+        "child_ids": outcome.child_ids or [],
+        "new_title": outcome.new_title,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Orchestration settings (kanban.orchestrator_profile / default_assignee /
+# auto_decompose) — surfaced to the dashboard's settings panel
+# ---------------------------------------------------------------------------
+
+class OrchestrationSettingsBody(BaseModel):
+    orchestrator_profile: Optional[str] = None
+    default_assignee: Optional[str] = None
+    auto_decompose: Optional[bool] = None
+
+
+@router.get("/orchestration")
+def get_orchestration_settings():
+    """Return the current kanban orchestration knobs from config.yaml
+    plus the resolved effective values (filling in fallbacks)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
+    explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
+    explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
+    auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+
+    # Resolve fallbacks the same way the decomposer does.
+    resolved_orch = explicit_orch
+    resolved_default = explicit_default
+    try:
+        from hermes_cli import profiles as profiles_mod
+        active_default = profiles_mod.get_active_profile_name() or "default"
+        if not resolved_orch or not profiles_mod.profile_exists(resolved_orch):
+            resolved_orch = active_default
+        if not resolved_default or not profiles_mod.profile_exists(resolved_default):
+            resolved_default = active_default
+    except Exception:
+        active_default = "default"
+        if not resolved_orch:
+            resolved_orch = active_default
+        if not resolved_default:
+            resolved_default = active_default
+
+    return {
+        "orchestrator_profile": explicit_orch,
+        "default_assignee": explicit_default,
+        "auto_decompose": auto_decompose,
+        "resolved_orchestrator_profile": resolved_orch,
+        "resolved_default_assignee": resolved_default,
+        "active_profile": active_default,
+    }
+
+
+@router.put("/orchestration")
+def set_orchestration_settings(payload: OrchestrationSettingsBody):
+    """Update the kanban orchestration knobs in ~/.hermes/config.yaml.
+
+    Each field is optional — only fields explicitly passed are
+    written. ``orchestrator_profile`` / ``default_assignee`` accept
+    empty strings to clear the override and fall back to the default
+    profile.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config() or {}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to load config: {exc}")
+
+    kanban_section = cfg.setdefault("kanban", {})
+    if not isinstance(kanban_section, dict):
+        kanban_section = {}
+        cfg["kanban"] = kanban_section
+
+    # Validate any non-empty profile names exist before saving.
+    try:
+        from hermes_cli import profiles as profiles_mod
+    except Exception:
+        profiles_mod = None  # type: ignore
+
+    if payload.orchestrator_profile is not None:
+        name = (payload.orchestrator_profile or "").strip()
+        if name and profiles_mod is not None:
+            try:
+                if not profiles_mod.profile_exists(name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"profile '{name}' does not exist",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass  # fail open if the lookup itself errors
+        kanban_section["orchestrator_profile"] = name
+
+    if payload.default_assignee is not None:
+        name = (payload.default_assignee or "").strip()
+        if name and profiles_mod is not None:
+            try:
+                if not profiles_mod.profile_exists(name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"profile '{name}' does not exist",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+        kanban_section["default_assignee"] = name
+
+    if payload.auto_decompose is not None:
+        kanban_section["auto_decompose"] = bool(payload.auto_decompose)
+
+    try:
+        save_config(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to save config: {exc}")
+
+    # Echo back the resolved state (callers usually re-render from it).
+    return get_orchestration_settings()
+
+
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
     # Enforce the dashboard session token as a query param — browsers can't

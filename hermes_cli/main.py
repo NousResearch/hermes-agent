@@ -9043,6 +9043,7 @@ def cmd_profile(args):
                 clone_config=clone,
                 no_alias=no_alias,
                 no_skills=no_skills,
+                description=getattr(args, "description", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
@@ -9141,6 +9142,107 @@ def cmd_profile(args):
         except (ValueError, FileNotFoundError) as e:
             print(f"Error: {e}")
             sys.exit(1)
+
+    elif action == "describe":
+        # Read or write a profile's description. The description is
+        # consumed by the kanban decomposer to route tasks based on
+        # role instead of name alone.
+        from hermes_cli import profiles as _profiles_mod
+
+        all_flag = bool(getattr(args, "all_missing", False))
+        auto_flag = bool(getattr(args, "auto", False))
+        overwrite_flag = bool(getattr(args, "overwrite", False))
+        text_value = getattr(args, "text", None)
+        name = getattr(args, "profile_name", None)
+
+        if all_flag and not auto_flag:
+            print("profile describe: --all requires --auto", file=sys.stderr)
+            sys.exit(2)
+        if all_flag and (text_value or name):
+            print(
+                "profile describe: --all is mutually exclusive with a profile name / --text",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not all_flag and not name:
+            print("profile describe: profile name is required (or --all --auto)", file=sys.stderr)
+            sys.exit(2)
+        if text_value and auto_flag:
+            print(
+                "profile describe: --text is mutually exclusive with --auto",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        # Show current description if no operation requested.
+        if name and not text_value and not auto_flag:
+            try:
+                if _profiles_mod.normalize_profile_name(name) == "default":
+                    from hermes_constants import get_hermes_home as _hh
+                    profile_dir = Path(_hh())
+                else:
+                    profile_dir = _profiles_mod.get_profile_dir(name)
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if not profile_dir.is_dir():
+                print(f"Error: profile '{name}' not found", file=sys.stderr)
+                sys.exit(1)
+            meta = _profiles_mod.read_profile_meta(profile_dir)
+            desc = meta.get("description") or ""
+            if not desc:
+                print(f"(no description set for '{name}')")
+            else:
+                tag = "[auto] " if meta.get("description_auto") else ""
+                print(f"{tag}{desc}")
+            sys.exit(0)
+
+        # --text path: just write the user-authored description.
+        if text_value:
+            try:
+                if _profiles_mod.normalize_profile_name(name) == "default":
+                    from hermes_constants import get_hermes_home as _hh
+                    profile_dir = Path(_hh())
+                else:
+                    profile_dir = _profiles_mod.get_profile_dir(name)
+                _profiles_mod.write_profile_meta(
+                    profile_dir,
+                    description=text_value,
+                    description_auto=False,
+                )
+                print(f"Description updated for '{name}'.")
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            sys.exit(0)
+
+        # --auto path: invoke the LLM describer.
+        from hermes_cli import profile_describer as _pd
+
+        if all_flag:
+            targets = _pd.list_describable_profiles(missing_only=True)
+            if not targets:
+                print("All profiles already have descriptions.")
+                sys.exit(0)
+        else:
+            targets = [name]
+
+        ok_count = 0
+        fail_count = 0
+        for tgt in targets:
+            outcome = _pd.describe_profile(tgt, overwrite=overwrite_flag)
+            if outcome.ok:
+                ok_count += 1
+                print(f"Described '{outcome.profile_name}': {outcome.description}")
+            else:
+                fail_count += 1
+                print(
+                    f"profile describe {outcome.profile_name}: {outcome.reason}",
+                    file=sys.stderr,
+                )
+        if not all_flag:
+            sys.exit(0 if ok_count == 1 else 1)
+        sys.exit(0 if ok_count > 0 else 1)
 
     elif action == "show":
         name = args.profile_name
@@ -12023,11 +12125,52 @@ Examples:
         action="store_true",
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
     )
+    profile_create.add_argument(
+        "--description",
+        default=None,
+        help="One- or two-sentence description of what this profile is good at. "
+             "Used by the kanban decomposer to route tasks based on role instead "
+             "of profile name alone. Skip and add later via `hermes profile describe`.",
+    )
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
     profile_delete.add_argument("profile_name", help="Profile to delete")
     profile_delete.add_argument(
         "-y", "--yes", action="store_true", help="Skip confirmation prompt"
+    )
+
+    profile_describe = profile_subparsers.add_parser(
+        "describe",
+        help="Read or set a profile's description (used by the kanban orchestrator)",
+    )
+    profile_describe.add_argument(
+        "profile_name",
+        nargs="?",
+        default=None,
+        help="Profile to describe (omit + use --all --auto to sweep)",
+    )
+    profile_describe.add_argument(
+        "--text",
+        default=None,
+        help="Set description to this exact text (overwrites any existing description)",
+    )
+    profile_describe.add_argument(
+        "--auto",
+        action="store_true",
+        help="Auto-generate description via the auxiliary LLM "
+             "(uses auxiliary.profile_describer)",
+    )
+    profile_describe.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="With --auto, replace user-authored descriptions too (default: only "
+             "fill in missing or previously-auto descriptions)",
+    )
+    profile_describe.add_argument(
+        "--all",
+        dest="all_missing",
+        action="store_true",
+        help="With --auto, run on every profile missing a description",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

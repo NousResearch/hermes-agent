@@ -2282,9 +2282,11 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_parallel_when_server_opted_in(self):
         """MCP tools from a parallel-safe server can run concurrently."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
+            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+            _mcp_tool_server_names["mcp_github_search_code"] = "github"
         try:
             tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
             tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
@@ -2292,13 +2294,16 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("github")
+                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+                _mcp_tool_server_names.pop("mcp_github_search_code", None)
 
     def test_mixed_mcp_and_builtin_parallel(self):
         """MCP parallel tools mixed with built-in parallel-safe tools."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
+            _mcp_tool_server_names["mcp_docs_search"] = "docs"
         try:
             tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="web_search", arguments='{"query":"test"}', call_id="c2")
@@ -2306,14 +2311,17 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
+                _mcp_tool_server_names.pop("mcp_docs_search", None)
 
     def test_mixed_parallel_and_serial_mcp_servers(self):
         """One parallel MCP server + one non-parallel MCP server = sequential."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
             # "github" is NOT in _parallel_safe_servers
+            _mcp_tool_server_names["mcp_docs_search"] = "docs"
+            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
         try:
             tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c2")
@@ -2321,6 +2329,8 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
+                _mcp_tool_server_names.pop("mcp_docs_search", None)
+                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
 
 
 class TestHandleMaxIterations:

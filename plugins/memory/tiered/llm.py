@@ -1,6 +1,8 @@
 """Shared LLM helper for tiered memory composition.
 
-Composer: moonshotai/kimi-k2.6 via OpenRouter.
+Composer: deepseek-v4-pro via DeepSeek API.
+Uses the same DEEPSEEK_API_KEY as the rest of Hermes — no separate
+OpenRouter or Ollama dependency.
 
 P169/MOL-560: dropped the local Ollama qwen3:1.7b primary path entirely.
 Post-MOL-546 the embedder is in-process via fastembed, so the composer
@@ -37,16 +39,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# P169/MOL-560: Kimi K2.6 is now the sole composer (was fallback).
-COMPOSER_MODEL = "moonshotai/kimi-k2.6"
-# P81/MOL-294: HERMES_MOCK_LLM_URL routes COMPOSER to aimock for mock-first dev loops.
-# .strip() defends against empty-string masking.
-COMPOSER_BASE_URL = os.environ.get("HERMES_MOCK_LLM_URL", "").strip() or "https://openrouter.ai/api/v1"
-COMPOSER_API_KEY_ENV = "OPENROUTER_API_KEY"
+# P169/MOL-560: Kimi K2.6 was the sole composer (was fallback).
+# MOL-602 follow-up: switched to deepseek-v4-pro (primary model) — no separate
+# OpenRouter dependency, no Ollama dependency. Uses same key as rest of Hermes.
+COMPOSER_MODEL = "deepseek-v4-pro"
+# Base URL matches the deepseek provider plugin (plugins/model-providers/deepseek/).
+COMPOSER_BASE_URL = os.environ.get("HERMES_MOCK_LLM_URL", "").strip() or "https://api.deepseek.com/v1"
+COMPOSER_API_KEY_ENV = "DEEPSEEK_API_KEY"
 
 # P169 review fix-pass I1: canonical endpoint — anything else triggers the
 # "stale mock URL silent redirect" guard log.
-_CANONICAL_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+_CANONICAL_COMPOSER_URL = "https://api.deepseek.com/v1"
 
 MAX_TOKENS = 4096
 TEMPERATURE = 0.3
@@ -99,7 +102,7 @@ def _announce_base_url_once() -> None:
     if _base_url_announced:
         return
     _base_url_announced = True
-    if COMPOSER_BASE_URL == _CANONICAL_OPENROUTER_URL:
+    if COMPOSER_BASE_URL == _CANONICAL_COMPOSER_URL:
         logger.info("memory LLM composer: base_url=%s (canonical)", COMPOSER_BASE_URL)
     else:
         logger.warning(
@@ -110,12 +113,12 @@ def _announce_base_url_once() -> None:
 
 
 def _call_composer(prompt: str) -> str:
-    """Call Kimi K2.6 via OpenRouter with reasoning: high. Returns content text.
+    """Call deepseek-v4-pro via DeepSeek API. Returns content text.
 
     Raises:
-        ComposerKeyMissing: OPENROUTER_API_KEY not set in env. Logged at ERROR
+        ComposerKeyMissing: DEEPSEEK_API_KEY not set in env. Logged at ERROR
             + tripwire written before raise.
-        ComposerAuthFailure: 401/403 from OpenRouter (expired/revoked key).
+        ComposerAuthFailure: 401/403 from DeepSeek (expired/revoked key).
             Logged at ERROR + tripwire before raise.
         Other openai.* exceptions: transient API errors (rate limit, 5xx,
             network) — caller's `llm_compose` outer except catches at WARNING.
@@ -141,9 +144,6 @@ def _call_composer(prompt: str) -> str:
             max_tokens=MAX_TOKENS,
             temperature=TEMPERATURE,
             messages=[{"role": "user", "content": prompt}],
-            extra_body={
-                "reasoning": {"enabled": True, "effort": "high"},
-            },
         )
     except (AuthenticationError, PermissionDeniedError) as e:
         # 401/403 — expired or revoked key. Permanent failure until operator
@@ -163,7 +163,7 @@ def _call_composer(prompt: str) -> str:
 
 
 def llm_compose(prompt: str, context: str) -> Optional[str]:
-    """Compose memory via Kimi K2.6 composer. Returns text or None on failure.
+    """Compose memory via deepseek-v4-pro composer. Returns text or None on failure.
 
     P169 contract change: pre-P169 the Ollama-then-Kimi chain meant `None`
     was a rare both-failed case. Post-P169 `None` covers any single failure

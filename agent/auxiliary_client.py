@@ -1252,12 +1252,20 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     or the credential pool.
     """
     try:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
+        from hermes_cli.auth import (
+            NOUS_INFERENCE_AUTH_AUTO,
+            NOUS_INFERENCE_AUTH_LEGACY,
+            resolve_nous_runtime_credentials,
+        )
 
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
             timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-            force_mint=force_refresh,
+            auth_mode=(
+                NOUS_INFERENCE_AUTH_LEGACY
+                if force_refresh
+                else NOUS_INFERENCE_AUTH_AUTO
+            ),
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -2501,12 +2509,12 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "nous":
-            from hermes_cli.auth import resolve_nous_runtime_credentials
+            from hermes_cli.auth import NOUS_INFERENCE_AUTH_LEGACY, resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                force_mint=True,
+                auth_mode=NOUS_INFERENCE_AUTH_LEGACY,
             )
             if not str(creds.get("api_key", "") or "").strip():
                 return False

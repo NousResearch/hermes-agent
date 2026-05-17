@@ -338,7 +338,10 @@ updates remain separate approvals. See
 `references/controlled-pr-metadata-evidence-refresh.md` when a scoped approval
 allows updating an existing PR body to refresh evidence links only; it records
 body-only PATCH scope, auth hygiene, explicit audit arguments, and reporting
-requirements. See
+requirements. See `references/controlled-protected-branch-merge.md` when a
+scoped approval allows exactly one protected-branch PR merge; it records final
+preflight, Gitea merge endpoint usage, post-merge lifecycle verification, and
+merged-state control-plane pitfalls. See
 `references/planning-readiness-arbitration.md` for the planning-review rule:
 when `plan.json`, strategic summaries, native Kanban, and readiness disagree,
 close live control-plane/readiness blockers before selecting S007A, S017A, or

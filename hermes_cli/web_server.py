@@ -4434,4 +4434,7 @@ def start_server(
             )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
+    # rather than X-Forwarded-For's rewritten value (which would defeat the
+    # loopback gate when behind a reverse proxy).
+    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)

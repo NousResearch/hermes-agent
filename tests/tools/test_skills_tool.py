@@ -511,6 +511,25 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "knowledge-brain"
 
+    def test_view_symlinked_category_under_skills_root_is_trusted(self, tmp_path, caplog):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            with caplog.at_level("WARNING", logger="tools.skills_tool"):
+                raw = skill_view("knowledge-brain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert not any(
+            "outside the trusted skills directory" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "zeta", category="z-cat")

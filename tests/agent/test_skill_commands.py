@@ -460,6 +460,21 @@ Generate some audio.
         assert "test-skill" in msg
         assert "do stuff" in msg
 
+    def test_builds_message_for_skill_dir_symlinked_outside_skills_root(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/knowledge-brain", "load context")
+
+        assert msg is not None
+        assert "knowledge-brain" in msg
+        assert "load context" in msg
+
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

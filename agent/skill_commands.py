@@ -61,10 +61,30 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
+            normalized = raw_identifier
+            candidate_roots = [SKILLS_DIR]
             try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                from agent.skill_utils import get_external_skills_dirs
+
+                candidate_roots.extend(get_external_skills_dirs())
             except Exception:
-                normalized = raw_identifier
+                pass
+
+            for root in candidate_roots:
+                # Prefer the lexical path first. Directory symlinks under
+                # ~/.hermes/skills intentionally point at shared skill sources;
+                # resolving them before relative_to() makes an installed skill
+                # look "outside" the skills root and breaks /skill-name loading.
+                try:
+                    normalized = str(identifier_path.relative_to(root))
+                    break
+                except Exception:
+                    pass
+                try:
+                    normalized = str(identifier_path.resolve().relative_to(root.resolve()))
+                    break
+                except Exception:
+                    pass
         else:
             normalized = raw_identifier.lstrip("/")
 

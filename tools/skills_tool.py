@@ -1068,12 +1068,20 @@ def skill_view(
         except Exception:
             pass
         for _td in _trusted_dirs:
+            _candidate_paths = [skill_md]
             try:
-                skill_md.resolve().relative_to(_td)
-                _outside_skills_dir = False
+                _candidate_paths.append(skill_md.resolve())
+            except Exception:
+                pass
+            for _candidate in _candidate_paths:
+                try:
+                    _candidate.relative_to(_td)
+                    _outside_skills_dir = False
+                    break
+                except ValueError:
+                    continue
+            if not _outside_skills_dir:
                 break
-            except ValueError:
-                continue
 
         # Security: detect common prompt injection patterns
         # (pattern list at module level as _INJECTION_PATTERNS)

@@ -1,5 +1,5 @@
+import { wrapAnsi } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
-import wrapAnsi from 'wrap-ansi'
 
 import { offsetFromPosition } from '../components/textInput.js'
 import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'

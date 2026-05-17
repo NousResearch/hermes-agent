@@ -344,7 +344,9 @@ GitHub-hosted-runner assumptions such as Python 3.13 arm64 toolcache metadata or
 sync CI reaches deterministic validators, when Gitea append-only statuses must
 be collapsed to latest-per-context state, or when live PR HEAD differs from stale
 completion/PR-evidence packets; it records the evidence-first repair, validator
-rerun, commit/push, current-head mismatch triage, and final status-reporting loop.
+rerun, commit/push, branch-target fallback PR discovery, `ls-remote` before stale
+tracking refs, explicit stale-head lifecycle classification, current-head
+mismatch triage, and final status-reporting loop.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

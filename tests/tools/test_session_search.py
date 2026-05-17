@@ -576,3 +576,114 @@ class TestSessionSearch:
         assert entry["source"] == "api_server", (
             f"source should be parent's 'api_server', got {entry['source']!r}"
         )
+
+
+class TestInSessionMode:
+    """in_session=True inverts the default: search ONLY current lineage, return verbatim."""
+
+    def test_in_session_returns_only_current_lineage(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "20260517_124053_7607c3"
+        other_sid = "20260101_000000_other00"
+
+        mock_db.search_messages.return_value = [
+            {"session_id": current_sid, "role": "user", "content": "my bug list: A, B, C",
+             "session_started": 1709500000, "source": "cli", "model": "test"},
+            {"session_id": other_sid, "role": "user", "content": "unrelated bug",
+             "session_started": 1709400000, "source": "cli", "model": "test"},
+        ]
+        mock_db.get_session.return_value = {"id": current_sid, "parent_session_id": None}
+
+        result = json.loads(session_search(
+            query="bug", db=mock_db, current_session_id=current_sid, in_session=True,
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "in_session"
+        assert result["count"] == 1
+        assert result["results"][0]["content"] == "my bug list: A, B, C"
+
+    def test_in_session_role_filter_isolates_user_text(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "20260517_124053_7607c3"
+        mock_db.search_messages.return_value = [
+            {"session_id": current_sid, "role": "user", "content": "user said this",
+             "session_started": 1709500000, "source": "cli", "model": "test"},
+            {"session_id": current_sid, "role": "assistant", "content": "assistant said this",
+             "session_started": 1709500001, "source": "cli", "model": "test"},
+        ]
+        mock_db.get_session.return_value = {"id": current_sid, "parent_session_id": None}
+
+        result = json.loads(session_search(
+            query="said", db=mock_db, current_session_id=current_sid,
+            in_session=True, role_filter="user",
+        ))
+        # search_messages was asked to filter by role at the DB level
+        call = mock_db.search_messages.call_args
+        assert call.kwargs.get("role_filter") == ["user"]
+        assert result["success"] is True
+
+    def test_in_session_includes_parent_lineage(self):
+        """Compression child should still find content in its parent fragment."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "parent_sid", "role": "user", "content": "old user text",
+             "session_started": 1709400000, "source": "cli", "model": "test"},
+            {"session_id": "unrelated_sid", "role": "user", "content": "noise",
+             "session_started": 1709300000, "source": "cli", "model": "test"},
+        ]
+
+        def _get_session(sid):
+            if sid == "child_sid":
+                return {"id": "child_sid", "parent_session_id": "parent_sid"}
+            if sid == "parent_sid":
+                return {"id": "parent_sid", "parent_session_id": None}
+            return None
+        mock_db.get_session.side_effect = _get_session
+
+        result = json.loads(session_search(
+            query="text", db=mock_db, current_session_id="child_sid", in_session=True,
+        ))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["content"] == "old user text"
+        assert result["sessions_searched"] == 2  # child + parent
+
+    def test_in_session_no_query_returns_recent_messages(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "sid1"
+        mock_db.get_session.return_value = {"id": current_sid, "parent_session_id": None}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+
+        result = json.loads(session_search(
+            query="", db=mock_db, current_session_id=current_sid, in_session=True, limit=2,
+        ))
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert [r["content"] for r in result["results"]] == ["reply", "second"]
+
+    def test_in_session_requires_current_session_id(self):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        result = json.loads(session_search(
+            query="x", db=mock_db, current_session_id=None, in_session=True,
+        ))
+        assert result["success"] is False
+        assert "current_session_id" in result.get("error", "")

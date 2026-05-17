@@ -265,6 +265,120 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _resolve_session_lineage(db, session_id: str) -> List[str]:
+    """Return the full lineage (root → … → given session_id) so in-session
+    search covers compression-fragment parents and delegation chains."""
+    if not session_id:
+        return []
+    chain = []
+    visited = set()
+    sid = session_id
+    # Walk up to the root
+    while sid and sid not in visited:
+        visited.add(sid)
+        chain.append(sid)
+        try:
+            s = db.get_session(sid)
+            sid = (s or {}).get("parent_session_id")
+        except Exception:
+            break
+    return chain
+
+
+def _search_current_session(
+    query: str,
+    role_filter: Optional[str],
+    limit: int,
+    db,
+    current_session_id: Optional[str],
+) -> str:
+    """In-session mode: search ONLY the active session lineage, return matches verbatim.
+
+    No LLM call, no summarization. Returns up to ``limit`` matched messages with
+    role, timestamp, and full text. Designed for prompts like "find what I wrote
+    about X in this chat" — the default mode excludes the current session.
+    """
+    if db is None:
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception:
+            from hermes_state import format_session_db_unavailable
+            return tool_error(format_session_db_unavailable(), success=False)
+
+    if not isinstance(limit, int):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 20
+    # In-session search returns raw messages (cheap), allow more than 5.
+    limit = max(1, min(limit, 100))
+
+    if not current_session_id:
+        return tool_error(
+            "in_session=True requires a current_session_id (no active session).",
+            success=False,
+        )
+
+    lineage = _resolve_session_lineage(db, current_session_id)
+    if not lineage:
+        lineage = [current_session_id]
+
+    role_list = None
+    if role_filter and role_filter.strip():
+        role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
+
+    try:
+        if query and query.strip():
+            # FTS5 search across the whole index, then filter to lineage.
+            raw = db.search_messages(
+                query=query.strip(),
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=500,
+                offset=0,
+            )
+            in_lineage = [r for r in raw if r.get("session_id") in lineage]
+        else:
+            # No query → return the most recent messages from the lineage.
+            in_lineage = []
+            for sid in lineage:
+                try:
+                    msgs = db.get_messages_as_conversation(sid) or []
+                except Exception:
+                    msgs = []
+                for m in msgs:
+                    if role_list and m.get("role") not in role_list:
+                        continue
+                    in_lineage.append({
+                        "session_id": sid,
+                        "role": m.get("role"),
+                        "content": m.get("content", ""),
+                        "created_at": m.get("created_at") or m.get("timestamp"),
+                    })
+            in_lineage = in_lineage[-limit:]
+
+        results = []
+        for m in in_lineage[:limit]:
+            results.append({
+                "role": m.get("role"),
+                "when": _format_timestamp(m.get("created_at") or m.get("session_started")),
+                "content": m.get("content", ""),
+            })
+
+        return json.dumps({
+            "success": True,
+            "mode": "in_session",
+            "query": query or "",
+            "sessions_searched": len(lineage),
+            "count": len(results),
+            "results": results,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logging.error("In-session search failed: %s", e, exc_info=True)
+        return tool_error(f"In-session search failed: {e}", success=False)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
@@ -328,6 +442,7 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    in_session: bool = False,
 ) -> str:
     """
     Search past sessions and return focused summaries of matching conversations.
@@ -335,7 +450,20 @@ def session_search(
     Uses FTS5 to find matches, then summarizes the top sessions with the
     configured auxiliary session_search model.
     The current session is excluded from results since the agent already has that context.
+
+    When ``in_session=True`` the behavior inverts: ONLY the current session lineage
+    is searched, and matching messages are returned verbatim (no LLM summarization).
+    This satisfies prompts like "only check my text in this conversation" — the
+    default mode cannot satisfy those because past-session recall is its purpose.
     """
+    if in_session:
+        return _search_current_session(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+        )
     if db is None:
         try:
             from hermes_state import SessionDB
@@ -583,6 +711,11 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Optional: only search messages from specific roles (comma-separated). E.g. 'user,assistant' to skip tool outputs.",
             },
+            "in_session": {
+                "type": "boolean",
+                "description": "When true, search ONLY the current conversation lineage (not past sessions) and return matching messages VERBATIM with no LLM summarization. Use this when the user says 'in this chat', 'in this conversation', 'what I just said', 'check my text' — phrases that scope to the active session. Combine with role_filter='user' to surface exactly what the user typed.",
+                "default": False,
+            },
             "limit": {
                 "type": "integer",
                 "description": "Max sessions to summarize (default: 3, max: 5).",
@@ -605,6 +738,7 @@ registry.register(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
+        in_session=bool(args.get("in_session", False)),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id")),
     check_fn=check_session_search_requirements,

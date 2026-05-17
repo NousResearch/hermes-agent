@@ -24,6 +24,7 @@ Example config::
         args: ["-y", "@modelcontextprotocol/server-github"]
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+        supports_parallel_tool_calls: true  # tools from this server may run concurrently
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:
@@ -56,6 +57,8 @@ Features:
     - Thread-safe architecture with dedicated background event loop
     - Sampling support: MCP servers can request LLM completions via
       sampling/createMessage (text and tool-use responses)
+    - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
+      flag allows concurrent execution of tools from the same server
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.
@@ -88,6 +91,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +282,11 @@ _CREDENTIAL_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+# Pre-compiled pattern for ${VAR_NAME} style env-var interpolation.
+# Supports any non-} characters in the variable name (hyphens, dots, etc.)
+# so providers like MY-VAR or my.var work correctly.
+_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +491,72 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     return f"MEDIA:{image_path}"
+
+
+# ---------------------------------------------------------------------------
+# Remote MCP URL validation
+# ---------------------------------------------------------------------------
+
+
+class InvalidMcpUrlError(ValueError):
+    """Raised when a remote MCP server's ``url`` cannot be parsed as http(s)://.
+
+    Validated once at startup so we fail fast with a clear message instead of
+    burning through the reconnect-backoff loop on every attempt.  (Ported from
+    anomalyco/opencode#25019.)
+    """
+
+
+def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
+    """Return the URL as a string if it's a valid http(s) remote MCP URL.
+
+    Raises :class:`InvalidMcpUrlError` otherwise with a message naming the
+    offending server, so users can spot the bad entry in their config.
+
+    Accepts:
+    - ``http://host`` / ``https://host`` with optional port, path, query
+    - IPv4, IPv6 (bracketed), DNS hostnames
+
+    Rejects:
+    - Non-string values (``None``, dicts, ints)
+    - Missing scheme (``example.com/mcp``)
+    - Non-http(s) schemes (``file://``, ``ws://``, ``stdio:`` — stdio servers
+      use the ``command`` key, not ``url``)
+    - Empty host (``http://``, ``https:///path``)
+    """
+    if not isinstance(url, str):
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': expected a string, got "
+            f"{type(url).__name__}"
+        )
+    stripped = url.strip()
+    if not stripped:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': empty url"
+        )
+    try:
+        parsed = urlparse(stripped)
+    except Exception as exc:  # urlparse is very permissive — belt and braces
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': {stripped!r} ({exc})"
+        ) from exc
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': scheme must be http or "
+            f"https, got {parsed.scheme!r} ({stripped!r})"
+        )
+    if not parsed.netloc:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': missing host ({stripped!r})"
+        )
+    # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port).
+    # Reject that — we need a real host.
+    if not parsed.hostname:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': missing hostname "
+            f"({stripped!r})"
+        )
+    return stripped
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -1450,6 +1525,21 @@ class MCPServerTask:
                 "this warning.",
                 self.name,
             )
+
+        # Validate remote URL once, up front.  Raising here (rather than
+        # letting it blow up inside the SDK's httpx layer on every retry)
+        # means a typo in config.yaml fails fast with a clear error — and
+        # critically, no reconnect-backoff burn.  (Ported from
+        # anomalyco/opencode#25019.)
+        if self._is_http():
+            try:
+                _validate_remote_mcp_url(self.name, config.get("url"))
+            except InvalidMcpUrlError as exc:
+                logger.warning("%s", exc)
+                self._error = exc
+                self._ready.set()
+                return
+
         retries = 0
         initial_retries = 0
         backoff = 1.0
@@ -1776,7 +1866,7 @@ def _handle_auth_error_and_retry(
         return await manager.handle_401(server_name, None)
 
     try:
-        recovered = _run_on_mcp_loop(_recover(), timeout=10)
+        recovered = _run_on_mcp_loop(_recover, timeout=10)
     except Exception as rec_exc:
         logger.warning(
             "MCP OAuth '%s': recovery attempt failed: %s",
@@ -1971,11 +2061,16 @@ def _handle_session_expired_and_retry(
     return None
 
 
+# Sanitized server names whose ``supports_parallel_tool_calls`` config is True.
+# Populated during ``register_mcp_servers()`` and queried by
+# ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
+_parallel_safe_servers: set = set()
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
-# Protects _mcp_loop, _mcp_thread, _servers, and _stdio_pids.
+# Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -2049,19 +2144,35 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
+def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine on the MCP event loop and block until done.
+
+    Accepts either a coroutine object or a zero-arg callable that returns one.
+    Callers can pass a factory to avoid constructing coroutine objects when
+    the MCP loop is unavailable (which would otherwise leak the coroutine
+    frame and emit ``"coroutine was never awaited"`` warnings).
 
     Poll in short intervals so the calling agent thread can honor user
     interrupts while the MCP work is still running on the background loop.
     """
     from tools.interrupt import is_interrupted
+    from agent.async_utils import safe_schedule_threadsafe
 
     with _lock:
         loop = _mcp_loop
     if loop is None or not loop.is_running():
+        if asyncio.iscoroutine(coro_or_factory):
+            coro_or_factory.close()
         raise RuntimeError("MCP event loop is not running")
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+    future = safe_schedule_threadsafe(
+        coro, loop,
+        logger=logger,
+        log_message="MCP scheduling failed",
+    )
+    if future is None:
+        raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
     deadline = None if timeout is None else start_time + timeout
 
@@ -2104,7 +2215,7 @@ def _interpolate_env_vars(value):
     if isinstance(value, str):
         def _replace(m):
             return os.environ.get(m.group(1), m.group(0))
-        return re.sub(r"\$\{([^}]+)\}", _replace, value)
+        return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -2258,7 +2369,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": text_result}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             result = _call_once()
@@ -2338,7 +2449,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return json.dumps({"resources": resources}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2398,7 +2509,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2461,7 +2572,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return json.dumps({"prompts": prompts}, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -2532,7 +2643,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return json.dumps(resp, ensure_ascii=False)
 
         def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
 
         try:
             return _call_once()
@@ -3077,6 +3188,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        # Track which servers opt-in to parallel tool calls (idempotent).
+        for srv_name, srv_cfg in servers.items():
+            if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
+                _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
+            else:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
     if not new_servers:
         return _existing_tool_names()
@@ -3116,7 +3233,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _run_on_mcp_loop(_discover_all(), timeout=120)
+        _run_on_mcp_loop(_discover_all, timeout=120)
     finally:
         if _was_interrupted:
             _set_interrupt(True)
@@ -3185,6 +3302,29 @@ def discover_mcp_tools() -> List[str]:
         logger.info(summary)
 
     return tool_names
+
+
+def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
+    """Check if an MCP tool belongs to a server that supports parallel tool calls.
+
+    MCP tool names follow the pattern ``mcp_{server}_{tool}``.  This extracts
+    the server component and checks it against the set of servers whose config
+    includes ``supports_parallel_tool_calls: true``.
+
+    Returns False for non-MCP tools or tools from servers without the flag.
+    """
+    if not tool_name.startswith("mcp_"):
+        return False
+    # Strip the "mcp_" prefix and extract the server name.
+    # Tool names are: mcp_{sanitized_server}_{sanitized_tool}
+    # We need to check all possible server prefixes because the server name
+    # itself may contain underscores after sanitization.
+    rest = tool_name[4:]  # strip "mcp_"
+    with _lock:
+        for server_name in _parallel_safe_servers:
+            if rest.startswith(server_name + "_") and len(rest) > len(server_name) + 1:
+                return True
+    return False
 
 
 def get_mcp_status() -> List[dict]:
@@ -3284,7 +3424,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         )
 
     try:
-        _run_on_mcp_loop(_probe_all(), timeout=120)
+        _run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
         logger.debug("MCP probe failed: %s", exc)
     finally:
@@ -3324,11 +3464,17 @@ def shutdown_mcp_servers():
     with _lock:
         loop = _mcp_loop
     if loop is not None and loop.is_running():
-        try:
-            future = asyncio.run_coroutine_threadsafe(_shutdown(), loop)
-            future.result(timeout=15)
-        except Exception as exc:
-            logger.debug("Error during MCP shutdown: %s", exc)
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            _shutdown(), loop,
+            logger=logger,
+            log_message="MCP shutdown: failed to schedule",
+        )
+        if future is not None:
+            try:
+                future.result(timeout=15)
+            except Exception as exc:
+                logger.debug("Error during MCP shutdown: %s", exc)
 
     _stop_mcp_loop()
 

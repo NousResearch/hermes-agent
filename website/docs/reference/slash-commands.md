@@ -98,7 +98,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 
 | Command | Description |
 |---------|-------------|
-| `/quit` | Exit the CLI (also: `/exit`). |
+| `/quit` | Exit the CLI (also: `/exit`). See note on `/q` under `/queue` above. Pass `--delete` (or `-d`) — e.g. `/exit --delete` — to also permanently remove the current session's SQLite history and on-disk transcripts before exiting. Useful for privacy-sensitive or one-off tasks. |
 
 ### Dynamic CLI slash commands
 

@@ -68,7 +68,11 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
 @pytest.mark.asyncio
 async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatch, tmp_path):
     """Retryable runtime fatal errors queue the platform for reconnection
-    instead of shutting down the gateway."""
+    AND keep the gateway alive — the background reconnect watcher recovers
+    the platform when the underlying issue clears.  (Previously this
+    exited-with-failure to trigger a systemd restart; that converted
+    transient failures into infinite restart loops.)
+    """
     config = GatewayConfig(
         platforms={
             Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
@@ -89,8 +93,8 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
 
     await runner._handle_adapter_fatal_error(adapter)
 
-    # Should shut down with failure — systemd Restart=on-failure will restart
-    runner.stop.assert_awaited_once()
-    assert runner._exit_with_failure is True
+    # Gateway stays alive — watcher will retry in background
+    runner.stop.assert_not_awaited()
+    assert runner._exit_with_failure is False
     assert Platform.WHATSAPP in runner._failed_platforms
     assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0

@@ -266,10 +266,12 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            if get_env_value("XAI_API_KEY"):
+            from tools.xai_http import resolve_xai_http_credentials
+
+            if resolve_xai_http_credentials().get("api_key"):
                 return "xai"
             logger.warning(
-                "STT provider 'xai' configured but XAI_API_KEY not set"
+                "STT provider 'xai' configured but no xAI credentials are available"
             )
             return "none"
 
@@ -289,9 +291,14 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if get_env_value("XAI_API_KEY"):
-        logger.info("No local STT available, using xAI Grok STT API")
-        return "xai"
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        if resolve_xai_http_credentials().get("api_key"):
+            logger.info("No local STT available, using xAI Grok STT API")
+            return "xai"
+    except Exception:
+        pass
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -704,15 +711,23 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
     Requires ``XAI_API_KEY`` environment variable.
     """
-    api_key = get_env_value("XAI_API_KEY")
+    from tools.xai_http import resolve_xai_http_credentials
+
+    creds = resolve_xai_http_credentials()
+    api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
+        }
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
         or get_env_value("XAI_STT_BASE_URL")
+        or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(
@@ -872,7 +887,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

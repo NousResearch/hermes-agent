@@ -283,6 +283,17 @@ class TestTeamsAdapterInit:
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         assert adapter._port == 5000
 
+    def test_invalid_port_from_extra_falls_back_to_default(self):
+        adapter = TeamsAdapter(
+            _make_config(client_id="id", client_secret="secret", tenant_id="tenant", port="abc")
+        )
+        assert adapter._port == 3978
+
+    def test_invalid_port_from_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_PORT", "abc")
+        adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
+        assert adapter._port == 3978
+
     def test_platform_value(self):
         adapter = TeamsAdapter(_make_config(client_id="id", client_secret="secret", tenant_id="tenant"))
         assert adapter.platform.value == "teams"

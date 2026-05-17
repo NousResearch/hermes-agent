@@ -57,6 +57,38 @@ class TestCronFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
+    def test_save_jobs_chowns_to_parent_owner(self):
+        """save_jobs should chown jobs.json to match its parent directory owner."""
+        cron_dir = Path(self.tmpdir) / "cron"
+        output_dir = cron_dir / "output"
+        jobs_file = cron_dir / "jobs.json"
+
+        # Make cron dir owned by our process UID (the "correct" owner)
+        cron_dir.mkdir(parents=True, exist_ok=True)
+        our_uid = os.getuid()
+        os.chown(cron_dir, our_uid, -1)
+
+        with patch("cron.jobs.CRON_DIR", cron_dir), \
+             patch("cron.jobs.OUTPUT_DIR", output_dir), \
+             patch("cron.jobs.JOBS_FILE", jobs_file):
+            from cron.jobs import save_jobs
+            save_jobs([{"id": "test", "prompt": "hello"}])
+
+            self.assertEqual(os.stat(jobs_file).st_uid, our_uid,
+                             "jobs.json should match parent dir owner after save")
+
+            # Now simulate the agent-running-as-root scenario: write as root (UID 0)
+            # while cron dir is owned by our_uid.
+            os.chown(jobs_file, 0, -1)  # simulate root ownership
+            self.assertEqual(os.stat(jobs_file).st_uid, 0,
+                             "test precondition: file should be root-owned")
+
+            # _secure_file is called by save_jobs internally. Verify it fixes ownership.
+            from cron.jobs import _secure_file
+            _secure_file(jobs_file)
+            self.assertEqual(os.stat(jobs_file).st_uid, our_uid,
+                             "_secure_file should chown back to parent dir owner")
+
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
         with patch("cron.jobs.OUTPUT_DIR", output_dir), \

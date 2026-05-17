@@ -327,6 +327,84 @@ def test_xai_callback_server_latches_first_terminal_callback_result():
 
 
 # ---------------------------------------------------------------------------
+# Loopback callback handler GET responses
+# ---------------------------------------------------------------------------
+
+
+def _get_callback(redirect_uri: str, query: str = "") -> tuple[int, str]:
+    """GET the loopback callback URL with an optional query string."""
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+
+    target = redirect_uri + (("?" + query) if query else "")
+    req = Request(target, method="GET")
+    try:
+        with urlopen(req, timeout=5.0) as resp:
+            return resp.getcode(), resp.read().decode("utf-8", "replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+def test_xai_callback_handler_returns_400_when_callback_url_lacks_code_and_error():
+    """Bare loopback URL (no code, no error) must not claim authorization received.
+
+    Regression for #27385: when xAI's auth backend fails to redirect and the user
+    manually navigates to http://127.0.0.1:<port>/callback, the handler used to
+    return 200 "xAI authorization received" while the CLI's wait loop still timed
+    out — leaving the user with a contradictory success page and a CLI error.
+    """
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(redirect_uri)
+        assert status == 400
+        assert "not received" in body.lower()
+        assert "hermes auth add xai-oauth" in body
+        # Wait loop must still see no code/error so it raises a real timeout,
+        # rather than treating this empty hit as a successful callback.
+        assert result["code"] is None
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_xai_callback_handler_accepts_callback_with_code():
+    """A real OAuth redirect (code + state) still records both and shows success."""
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(redirect_uri, query="code=abc&state=xyz")
+        assert status == 200
+        assert "xAI authorization received" in body
+        assert result["code"] == "abc"
+        assert result["state"] == "xyz"
+        assert result["error"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+def test_xai_callback_handler_records_error_callback():
+    """A redirect carrying an `error` param must surface the failure page and capture detail."""
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        status, body = _get_callback(
+            redirect_uri,
+            query="error=access_denied&error_description=user%20cancelled",
+        )
+        assert status == 200
+        assert "xAI authorization failed" in body
+        assert result["error"] == "access_denied"
+        assert result["error_description"] == "user cancelled"
+        assert result["code"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
 # Token roundtrip + reads
 # ---------------------------------------------------------------------------
 

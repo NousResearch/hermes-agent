@@ -58,8 +58,8 @@ def _read_message_body(
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text()
-        except OSError as exc:
+            return Path(file_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
             print(f"hermes send: cannot read {file_path}: {exc}", file=sys.stderr)
             sys.exit(_USAGE_EXIT)
 

@@ -12,6 +12,7 @@ import {
   compactPreview,
   hasAnsi,
   isPasteBackedText,
+  sanitizeAnsiForRender,
   stripAnsi
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -85,13 +86,14 @@ export const MessageLine = memo(function MessageLine({
   if (msg.role === 'tool') {
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
+    const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
           <Text wrap="truncate-end">
-            <Ansi>{msg.text}</Ansi>
+            <Ansi>{safeAnsi}</Ansi>
           </Text>
         ) : (
           <Text color={t.color.muted} wrap="truncate-end">
@@ -129,13 +131,13 @@ export const MessageLine = memo(function MessageLine({
               {msg.text.length.toLocaleString()} chars
             </Text>
           </Box>
-          {systemOpen && <Ansi>{msg.text}</Ansi>}
+          {systemOpen && <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>}
         </Box>
       )
     }
 
     if (msg.role !== 'user' && hasAnsi(msg.text)) {
-      return <Ansi>{msg.text}</Ansi>
+      return <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>
     }
 
     if (msg.role === 'assistant') {

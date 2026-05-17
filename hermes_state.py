@@ -1977,6 +1977,9 @@ class SessionDB:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
+                # Default to OR for CJK tokens (no explicit operator) so that
+                # multi-term queries like "大别山 项目" match either term rather
+                # than requiring both (implicit AND misses too many results).
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
@@ -1984,7 +1987,12 @@ class SessionDB:
                         parts.append(tok)
                     else:
                         parts.append('"' + tok.replace('"', '""') + '"')
-                trigram_query = " ".join(parts)
+                # Join with OR if user didn't supply any explicit boolean op
+                has_explicit_op = any(t.upper() in ("AND", "OR", "NOT") for t in tokens)
+                if has_explicit_op:
+                    trigram_query = " ".join(parts)
+                else:
+                    trigram_query = " OR ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
                 if source_filter is not None:

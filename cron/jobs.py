@@ -147,6 +147,18 @@ def _secure_file(path: Path):
     except (OSError, NotImplementedError):
         pass
 
+    # If file owner doesn't match parent directory owner, fix it.
+    # This handles the case where cronjob tools run as a different
+    # user (e.g. docker exec default root) but the cron scheduler
+    # runs as a non-root user (hermes). Without the chown the
+    # scheduler gets IOError when it reloads jobs.json.
+    try:
+        parent_uid = path.parent.stat().st_uid
+        if path.stat().st_uid != parent_uid:
+            os.chown(path, parent_uid, -1)
+    except (OSError, NotImplementedError):
+        pass
+
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""

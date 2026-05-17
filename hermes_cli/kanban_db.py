@@ -3233,18 +3233,21 @@ def enforce_max_runtime(
             except (ProcessLookupError, OSError):
                 pass
             # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+            # ``signal_fn`` is a test hook and may not deliver a real signal;
+            # avoid probing arbitrary fake PIDs through the live-system guard.
+            if signal_fn is None:
+                for _ in range(10):
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.5)
+                if _pid_alive(pid):
+                    try:
+                        # signal.SIGKILL doesn't exist on Windows.
+                        _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        kill(pid, _sigkill)
+                        killed = True
+                    except (ProcessLookupError, OSError):
+                        pass
 
         with write_txn(conn):
             cur = conn.execute(
@@ -4349,6 +4352,16 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
     }
+
+
+def _safe_int(val) -> Optional[int]:
+    """Parse an integer timestamp, returning None for missing/corrupt values."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
 
 
 def _to_epoch(val) -> Optional[int]:

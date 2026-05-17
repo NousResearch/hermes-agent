@@ -1229,6 +1229,22 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+    # Defensive: validate override_acp_command exists on PATH before honoring
+    # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
+    # delegate_task tool calls despite the schema saying not to, which forces
+    # the subagent onto the copilot-acp transport below and crashes the
+    # gateway when the binary is missing (e.g. headless container deploys).
+    if override_acp_command:
+        import shutil as _shutil
+
+        if not _shutil.which(override_acp_command):
+            logger.warning(
+                "Ignoring acp_command=%r: binary not found on PATH; "
+                "falling back to default transport.",
+                override_acp_command,
+            )
+            override_acp_command = None
+            override_acp_args = None
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )

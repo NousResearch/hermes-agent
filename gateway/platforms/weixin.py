@@ -1196,6 +1196,14 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        # Voice echo enforcement: cache last voice transcript per chat_id so the
+        # outbound send() can guarantee the `> 🎤 你说："…"` echo prefix even when
+        # the LLM forgets to add it. One-shot: consumed on next outbound send.
+        self._pending_voice_echo: Dict[str, str] = {}
+        _voice_echo_raw = extra.get("voice_echo_enforce")
+        if _voice_echo_raw is None:
+            _voice_echo_raw = os.getenv("WEIXIN_VOICE_ECHO_ENFORCE")
+        self._voice_echo_enforce: bool = _coerce_bool(_voice_echo_raw, default=True)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
@@ -1399,6 +1407,12 @@ class WeixinAdapter(BasePlatformAdapter):
             if self._dedup.is_duplicate(content_key):
                 logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
                 return
+            # Voice echo enforcement: stash transcript keyed on the eventual
+            # outbound chat_id so send() can guarantee the echo prefix.
+            if self._voice_echo_enforce and text.startswith("[voice:transcribed] "):
+                transcript = text[len("[voice:transcribed] "):].strip()
+                if transcript:
+                    self._pending_voice_echo[sender_id] = transcript
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
@@ -1677,6 +1691,24 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+        # Voice echo enforcement (mechanical guarantee, not LLM-dependent):
+        # if the inbound message for this chat was a voice transcript and the
+        # outbound reply does NOT already start with the `> 🎤 你说："…"` echo,
+        # auto-prepend it. Consumed (popped) so it never bleeds into a later
+        # turn. Skips media-only sends (empty content after MEDIA: extraction
+        # would re-trigger on the same transcript next turn — popping here
+        # is one-shot regardless).
+        if self._voice_echo_enforce and content and content.strip():
+            transcript = self._pending_voice_echo.pop(chat_id, None)
+            if transcript and not content.lstrip().startswith("> 🎤 你说"):
+                # Escape any embedded double quotes in the transcript so the
+                # blockquote parses cleanly.
+                safe = transcript.replace('"', '\\"')
+                content = f'> 🎤 你说："{safe}"\n\n{content}'
+                logger.info(
+                    "[%s] voice-echo enforcer prepended prefix for %s (LLM forgot)",
+                    self.name, _safe_id(chat_id),
+                )
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
 

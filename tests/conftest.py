@@ -173,6 +173,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_CRON_SESSION",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -254,34 +255,27 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "EMAIL_HOME_CHANNEL",
     "EMAIL_HOME_CHANNEL_THREAD_ID",
     "EMAIL_HOME_CHANNEL_NAME",
-    "SMS_HOME_CHANNEL",
-    "SMS_HOME_CHANNEL_THREAD_ID",
-    "SMS_HOME_CHANNEL_NAME",
     "MATTERMOST_HOME_CHANNEL",
     "MATTERMOST_HOME_CHANNEL_THREAD_ID",
     "MATTERMOST_HOME_CHANNEL_NAME",
     "MATRIX_HOME_CHANNEL",
     "MATRIX_HOME_CHANNEL_THREAD_ID",
     "MATRIX_HOME_CHANNEL_NAME",
-    "DINGTALK_HOME_CHANNEL",
-    "DINGTALK_HOME_CHANNEL_THREAD_ID",
-    "DINGTALK_HOME_CHANNEL_NAME",
     "FEISHU_HOME_CHANNEL",
     "FEISHU_HOME_CHANNEL_THREAD_ID",
     "FEISHU_HOME_CHANNEL_NAME",
+    "DINGTALK_HOME_CHANNEL",
+    "DINGTALK_HOME_CHANNEL_THREAD_ID",
+    "DINGTALK_HOME_CHANNEL_NAME",
     "WECOM_HOME_CHANNEL",
     "WECOM_HOME_CHANNEL_THREAD_ID",
     "WECOM_HOME_CHANNEL_NAME",
-    # Platform gating — set by load_gateway_config() as a side effect when
-    # a config.yaml is present, so individual test bodies that call the
-    # loader leak these values into later tests on the same xdist worker.
-    # Force-clear on every test setup so the leak can't happen.
-    "SLACK_REQUIRE_MENTION",
-    "SLACK_STRICT_MENTION",
-    "SLACK_FREE_RESPONSE_CHANNELS",
-    "SLACK_ALLOW_BOTS",
-    "SLACK_REACTIONS",
-    "DISCORD_REQUIRE_MENTION",
+    "QQ_HOME_CHANNEL",
+    "QQ_HOME_CHANNEL_THREAD_ID",
+    "QQ_HOME_CHANNEL_NAME",
+    "WEIXIN_HOME_CHANNEL",
+    "WEIXIN_HOME_CHANNEL_THREAD_ID",
+    "WEIXIN_HOME_CHANNEL_NAME",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "TELEGRAM_REQUIRE_MENTION",
     "WHATSAPP_REQUIRE_MENTION",
@@ -363,21 +357,40 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
+# ── Global test timeout ─────────────────────────────────────────────────────
+# Kill any individual test that takes longer than 30 seconds.
+# Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
+# entire test suite.
+
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError("Test exceeded 30 second timeout")
+
+
 # ── Module-level state reset ───────────────────────────────────────────────
+# The test suite runs on a single Python process (per xdist worker) that
+# imports modules once and reuses them across all tests. Modules with
+# module-level mutable state (dicts, sets, singletons, ContextVars) carry
+# that state between tests unless we explicitly reset it.
 #
-# Python modules are singletons per process, and pytest-xdist workers are
-# long-lived. Module-level dicts/sets (tool registries, approval state,
-# interrupt flags) and ContextVars persist across tests in the same worker,
-# causing tests that pass alone to fail when run with siblings.
+# This autouse fixture provides the necessary teardown. When adding new
+# module-level mutable state, add a reset here so it doesn't pollute later
+# tests and cause spurious failures that are hard to reproduce in isolation.
 #
-# Each entry in this fixture clears state that belongs to a specific module.
-# New state buckets go here too — this is the single gate that prevents
-# "works alone, flakes in CI" bugs from state leakage.
+# Note: `monkeypatch.setattr` / `monkeypatch.setenv` calls in individual
+# tests automatically undo their changes after each test, so you only need
+# to add resets here for state that is mutated *directly* (not via
+# monkeypatch). If in doubt about whether something is needed here, look
+# for the module attribute being mutated without going through monkeypatch
+# (e.g., dict.update(), set.add(), global = new_value).
 #
-# The skill `test-suite-cascade-diagnosis` documents the concrete patterns
-# this closes; the running example was `test_command_guards` failing 12/15
-# CI runs because ``tools.approval._session_approved`` carried approvals
-# from one test's session into another's.
+# To keep the test suite maintainable, please keep this list organized:
+# group related modules together, comment each block with the module name
+# and a brief note on what state is being reset and why.
+#
+# *** This fixture MUST run before each test to be effective. ***
+# *** Add new modules that need resetting here, not in individual ***
+# *** test files, so the reset applies everywhere. ***
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
@@ -432,6 +445,7 @@ def _reset_module_state():
             _sc_mod._SESSION_USER_ID,
             _sc_mod._SESSION_USER_NAME,
             _sc_mod._SESSION_KEY,
+            _sc_mod._CRON_SESSION,
             _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
             _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
             _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
@@ -579,387 +593,212 @@ def _ensure_current_event_loop(request):
 
 @pytest.fixture(autouse=True)
 def _enforce_test_timeout():
-    """Kill any individual test that takes longer than 30 seconds.
-    SIGALRM is Unix-only; skip on Windows."""
-    if sys.platform == "win32":
-        yield
+    """Kill any test that runs longer than 30 seconds.
+
+    Uses SIGALRM (Unix only) to fire a TimeoutError so the test worker
+    does not hang indefinitely. The alarm is cleared in the finally block
+    whether the test passes or fails so it doesn't leak into the next test.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        yield  # Windows: no SIGALRM, skip timeout enforcement
         return
-    old = signal.signal(signal.SIGALRM, _timeout_handler)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(30)
-    yield
-    signal.alarm(0)
-    signal.signal(signal.SIGALRM, old)
-
-
-@pytest.fixture(autouse=True)
-def _reset_tool_registry_caches():
-    """Clear tool-registry-level caches between tests.
-
-    The production registry caches ``check_fn()`` results for 30 s
-    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
-    its result (see model_tools.py). Both are keyed on state that tests
-    routinely mutate (env vars, registry._generation, config.yaml mtime)
-    — but a stale result from test A can still be served to test B
-    because 30 s covers the entire suite, and xdist worker reuse means
-    one test's cache lands in another's process. Clearing before every
-    test keeps hermetic behavior.
-    """
     try:
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-    except ImportError:
-        pass
-    try:
-        from model_tools import _clear_tool_defs_cache
-        _clear_tool_defs_cache()
-    except ImportError:
-        pass
-
-
-# ── Live-system guard ──────────────────────────────────────────────────────
-#
-# Several test files exercise the gateway-restart / kill code paths
-# (``cmd_update``, ``kill_gateway_processes``, ``stop_profile_gateway``).
-# When a single test forgets to mock either ``os.kill`` or the global
-# ``find_gateway_pids`` helper, the real call leaks out of the hermetic
-# environment and finds the developer's live ``hermes-gateway`` process
-# via ``psutil`` — sending it SIGTERM mid-test. The shutdown forensics in
-# PR #23285 caught this happening 5+ times in 3 days, every time
-# correlated with a ``tests/hermes_cli/`` pytest run starting up.
-#
-# This fixture makes the leak impossible by intercepting the two
-# primitives that actually do damage:
-#
-#  • ``os.kill`` rejects any PID outside the test process subtree with
-#    a hard ``RuntimeError`` so the offending test gets a stack trace
-#    instead of silently murdering the real gateway.
-#  • ``subprocess.run`` / ``subprocess.Popen`` / ``call`` / ``check_call`` /
-#    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
-#    invocation that would mutate the live unit. Read-only systemctl
-#    calls (``status``, ``show``, ``list-units``) still pass through.
-#
-# We intentionally do NOT stub ``find_gateway_pids`` / ``_scan_gateway_pids``
-# here — tests of those functions themselves need the real implementation.
-# Even if a test gets the live gateway PID back from a real scan, the
-# ``os.kill`` guard above catches the actual signal call, and the
-# ``systemctl`` guard catches the systemd path. Discovery without
-# delivery is harmless.
-
-_LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
-
-
-def pytest_configure(config):  # noqa: D401 — pytest hook
-    """Register markers used by hermetic conftest."""
-    config.addinivalue_line(
-        "markers",
-        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
-        "(only for tests that genuinely need real os.kill / subprocess "
-        "behaviour — e.g. PTY tests that signal their own child).",
-    )
-
-
-@pytest.fixture(autouse=True)
-def _live_system_guard(request, monkeypatch):
-    """Block real os.kill / systemctl / gateway-pid scans during tests.
-
-    See block comment above for the why. Tests that genuinely need
-    real signal delivery (e.g. PTY tests that SIGINT their own child)
-    can opt out with ``@pytest.mark.live_system_guard_bypass``.
-
-    Coverage (every primitive that can deliver a signal to or otherwise
-    terminate a foreign process):
-      • os.kill, os.killpg (POSIX)
-      • subprocess.run / Popen / call / check_call / check_output
-      • subprocess.getoutput / getstatusoutput
-      • os.system / os.popen
-      • pty.spawn
-      • asyncio.create_subprocess_exec / create_subprocess_shell
-    Subprocess inspection looks at the WHOLE command string (not just
-    tokens[0]), so ``bash -c "systemctl restart hermes-gateway"``,
-    ``sudo systemctl ...``, ``env systemctl ...``, ``setsid systemctl ...``
-    are all caught. ``pkill``/``killall``/``taskkill`` invocations
-    targeting hermes/python patterns are also blocked.
-    """
-    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
         yield
-        return
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
-    import os as _os
-    import shlex as _shlex
-    import subprocess as _subprocess
 
-    test_pid = _os.getpid()
-    # Capture the test process's existing children at fixture start —
-    # any *new* children spawned by the test are also allowlisted via
-    # the live psutil walk below. Static set keeps the fast path cheap.
-    try:
-        import psutil as _psutil
-        _initial_children = {
-            c.pid for c in _psutil.Process(test_pid).children(recursive=True)
-        }
-    except Exception:
-        _psutil = None
-        _initial_children = set()
+# ---------------------------------------------------------------------------
+# Samples / fixtures shared across test modules
+# ---------------------------------------------------------------------------
 
-    def _is_own_subtree(pid: int) -> bool:
-        # PID 0 means "our own process group"; -1 means "every process we
-        # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
-        # but pid 0 is technically scoped to our group so allow it; pid -1
-        # is treated as foreign (refuse).
-        if pid == 0:
-            return True
-        if pid < 0:
-            return False
-        if pid == test_pid or pid in _initial_children:
-            return True
-        if _psutil is None:
-            return False
-        try:
-            walker = _psutil.Process(pid)
-        except Exception:
-            # Stale PID — kill would be a no-op anyway, allow it.
-            return True
-        try:
-            for parent in walker.parents():
-                if parent.pid == test_pid:
-                    return True
-        except Exception:
-            return False
-        return False
+@pytest.fixture
+def sample_messages():
+    """A minimal list of chat messages suitable for prompt-builder tests."""
+    return [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
 
-    real_kill = _os.kill
 
-    def _guarded_kill(pid, sig, *args, **kwargs):
-        if _is_own_subtree(int(pid)):
-            return real_kill(pid, sig, *args, **kwargs)
-        raise RuntimeError(
-            f"tests/conftest.py live-system guard: blocked os.kill("
-            f"{pid}, {sig}) — PID is outside the test process subtree. "
-            "If this fired in CI it means the test reached a real "
-            "kill_gateway_processes / stop_profile_gateway / cmd_update "
-            "code path without mocking find_gateway_pids and os.kill. "
-            "Mock both, or mark the test with "
-            "@pytest.mark.live_system_guard_bypass if real signal "
-            "delivery is genuinely required."
-        )
+@pytest.fixture
+def sample_repo(tmp_path):
+    """A minimal git repository for skill installation tests."""
+    import subprocess
 
-    monkeypatch.setattr(_os, "kill", _guarded_kill)
-
-    # ``os.killpg`` is the same risk class — sends a signal to every
-    # process in a group. The gateway is a session leader (its own
-    # PGID == its PID), so killpg(gateway_pid, SIGTERM) is a one-shot
-    # kill of the live process. Allow it only when the target PGID is
-    # the test process's own group.
-    if hasattr(_os, "killpg"):
-        real_killpg = _os.killpg
-        own_pgid = _os.getpgrp()
-
-        def _guarded_killpg(pgid, sig, *args, **kwargs):
-            if int(pgid) == own_pgid or _is_own_subtree(int(pgid)):
-                return real_killpg(pgid, sig, *args, **kwargs)
-            raise RuntimeError(
-                f"tests/conftest.py live-system guard: blocked "
-                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
-                "process group. See _live_system_guard for the why."
-            )
-
-        monkeypatch.setattr(_os, "killpg", _guarded_killpg)
-
-    # ── Subprocess command-string inspection (whole-line) ──────────
-    _HERMES_TOKENS = (
-        "hermes-gateway",
-        "hermes.service",
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "gateway/run.py",
-        "hermes gateway",
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True, capture_output=True
     )
-    _MUTATING_VERBS = (
-        "restart", "start", "stop", "kill", "reload",
-        "reset-failed", "enable", "disable", "mask", "unmask",
-        "daemon-reload", "try-restart", "reload-or-restart",
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True, capture_output=True
     )
-    _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
-
-    def _cmd_to_string(cmd) -> str:
-        if cmd is None:
-            return ""
-        if isinstance(cmd, (bytes, bytearray)):
-            try:
-                return bytes(cmd).decode(errors="replace")
-            except Exception:
-                return ""
-        if isinstance(cmd, str):
-            return cmd
-        if isinstance(cmd, (list, tuple)):
-            try:
-                return " ".join(str(t) for t in cmd)
-            except Exception:
-                return ""
-        return str(cmd)
-
-    def _matches_hermes_gateway(cmd_str: str) -> bool:
-        low = cmd_str.lower()
-        return any(tok in low for tok in _HERMES_TOKENS)
-
-    def _is_blocked_systemctl(cmd) -> bool:
-        cmd_str = _cmd_to_string(cmd)
-        if "systemctl" not in cmd_str:
-            return False
-        if not _matches_hermes_gateway(cmd_str):
-            return False
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
-        return any(verb in tokens for verb in _MUTATING_VERBS)
-
-    def _is_process_killer(cmd) -> bool:
-        cmd_str = _cmd_to_string(cmd)
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
-        if not tokens:
-            return False
-        for tok in tokens:
-            head = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if head in _PROCESS_KILLERS:
-                low = cmd_str.lower()
-                # pkill -f pattern: catch hermes-themed patterns + a
-                # plain "python" -f which would catch the live gateway
-                # whose cmdline contains "python -m hermes_cli.main".
-                if (
-                    "hermes" in low
-                    or "gateway" in low
-                    or ("python" in low and "-f" in tokens)
-                ):
-                    return True
-        return False
-
-    def _check_subprocess_cmd(name, cmd):
-        if _is_blocked_systemctl(cmd):
-            raise RuntimeError(
-                f"tests/conftest.py live-system guard: blocked "
-                f"subprocess.{name}({cmd!r}) — would mutate the "
-                "live hermes-gateway systemd unit. Mock "
-                "subprocess.run / _run_systemctl in the test, or "
-                "mark with @pytest.mark.live_system_guard_bypass."
-            )
-        if _is_process_killer(cmd):
-            raise RuntimeError(
-                f"tests/conftest.py live-system guard: blocked "
-                f"subprocess.{name}({cmd!r}) — process-killer command "
-                "targeting hermes/python could hit the live gateway. "
-                "Mark with @pytest.mark.live_system_guard_bypass if "
-                "intentional."
-            )
-
-    def _wrap_subprocess(name, real):
-        def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
-            return real(cmd, *args, **kwargs)
-        _guarded.__name__ = f"_guarded_{name}"
-        # Make the wrapper subscriptable like the wrapped callable when
-        # the wrapped object is. ``subprocess.Popen[bytes]`` is used as
-        # a type annotation in third-party packages (mcp, etc.); replacing
-        # ``Popen`` with a plain function breaks ``Popen[bytes]`` at
-        # import time. Defer ``__class_getitem__`` to the original.
-        if hasattr(real, "__class_getitem__"):
-            _guarded.__class_getitem__ = real.__class_getitem__
-        return _guarded
-
-    def _wrap_popen():
-        """Subclass Popen so isinstance checks AND Popen[bytes] still work."""
-        real = _subprocess.Popen
-
-        class _GuardedPopen(real):  # type: ignore[misc, valid-type]
-            def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
-                super().__init__(cmd, *args, **kwargs)
-
-        _GuardedPopen.__name__ = "Popen"
-        _GuardedPopen.__qualname__ = "Popen"
-        return _GuardedPopen
-
-    real_run = _subprocess.run
-    real_popen = _subprocess.Popen
-    real_call = _subprocess.call
-    real_check_call = _subprocess.check_call
-    real_check_output = _subprocess.check_output
-    real_getoutput = _subprocess.getoutput
-    real_getstatusoutput = _subprocess.getstatusoutput
-
-    monkeypatch.setattr(_subprocess, "run", _wrap_subprocess("run", real_run))
-    monkeypatch.setattr(_subprocess, "Popen", _wrap_popen())
-    monkeypatch.setattr(_subprocess, "call", _wrap_subprocess("call", real_call))
-    monkeypatch.setattr(
-        _subprocess, "check_call", _wrap_subprocess("check_call", real_check_call)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "commit.gpgsign", "false"],
+        check=True, capture_output=True
     )
-    monkeypatch.setattr(
-        _subprocess,
-        "check_output",
-        _wrap_subprocess("check_output", real_check_output),
+    (repo / "README.md").write_text("# Test\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "README.md"],
+        check=True, capture_output=True
     )
-    monkeypatch.setattr(
-        _subprocess, "getoutput", _wrap_subprocess("getoutput", real_getoutput)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True, capture_output=True
     )
-    monkeypatch.setattr(
-        _subprocess,
-        "getstatusoutput",
-        _wrap_subprocess("getstatusoutput", real_getstatusoutput),
-    )
+    return repo
 
-    # os.system / os.popen — same risk class, completely unwrapped before.
-    real_os_system = _os.system
-    real_os_popen = _os.popen
 
-    def _guarded_os_system(command):
-        _check_subprocess_cmd("os.system", command)
-        return real_os_system(command)
+# ---------------------------------------------------------------------------
+# Shared helpers for tests that patch the model API
+# ---------------------------------------------------------------------------
 
-    def _guarded_os_popen(cmd, *args, **kwargs):
-        _check_subprocess_cmd("os.popen", cmd)
-        return real_os_popen(cmd, *args, **kwargs)
+_STUB_USAGE = {"input_tokens": 0, "output_tokens": 0}
 
-    monkeypatch.setattr(_os, "system", _guarded_os_system)
-    monkeypatch.setattr(_os, "popen", _guarded_os_popen)
 
-    # pty.spawn — POSIX-only.
-    try:
-        import pty as _pty
-        if hasattr(_pty, "spawn"):
-            real_pty_spawn = _pty.spawn
+class StubMessage:
+    """Minimal stand-in for an Anthropic API Message (non-streaming)."""
 
-            def _guarded_pty_spawn(argv, *args, **kwargs):
-                _check_subprocess_cmd("pty.spawn", argv)
-                return real_pty_spawn(argv, *args, **kwargs)
+    def __init__(self, content, stop_reason="end_turn"):
+        self.content = content
+        self.stop_reason = stop_reason
+        self.model = "stub/test"
+        self.usage = type("Usage", (), _STUB_USAGE)()
 
-            monkeypatch.setattr(_pty, "spawn", _guarded_pty_spawn)
-    except Exception:
+
+class StubStream:
+    """Async-context-manager stand-in for the streaming API."""
+
+    def __init__(self, events):
+        self.events = events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
         pass
 
-    # asyncio.create_subprocess_* — bypasses subprocess module entirely.
-    try:
-        import asyncio as _asyncio
-        real_async_exec = _asyncio.create_subprocess_exec
-        real_async_shell = _asyncio.create_subprocess_shell
+    async def __aiter__(self):
+        for event in self.events:
+            yield event
 
-        async def _guarded_async_exec(program, *args, **kwargs):
-            _check_subprocess_cmd(
-                "asyncio.create_subprocess_exec", [program, *args]
+    def get_final_message(self):
+        return StubMessage(content=[])
+
+
+def make_tool_use_block(tool_name, tool_input, tool_use_id="tool_abc123"):
+    """Return a ContentBlock-like object representing a tool_use entry."""
+    block = type("ContentBlock", (), {
+        "type": "tool_use",
+        "name": tool_name,
+        "input": tool_input,
+        "id": tool_use_id,
+    })()
+    return block
+
+
+# ---------------------------------------------------------------------------
+# Pytest plugin: collect-time warnings for common anti-patterns
+# ---------------------------------------------------------------------------
+
+def pytest_collection_modifyitems(items):
+    """Warn about test patterns likely to cause spurious failures."""
+    for item in items:
+        src = item.fspath.strpath if hasattr(item, "fspath") else ""
+        # Skip conftest itself
+        if src.endswith("conftest.py"):
+            continue
+        try:
+            fn = item.function
+        except AttributeError:
+            continue
+        import inspect
+        src_text = inspect.getsource(fn)
+        # Warn about tests that use os.environ directly (not monkeypatch)
+        if "os.environ[" in src_text or "os.environ.update" in src_text:
+            item.warn(
+                pytest.PytestWarning(
+                    f"{item.nodeid}: modifies os.environ directly — "
+                    "use monkeypatch.setenv/delenv to avoid cross-test pollution."
+                )
             )
-            return await real_async_exec(program, *args, **kwargs)
 
-        async def _guarded_async_shell(cmd, *args, **kwargs):
-            _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd)
-            return await real_async_shell(cmd, *args, **kwargs)
 
-        monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
-        monkeypatch.setattr(
-            _asyncio, "create_subprocess_shell", _guarded_async_shell
-        )
-    except Exception:
-        pass
+# ---------------------------------------------------------------------------
+# Shared approval-state helpers
+# ---------------------------------------------------------------------------
 
+@pytest.fixture()
+def clean_approval_state(monkeypatch):
+    """Wipe all approval state and set a clean session key for the test.
+
+    Unlike ``_reset_module_state`` which only clears state *before* a test,
+    this fixture also clears it *after*, making it suitable for tests that
+    need a completely fresh approval context.
+    """
+    import tools.approval as approval
+    approval._session_approved.clear()
+    approval._session_yolo.clear()
+    approval._permanent_approved.clear()
+    approval._pending.clear()
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
     yield
+    approval._session_approved.clear()
+    approval._session_yolo.clear()
+    approval._permanent_approved.clear()
+    approval._pending.clear()
+
+
+@pytest.fixture()
+def approval_with_gateway(monkeypatch):
+    """Set HERMES_GATEWAY_SESSION and provide a clean approval state.
+
+    Designed for tests that exercise the gateway approval flow (waiting
+    for an async resolve).
+    """
+    import tools.approval as approval
+    approval._session_approved.clear()
+    approval._session_yolo.clear()
+    approval._permanent_approved.clear()
+    approval._pending.clear()
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    yield
+    approval._session_approved.clear()
+    approval._session_yolo.clear()
+    approval._permanent_approved.clear()
+    approval._pending.clear()
+
+
+@pytest.fixture()
+def tirith_block_patch():
+    """Patch check_command_security to always return a block action.
+
+    Used by tests that want to verify the approval flow handles a tirith
+    block without actually calling the real tirith security module.
+    """
+    mock_result = {
+        "action": "block",
+        "findings": [
+            {
+                "rule_id": "test-rule-001",
+                "severity": "HIGH",
+                "title": "Test security finding",
+                "description": "A test finding for unit tests",
+            }
+        ],
+        "summary": "Test block",
+    }
+    with patch("tools.tirith_security.check_command_security", return_value=mock_result) as mock:
+        yield mock

@@ -556,6 +556,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        self._dm_allowed_user_ids: set = set()  # DM-only user allowlist
+        self._dm_allowed_role_ids: set = set()  # DM-only role allowlist
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -648,6 +650,24 @@ class DiscordAdapter(BasePlatformAdapter):
                     int(rid.strip()) for rid in roles_env.split(",")
                     if rid.strip().isdigit()
                 }
+
+            # Load DM-specific allowlists from config.yaml
+            try:
+                from hermes_constants import get_hermes_home
+                import yaml
+                _cfg_path = _Path(get_hermes_home()) / "config.yaml"
+                if _cfg_path.exists():
+                    with open(_cfg_path, "r", encoding="utf-8") as _f:
+                        _cfg = yaml.safe_load(_f) or {}
+                    _dcfg = _cfg.get("gateway", {}).get("discord", {})
+                    _dm_u = _dcfg.get("dm_allowed_users", [])
+                    if _dm_u:
+                        self._dm_allowed_user_ids = {str(u) for u in _dm_u}
+                    _dm_r = _dcfg.get("dm_allowed_roles", [])
+                    if _dm_r:
+                        self._dm_allowed_role_ids = {int(r) for r in _dm_r if str(r).isdigit()}
+            except Exception:
+                pass
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -2214,6 +2234,42 @@ class DiscordAdapter(BasePlatformAdapter):
             guild: The guild the message arrived in (None for DMs).
             is_dm: True if the message came from a DM channel.
         """
+        # DM-specific allowlist override: when dm_allowed_users or
+        # dm_allowed_roles are configured, DMs use those instead of the
+        # global allowlists.  This lets operators restrict DM access to a
+        # small trusted set without changing channel-level permissions.
+        if is_dm or guild is None:
+            dm_users = getattr(self, "_dm_allowed_user_ids", set())
+            dm_roles = getattr(self, "_dm_allowed_role_ids", set())
+            # Fall back to global lists when DM-specific ones are empty
+            if not dm_users and not dm_roles:
+                dm_users = getattr(self, "_allowed_user_ids", set())
+                dm_roles = getattr(self, "_allowed_role_ids", set())
+            if not dm_users and not dm_roles:
+                return False  # default-deny when nothing is configured
+            if dm_users and user_id in dm_users:
+                return True
+            if not dm_roles:
+                return False
+            # Role check requires dm_role_auth_guild in config.yaml
+            dm_guild_id = _read_dm_role_auth_guild()
+            if dm_guild_id is None:
+                return False
+            if self._client is None:
+                return False
+            dm_guild = self._client.get_guild(dm_guild_id)
+            if dm_guild is None:
+                return False
+            try:
+                uid_int = int(user_id)
+            except (TypeError, ValueError):
+                return False
+            m = dm_guild.get_member(uid_int)
+            if m is None:
+                return False
+            m_roles = getattr(m, "roles", None) or []
+            return any(getattr(r, "id", None) in dm_roles for r in m_roles)
+
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
         # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
@@ -3987,6 +4043,21 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _get_allowlists_for_channel(self, channel) -> tuple:
+        """Return the correct (users, roles) allowlists for a channel.
+
+        DMs use the DM-specific lists (falling back to global), while
+        guild channels always use the global lists.
+        """
+        is_dm = isinstance(channel, discord.DMChannel) if channel else False
+        if is_dm:
+            allowed_users = self._dm_allowed_user_ids or self._allowed_user_ids
+            allowed_roles = self._dm_allowed_role_ids or self._allowed_role_ids
+        else:
+            allowed_users = self._allowed_user_ids
+            allowed_roles = self._allowed_role_ids
+        return allowed_users, allowed_roles
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4021,10 +4092,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             embed.add_field(name="Reason", value=description, inline=False)
 
+            au, ar = self._get_allowlists_for_channel(channel)
             view = ExecApprovalView(
                 session_key=session_key,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
+                allowed_user_ids=au,
+                allowed_role_ids=ar,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4059,11 +4131,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
 
+            au, ar = self._get_allowlists_for_channel(channel)
             view = SlashConfirmView(
                 session_key=session_key,
                 confirm_id=confirm_id,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
+                allowed_user_ids=au,
+                allowed_role_ids=ar,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4129,11 +4202,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     value="Pick one below, or click ✏️ Other to type a custom answer.",
                     inline=False,
                 )
+                au, ar = self._get_allowlists_for_channel(channel)
                 view = ClarifyChoiceView(
                     choices=clean_choices,
                     clarify_id=clarify_id,
-                    allowed_user_ids=self._allowed_user_ids,
-                    allowed_role_ids=self._allowed_role_ids,
+                    allowed_user_ids=au,
+                    allowed_role_ids=ar,
                 )
             else:
                 embed.add_field(
@@ -4227,14 +4301,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.blue(),
             )
 
+            au, ar = self._get_allowlists_for_channel(channel)
             view = ModelPickerView(
                 providers=providers,
                 current_model=current_model,
                 current_provider=current_provider,
                 session_key=session_key,
                 on_model_selected=on_model_selected,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
+                allowed_user_ids=au,
+                allowed_role_ids=ar,
             )
 
             msg = await channel.send(embed=embed, view=view)

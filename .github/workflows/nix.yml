@@ -22,9 +22,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-      - uses: ./.github/actions/nix-setup
+
+      - name: Setup Nix with Cachix push access
+        if: github.event_name == 'push'
+        uses: ./.github/actions/nix-setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Nix with read-only Cachix
+        if: github.event_name != 'push'
+        uses: ./.github/actions/nix-setup
 
       - name: Resolve head SHA
         if: github.event_name == 'pull_request'

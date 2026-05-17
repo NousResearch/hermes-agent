@@ -15,32 +15,21 @@ import json
 import logging
 import os
 import platform
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
-
-# NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
-# ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
-# and the 3 usage sites (build_anthropic_client, build_anthropic_bedrock_client,
-# read_claude_code_credentials_from_keychain) are all on cold user-triggered
-# paths. Access via the `_get_anthropic_sdk()` accessor below, which caches
-# the module after the first call and returns None on ImportError.
-_anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
+import anthropic as _anthropic_sdk
 
 
 def _get_anthropic_sdk():
-    """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
-    global _anthropic_sdk
-    if _anthropic_sdk is ...:
-        try:
-            import anthropic as _sdk
-            _anthropic_sdk = _sdk
-        except ImportError:
-            _anthropic_sdk = None
+    """Return the eagerly imported ``anthropic`` SDK module."""
     return _anthropic_sdk
+
 
 logger = logging.getLogger(__name__)
 
@@ -277,28 +266,73 @@ _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
 
+def _safe_executable_search_path() -> str:
+    """Return PATH entries safe for metadata lookup, excluding the current dir."""
+    cwd = Path.cwd().resolve()
+    entries = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            if Path(entry).resolve() == cwd:
+                continue
+        except OSError:
+            continue
+        entries.append(entry)
+    return os.pathsep.join(entries)
+
+
+def _is_valid_claude_code_version(version: object) -> bool:
+    """Return True when a package version is safe to use in the user-agent."""
+    if not isinstance(version, str) or not version:
+        return False
+    return bool(re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,63}", version))
+
+
+def _claude_code_package_json_candidates(executable: str):
+    """Yield likely Claude Code package.json paths for an npm-installed binary."""
+    try:
+        exe_path = Path(executable).resolve()
+    except OSError:
+        return
+
+    for parent in (exe_path.parent, *exe_path.parents):
+        yield parent / "package.json"
+
+    for base in (exe_path.parent, exe_path.parent.parent):
+        yield base / "node_modules" / "@anthropic-ai" / "claude-code" / "package.json"
+        yield base / "lib" / "node_modules" / "@anthropic-ai" / "claude-code" / "package.json"
+
+
+def _read_claude_code_version_from_package(package_json: Path) -> Optional[str]:
+    """Read Claude Code's npm package version without executing the CLI."""
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if package.get("name") != "@anthropic-ai/claude-code":
+        return None
+    version = package.get("version")
+    return version if _is_valid_claude_code_version(version) else None
+
+
 def _detect_claude_code_version() -> str:
-    """Detect the installed Claude Code version, fall back to a static constant.
+    """Detect the installed Claude Code version without executing PATH entries.
 
     Anthropic's OAuth infrastructure validates the user-agent version and may
-    reject requests with a version that's too old.  Detecting dynamically means
-    users who keep Claude Code updated never hit stale-version 400s.
+    reject requests with a version that's too old. Read npm package metadata
+    instead of invoking ``claude --version`` so a planted executable cannot run
+    with Hermes' privileges or inherited environment.
     """
-    import subprocess as _sp
-
+    search_path = _safe_executable_search_path()
     for cmd in ("claude", "claude-code"):
-        try:
-            result = _sp.run(
-                [cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
-                version = result.stdout.strip().split()[0]
-                if version and version[0].isdigit():
-                    return version
-        except Exception:
-            pass
+        executable = shutil.which(cmd, path=search_path)
+        if not executable:
+            continue
+        for package_json in _claude_code_package_json_candidates(executable):
+            version = _read_claude_code_version_from_package(package_json)
+            if version:
+                return version
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
@@ -534,13 +568,6 @@ def build_anthropic_client(
 
     Returns an anthropic.Anthropic instance.
     """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for the Anthropic provider. "
-            "Install it with: pip install 'anthropic>=0.39.0'"
-        )
-
     normalize_proxy_env_vars()
 
     from httpx import Timeout
@@ -629,12 +656,6 @@ def build_anthropic_bedrock_client(region: str):
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for the Bedrock provider. "
-            "Install it with: pip install 'anthropic>=0.39.0'"
-        )
     if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
         raise ImportError(
             "anthropic.AnthropicBedrock not available. "

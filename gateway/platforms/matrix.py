@@ -39,6 +39,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+MATRIX_LOCAL_FILE_MAX_BYTES = 50 * 1024 * 1024
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -1369,6 +1371,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
             )
+        if not p.is_file():
+            return SendResult(success=False, error="Matrix media path must be a regular file")
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            return SendResult(success=False, error=f"Matrix media file is not accessible: {exc}")
+        if size > MATRIX_LOCAL_FILE_MAX_BYTES:
+            return SendResult(success=False, error="Matrix media file exceeds the 50 MiB upload limit")
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

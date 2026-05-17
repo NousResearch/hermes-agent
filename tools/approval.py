@@ -156,12 +156,22 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 # Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $HERMES_HOME.
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# via shell expansions like $HOME or $HERMES_HOME. Shell quoting can split a
+# path across tokens (for example, "$HOME"/.ssh), so permit a closing quote
+# between a home variable and the following slash.
+_SHELL_QUOTE = r'["\']?'
+_HOME_PATH_PREFIX = (
+    r'(?:~|\$home|\$\{home\})'
+    rf'{_SHELL_QUOTE}'
+    r'|/home/[^/\s"\'`]+'
+    r'|/users/[^/\s"\'`]+'
+    r'|/root'
+)
+_HERMES_HOME_PREFIX = r'(?:\$hermes_home|\$\{hermes_home\})' rf'{_SHELL_QUOTE}'
+_SSH_SENSITIVE_PATH = rf'(?:{_HOME_PATH_PREFIX})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    rf'(?:(?:{_HOME_PATH_PREFIX})/\.hermes/|'
+    rf'(?:{_HERMES_HOME_PREFIX})/)'
     r'\.env\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'

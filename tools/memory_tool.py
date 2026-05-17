@@ -115,11 +115,13 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, user_id: str = None, identity_map: dict = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self._user_id = user_id  # Optional platform user_id for per-user USER.md scoping
+        self._identity_map = identity_map or {}  # platform_user_id → canonical identity
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -128,8 +130,8 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
+        self.memory_entries = self._read_file(self._path_for("memory"))
+        self.user_entries = self._read_file(self._path_for("user"))
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -175,10 +177,18 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         mem_dir = get_memory_dir()
         if target == "user":
+            user_id = self._user_id
+            if user_id:
+                # Resolve through identity map: platform_user_id → canonical identity
+                canonical = self._identity_map.get(user_id, user_id)
+                # Sanitize to prevent path traversal and filesystem issues
+                safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', str(canonical))
+                user_dir = mem_dir / "users" / safe_id
+                user_dir.mkdir(parents=True, exist_ok=True)
+                return user_dir / "USER.md"
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 

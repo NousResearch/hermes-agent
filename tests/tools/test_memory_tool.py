@@ -208,6 +208,88 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStorePerUser:
+    """Per-user USER.md isolation — users get their own files."""
+
+    def test_user_id_scopes_to_separate_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store_alice = MemoryStore(user_id="alice_123")
+        store_alice.load_from_disk()
+        store_alice.add("user", "Alice prefers dark mode")
+
+        store_bob = MemoryStore(user_id="bob_456")
+        store_bob.load_from_disk()
+        store_bob.add("user", "Bob likes light mode")
+
+        # Each user's data is isolated
+        assert store_alice.user_entries == ["Alice prefers dark mode"]
+        assert store_bob.user_entries == ["Bob likes light mode"]
+        # Files live in different paths
+        assert (tmp_path / "users" / "alice_123" / "USER.md").exists()
+        assert (tmp_path / "users" / "bob_456" / "USER.md").exists()
+        # No user data in the fallback file
+        assert not (tmp_path / "USER.md").exists() or \
+               len(store_alice._read_file(tmp_path / "USER.md")) == 0
+
+    def test_no_user_id_uses_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("user", "CLI user default")
+
+        # Data goes to fallback USER.md
+        assert (tmp_path / "USER.md").exists()
+        assert not (tmp_path / "users").exists() or \
+               not any((tmp_path / "users").iterdir())
+
+    def test_identity_map_merges_users(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        # Same canonical ID → same file
+        identity = {"tg_100": "tav", "dc_200": "tav"}
+        store_tg = MemoryStore(user_id="tg_100", identity_map=identity)
+        store_tg.load_from_disk()
+        store_tg.add("user", "Tav likes RPGs")
+
+        store_dc = MemoryStore(user_id="dc_200", identity_map=identity)
+        store_dc.load_from_disk()
+
+        # Both read from users/tav/USER.md
+        assert "Tav likes RPGs" in store_dc.user_entries
+        assert store_tg.user_entries == store_dc.user_entries
+        assert (tmp_path / "users" / "tav" / "USER.md").exists()
+
+    def test_sanitizes_user_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore(user_id="../../../etc/passwd")
+        store.load_from_disk()
+        store.add("user", "tamper attempt")
+
+        # Path traversal is neutralized — dots and slashes become underscores
+        safe_path = tmp_path / "users" / "_________etc_passwd" / "USER.md"
+        assert safe_path.exists(), f"Expected {safe_path} to exist"
+        traversal_path = tmp_path / "users" / ".." / ".." / ".." / "etc" / "passwd"
+        assert not traversal_path.exists(), f"Expected {traversal_path} NOT to exist"
+
+    def test_isolated_file_locks(self, tmp_path, monkeypatch):
+        """Each per-user file gets its own lock — no contention."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store1 = MemoryStore(user_id="user_a")
+        store2 = MemoryStore(user_id="user_b")
+
+        store1.load_from_disk()
+        store2.load_from_disk()
+        store1.add("user", "A-data")
+        store2.add("user", "B-data")
+
+        assert store1.user_entries == ["A-data"]
+        assert store2.user_entries == ["B-data"]
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

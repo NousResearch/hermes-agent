@@ -1275,6 +1275,9 @@ class GatewayRunner:
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
+        # CircuitBreakerManager — set by start_gateway (Phase 2)
+        self.circuit_breaker_manager = None
+
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
@@ -14211,6 +14214,58 @@ class GatewayRunner:
             ).start()
         return len(to_evict)
 
+    def _evict_idle_caches_on_pressure(self, level, pct: float) -> None:
+        """Called by the memory monitor eviction hook when RAM runs hot.
+
+        ``level`` is a ``MemoryPressureLevel``; ``pct`` is RSS % of system RAM.
+
+        Actions taken:
+          WARNING   — sweep idle cached agents (TTL-based)
+          CRITICAL  — sweep idle + enforce cache cap aggressively
+          EMERGENCY — sweep all + force gc + log critical
+        """
+        from gateway.memory_monitor import MemoryPressureLevel
+
+        if level == MemoryPressureLevel.WARNING:
+            evicted = self._sweep_idle_cached_agents()
+            logger.warning(
+                "[MEMORY] WARNING eviction: %d idle agents cleared (%.1f%% RAM)",
+                evicted, pct,
+            )
+        elif level == MemoryPressureLevel.CRITICAL:
+            evicted = self._sweep_idle_cached_agents()
+            # Also enforce the cache cap more aggressively — halve it temporarily
+            if evicted > 0:
+                logger.critical(
+                    "[MEMORY] CRITICAL eviction: %d idle agents cleared (%.1f%% RAM)",
+                    evicted, pct,
+                )
+            # Force immediate gc
+            import gc
+            gc.collect()
+        elif level == MemoryPressureLevel.EMERGENCY:
+            # Emergency: clear all cached agents not actively in a turn
+            evicted = self._sweep_idle_cached_agents()
+            # Also clear as much as possible
+            try:
+                self._agent_cache.clear()
+                logger.critical(
+                    "[MEMORY] EMERGENCY: all cached agents cleared + gc (%.1f%% RAM)",
+                    pct,
+                )
+            except Exception:
+                pass
+            # Aggressive GC
+            import gc
+            gc.collect()
+            # Try to release memory back to the OS (Linux only)
+            try:
+                import ctypes
+                libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                libc.malloc_trim(0)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Proxy mode: forward messages to a remote Hermes API server
     # ------------------------------------------------------------------
@@ -16865,6 +16920,48 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     recovery_engine = RecoveryEngine()
     set_recovery_engine(recovery_engine)
+
+    # ── Phase 2: Circuit Breaker + Memory Guard ────────────────────────
+    # CircuitBreakerManager: per-target state-machine failure protection.
+    # Wired into the RecoveryEngine and available to platform adapters
+    # via the runner for call-by-call circuit-breaker protection.
+    from gateway.circuit_breaker import CircuitBreakerManager, CircuitBreakerConfig
+
+    _cb_config = CircuitBreakerConfig()  # defaults; overridable from config.yaml
+    try:
+        _resilience_cfg = (_load_cli_config() or {}).get("resilience", {}).get("circuit_breaker", {}) or {}
+        if _resilience_cfg.get("enabled") is not None:
+            _cb_config.enabled = bool(_resilience_cfg["enabled"])
+        if _resilience_cfg.get("failure_threshold") is not None:
+            _cb_config.failure_threshold = int(_resilience_cfg["failure_threshold"])
+        if _resilience_cfg.get("window_seconds") is not None:
+            _cb_config.window_seconds = float(_resilience_cfg["window_seconds"])
+        if _resilience_cfg.get("cooldown_seconds") is not None:
+            _cb_config.cooldown_seconds = float(_resilience_cfg["cooldown_seconds"])
+        if _resilience_cfg.get("half_open_max_calls") is not None:
+            _cb_config.half_open_max_calls = int(_resilience_cfg["half_open_max_calls"])
+    except Exception as _cb_cfg_err:
+        logger.debug("Failed to read circuit_breaker config: %s", _cb_cfg_err)
+
+    circuit_breaker_manager = CircuitBreakerManager(default_config=_cb_config)
+    recovery_engine.set_circuit_breaker_manager(circuit_breaker_manager)
+    runner.circuit_breaker_manager = circuit_breaker_manager
+
+    # Memory guard: register an eviction hook that tells the runner to
+    # clear idle agent caches when memory pressure climbs above 80%.
+    from gateway import memory_monitor as _mm_guard
+
+    def _on_memory_pressure(level, pct):
+        try:
+            runner._evict_idle_caches_on_pressure(level, pct)
+        except Exception as _evict_err:
+            logger.debug("Memory-pressure cache eviction skipped: %s", _evict_err)
+
+    _mm_guard.register_eviction_hook(
+        callback=_on_memory_pressure,
+        name="gateway-runner",
+        min_interval=30.0,
+    )
     
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service

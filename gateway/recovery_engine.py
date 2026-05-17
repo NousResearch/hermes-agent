@@ -184,3 +184,12 @@ class RecoveryEngine:
     def register_retry_success(self, location: str) -> None:
         """Clear retry count for a location when an operation succeeds."""
         self._retry_counts.pop(location, None)
+
+    def set_circuit_breaker_manager(self, manager) -> None:
+        """Wire the Phase 2 CircuitBreakerManager into the engine.
+
+        The manager provides per-target circuit breakers via ``.get(target)``.
+        When the engine receives a CIRCUIT_BREAK action it records a failure
+        on the corresponding circuit breaker, which may transition it to OPEN.
+        """
+        self._circuit_breaker = manager

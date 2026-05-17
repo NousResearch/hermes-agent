@@ -252,7 +252,11 @@ const ComposerPane = memo(function ComposerPane({
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
+          onActiveSessionSelect={actions.activateLiveSession}
+          onActiveSessionClose={actions.closeLiveSession}
           onModelSelect={actions.onModelSelect}
+          onNewLiveSession={actions.newLiveSession}
+          onNewPromptSession={actions.newPromptSession}
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
@@ -354,9 +358,11 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
+        liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
+        onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
         status={ui.status}

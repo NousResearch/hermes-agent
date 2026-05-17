@@ -177,13 +177,19 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # WeChat's customer-service / message-encrypt protocols mandate AES-128-ECB
+    # with PKCS#7 padding (see official Java/PHP SDK reference). The format is
+    # interoperable — switching to a streaming or CBC mode would break the
+    # signature handshake with WeChat servers, even though ECB is generically
+    # vulnerable to block-substitution attacks.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305  -- WeChat protocol requires AES-128-ECB
     encryptor = cipher.encryptor()
     return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
 
 
 def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # Inverse of _aes128_ecb_encrypt — same WeChat protocol constraint.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305  -- WeChat protocol requires AES-128-ECB
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
     if not padded:

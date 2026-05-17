@@ -1426,6 +1426,36 @@ def test_refresh_token_reuse_detection_surfaces_actionable_message():
     assert exc_info.value.relogin_required is True
 
 
+def test_refresh_token_reuse_error_code_is_terminal():
+    """Nous may return refresh_token_reused as the OAuth error code itself."""
+    from hermes_cli import auth as auth_mod
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "refresh_token_reused",
+                "error_description": "Refresh token reuse detected",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        auth_mod._refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_consumed_elsewhere",
+        )
+
+    assert exc_info.value.code == "refresh_token_reused"
+    assert exc_info.value.relogin_required is True
+    assert auth_mod._is_terminal_nous_refresh_error(exc_info.value) is True
+
+
 def test_refresh_token_exchange_sends_refresh_token_header():
     """Nous refresh tokens must be sent in a header so sandbox proxies can
     substitute placeholder credentials without parsing form bodies.
@@ -1684,6 +1714,46 @@ def test_try_import_shared_returns_none_on_refresh_failure(
 
     assert auth_mod._try_import_shared_nous_state() is None
     assert auth_mod._read_shared_nous_state() is None
+
+
+def test_try_import_shared_persists_rotated_token_when_mint_fails(
+    shared_store_env, monkeypatch,
+):
+    """A forced shared import refresh rotates the single-use token before minting.
+
+    If the later agent-key mint fails, the shared store must still keep the
+    rotated refresh token; otherwise the next import attempt replays the
+    consumed token and trips refresh-token reuse.
+    """
+    from hermes_cli import auth as auth_mod
+
+    shared_state = _full_state_fixture()
+    shared_state["refresh_token"] = "refresh-old"
+    shared_state["access_token"] = "access-old"
+    auth_mod._write_shared_nous_state(shared_state)
+
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        assert refresh_token == "refresh-old"
+        return {
+            "access_token": "access-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 900,
+            "token_type": "Bearer",
+        }
+
+    def _fake_mint_agent_key(*, client, portal_base_url, access_token, min_ttl_seconds):
+        assert access_token == "access-new"
+        raise AuthError("credits exhausted", provider="nous", code="insufficient_credits")
+
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", _fake_refresh_access_token)
+    monkeypatch.setattr(auth_mod, "_mint_agent_key", _fake_mint_agent_key)
+
+    assert auth_mod._try_import_shared_nous_state() is None
+
+    shared_after = auth_mod._read_shared_nous_state()
+    assert shared_after is not None
+    assert shared_after["refresh_token"] == "refresh-new"
+    assert shared_after["access_token"] == "access-new"
 
 
 def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):

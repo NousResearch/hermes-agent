@@ -620,18 +620,35 @@ class CredentialPool:
                 return entry
             store_refresh = state.get("refresh_token", "")
             store_access = state.get("access_token", "")
-            if store_refresh and store_refresh != entry.refresh_token:
+            comparable_updates = {
+                "access_token": store_access,
+                "refresh_token": store_refresh,
+                "expires_at": state.get("expires_at"),
+                "agent_key": state.get("agent_key"),
+                "agent_key_expires_at": state.get("agent_key_expires_at"),
+                "inference_base_url": state.get("inference_base_url"),
+            }
+            should_sync = any(
+                value not in (None, "") and getattr(entry, key, None) != value
+                for key, value in comparable_updates.items()
+            )
+            if should_sync:
                 logger.debug(
-                    "Pool entry %s: syncing tokens from auth.json (Nous refresh token changed)",
+                    "Pool entry %s: syncing Nous state from auth.json",
                     entry.id,
                 )
                 field_updates: Dict[str, Any] = {
-                    "access_token": store_access,
-                    "refresh_token": store_refresh,
                     "last_status": None,
                     "last_status_at": None,
                     "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
                 }
+                if store_access:
+                    field_updates["access_token"] = store_access
+                if store_refresh:
+                    field_updates["refresh_token"] = store_refresh
                 if state.get("expires_at"):
                     field_updates["expires_at"] = state["expires_at"]
                 if state.get("agent_key"):
@@ -810,40 +827,15 @@ class CredentialPool:
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                nous_state = {
-                    "access_token": entry.access_token,
-                    "refresh_token": entry.refresh_token,
-                    "client_id": entry.client_id,
-                    "portal_base_url": entry.portal_base_url,
-                    "inference_base_url": entry.inference_base_url,
-                    "token_type": entry.token_type,
-                    "scope": entry.scope,
-                    "obtained_at": entry.obtained_at,
-                    "expires_at": entry.expires_at,
-                    "agent_key": entry.agent_key,
-                    "agent_key_expires_at": entry.agent_key_expires_at,
-                    "tls": entry.tls,
-                }
-                refreshed = auth_mod.refresh_nous_oauth_from_state(
-                    nous_state,
+                auth_mod.resolve_nous_runtime_credentials(
                     min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-                    force_refresh=force,
                     inference_auth_mode=(
                         auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY
                         if force
                         else auth_mod.NOUS_INFERENCE_AUTH_MODE_AUTO
                     ),
                 )
-                # Apply returned fields: dataclass fields via replace, extras via dict update
-                field_updates = {}
-                extra_updates = dict(entry.extra)
-                _field_names = {f.name for f in fields(entry)}
-                for k, v in refreshed.items():
-                    if k in _field_names:
-                        field_updates[k] = v
-                    elif k in _EXTRA_KEYS:
-                        extra_updates[k] = v
-                updated = replace(entry, extra=extra_updates, **field_updates)
+                updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry
         except Exception as exc:

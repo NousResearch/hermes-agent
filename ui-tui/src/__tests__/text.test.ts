@@ -115,6 +115,13 @@ describe('ANSI sanitizers', () => {
     expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mCD`)
   })
 
+  it('strips multi-byte non-CSI ESC sequences without leaving trailing bytes', () => {
+    const sample = `A${ESC}(0B${ESC}%GC${ESC})0D`
+
+    expect(stripAnsi(sample)).toBe('ABCD')
+    expect(sanitizeAnsiForRender(sample)).toBe('ABCD')
+  })
+
   it('detects non-CSI escape prefixes too', () => {
     expect(hasAnsi(`ok${ESC}Ppayload${ESC}\\`)).toBe(true)
   })

@@ -553,6 +553,264 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Archived-board helpers
+# ---------------------------------------------------------------------------
+
+def archived_boards_root() -> Path:
+    """Return ``<root>/kanban/boards/_archived``.
+
+    Why: Dashboard archive viewer needs a single entry point to list every
+    archived board folder (parallel to :func:`boards_root`).
+    What: Returns the directory where archived board folders live.
+    Test: Assert it equals ``boards_root() / "_archived"``.
+    """
+    return boards_root() / "_archived"
+
+
+def list_archived_boards() -> list[dict]:
+    """Enumerate archived board directories.
+
+    Why: Dashboard archive viewer needs metadata for every archived board
+    so the user can pick which to restore. Folders are named ``<slug>-<ts>``
+    (timestamp-suffixed by :func:`remove_board`); we reverse-engineer the
+    base slug + the timestamp from the directory name.
+    What: Returns a list of ``{slug, archived_dir, archived_at, name, ...}``
+    sorted by most-recently-archived first.
+    Test: Archive a board, call this — expect 1 entry with the right slug
+    and ``archived_dir`` matching the on-disk path.
+    """
+    root = archived_boards_root()
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        # Parse "<slug>-<timestamp>[-<n>]". Take the trailing digits-only
+        # token as the timestamp, the rest as the slug; collision-suffixed
+        # entries (slug-ts-1) keep the same parsing.
+        parts = name.rsplit("-", 1)
+        archived_at: Optional[int] = None
+        base_slug = name
+        if len(parts) == 2:
+            head, tail = parts
+            if tail.isdigit() and len(tail) >= 9:  # epoch seconds, ~10 digits
+                base_slug = head
+                try:
+                    archived_at = int(tail)
+                except ValueError:
+                    archived_at = None
+            else:
+                # Maybe "<slug>-<ts>-<n>"; try the previous segment.
+                inner = head.rsplit("-", 1)
+                if len(inner) == 2 and inner[1].isdigit() and len(inner[1]) >= 9:
+                    base_slug = inner[0]
+                    try:
+                        archived_at = int(inner[1])
+                    except ValueError:
+                        archived_at = None
+        meta: dict[str, Any] = {}
+        try:
+            mp = child / "board.json"
+            if mp.exists():
+                raw = json.loads(mp.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    meta = raw
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        # Count tasks in the archived DB so the UI can show task badges
+        # ("12 tasks would be restored"). Best-effort — broken DBs are
+        # still listable, they just report ``total: 0``.
+        counts: dict[str, int] = {}
+        db_path = child / "kanban.db"
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+                    ).fetchall()
+                    counts = {r["status"]: int(r["n"]) for r in rows}
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                counts = {}
+        out.append({
+            "slug": base_slug,
+            "name": meta.get("name") or _default_board_display_name(base_slug),
+            "description": meta.get("description", ""),
+            "icon": meta.get("icon", ""),
+            "color": meta.get("color", ""),
+            "archived_dir": str(child),
+            "archived_at": archived_at,
+            "counts": counts,
+            "total": sum(counts.values()),
+        })
+    out.sort(key=lambda r: (r.get("archived_at") or 0), reverse=True)
+    return out
+
+
+def restore_board(slug: str) -> dict:
+    """Restore an archived board back to its active directory.
+
+    Why: Users need a one-click undo for accidental archives without
+    having to drop to a shell. Mirror of :func:`remove_board` archive
+    path — moves ``_archived/<slug>-<ts>/`` → ``boards/<slug>/``.
+    What: Locates the most-recently-archived directory matching ``slug``,
+    refuses if an active board with that slug already exists, otherwise
+    renames the directory back into place. Returns
+    ``{slug, action, new_path, archived_dir}``.
+    Test: Archive a board, call ``restore_board(slug)``, assert
+    :func:`board_exists` is True for the slug and the ``_archived`` dir
+    is gone.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    if board_exists(normed) and board_dir(normed).is_dir():
+        raise ValueError(
+            f"board {normed!r} already exists — cannot restore on top of an active board"
+        )
+    root = archived_boards_root()
+    if not root.is_dir():
+        raise ValueError(f"no archived board found for slug {normed!r}")
+    # Find the most-recently-archived dir for this slug (in case of
+    # multiple archives, restore the newest).
+    matches: list[tuple[int, Path]] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        name = child.name
+        # Match "<slug>-<digits>" or "<slug>-<digits>-<n>" exactly.
+        # Avoid prefix-collisions (slug "foo" must not match dir "foobar-...").
+        if not name.startswith(normed + "-"):
+            continue
+        remainder = name[len(normed) + 1:]
+        # Remainder must be all digits or digits-then-"-<n>".
+        head_tail = remainder.split("-", 1)
+        if not head_tail[0].isdigit():
+            continue
+        try:
+            ts = int(head_tail[0])
+        except ValueError:
+            continue
+        matches.append((ts, child))
+    if not matches:
+        raise ValueError(f"no archived board found for slug {normed!r}")
+    matches.sort(key=lambda x: x[0], reverse=True)
+    archived_dir = matches[0][1]
+    target = board_dir(normed)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    archived_dir.rename(target)
+    # If the metadata file marked it archived, flip the flag so the UI
+    # doesn't show it as archived in the active list.
+    try:
+        meta_path = target / "board.json"
+        if meta_path.exists():
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and raw.get("archived"):
+                raw["archived"] = False
+                meta_path.write_text(
+                    json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {
+        "slug": normed,
+        "action": "restored",
+        "new_path": str(target),
+        "archived_dir": str(archived_dir),
+    }
+
+
+def hard_delete_board(slug: str) -> dict:
+    """Permanently delete a board directory (active OR archived).
+
+    Why: Operator wants to reclaim disk by purging a board that's no
+    longer needed even from the archive. Separate from :func:`remove_board`
+    so the integrity checks (zero tasks) can live in the API layer
+    without touching the legacy CLI path.
+    What: Removes the board's on-disk dir (preferring the active dir,
+    falling back to ``_archived/`` matches). Caller is responsible for
+    enforcing integrity rules. Returns ``{slug, action, removed_paths}``.
+    Test: Hard-delete a board, assert the dir is gone from both
+    ``boards/`` and ``boards/_archived/``.
+    """
+    import shutil
+
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    if normed == DEFAULT_BOARD:
+        raise ValueError("the 'default' board cannot be removed")
+    removed: list[str] = []
+    active = board_dir(normed)
+    if active.is_dir():
+        if get_current_board() == normed:
+            clear_current_board()
+        shutil.rmtree(active)
+        removed.append(str(active))
+    # Also purge every matching archive entry so the slug fully vanishes.
+    root = archived_boards_root()
+    if root.is_dir():
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if not name.startswith(normed + "-"):
+                continue
+            remainder = name[len(normed) + 1:]
+            head_tail = remainder.split("-", 1)
+            if not head_tail[0].isdigit():
+                continue
+            shutil.rmtree(child)
+            removed.append(str(child))
+    if not removed:
+        raise ValueError(f"board {normed!r} does not exist (not active, not archived)")
+    return {"slug": normed, "action": "hard-deleted", "removed_paths": removed}
+
+
+def restore_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Flip an archived task back to an active state.
+
+    Why: Users archive tasks aggressively as part of triage; they need a
+    one-click undo without resorting to raw SQL or the CLI.
+    What: Sets status='todo' (a safe default — task gets re-evaluated by
+    ``recompute_ready`` afterwards so parent-blocked tasks stay correct).
+    Records a ``restored`` event in ``task_events``. Returns False if the
+    task isn't archived.
+    Test: Archive a task, call ``restore_task``, assert it returns True
+    and the task's status is now 'todo'.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] != "archived":
+            return False
+        # Flip to 'todo' as the safe default. ``recompute_ready`` will
+        # promote to 'ready' if no upstream blockers remain.
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'archived'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "restored", None, run_id=None)
+    # Outside the txn — recompute might mark it ready.
+    try:
+        recompute_ready(conn)
+    except Exception:
+        pass
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 
@@ -917,6 +1175,21 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Don't auto-resurrect a deleted board. After hard_delete_board() the
+    # board dir is gone — but stale callers (frontend with old `?board=`
+    # query, dispatcher tick with cached state, `current` pointer that
+    # wasn't cleared) would mkdir(exist_ok=True) + init schema and the
+    # board reappears. Default board is exempt — its path is the legacy
+    # root-level kanban.db, always valid.
+    if (
+        board
+        and board != DEFAULT_BOARD
+        and not path.exists()
+        and not path.parent.exists()
+    ):
+        raise FileNotFoundError(
+            f"board {board!r} does not exist on disk (deleted?)"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS

@@ -137,10 +137,121 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+# Map current task.status → task_events.kind that records the most recent
+# transition INTO that status. Used by ``_compute_entered_status_at`` to
+# answer "when did this card enter its current column?" without adding a
+# new ``status_changed_at`` column on the tasks table.
+#
+# ``todo`` is intentionally absent: a fresh task starts in ``todo`` with no
+# dedicated entry event (``created_at`` is the natural fallback). Tasks
+# rolled back to ``todo`` from ready (``claim_rejected``) or from archived
+# (``restored``) get their entered-stage timestamp from those events instead.
+_STATUS_TO_ENTRY_EVENT: dict[str, tuple[str, ...]] = {
+    "ready":    ("promoted",),
+    "running":  ("claimed",),
+    "done":     ("completed",),
+    "blocked":  ("blocked",),
+    "archived": ("archived",),
+    "todo":     ("restored", "claim_rejected"),
+    # "triage" — no dedicated event; falls back to created_at.
+}
+
+
+def _entered_status_at_for_task(
+    conn: sqlite3.Connection, task_id: str, status: str, created_at: int,
+) -> int:
+    """Return the timestamp when ``task_id`` entered its current ``status``.
+
+    Why: Dashboard cards need a per-stage timestamp distinct from
+    ``created_at`` so operators can spot tasks stuck in ``running`` /
+    ``blocked`` independently of how old the ticket is.
+    What: Looks up the latest ``task_events.created_at`` whose ``kind``
+    matches the status's entry event; falls back to ``created_at`` when
+    no such event exists (e.g. fresh ``todo`` tasks, or ``triage``).
+    Test: Promote a task to ready, expect entered_status_at == promoted
+    event timestamp; claim it, expect entered_status_at == claimed
+    timestamp (NOT promoted).
+    """
+    kinds = _STATUS_TO_ENTRY_EVENT.get(status)
+    if not kinds:
+        return created_at
+    placeholders = ",".join("?" for _ in kinds)
+    row = conn.execute(
+        f"SELECT MAX(created_at) AS ts FROM task_events "
+        f"WHERE task_id = ? AND kind IN ({placeholders})",
+        (task_id, *kinds),
+    ).fetchone()
+    ts = row["ts"] if row else None
+    return int(ts) if ts is not None else int(created_at)
+
+
+def _batch_entered_status_at(
+    conn: sqlite3.Connection, tasks: list[kanban_db.Task],
+) -> dict[str, int]:
+    """Batch version of :func:`_entered_status_at_for_task` for list endpoints.
+
+    Why: ``GET /board`` serializes hundreds of tasks; calling the
+    per-task helper would be N+1 against ``task_events``. One grouped
+    aggregate query keeps the cost flat regardless of board size.
+    What: For each task, picks MAX(created_at) over the events matching
+    its status's entry kinds. Falls back to ``task.created_at`` when no
+    matching event exists.
+    Test: Build a board with 3 tasks in ready/running/done, call this,
+    assert each maps to its own status's event timestamp.
+    """
+    if not tasks:
+        return {}
+    # Collect every (task_id, kind) pair we care about so the WHERE clause
+    # filters tightly. We don't pre-filter by status because a task that
+    # just transitioned still has older events of the previous kinds —
+    # filtering on the *current* status's kinds is what gives us the
+    # "entered this column" semantics.
+    interest: dict[str, tuple[str, ...]] = {}
+    for t in tasks:
+        kinds = _STATUS_TO_ENTRY_EVENT.get(t.status)
+        if kinds:
+            interest[t.id] = kinds
+
+    out: dict[str, int] = {t.id: int(t.created_at) for t in tasks}
+    if not interest:
+        return out
+
+    # Build one IN-clause over the union of all kinds we need so we can
+    # do a single scan, then filter per-task client-side. This is cheaper
+    # than one query per task even for boards in the thousands.
+    all_kinds = sorted({k for ks in interest.values() for k in ks})
+    all_ids = list(interest.keys())
+    id_ph = ",".join("?" for _ in all_ids)
+    kind_ph = ",".join("?" for _ in all_kinds)
+    rows = conn.execute(
+        f"SELECT task_id, kind, MAX(created_at) AS ts "
+        f"FROM task_events "
+        f"WHERE task_id IN ({id_ph}) AND kind IN ({kind_ph}) "
+        f"GROUP BY task_id, kind",
+        (*all_ids, *all_kinds),
+    ).fetchall()
+    per_task_max: dict[str, int] = {}
+    for r in rows:
+        tid = r["task_id"]
+        kind = r["kind"]
+        # Skip rows whose kind isn't in *this* task's interest set
+        # (we widened the IN-clause for batch efficiency above).
+        if kind not in interest.get(tid, ()):
+            continue
+        ts = int(r["ts"])
+        cur = per_task_max.get(tid)
+        if cur is None or ts > cur:
+            per_task_max[tid] = ts
+    for tid, ts in per_task_max.items():
+        out[tid] = ts
+    return out
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    entered_status_at: Optional[int] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
@@ -149,6 +260,23 @@ def _task_dict(
         d["age"] = kanban_db.task_age(task)
     except Exception:
         d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
+    # Per-stage timestamp: when did this card enter its current column?
+    # ``entered_status_at`` is precomputed by the batch helper on list
+    # endpoints; falls back to ``None`` here (single-task callers can
+    # compute it themselves via /tasks/:id below).
+    d["entered_status_at"] = entered_status_at
+    # Derived age in seconds for the current stage, alongside the
+    # existing created/started/complete ages. ``None`` when we don't
+    # have entered_status_at yet (caller didn't pass it).
+    if entered_status_at is not None:
+        try:
+            age_block = d.get("age") or {}
+            age_block["entered_status_age_seconds"] = max(
+                0, int(time.time()) - int(entered_status_at)
+            )
+            d["age"] = age_block
+        except Exception:
+            pass
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
@@ -411,13 +539,19 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        # Batch-fetch entered-status timestamps in one aggregate query.
+        entered_at_map = _batch_entered_status_at(conn, tasks)
 
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                entered_status_at=entered_at_map.get(t.id),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -464,6 +598,58 @@ def get_board(
 
 
 # ---------------------------------------------------------------------------
+# GET /tasks/archived  — MUST be registered before /tasks/{task_id} so the
+# static path doesn't get swallowed by the path-param catch-all below.
+# Powers the dashboard Archive Viewer (companion to /boards/archived).
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/archived")
+def list_archived_tasks(
+    board: Optional[str] = Query(
+        None,
+        description="Board slug to filter on (omit for the active board)",
+    ),
+    all_boards: bool = Query(
+        False,
+        description="Span every active board instead of just the selected one",
+    ),
+):
+    """Return every task with status='archived' on the chosen board(s).
+
+    Why: Dashboard Archive Viewer needs a list of archived tasks across
+    one (or all) active boards so users can spot accidental archives and
+    restore them.
+    What: When ``all_boards`` is True, iterates every active board and
+    concatenates results, tagging each task with ``board_slug``. Otherwise
+    queries just the resolved board.
+    Test: Archive a task on board A, call with ``all_boards=true``,
+    expect that task in the returned list with the right ``board_slug``.
+    """
+    out: list[dict] = []
+    if all_boards:
+        boards = kanban_db.list_boards(include_archived=False)
+        slugs = [b["slug"] for b in boards]
+    else:
+        slugs = [_resolve_board(board) or kanban_db.get_current_board()]
+    for slug in slugs:
+        if not kanban_db.board_exists(slug):
+            continue
+        conn = kanban_db.connect(board=slug)
+        try:
+            tasks = kanban_db.list_tasks(conn, include_archived=True, status="archived")
+            entered_at_map = _batch_entered_status_at(conn, tasks)
+            for t in tasks:
+                d = _task_dict(t, entered_status_at=entered_at_map.get(t.id))
+                d["board_slug"] = slug
+                out.append(d)
+        except Exception as exc:
+            log.warning("list_archived_tasks: board %s failed: %s", slug, exc)
+        finally:
+            conn.close()
+    return {"archived_tasks": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
 # GET /tasks/:id
 # ---------------------------------------------------------------------------
 
@@ -479,7 +665,12 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        entered_at = _entered_status_at_for_task(
+            conn, task.id, task.status, task.created_at,
+        )
+        task_d = _task_dict(
+            task, latest_summary=full_summary, entered_status_at=entered_at,
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -539,7 +730,15 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
         )
         task = kanban_db.get_task(conn, task_id)
-        body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        if task is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, task.id, task.status, task.created_at,
+            )
+            body: dict[str, Any] = {
+                "task": _task_dict(task, entered_status_at=entered_at),
+            }
+        else:
+            body = {"task": None}
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -675,7 +874,119 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
 
         updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+        if updated is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, updated.id, updated.status, updated.created_at,
+            )
+            return {
+                "task": _task_dict(updated, entered_status_at=entered_at),
+            }
+        return {"task": None}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id  — hard-delete a task and all its derived rows.
+#
+# This is destructive and irreversible: archive (PATCH status=archived) is
+# the soft-delete path for tasks the user wants to keep in history. Use
+# DELETE only when the task is truly garbage (e.g. an accidental create,
+# a duplicate of another card, or a crashed task that's already been
+# replaced) and you don't want it cluttering audit/event queries either.
+#
+# Tables touched (no FK cascades in v1 schema, so explicit deletes):
+#   - tasks            (the row itself)
+#   - task_links       (parent_id = ? OR child_id = ?)
+#   - task_comments    (task_id = ?)
+#   - task_events      (task_id = ?)
+#   - task_runs        (task_id = ?)
+#   - kanban_notify_subs (task_id = ?)  — gateway notification subscriptions
+# ---------------------------------------------------------------------------
+
+@router.delete("/tasks/{task_id}", status_code=204)
+def delete_task(
+    task_id: str,
+    board: Optional[str] = Query(None),
+    force: bool = Query(
+        False,
+        description=(
+            "Override the status-based integrity rule. Default behaviour "
+            "(force=false) refuses hard-delete when the task is not in "
+            "{'archived', 'done'} so the dashboard can't accidentally "
+            "wipe live work."
+        ),
+    ),
+):
+    """Hard-delete a task (with terminal-status integrity rule).
+
+    Why: Soft-delete (archive) is the right path for tasks the user
+    wants to keep in history; this endpoint is for true garbage. The
+    integrity rule (only 'archived' or 'done') stops the dashboard from
+    accidentally yanking a running/blocked task and orphaning its
+    workspace.
+    What: Refuses with 409 unless the task's status is 'archived' or
+    'done', OR ``force=true`` is supplied (escape hatch for legacy
+    callers and operator override).
+    Test: Try to DELETE a 'ready' task — expect 409. DELETE a 'done'
+    task — expect 204.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+        # Integrity rule: only allow hard delete on terminal-state tasks.
+        if not force and task.status not in {"archived", "done"}:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": (
+                        f"task {task_id} has status {task.status!r}; hard-delete "
+                        "is only allowed on tasks in 'archived' or 'done' "
+                        "state. Archive the task first, or pass force=true to "
+                        "override."
+                    ),
+                    "current_status": task.status,
+                },
+            )
+
+        # Close any active run with outcome='reclaimed' so the run record is
+        # consistent before we drop everything; matters if the dispatcher
+        # later joins task_runs in audit queries that survive deletes.
+        if task.status == "running" and task.current_run_id:
+            kanban_db._end_run(
+                conn, task_id,
+                outcome="reclaimed", status="reclaimed",
+                summary="task hard-deleted from dashboard while run was active",
+            )
+
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
+                (task_id, task_id),
+            )
+            conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+            # kanban_notify_subs may not exist on older boards — guard.
+            try:
+                conn.execute(
+                    "DELETE FROM kanban_notify_subs WHERE task_id = ?",
+                    (task_id,),
+                )
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            if cur.rowcount != 1:
+                # Concurrent delete or row vanished between our get_task and
+                # the actual DELETE — surface as 404 so the UI removes the
+                # card either way.
+                raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        # Returning None with status_code=204 means FastAPI emits no body.
+        return None
     finally:
         conn.close()
 
@@ -1497,14 +1808,317 @@ def rename_board(slug: str, payload: RenameBoardBody):
     return {"board": meta}
 
 
-@router.delete("/boards/{slug}")
-def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
-    """Archive (default) or hard-delete a board."""
+# ---------------------------------------------------------------------------
+# Board lifecycle: archive / restore / hard-delete + archive viewer
+#
+# Integrity rules (enforced here AND mirrored in the dashboard UI):
+#
+#   * "default" board cannot be archived or hard-deleted (kanban_db enforces
+#     this at the function level — we surface the error as 409).
+#   * Cannot archive the currently-active board — user must ``switch`` first.
+#   * Archive of a board with non-archived tasks requires ``cascade=true``;
+#     otherwise refuses with 409 so the user has to decide explicitly.
+#   * Hard-delete of a board requires zero tasks (active OR archived).
+#   * Hard-delete of a task requires status in {archived, done}.
+#   * Restoring a board re-creates the on-disk directory; refuses if a
+#     board with the same slug already exists in the active set.
+#
+# Every integrity refusal returns HTTP 409 with a JSON body containing a
+# clear ``error`` field so the dashboard can render the message verbatim.
+# ---------------------------------------------------------------------------
+
+
+def _board_task_status_counts(slug: str) -> dict[str, int]:
+    """Return ``{status: count}`` for a board's task table.
+
+    Why: Integrity checks (cascade, hard-delete, restore) need to know
+    how many active and archived tasks the board has — separate from
+    :func:`_board_counts` which is also used as a UI hint.
+    What: Opens the board's DB, runs a GROUP BY on ``tasks.status``.
+    Test: Create 2 todo tasks + 1 archived, expect ``{"todo": 2,
+    "archived": 1}`` for that board.
+    """
     try:
-        res = kanban_db.remove_board(slug, archive=not delete)
+        path = kanban_db.kanban_db_path(board=slug)
+        if not path.exists():
+            return {}
+        conn = kanban_db.connect(board=slug)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status",
+            ).fetchall()
+            return {r["status"]: int(r["n"]) for r in rows}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def _non_archived_total(status_counts: dict[str, int]) -> int:
+    """Sum of every status that is NOT 'archived' (== "live" task count)."""
+    return sum(n for s, n in status_counts.items() if s != "archived")
+
+
+@router.get("/boards/archived")
+def list_archived_boards():
+    """Return every archived board directory with parsed metadata.
+
+    Why: Powers the dashboard's Archive Viewer tab so users can find
+    boards they archived earlier (by accident or intentionally).
+    What: Wraps :func:`kanban_db.list_archived_boards` and adds a
+    ``can_restore`` hint per row (false when an active board with the
+    same slug already exists).
+    Test: Archive one board, GET /boards/archived → 1 entry with
+    ``can_restore=true``.
+    """
+    rows = kanban_db.list_archived_boards()
+    active_slugs = {b["slug"] for b in kanban_db.list_boards(include_archived=False)}
+    for r in rows:
+        r["can_restore"] = r["slug"] not in active_slugs
+    return {"archived_boards": rows, "count": len(rows)}
+
+
+# NOTE: ``GET /tasks/archived`` is registered earlier in the file (just
+# before ``GET /tasks/{task_id}``) so the static path matches before the
+# path-param catch-all. See ``list_archived_tasks`` near the top.
+
+
+@router.post("/boards/{slug}/archive")
+def archive_board_endpoint(
+    slug: str,
+    cascade: bool = Query(
+        False,
+        description="Also archive every non-archived task on this board",
+    ),
+):
+    """Archive a board (move on-disk to ``boards/_archived/``).
+
+    Why: Replaces the legacy ``DELETE /boards/{slug}`` archive path with
+    an explicit, structured verb so the dashboard UI can distinguish
+    archive (recoverable) from hard delete (destructive) without relying
+    on a query-param flag.
+    What: Enforces integrity rules (not 'default', not active, no live
+    tasks unless ``cascade=true``), then calls :func:`kanban_db.remove_board`
+    with ``archive=True``. When ``cascade=true``, archives every
+    non-archived task first.
+    Test: Archive a non-default board with tasks and cascade=true,
+    assert all tasks transition to status='archived' and the dir moves
+    to ``boards/_archived/``.
+    """
+    try:
+        normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not normed:
+        raise HTTPException(status_code=400, detail="board slug is required")
+    if normed == kanban_db.DEFAULT_BOARD:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "the 'default' board cannot be archived"},
+        )
+    if not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {normed!r} does not exist")
+    if kanban_db.get_current_board() == normed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": (
+                    f"cannot archive {normed!r} while it is the active board — "
+                    "switch to another board first"
+                ),
+            },
+        )
+
+    counts = _board_task_status_counts(normed)
+    live = _non_archived_total(counts)
+    if live > 0 and not cascade:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": (
+                    f"board {normed!r} has {live} non-archived task(s); pass "
+                    "cascade=true to archive them along with the board"
+                ),
+                "live_task_count": live,
+                "counts": counts,
+            },
+        )
+
+    cascaded_ids: list[str] = []
+    if live > 0 and cascade:
+        conn = kanban_db.connect(board=normed)
+        try:
+            tasks = kanban_db.list_tasks(conn, include_archived=False)
+            for t in tasks:
+                if t.status != "archived":
+                    try:
+                        if kanban_db.archive_task(conn, t.id):
+                            cascaded_ids.append(t.id)
+                    except Exception as exc:
+                        log.warning("cascade archive failed for %s: %s", t.id, exc)
+        finally:
+            conn.close()
+
+    try:
+        res = kanban_db.remove_board(normed, archive=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"error": str(exc)})
+    return {
+        "result": res,
+        "cascade_archived_tasks": cascaded_ids,
+        "current": kanban_db.get_current_board(),
+    }
+
+
+@router.post("/boards/{slug}/restore")
+def restore_board_endpoint(slug: str):
+    """Restore an archived board back to the active list.
+
+    Why: One-click undo for accidental archives.
+    What: Moves ``boards/_archived/<slug>-<ts>/`` → ``boards/<slug>/``.
+    Refuses (409) if an active board with the same slug already exists.
+    Test: Archive a board, call this endpoint, assert ``board_exists``
+    returns True for the slug.
+    """
+    try:
+        res = kanban_db.restore_board(slug)
+    except ValueError as exc:
+        msg = str(exc)
+        # "already exists" → 409 conflict; otherwise 404 (no such archive).
+        status_code = 409 if "already exists" in msg else 404
+        raise HTTPException(status_code=status_code, detail={"error": msg})
+    return {"result": res}
+
+
+@router.delete("/boards/{slug}")
+def delete_board(
+    slug: str,
+    delete: bool = Query(
+        False,
+        description="Hard-delete (destructive) instead of archive. Default = archive.",
+    ),
+    cascade: bool = Query(
+        False,
+        description=(
+            "Archive mode: also archive every non-archived task. "
+            "Hard-delete mode: opt-in to destroy a non-empty board "
+            "(directory + every task, active and archived, are purged)."
+        ),
+    ),
+):
+    """Archive (default) or hard-delete a board.
+
+    Why: Backwards-compatible entry point for the existing dashboard
+    bundle which still emits ``DELETE /boards/{slug}``. New code should
+    prefer ``POST /boards/{slug}/archive`` (explicit) or this endpoint
+    with ``delete=true`` (hard delete; ``cascade=true`` opts in to
+    destroying a non-empty board outright).
+    What: With ``delete=false`` (default) → behaves like the archive
+    endpoint above (cascade rules included). With ``delete=true`` →
+    refuses on a non-empty board unless ``cascade=true``; on success
+    purges every on-disk trace (active dir + every matching
+    ``_archived/<slug>-*/`` entry, including all tasks inside).
+    Test: Try ``delete=true`` on a non-empty board — expect 409 with
+    ``task_count`` in detail. Same call with ``cascade=true`` → 200 and
+    the entire board (active + archived dirs) is removed.
+    """
+    try:
+        normed = kanban_db._normalize_board_slug(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not normed:
+        raise HTTPException(status_code=400, detail="board slug is required")
+    if normed == kanban_db.DEFAULT_BOARD:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "the 'default' board cannot be removed"},
+        )
+
+    if not delete:
+        # Archive path — defer to the explicit archive endpoint logic.
+        return archive_board_endpoint(slug=normed, cascade=cascade)
+
+    # Hard-delete path. Auto-switch to default if it's the active board —
+    # the dashboard always intends to remove the current board, so a 409
+    # here just adds friction. We DON'T do this for the legacy archive
+    # path because archive is the recoverable action.
+    if kanban_db.get_current_board() == normed:
+        kanban_db.set_current_board(kanban_db.DEFAULT_BOARD)
+
+    # Non-empty board requires explicit cascade=true opt-in. The integrity
+    # rule (refuse-by-default) stays intentional — accidental clicks on a
+    # board with content must NOT silently destroy data. Cascade is the
+    # power-user / dashboard-confirmed path.
+    counts = _board_task_status_counts(normed)
+    total = sum(counts.values())
+    if total > 0 and not cascade:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": (
+                    f"board {normed!r} has {total} task(s) (active or archived); "
+                    "pass cascade=true to hard-delete the board AND every "
+                    "task on it (irreversible). Consider archive (POST "
+                    "/boards/{slug}/archive?cascade=true) for a "
+                    "recoverable delete."
+                ),
+                "task_count": total,
+                "counts": counts,
+            },
+        )
+
+    try:
+        res = kanban_db.hard_delete_board(normed)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"error": str(exc)})
     return {"result": res, "current": kanban_db.get_current_board()}
+
+
+@router.post("/tasks/{task_id}/restore")
+def restore_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
+    """Restore an archived task back to status='todo'.
+
+    Why: One-click undo for archived tasks from the dashboard Archive
+    Viewer.
+    What: Calls :func:`kanban_db.restore_task`; refuses (409) if the task
+    isn't currently archived.
+    Test: Archive a task, call this endpoint, assert the task's status
+    is 'todo' afterwards.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        if task.status != "archived":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": (
+                        f"task {task_id} is not archived (current status: "
+                        f"{task.status!r}); nothing to restore"
+                    ),
+                },
+            )
+        ok = kanban_db.restore_task(conn, task_id)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": f"failed to restore task {task_id}"},
+            )
+        updated = kanban_db.get_task(conn, task_id)
+        if updated is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, updated.id, updated.status, updated.created_at,
+            )
+            return {
+                "ok": True,
+                "task": _task_dict(updated, entered_status_at=entered_at),
+            }
+        return {"ok": True, "task": None}
+    finally:
+        conn.close()
 
 
 @router.post("/boards/{slug}/switch")

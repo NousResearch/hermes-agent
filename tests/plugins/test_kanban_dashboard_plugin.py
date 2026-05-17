@@ -1794,3 +1794,168 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_archive_viewer_button_label_matches_upstream():
+    """The top-bar Archive viewer toggle keeps the upstream label "Archive".
+
+    Why: PR #6 (kanban-board-archive-ui) once shipped a duplicate action
+    Archive button next to the viewer toggle, which forced a defensive
+    rename of the viewer toggle to "Archives" (plural). That duplicate
+    action button is now removed from the top toolbar (see commit
+    90450f147, fix/kanban-toolbar-cleanup), so the collision no longer
+    exists and the upstream label is restored.
+    What: Asserts the viewer toggle uses the upstream fallback "Archive"
+    and that the old defensive "Archives" plural is gone from the bundle.
+    Test: Run pytest on this file; the upstream substring must appear and
+    the plural workaround must not.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Viewer toggle: upstream label "Archive" (singular) restored.
+    assert 'tx(t, "showArchive", "Archive")' in js
+    # Defensive plural rename from the duplicate-button era must be gone.
+    assert 'tx(t, "showArchive", "Archives")' not in js
+
+
+def test_dashboard_hard_delete_supports_cascade_query_param():
+    """The hardDeleteBoard callback must thread cascade=true through to the
+    DELETE endpoint so the dashboard can destroy a non-empty board after the
+    user explicitly confirms.
+
+    Why: Issue 1 from the field — clicking [Delete] on a non-empty board
+    used to return 409 with no path forward. The fix lets the UI pass
+    cascade=true after a two-step confirm; the backend retains its
+    integrity rule (refuse-by-default) so a stale UI still can't wipe
+    data silently.
+    What: Asserts the bundle builds the correct query string for both
+    branches (no-cascade vs cascade) and that the click handler routes
+    through the shared confirm helper.
+    Test: Substring checks against the built bundle for the
+    cascade=true URL pattern and the helper name.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # hardDeleteBoard now accepts an opts arg with cascade.
+    assert "function (slug, opts)" in js
+    # Query string includes cascade=true when opted in, default delete=true otherwise.
+    assert '"?delete=true&cascade=true"' in js
+    assert '"?delete=true"' in js
+    # Shared confirm helper exists and routes through onHardDeleteBoard.
+    assert "function confirmAndHardDelete()" in js
+    assert "props.onHardDeleteBoard(props.board, { cascade: true })" in js
+
+
+def test_dashboard_hard_delete_non_empty_uses_two_step_confirm():
+    """Non-empty board hard-delete must require TWO confirms before firing.
+
+    Why: A single misclick on [Delete] used to dead-end at 409; the cure
+    must not over-correct into a single-confirm cascade wipe. The
+    two-step pattern (consequences → "absolutely sure") matches the
+    PM-supplied UX rule for irreversible destructive actions.
+    What: The bundle must contain both confirm copy strings and route
+    through them in sequence; empty boards still use the single-confirm
+    path.
+    Test: Substring checks for the two-step strings and the empty-board
+    fallback copy.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Empty-board single confirm.
+    assert "hardDeleteEmptyBoardConfirm" in js
+    # Non-empty two-step confirms.
+    assert "hardDeleteNonEmptyBoardConfirm" in js
+    assert "hardDeleteNonEmptyBoardConfirm2" in js
+    # Branching on currentTotal so empty boards skip the harsh wording.
+    assert "if (!currentTotal || currentTotal <= 0)" in js
+
+
+def test_dashboard_card_ago_renders_both_through_slash():
+    """Card meta row must ALWAYS render both timeAgo values through a
+    slash when ``entered_status_at`` differs from ``created_at``, even
+    when the two values collapse to the same coarse bucket.
+
+    Why: Earlier iteration hid the "/ second" when the buckets
+    coincided, but the user explicitly requested both values be
+    visible at all times (knowing the task hasn't moved is itself
+    information). The bundle now strips trailing " ago" from each
+    side and appends a single " ago" once at the end so the
+    punctuation reads naturally (e.g. ``"3h / 12m ago"`` instead of
+    ``"3h ago / 12m ago"``).
+    What: Asserts the bundle's render path computes both strings,
+    strips the suffix via a ``stripAgo`` helper, and joins them with
+    ``" / "`` unconditionally whenever ``enteredAgo`` is present.
+    Test: Run pytest on this file; the substring checks below all
+    appear in the bundle exactly as written. If a future refactor
+    inlines the conditional, update these substrings to match.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Both timestamps are still computed locally.
+    assert "const createdAgo = timeAgo ? timeAgo(t.created_at)" in js
+    assert "timeAgo(t.entered_status_at)" in js
+
+    # Suffix-stripping logic: a local helper drops trailing " ago" so
+    # we can re-attach a single one after the join.
+    assert "stripAgo" in js
+    assert '.endsWith(" ago")' in js
+    assert ".slice(0, -4)" in js
+
+    # Both-had-ago branch produces "{cShort} / {eShort} ago" — a single
+    # trailing " ago", with the slash inside.
+    assert '`${cShort} / ${eShort} ago`' in js
+    # Special-string branch (e.g. "just now"/"yesterday") drops the
+    # trailing " ago" entirely.
+    assert '`${cShort} / ${eShort}`' in js
+    # The slash is rendered unconditionally whenever enteredAgo exists,
+    # not gated on bucket inequality.
+    assert "if (!enteredAgo)" in js
+
+
+def test_dashboard_bundle_syntax_valid():
+    """The compiled dashboard bundle must parse as valid JavaScript.
+
+    Why: The dashboard is shipped as a hand-patched IIFE bundle (no build
+    step). A stray inline `function` declaration or missing paren breaks
+    the *entire* plugin: the browser logs `did not call register()` and
+    Kanban tab goes blank. We've shipped that bug at least once (commit
+    0ca782302 inserted a function declaration in argument position), so
+    this guard runs `node --check` on every test run.
+    What: subprocess.run(['node', '--check', bundle]) → exit 0.
+    Test: Introduce a syntax error in dist/index.js → this test fails;
+    fix it → green.
+
+    If `node` is not on PATH (rare CI image), the test skips rather than
+    fails — the syntax check is a belt-and-suspenders guard, not a hard
+    dependency.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node not available; skipping bundle syntax check")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    result = subprocess.run(
+        ["node", "--check", str(bundle)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Bundle syntax error in {bundle}:\n"
+        f"stderr: {result.stderr}\n"
+        f"stdout: {result.stdout}"
+    )

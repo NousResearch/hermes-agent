@@ -166,6 +166,25 @@
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
 
+  // localStorage key controlling the per-browser "Don't ask again" pref
+  // for the card delete confirmation. False by default (we always confirm
+  // because the DELETE endpoint hard-deletes the task + every derived row);
+  // user opts in by ticking the checkbox in the confirm dialog.
+  const LS_SKIP_DELETE_CONFIRM_KEY = "hermes.kanban.skipDeleteConfirm";
+
+  function readSkipDeleteConfirm() {
+    try {
+      return window.localStorage.getItem(LS_SKIP_DELETE_CONFIRM_KEY) === "1";
+    } catch (_e) { return false; }
+  }
+
+  function writeSkipDeleteConfirm(skip) {
+    try {
+      if (skip) window.localStorage.setItem(LS_SKIP_DELETE_CONFIRM_KEY, "1");
+      else window.localStorage.removeItem(LS_SKIP_DELETE_CONFIRM_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
   function readSelectedBoard() {
     try {
       const v = window.localStorage.getItem(LS_BOARD_KEY);
@@ -638,6 +657,28 @@
       });
     }, [loadBoard, board, t]);
 
+    // Hard-delete a task. Optimistic: pull the card off the board immediately,
+    // then call DELETE. On failure, reload to re-instate it so the UI doesn't
+    // lie about state. Drawer closes itself if the deleted task was open.
+    const deleteTask = useCallback(function (taskId) {
+      setBoardData(function (b) {
+        if (!b) return b;
+        const columns = b.columns.map(function (col) {
+          return Object.assign({}, col, {
+            tasks: col.tasks.filter(function (t) { return t.id !== taskId; }),
+          });
+        });
+        return Object.assign({}, b, { columns });
+      });
+      setSelectedTaskId(function (cur) { return cur === taskId ? null : cur; });
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
+        method: "DELETE",
+      }).catch(function (err) {
+        setError(tx(t, "deleteFailed", "Delete failed: ") + (err.message || err));
+        loadBoard();
+      });
+    }, [loadBoard, board, t]);
+
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
       setLastSelectedId(null);
@@ -863,15 +904,108 @@
       });
     }, [loadBoardList, switchBoard, board]);
 
-    const deleteBoard = useCallback(function (slug) {
+    // Board lifecycle: archive (recoverable), hard-delete (zero-task rule),
+    // and restore. Each surface (Archive / Delete / Restore) calls the
+    // matching endpoint, surfaces 409 integrity errors verbatim via the
+    // existing error banner channel, and refreshes the board list on
+    // success. Cascade is plumbed through for the non-empty-archive path.
+    //
+    // Returns a Promise that resolves on success and rejects on failure
+    // so the dialog/button can show inline feedback.
+    const archiveBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
       if (!slug || slug === "default") return Promise.resolve();
-      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
-        method: "DELETE",
-      }).then(function () {
+      const cascade = !!opts.cascade;
+      const qs = cascade ? "?cascade=true" : "";
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}/archive${qs}`, {
+        method: "POST",
+      }).then(function (res) {
+        // Optimistic: drop the archived slug from the switcher immediately
+        // so the user never sees it after a confirmed action, even if the
+        // subsequent /boards refetch races with a stale state slot.
+        setBoardList(function (prev) {
+          return (prev || []).filter(function (b) { return b.slug !== slug; });
+        });
         loadBoardList();
         if (board === slug) switchBoard("default");
+        return res;
+      }).catch(function (err) {
+        // Surface 409 integrity errors with the server-provided text.
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "archiveBoardFailed", "Archive failed: ") + msg);
+        throw err;
       });
-    }, [board, loadBoardList, switchBoard]);
+    }, [board, loadBoardList, switchBoard, t]);
+
+    // Hard-delete with optional cascade. Cascade is the explicit opt-in for
+    // destroying a non-empty board (active + archived tasks); without it the
+    // backend returns 409 so the user can't wipe data with a single misclick.
+    // Why: see Issue 1 — clicking [Delete] on a non-empty board used to dead-
+    // end at the 409 banner with no way forward.
+    const hardDeleteBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
+      if (!slug || slug === "default") return Promise.resolve();
+      const cascade = !!opts.cascade;
+      const qs = cascade ? "?delete=true&cascade=true" : "?delete=true";
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}${qs}`, {
+        method: "DELETE",
+      }).then(function (res) {
+        // Optimistic: drop the deleted slug from the switcher immediately
+        // (same rationale as archiveBoard — prevents a stale entry from
+        // lingering between the DELETE response and the /boards refetch).
+        setBoardList(function (prev) {
+          return (prev || []).filter(function (b) { return b.slug !== slug; });
+        });
+        loadBoardList();
+        if (board === slug) switchBoard("default");
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "deleteBoardFailed", "Delete failed: ") + msg);
+        throw err;
+      });
+    }, [board, loadBoardList, switchBoard, t]);
+
+    const restoreBoard = useCallback(function (slug) {
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}/restore`, {
+        method: "POST",
+      }).then(function (res) {
+        loadBoardList();
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "restoreBoardFailed", "Restore failed: ") + msg);
+        throw err;
+      });
+    }, [loadBoardList, t]);
+
+    const restoreTask = useCallback(function (taskId, taskBoard) {
+      const qs = taskBoard ? `?board=${encodeURIComponent(taskBoard)}` : "";
+      return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}/restore${qs}`, {
+        method: "POST",
+      }).then(function (res) {
+        loadBoard();
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "restoreTaskFailed", "Restore failed: ") + msg);
+        throw err;
+      });
+    }, [loadBoard, t]);
+
+    // Back-compat: keep `deleteBoard` as a default-archive entrypoint so
+    // existing call sites work. Shift-click + button copy below give the
+    // user the explicit hard-delete affordance.
+    const deleteBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
+      if (opts.hardDelete) return hardDeleteBoard(slug);
+      return archiveBoard(slug, { cascade: !!opts.cascade });
+    }, [archiveBoard, hardDeleteBoard]);
+
+    // Archive Viewer state — toggles a separate panel that lists archived
+    // boards + tasks with per-row restore buttons. Hidden by default so
+    // the main board view stays the focus.
+    const [showArchive, setShowArchive] = useState(false);
 
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
@@ -901,7 +1035,19 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
+          onHardDeleteBoard: hardDeleteBoard,
+          onArchiveBoard: archiveBoard,
+          showArchive: showArchive,
+          onToggleArchive: function () { setShowArchive(function (v) { return !v; }); },
         }),
+        showArchive ? h(ArchiveViewer, {
+          currentBoard: board,
+          onRestoreBoard: restoreBoard,
+          onRestoreTask: restoreTask,
+          onArchiveBoard: archiveBoard,
+          onHardDeleteBoard: hardDeleteBoard,
+          onClose: function () { setShowArchive(false); },
+        }) : null,
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
           onCreate: function (payload) {
@@ -947,6 +1093,7 @@
           selectAllInColumn,
           onMove: moveTask,
           onMoveSelected: moveSelected,
+          onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1415,6 +1562,38 @@
       );
     }
 
+    // Hard-delete UX (shared by shift-Archive and Delete):
+    //   * Empty board (currentTotal === 0) — single confirm, fire.
+    //   * Non-empty board — TWO confirms: first describes the consequences
+    //     and recommends Archive; second is the "absolutely sure" gate.
+    //     Only then does the call go through with cascade=true. The backend
+    //     integrity rule (refuse-by-default on non-empty boards) stays
+    //     intact — even an outdated UI can't wipe data without cascade.
+    function confirmAndHardDelete() {
+      if (!props.onHardDeleteBoard) return;
+      // Backend auto-switches to default when hard-deleting the active
+      // board; frontend's post-success switchBoard in hardDeleteBoard
+      // handles UI state. No pre-switch needed (double-switch hangs load).
+      if (!currentTotal || currentTotal <= 0) {
+        const msg = tx(t, "hardDeleteEmptyBoardConfirm",
+          "Delete empty board '{name}'? This removes the directory permanently.",
+          { name: currentName });
+        if (window.confirm(msg)) {
+          props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
+        }
+        return;
+      }
+      const msg1 = tx(t, "hardDeleteNonEmptyBoardConfirm",
+        "Board '{name}' has {n} task(s). This will PERMANENTLY delete the board AND every task on it (active + archived). This cannot be undone. Consider Archive instead. Proceed with hard delete?",
+        { name: currentName, n: String(currentTotal) });
+      if (!window.confirm(msg1)) return;
+      const msg2 = tx(t, "hardDeleteNonEmptyBoardConfirm2",
+        "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
+        { name: currentName, n: String(currentTotal) });
+      if (!window.confirm(msg2)) return;
+      props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
+    }
+
     return h("div", { className: "hermes-kanban-boardswitcher" },
       h("div", { className: "hermes-kanban-boardswitcher-inner" },
         h("div", { className: "flex flex-col gap-0.5" },
@@ -1446,20 +1625,240 @@
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        props.board !== "default"
-          ? h(Button, {
-            onClick: function () {
-              const msg = tx(t, "archiveBoardConfirm",
-                "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
-                { name: currentName });
-              if (window.confirm(msg)) props.onDeleteBoard(props.board);
-            },
-            size: "sm",
-            className: "h-8",
-            title: tx(t, "archiveBoardTitle", "Archive this board"),
-          }, tx(t, "archive", "Archive"))
-          : null,
+        // Archive viewer toggle. No Delete button on toolbar — destructive
+        // hard-delete is now only reachable on already-archived boards from
+        // inside the Archive panel (workflow: Archive → review → Delete).
+        h(Button, {
+          onClick: function () { if (props.onToggleArchive) props.onToggleArchive(); },
+          size: "sm",
+          className: "h-8",
+          title: tx(t, "archiveViewTitle",
+            "Show archived boards and tasks (restore or hard-delete from here)"),
+        }, props.showArchive
+          ? tx(t, "hideArchive", "Hide archive")
+          : tx(t, "showArchive", "Archive")),
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Archive Viewer — separate panel that lists every archived board
+  // (from boards/_archived/) plus every archived task on the current
+  // board, with per-row Restore buttons. Toggled from BoardSwitcher.
+  //
+  // Two parallel fetches on mount:
+  //   GET /boards/archived              — archived board dirs
+  //   GET /tasks/archived?board=<slug>  — archived tasks on the current
+  //                                       board (avoids fan-out across
+  //                                       every active board)
+  //
+  // Restore failures bubble up as alert() so the user sees the integrity
+  // error (e.g. trying to restore a board whose slug collides with an
+  // already-active one).
+  // ---------------------------------------------------------------------
+  function ArchiveViewer(props) {
+    const { t } = useI18n();
+    const [boards, setBoards] = useState([]);
+    const [tasks, setTasks] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [reloadTick, setReloadTick] = useState(0);
+    const [allBoards, setAllBoards] = useState(false);
+
+    useEffect(function () {
+      let cancelled = false;
+      setLoading(true);
+      const boardsUrl = `${API}/boards/archived`;
+      const tasksUrl = allBoards
+        ? `${API}/tasks/archived?all_boards=true`
+        : `${API}/tasks/archived?board=${encodeURIComponent(props.currentBoard || "default")}`;
+      Promise.all([
+        SDK.fetchJSON(boardsUrl).catch(function () { return { archived_boards: [] }; }),
+        SDK.fetchJSON(tasksUrl).catch(function () { return { archived_tasks: [] }; }),
+      ]).then(function (results) {
+        if (cancelled) return;
+        setBoards(results[0].archived_boards || []);
+        setTasks(results[1].archived_tasks || []);
+        setLoading(false);
+      });
+      return function () { cancelled = true; };
+    }, [props.currentBoard, allBoards, reloadTick]);
+
+    function handleRestoreBoard(slug) {
+      const msg = tx(t, "restoreBoardConfirm",
+        "Restore archived board '{slug}'?", { slug: slug });
+      if (!window.confirm(msg)) return;
+      props.onRestoreBoard(slug)
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "restoreBoardFailedAlert", "Restore failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    function handleArchiveCurrentBoard() {
+      if (!props.onArchiveBoard) return;
+      const slug = props.currentBoard;
+      if (!slug || slug === "default") {
+        alert(tx(t, "cannotArchiveDefault",
+          "Cannot archive the 'default' board. Switch to another board first."));
+        return;
+      }
+      const msg = tx(t, "archiveBoardConfirm",
+        "Archive board '{slug}'? It will move to the archive list below " +
+        "(recoverable). All its tasks (active + archived) move with it.",
+        { slug: slug });
+      if (!window.confirm(msg)) return;
+      props.onArchiveBoard(slug, { cascade: true })
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "archiveBoardFailedAlert", "Archive failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    function handleHardDeleteArchivedBoard(slug) {
+      if (!props.onHardDeleteBoard) return;
+      const msg1 = tx(t, "hardDeleteArchivedConfirm",
+        "PERMANENTLY delete archived board '{slug}'? This wipes its " +
+        "directory from disk — cannot be undone.", { slug: slug });
+      if (!window.confirm(msg1)) return;
+      const msg2 = tx(t, "hardDeleteArchivedConfirm2",
+        "ABSOLUTELY SURE? Board '{slug}' and every task in it will be " +
+        "gone forever.", { slug: slug });
+      if (!window.confirm(msg2)) return;
+      props.onHardDeleteBoard(slug, { cascade: true })
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "hardDeleteArchivedFailedAlert",
+            "Delete failed: ") + (err && err.message ? err.message : err));
+        });
+    }
+
+    function handleRestoreTask(taskId, taskBoard) {
+      props.onRestoreTask(taskId, taskBoard)
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "restoreTaskFailedAlert", "Restore failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    return h("div", { className: "hermes-kanban-archive-viewer p-4 border rounded" },
+      h("div", { className: "flex items-center gap-3 mb-3" },
+        h("div", { className: "font-medium text-sm" },
+          tx(t, "archiveViewer", "Archive")),
+        h("div", { className: "flex-1" }),
+        h("label", { className: "text-xs flex items-center gap-1" },
+          h("input", {
+            type: "checkbox",
+            checked: allBoards,
+            onChange: function (e) { setAllBoards(!!e.target.checked); },
+          }),
+          tx(t, "tasksAllBoards", "Tasks from all boards"),
+        ),
+        h(Button, {
+          size: "sm",
+          onClick: function () { setReloadTick(function (v) { return v + 1; }); },
+          title: tx(t, "refresh", "Refresh"),
+        }, tx(t, "refresh", "Refresh")),
+        // ToArchive — archives the currently active board (moves it into
+        // the list below). Hidden for the default board (can't be archived).
+        props.currentBoard && props.currentBoard !== "default"
+          ? h(Button, {
+            size: "sm",
+            onClick: handleArchiveCurrentBoard,
+            title: tx(t, "archiveCurrentBoardTitle",
+              "Move the currently active board into the archive"),
+          }, tx(t, "toArchive", "ToArchive"))
+          : null,
+        h(Button, {
+          size: "sm",
+          onClick: props.onClose,
+          title: tx(t, "closeArchive", "Close archive view"),
+        }, tx(t, "close", "Close")),
+      ),
+      loading
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(t, "loadingArchive", "Loading archive…"))
+        : h("div", { className: "flex flex-col gap-4" },
+          // Boards section
+          h("div", null,
+            h("div", { className: "text-xs uppercase text-muted-foreground mb-1" },
+              tx(t, "archivedBoards", "Archived boards"),
+              " (", String(boards.length), ")",
+            ),
+            boards.length === 0
+              ? h("div", { className: "text-xs text-muted-foreground italic" },
+                  tx(t, "noArchivedBoards", "No archived boards."))
+              : h("div", { className: "flex flex-col gap-1" },
+                boards.map(function (b) {
+                  const ts = b.archived_at
+                    ? new Date(b.archived_at * 1000).toLocaleString()
+                    : tx(t, "unknown", "unknown");
+                  return h("div", {
+                    key: b.archived_dir,
+                    className: "flex items-center gap-2 text-xs border rounded px-2 py-1",
+                  },
+                    h("span", { className: "font-mono" }, b.slug),
+                    h("span", { className: "text-muted-foreground" },
+                      `· ${b.total || 0} task${b.total === 1 ? "" : "s"} · ${ts}`),
+                    h("div", { className: "flex-1" }),
+                    h(Button, {
+                      size: "sm",
+                      disabled: !b.can_restore,
+                      title: b.can_restore
+                        ? tx(t, "restoreBoardTitle", "Restore this board")
+                        : tx(t, "restoreCollisionTitle",
+                          "An active board with this slug already exists"),
+                      onClick: function () { handleRestoreBoard(b.slug); },
+                    }, tx(t, "restore", "Restore")),
+                    // Per-row Delete — hard-deletes this archived board
+                    // permanently (wipes its _archived/<slug>-<ts>/ dir).
+                    // Two confirms in handleHardDeleteArchivedBoard.
+                    h(Button, {
+                      size: "sm",
+                      className: "hermes-kanban-board-delete",
+                      title: tx(t, "hardDeleteArchivedTitle",
+                        "Permanently delete this archived board"),
+                      onClick: function () { handleHardDeleteArchivedBoard(b.slug); },
+                    }, tx(t, "delete", "Delete")),
+                  );
+                }),
+              ),
+          ),
+          // Tasks section
+          h("div", null,
+            h("div", { className: "text-xs uppercase text-muted-foreground mb-1" },
+              tx(t, "archivedTasks", "Archived tasks"),
+              " (", String(tasks.length), ")",
+            ),
+            tasks.length === 0
+              ? h("div", { className: "text-xs text-muted-foreground italic" },
+                  tx(t, "noArchivedTasks", "No archived tasks on this board."))
+              : h("div", { className: "flex flex-col gap-1" },
+                tasks.map(function (tk) {
+                  return h("div", {
+                    key: (tk.board_slug || "default") + "::" + tk.id,
+                    className: "flex items-center gap-2 text-xs border rounded px-2 py-1",
+                  },
+                    h("span", { className: "font-mono text-muted-foreground" },
+                      tk.id.slice(0, 8)),
+                    h("span", { className: "truncate flex-1" }, tk.title),
+                    allBoards
+                      ? h("span", { className: "text-muted-foreground" },
+                          "[" + (tk.board_slug || "default") + "]")
+                      : null,
+                    h(Button, {
+                      size: "sm",
+                      title: tx(t, "restoreTaskTitle",
+                        "Restore this task to 'todo' status"),
+                      onClick: function () { handleRestoreTask(tk.id, tk.board_slug); },
+                    }, tx(t, "restore", "Restore")),
+                  );
+                }),
+              ),
+          ),
+        ),
     );
   }
 
@@ -1816,6 +2215,7 @@
           selectAllInColumn: props.selectAllInColumn,
           onMove: props.onMove,
           onMoveSelected: props.onMoveSelected,
+          onDelete: props.onDelete,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
@@ -1948,6 +2348,7 @@
                       draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
+                      onDelete: props.onDelete,
                       onOpen: props.onOpen,
                     });
                   }),
@@ -1962,9 +2363,86 @@
                   draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
+                  onDelete: props.onDelete,
                   onOpen: props.onOpen,
                 });
               }),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Confirm-delete dialog
+  //
+  // Lightweight modal used by the card's trash icon. We can't use
+  // ``window.confirm`` because we need a "Don't ask again" checkbox to
+  // persist the user's preference into LS_SKIP_DELETE_CONFIRM_KEY. Click
+  // the shade or hit Escape to cancel.
+  // -------------------------------------------------------------------------
+
+  function DeleteConfirmDialog(props) {
+    const { t: i18n } = useI18n();
+    const [skipFuture, setSkipFuture] = useState(false);
+
+    useEffect(function () {
+      function onKey(e) {
+        if (e.key === "Escape") { e.preventDefault(); props.onCancel(); }
+        else if (e.key === "Enter") { e.preventDefault(); confirm(); }
+      }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [props.onCancel]);
+
+    function confirm() {
+      if (skipFuture) writeSkipDeleteConfirm(true);
+      props.onConfirm();
+    }
+
+    const title = props.task && (props.task.title || props.task.id);
+
+    return h("div", {
+      className: "hermes-kanban-confirm-shade",
+      onClick: function (e) {
+        // Click on shade (not bubbled from dialog) cancels.
+        if (e.target === e.currentTarget) props.onCancel();
+      },
+    },
+      h("div", {
+        className: "hermes-kanban-confirm-dialog",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "hermes-kanban-confirm-title",
+      },
+        h("div", { id: "hermes-kanban-confirm-title", className: "hermes-kanban-confirm-title" },
+          tx(i18n, "deleteTaskTitle", "Delete task?")),
+        h("div", { className: "hermes-kanban-confirm-body" },
+          h("div", { className: "hermes-kanban-confirm-message" },
+            tx(i18n, "deleteTaskWarning",
+               "This permanently removes the task, its comments, events, and run history. This cannot be undone.")),
+          title ? h("div", { className: "hermes-kanban-confirm-target" },
+            title) : null,
+        ),
+        h("label", { className: "hermes-kanban-confirm-skip" },
+          h("input", {
+            type: "checkbox",
+            checked: skipFuture,
+            onChange: function (e) { setSkipFuture(e.target.checked); },
+          }),
+          h("span", null, tx(i18n, "deleteTaskDontAsk", "Don't ask again")),
+        ),
+        h("div", { className: "hermes-kanban-confirm-actions" },
+          h(Button, {
+            variant: "outline",
+            size: "sm",
+            onClick: props.onCancel,
+          }, tx(i18n, "cancel", "Cancel")),
+          h(Button, {
+            size: "sm",
+            className: "hermes-kanban-confirm-delete-btn",
+            onClick: confirm,
+          }, tx(i18n, "delete", "Delete")),
+        ),
       ),
     );
   }
@@ -1998,10 +2476,24 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
     useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
     }, [t.id]);
+
+    const handleTrashClick = function (e) {
+      // Stop bubbling so the card's onClick doesn't open the drawer.
+      // Also disable native drag start while the dialog is open.
+      e.stopPropagation();
+      e.preventDefault();
+      if (!props.onDelete) return;
+      if (readSkipDeleteConfirm()) {
+        props.onDelete(t.id);
+      } else {
+        setConfirmOpen(true);
+      }
+    };
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
@@ -2050,7 +2542,16 @@
     const progress = t.progress;
     const needsAssignee = t.status === "ready" && !t.assignee;
 
-    return h("div", {
+    return h(React.Fragment, null,
+      confirmOpen ? h(DeleteConfirmDialog, {
+        task: t,
+        onCancel: function () { setConfirmOpen(false); },
+        onConfirm: function () {
+          setConfirmOpen(false);
+          if (props.onDelete) props.onDelete(t.id);
+        },
+      }) : null,
+      h("div", {
       ref: cardRef,
       "data-task-id": t.id,
       className: cn(
@@ -2126,6 +2627,37 @@
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
               : null,
+            props.onDelete ? h("button", {
+              type: "button",
+              className: "hermes-kanban-trash-btn",
+              title: tx(i18n, "deleteTaskHint",
+                        "Delete this task and all its history (irreversible)"),
+              "aria-label": tx(i18n, "deleteTaskAria",
+                               "Delete task ") + t.id,
+              onClick: handleTrashClick,
+              // Prevent the card's native drag from arming when the user
+              // started the gesture on the trash button.
+              onMouseDown: function (e) { e.stopPropagation(); },
+              onDragStart: function (e) { e.preventDefault(); e.stopPropagation(); },
+            },
+              h("svg", {
+                viewBox: "0 0 16 16",
+                width: "14", height: "14",
+                fill: "none",
+                stroke: "currentColor",
+                strokeWidth: "1.5",
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                "aria-hidden": "true",
+              },
+                // Trash bin: lid, body, two vertical stripes.
+                h("path", { d: "M2.5 4h11" }),
+                h("path", { d: "M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4" }),
+                h("path", { d: "M4.5 4l.5 9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9" }),
+                h("path", { d: "M7 7v5" }),
+                h("path", { d: "M9 7v5" }),
+              ),
+            ) : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
@@ -2147,11 +2679,46 @@
                             title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
-            h("span", { className: "hermes-kanban-ago",
-                        title: t.created_at ? `Created ${t.created_at}` : "" },
-              timeAgo ? timeAgo(t.created_at) : ""),
+            (function () {
+              // "created / in-stage" age. ALWAYS render both timestamps
+              // through a slash when entered_status_at differs from
+              // created_at — even if timeAgo() collapses them to the
+              // same coarse bucket (e.g. "3h / 3h ago"). User explicitly
+              // requested both values visible: knowing the task entered
+              // the current stage in the same hour-bucket as creation
+              // is itself information ("hasn't moved yet"). We strip
+              // the trailing " ago" from each side and re-append a
+              // single " ago" at the end so the punctuation reads
+              // naturally. Special strings like "just now" / "yesterday"
+              // don't carry the " ago" suffix — we render them as-is
+              // and skip the trailing " ago" if either side lacks it.
+              // Tooltip retains both raw timestamps unchanged.
+              const createdAgo = timeAgo ? timeAgo(t.created_at) : "";
+              const enteredAgo = (timeAgo && t.entered_status_at && t.entered_status_at !== t.created_at)
+                ? timeAgo(t.entered_status_at)
+                : null;
+              let text;
+              if (!enteredAgo) {
+                // No second timestamp (status never advanced past creation)
+                // — preserve legacy single-value rendering.
+                text = createdAgo;
+              } else {
+                const stripAgo = (s) => (s && s.endsWith(" ago") ? s.slice(0, -4) : s);
+                const cShort = stripAgo(createdAgo);
+                const eShort = stripAgo(enteredAgo);
+                const bothHadAgo = createdAgo.endsWith(" ago") && enteredAgo.endsWith(" ago");
+                text = bothHadAgo
+                  ? `${cShort} / ${eShort} ago`
+                  : `${cShort} / ${eShort}`;
+              }
+              const title = t.entered_status_at && t.entered_status_at !== t.created_at
+                ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
+                : (t.created_at ? `Created ${t.created_at}` : "");
+              return h("span", { className: "hermes-kanban-ago", title }, text);
+            })(),
           ),
         ),
+      ),
       ),
     );
   }
@@ -2312,6 +2879,15 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Drawer collapse — when true, the modal shade + body disappear and a
+    // thin right-edge handle takes their place so the user can keep the
+    // task "pinned" while still reading the board behind it. Click the
+    // handle (or the chevron in the head) to restore. Reset every time
+    // the drawer is opened for a different task so the user always gets
+    // the full UI for a fresh open. Persisting across reloads would be
+    // surprising — leave it ephemeral.
+    const [collapsed, setCollapsed] = useState(false);
+    useEffect(function () { setCollapsed(false); }, [props.taskId]);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -2461,6 +3037,40 @@
         });
     };
 
+    // Collapsed view: a thin vertical handle pinned to the right edge.
+    // The shade is omitted so clicks on the board pass through. Click the
+    // handle anywhere to restore the full drawer; click ✕ inside the handle
+    // to close entirely (same as Escape in the expanded view).
+    if (collapsed) {
+      const previewTitle = (data && data.task && data.task.title) || props.taskId;
+      return h("div", {
+        className: "hermes-kanban-drawer-handle",
+        role: "button",
+        tabIndex: 0,
+        title: tx(t, "drawerExpandHint", "Expand task drawer"),
+        onClick: function () { setCollapsed(false); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setCollapsed(false);
+          }
+        },
+      },
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-drawer-handle-close",
+          title: tx(t, "close", "Close (Esc)"),
+          "aria-label": tx(t, "close", "Close (Esc)"),
+          onClick: function (e) { e.stopPropagation(); props.onClose(); },
+        }, "×"),
+        h("span", {
+          className: "hermes-kanban-drawer-handle-chevron",
+          "aria-hidden": "true",
+        }, "‹"),
+        h("span", { className: "hermes-kanban-drawer-handle-title" }, previewTitle),
+      );
+    }
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -2468,6 +3078,14 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
+          h("button", {
+            type: "button",
+            onClick: function () { setCollapsed(true); },
+            className: "hermes-kanban-drawer-collapse",
+            title: tx(t, "drawerCollapseHint",
+                      "Collapse to right edge — keep this task pinned while reading the board"),
+            "aria-label": tx(t, "drawerCollapseAria", "Collapse drawer"),
+          }, "›"),
           h("button", {
             type: "button",
             onClick: props.onClose,

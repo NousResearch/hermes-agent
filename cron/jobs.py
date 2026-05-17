@@ -19,6 +19,11 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Hermes requires Python 3.9+
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
@@ -44,6 +49,55 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _load_schedule_timezone(timezone_name: Optional[str], *, strict: bool = False) -> Optional[ZoneInfo]:
+    """Return a ZoneInfo for a schedule-level timezone.
+
+    CRON_TZ/TZ is job data, so parsing should reject invalid names while
+    runtime computation should avoid crashing the scheduler if a persisted job
+    was hand-edited incorrectly.
+    """
+    if not timezone_name:
+        return None
+    name = str(timezone_name).strip()
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except Exception as exc:
+        message = f"Invalid timezone {name!r} in cron schedule"
+        if strict:
+            raise ValueError(f"{message}: {exc}") from exc
+        logger.warning("%s; falling back to Hermes timezone", message)
+        return None
+
+
+def _split_cron_timezone_prefix(schedule: str) -> tuple[str, Optional[str]]:
+    """Split a leading CRON_TZ=/TZ= prefix from a schedule string."""
+    match = re.match(r"^(?:CRON_TZ|TZ)=([^\s]+)\s+(.+)$", schedule, flags=re.IGNORECASE)
+    if not match:
+        return schedule, None
+    timezone_name = match.group(1).strip()
+    cron_expr = match.group(2).strip()
+    _load_schedule_timezone(timezone_name, strict=True)
+    return cron_expr, timezone_name
+
+
+def _cron_base_time(schedule: Dict[str, Any], base_time: datetime) -> datetime:
+    """Return the croniter base time in the schedule's wall-clock timezone."""
+    schedule_tz = _load_schedule_timezone(schedule.get("timezone"))
+    if schedule_tz is None:
+        return base_time
+    return _ensure_aware(base_time).astimezone(schedule_tz)
+
+
+def _cron_result_time(schedule: Dict[str, Any], next_run: datetime, output_tz) -> datetime:
+    """Convert a croniter result back to Hermes scheduler timezone."""
+    schedule_tz = _load_schedule_timezone(schedule.get("timezone"))
+    if schedule_tz is None:
+        return next_run
+    return _ensure_aware(next_run).astimezone(output_tz)
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -204,10 +258,13 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     schedule = schedule.strip()
     original = schedule
+    schedule, schedule_timezone = _split_cron_timezone_prefix(schedule)
     schedule_lower = schedule.lower()
     
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
+        if schedule_timezone:
+            raise ValueError("CRON_TZ/TZ prefixes are only supported for cron expressions")
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
         return {
@@ -229,12 +286,17 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             croniter(schedule)
         except Exception as e:
             raise ValueError(f"Invalid cron expression '{schedule}': {e}")
-        return {
+        result = {
             "kind": "cron",
             "expr": schedule,
-            "display": schedule
+            "display": original,
         }
-    
+        if schedule_timezone:
+            result["timezone"] = schedule_timezone
+        return result
+    if schedule_timezone:
+        raise ValueError("CRON_TZ/TZ prefixes are only supported for valid cron expressions")
+
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
@@ -338,7 +400,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
 
     if kind == "cron" and HAS_CRONITER:
         try:
-            now = _hermes_now()
+            now = _cron_base_time(schedule, _hermes_now())
             cron = croniter(schedule["expr"], now)
             first = cron.get_next(datetime)
             second = cron.get_next(datetime)
@@ -390,9 +452,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(schedule["expr"], _cron_base_time(schedule, base_time))
         next_run = cron.get_next(datetime)
-        return next_run.isoformat()
+        return _cron_result_time(schedule, next_run, now.tzinfo).isoformat()
 
     return None
 

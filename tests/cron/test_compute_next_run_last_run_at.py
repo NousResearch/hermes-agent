@@ -85,3 +85,25 @@ class TestCronComputeNextRunUsesLastRunAt:
         interval_dt = datetime.fromisoformat(interval_result)
         assert cron_dt > last_run, f"Cron next {cron_dt} should be after last_run {last_run}"
         assert interval_dt > last_run, f"Interval next {interval_dt} should be after last_run {last_run}"
+
+    def test_cron_timezone_uses_last_run_in_schedule_timezone_and_returns_hermes_timezone(self, monkeypatch):
+        """CRON_TZ jobs should compute in their own wall-clock timezone.
+
+        The stored last_run_at is in Hermes/Bangkok time.  The next execution
+        must be the next 08:45 America/New_York market-time slot, returned in
+        Hermes/Bangkok time for the scheduler.
+        """
+        bangkok = ZoneInfo("Asia/Bangkok")
+        last_run = datetime(2026, 5, 15, 19, 57, 0, tzinfo=bangkok)
+        now = datetime(2026, 5, 17, 16, 0, 0, tzinfo=bangkok)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {
+            "kind": "cron",
+            "expr": "45 8 * * 1-5",
+            "timezone": "America/New_York",
+        }
+
+        result = compute_next_run(schedule, last_run_at=last_run.isoformat())
+
+        assert result == "2026-05-18T19:45:00+07:00"

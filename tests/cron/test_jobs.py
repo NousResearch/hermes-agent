@@ -6,6 +6,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from cron.jobs import (
     parse_duration,
@@ -99,6 +100,19 @@ class TestParseSchedule:
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
 
+    def test_cron_tz_prefix_preserves_timezone(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("CRON_TZ=America/New_York 45 8 * * 1-5")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "45 8 * * 1-5"
+        assert result["timezone"] == "America/New_York"
+        assert result["display"] == "CRON_TZ=America/New_York 45 8 * * 1-5"
+
+    def test_cron_tz_prefix_rejects_invalid_timezone(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError, match="Invalid timezone"):
+            parse_schedule("CRON_TZ=Not/AZone 0 9 * * *")
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"
@@ -171,6 +185,23 @@ class TestComputeNextRun:
         next_dt = datetime.fromisoformat(result)
         assert isinstance(next_dt, datetime)
         assert next_dt > datetime.now().astimezone()
+
+    def test_cron_with_timezone_returns_next_run_in_hermes_timezone(self, monkeypatch):
+        pytest.importorskip("croniter")
+        bangkok = ZoneInfo("Asia/Bangkok")
+        now = datetime(2026, 5, 17, 16, 0, tzinfo=bangkok)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {
+            "kind": "cron",
+            "expr": "45 8 * * 1-5",
+            "timezone": "America/New_York",
+        }
+
+        result = compute_next_run(schedule)
+
+        # Monday 08:45 in New York during EDT is Monday 19:45 in Bangkok.
+        assert result == "2026-05-18T19:45:00+07:00"
 
     def test_unknown_kind_returns_none(self):
         assert compute_next_run({"kind": "unknown"}) is None

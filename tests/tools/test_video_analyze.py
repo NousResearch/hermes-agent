@@ -158,7 +158,7 @@ class TestHandleVideoAnalyze:
             args = mock_tool.call_args[0]
             assert args[2] == "google/gemini-2.5-flash"
 
-    def test_falls_back_to_vision_model_env(self, tmp_path, monkeypatch):
+    def test_does_not_fall_back_to_vision_model_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "google/gemini-flash")
 
@@ -168,7 +168,7 @@ class TestHandleVideoAnalyze:
                 _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
             )
             args = mock_tool.call_args[0]
-            assert args[2] == "google/gemini-flash"
+            assert args[2] is None
 
 
 # ---------------------------------------------------------------------------

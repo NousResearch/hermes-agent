@@ -13,14 +13,24 @@ import pytest
 from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
+    _handle_video_analyze,
+    _handle_audio_analyze,
     _determine_mime_type,
+    _detect_audio_mime_type,
+    _download_audio,
+    _download_video,
+    _audio_to_base64_data_url,
     _image_to_base64_data_url,
     _resize_image_for_vision,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
+    video_analyze_tool,
+    audio_analyze_tool,
     check_vision_requirements,
+    check_video_requirements,
+    check_audio_requirements,
 )
 
 
@@ -426,6 +436,226 @@ class TestVisionConfig:
         assert mock_llm.await_args.kwargs["timeout"] == 120.0
 
 
+class TestMediaAuxiliaryConfig:
+    @pytest.mark.asyncio
+    async def test_video_analyze_uses_video_task_config(self, tmp_path):
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"fake mp4 bytes")
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Configured video analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={
+                "auxiliary": {"video": {"temperature": 0.2, "timeout": 333}}
+            }),
+            patch(
+                "tools.vision_tools._video_to_base64_data_url",
+                return_value="data:video/mp4;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await video_analyze_tool(str(video), "describe this", "test/model"))
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["task"] == "video"
+        assert mock_llm.await_args.kwargs["temperature"] == 0.2
+        assert mock_llm.await_args.kwargs["timeout"] == 333.0
+        content = mock_llm.await_args.kwargs["messages"][0]["content"]
+        assert content[1]["type"] == "video_url"
+
+    @pytest.mark.asyncio
+    async def test_oversized_local_video_rejected_before_encoding(self, tmp_path):
+        video = tmp_path / "huge.mp4"
+        video.write_bytes(b"x" * 32)
+
+        with (
+            patch("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 10),
+            patch("tools.vision_tools._video_to_base64_data_url") as mock_b64,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm,
+        ):
+            result = json.loads(await video_analyze_tool(str(video), "describe"))
+
+        assert result["success"] is False
+        assert "too large" in result["error"].lower()
+        mock_b64.assert_not_called()
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_video_download_stream_enforces_size_limit(self, tmp_path):
+        class FakeResponse:
+            headers = {}
+            url = "https://example.com/video.mp4"
+            is_redirect = False
+            next_request = None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"123456"
+                yield b"789012"
+
+        class FakeStream:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, *args, **kwargs):
+                return FakeStream()
+
+        dest = tmp_path / "download.mp4"
+        with (
+            patch("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=FakeClient()),
+            pytest.raises(ValueError, match="Video too large"),
+        ):
+            await _download_video("https://example.com/video.mp4", dest, max_retries=1)
+
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
+    async def test_audio_analyze_uses_audio_task_config(self, tmp_path):
+        audio = tmp_path / "tone.wav"
+        audio.write_bytes(b"RIFF" + b"\x00" * 32)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Configured audio analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={
+                "auxiliary": {"audio": {"temperature": 0.3, "timeout": 444}}
+            }),
+            patch(
+                "tools.vision_tools._audio_to_base64_data_url",
+                return_value="data:audio/wav;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await audio_analyze_tool(str(audio), "what is this", "test/model"))
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["task"] == "audio"
+        assert mock_llm.await_args.kwargs["temperature"] == 0.3
+        assert mock_llm.await_args.kwargs["timeout"] == 444.0
+        content = mock_llm.await_args.kwargs["messages"][0]["content"]
+        assert content[1]["type"] == "audio_url"
+
+    def test_audio_mime_and_data_url(self, tmp_path):
+        audio = tmp_path / "voice.mp3"
+        audio.write_bytes(b"abc")
+        assert _detect_audio_mime_type(audio) == "audio/mpeg"
+        assert _audio_to_base64_data_url(audio).startswith("data:audio/mpeg;base64,")
+
+    @pytest.mark.asyncio
+    async def test_oversized_local_audio_rejected_before_encoding(self, tmp_path):
+        audio = tmp_path / "huge.mp3"
+        audio.write_bytes(b"x" * 32)
+
+        with (
+            patch("tools.vision_tools._MAX_AUDIO_BASE64_BYTES", 10),
+            patch("tools.vision_tools._audio_to_base64_data_url") as mock_b64,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm,
+        ):
+            result = json.loads(await audio_analyze_tool(str(audio), "describe"))
+
+        assert result["success"] is False
+        assert "too large" in result["error"].lower()
+        mock_b64.assert_not_called()
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_audio_download_stream_enforces_size_limit(self, tmp_path):
+        class FakeResponse:
+            headers = {}
+            url = "https://example.com/audio.mp3"
+            is_redirect = False
+            next_request = None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"123456"
+                yield b"789012"
+
+        class FakeStream:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, *args, **kwargs):
+                return FakeStream()
+
+        dest = tmp_path / "download.mp3"
+        with (
+            patch("tools.vision_tools._MAX_AUDIO_BASE64_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=FakeClient()),
+            pytest.raises(ValueError, match="Audio too large"),
+        ):
+            await _download_audio("https://example.com/audio.mp3", dest, max_retries=1)
+
+        assert not dest.exists()
+
+    def test_video_handler_uses_video_model_env(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "video/model")
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision/model")
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True})
+            coro = _handle_video_analyze({"video_url": "https://example.com/v.mp4", "question": "test"})
+            coro.close()
+        assert mock_tool.call_args[0][2] == "video/model"
+
+    def test_video_handler_does_not_fall_back_to_vision_model_env(self, monkeypatch):
+        monkeypatch.delenv("AUXILIARY_VIDEO_MODEL", raising=False)
+        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision/model")
+        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True})
+            coro = _handle_video_analyze({"video_url": "https://example.com/v.mp4", "question": "test"})
+            coro.close()
+        assert mock_tool.call_args[0][2] is None
+
+    def test_audio_handler_uses_audio_model_env(self, monkeypatch):
+        monkeypatch.setenv("AUXILIARY_AUDIO_MODEL", "audio/model")
+        with patch("tools.vision_tools.audio_analyze_tool", new_callable=AsyncMock) as mock_tool:
+            mock_tool.return_value = json.dumps({"success": True})
+            coro = _handle_audio_analyze({"audio_url": "https://example.com/a.wav", "question": "test"})
+            coro.close()
+        assert mock_tool.call_args[0][2] == "audio/model"
+
+
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):
@@ -508,6 +738,22 @@ class TestVisionRequirements:
     def test_check_requirements_returns_bool(self):
         result = check_vision_requirements()
         assert isinstance(result, bool)
+
+    @pytest.mark.parametrize(
+        ("checker", "task"),
+        [
+            (check_vision_requirements, "vision"),
+            (check_video_requirements, "video"),
+            (check_audio_requirements, "audio"),
+        ],
+    )
+    def test_multimodal_requirement_checks_use_task_specific_routing(self, checker, task):
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("custom", object(), "omni"),
+        ) as mock_resolve:
+            assert checker() is True
+        assert mock_resolve.call_args.kwargs["task"] == task
 
     def test_check_requirements_accepts_codex_auth(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -723,6 +969,18 @@ class TestVisionRegistration:
         entry = registry._tools.get("vision_analyze")
         assert entry is not None
         assert entry.toolset == "vision"
+        assert entry.is_async is True
+
+    @pytest.mark.parametrize(
+        ("tool_name", "toolset"),
+        [("video_analyze", "video"), ("audio_analyze", "audio")],
+    )
+    def test_media_tools_registered(self, tool_name, toolset):
+        from tools.registry import registry
+
+        entry = registry._tools.get(tool_name)
+        assert entry is not None
+        assert entry.toolset == toolset
         assert entry.is_async is True
 
     def test_schema_has_required_fields(self):

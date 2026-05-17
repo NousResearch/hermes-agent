@@ -51,9 +51,9 @@ const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
-const upperBound = (arr: ArrayLike<number>, target: number) => {
+const upperBound = (arr: ArrayLike<number>, target: number, length = arr.length) => {
   let lo = 0
-  let hi = arr.length
+  let hi = length
 
   while (lo < hi) {
     const mid = (lo + hi) >> 1
@@ -130,6 +130,9 @@ export function useVirtualHistory(
   })
 
   const [hasScrollRef, setHasScrollRef] = useState(false)
+  // Height cache writes happen in layout effects; bump once so offsets and
+  // clamp bounds rebuild without waiting for the next scroll/input event.
+  const [measuredHeightVersion, bumpMeasuredHeightVersion] = useState(0)
   const metrics = useRef({ sticky: true, top: 0, vp: 0 })
   const lastScrollTopRef = useRef(0)
 
@@ -282,8 +285,8 @@ export function useVirtualHistory(
 
       // Binary search — offsets is monotone. Linear walk was O(n) at n=10k+,
       // ~2ms per render during scroll.
-      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo) - 1))
-      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi)))
+      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo, n + 1) - 1))
+      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi, n + 1)))
     }
   }
 
@@ -434,6 +437,7 @@ export function useVirtualHistory(
   useLayoutEffect(() => {
     const s = scrollRef.current
     let dirty = false
+    let heightDirty = false
 
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
@@ -474,6 +478,7 @@ export function useVirtualHistory(
         if (h > 0 && heights.current.get(k) !== h) {
           heights.current.set(k, h)
           dirty = true
+          heightDirty = true
         }
       }
     }
@@ -499,7 +504,11 @@ export function useVirtualHistory(
       offsetVersion.current++
       onHeightsChangeRef.current?.(heights.current)
     }
-  })
+
+    if (heightDirty) {
+      bumpMeasuredHeightVersion(n => n + 1)
+    }
+  }, [effEnd, effStart, items, liveTailActive, measuredHeightVersion, n, offsets, scrollRef, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[effEnd] ?? total)),

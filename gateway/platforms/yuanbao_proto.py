@@ -702,7 +702,7 @@ def decode_inbound_push(data: bytes) -> Optional[dict]:
             "trace_id": trace_id,
         }
         # 过滤空值（保持 API 整洁）
-        return {k: v for k, v in result.items() if v or k in ("msg_body", "msg_seq")}
+        return {k: v for k, v in result.items() if v or k in {"msg_body", "msg_seq"}}
     except Exception as e:
         if DEBUG_MODE:
             logger.debug("[yuanbao_proto] decode_inbound_push failed: %s", e)

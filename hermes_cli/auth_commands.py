@@ -33,7 +33,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -77,6 +77,8 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
+    if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
+        return "xai-oauth"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -170,7 +172,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -245,6 +247,47 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "nous":
+        # Codex-style auto-import: if a shared Nous credential lives at
+        # <hermes-root>/shared/nous_auth.json (written by any previous
+        # successful login), offer to import it instead of running the
+        # full device-code flow. This makes `hermes --profile <name>
+        # auth add nous --type oauth` a one-tap operation for users who
+        # run multiple profiles.
+        shared = auth_mod._read_shared_nous_state()
+        if shared:
+            try:
+                path = auth_mod._nous_shared_store_path()
+            except RuntimeError:
+                path = None
+            print()
+            if path:
+                print(f"Found existing Nous OAuth credentials at {path}")
+            else:
+                print("Found existing shared Nous OAuth credentials")
+            try:
+                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "y"
+            if do_import in {"", "y", "yes"}:
+                print("Rehydrating Nous session from shared credentials...")
+                rehydrated = auth_mod._try_import_shared_nous_state(
+                    timeout_seconds=getattr(args, "timeout", None) or 15.0,
+                    min_key_ttl_seconds=max(
+                        60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))
+                    ),
+                )
+                if rehydrated is not None:
+                    custom_label = (getattr(args, "label", None) or "").strip() or None
+                    entry = auth_mod.persist_nous_credentials(rehydrated, label=custom_label)
+                    shown_label = entry.label if entry is not None else label_from_token(
+                        rehydrated.get("access_token", ""), _oauth_default_label(provider, 1),
+                    )
+                    print(f'Imported {provider} OAuth credentials: "{shown_label}"')
+                    return
+                # Rehydrate failed (expired refresh_token, portal down, etc.)
+                # — fall through to device-code flow.
+                print("Could not refresh shared credentials — falling back to device-code login.")
+
         creds = auth_mod._nous_device_code_login(
             portal_base_url=getattr(args, "portal_url", None),
             inference_base_url=getattr(args, "inference_url", None),
@@ -283,6 +326,31 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=f"{SOURCE_MANUAL}:device_code",
+            access_token=creds["tokens"]["access_token"],
+            refresh_token=creds["tokens"].get("refresh_token"),
+            base_url=creds.get("base_url"),
+            last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "xai-oauth":
+        creds = auth_mod._xai_oauth_loopback_login(
+            timeout_seconds=getattr(args, "timeout", None) or 20.0,
+            open_browser=not getattr(args, "no_browser", False),
+        )
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["tokens"]["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:xai_pkce",
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
@@ -334,10 +402,12 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "minimax-oauth":
-        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
-        creds = resolve_minimax_oauth_runtime_credentials()
+        creds = auth_mod._minimax_oauth_login(
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=getattr(args, "timeout", None) or 15.0,
+        )
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds["api_key"],
+            creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
         entry = PooledCredential(
@@ -347,8 +417,9 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=f"{SOURCE_MANUAL}:minimax_oauth",
-            access_token=creds["api_key"],
-            base_url=creds.get("base_url"),
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+            base_url=creds.get("inference_base_url"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')

@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -206,6 +207,118 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_compression_count_shown_in_wide_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=3,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🗜️ 3" in text
+
+    def test_compression_count_hidden_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🗜️" not in text
+
+    def test_compression_count_shown_in_medium_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_400,
+            total_tokens=12_400,
+            api_calls=7,
+            context_tokens=12_400,
+            context_length=200_000,
+            compressions=2,
+        )
+
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert "🗜️ 2" in text
+
+    def test_compression_count_hidden_in_narrow_status_bar(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_400,
+            total_tokens=12_400,
+            api_calls=7,
+            context_tokens=12_400,
+            context_length=200_000,
+            compressions=5,
+        )
+
+        text = cli_obj._build_status_bar_text(width=50)
+
+        assert "🗜️" not in text
+
+    def test_compression_count_style_thresholds(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._compression_count_style(1) == "class:status-bar-dim"
+        assert cli_obj._compression_count_style(4) == "class:status-bar-dim"
+        assert cli_obj._compression_count_style(5) == "class:status-bar-warn"
+        assert cli_obj._compression_count_style(9) == "class:status-bar-warn"
+        assert cli_obj._compression_count_style(10) == "class:status-bar-bad"
+        assert cli_obj._compression_count_style(25) == "class:status-bar-bad"
+
+    def test_compression_count_in_wide_fragments(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._status_bar_visible = True
+
+        frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+
+        assert "🗜️ 7" in frag_texts
+        frag_styles = {text: style for style, text in frags}
+        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
+
+    def test_compression_count_absent_from_fragments_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=0,
+        )
+        cli_obj._status_bar_visible = True
+
+        frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+
+        assert not any("🗜️" in t for t in frag_texts)
+
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()
 
@@ -218,6 +331,45 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("top", width=50) == 1
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        """When _status_bar_suppressed_after_resize is set, both rules hide.
+
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
+
+        cli_obj._status_bar_suppressed_after_resize = False
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scrollback_box_width_returns_viewport_width(self):
+        """Decorative scrollback boxes use the full viewport width.
+
+        The previous clamp (max 56 cols) was reverted in favour of the
+        prompt_toolkit ``_output_screen_diff`` monkey-patch landed in
+        #26137, which keeps chrome out of scrollback at the source.
+        We accept that an aggressive column-shrink may visually reflow
+        already printed Panel borders — that's a cosmetic artifact of
+        stamped scrollback history, not a live-render bug.
+        """
+        from cli import HermesCLI
+
+        # Floor at 32 — narrow terminals still get something usable
+        # (avoids negative ``'─' * (w - 2)`` math).
+        assert HermesCLI._scrollback_box_width(20) == 32
+        assert HermesCLI._scrollback_box_width(32) == 32
+        # Above the floor, return the actual viewport width — no cap.
+        assert HermesCLI._scrollback_box_width(48) == 48
+        assert HermesCLI._scrollback_box_width(80) == 80
+        assert HermesCLI._scrollback_box_width(120) == 120
+        assert HermesCLI._scrollback_box_width(200) == 200
 
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()
@@ -244,6 +396,24 @@ class TestCLIStatusBar:
 
         assert cli_obj._spinner_widget_height(width=64) == 2
 
+    def test_spinner_elapsed_format_is_fixed_width_to_reduce_wrap_jitter(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "running tool"
+
+        # <60s path
+        cli_obj._tool_start_time = time.monotonic() - 9.2
+        short = cli_obj._render_spinner_text()
+
+        # >=60s path
+        cli_obj._tool_start_time = time.monotonic() - 65.2
+        long = cli_obj._render_spinner_text()
+
+        short_elapsed = short.split("(", 1)[1].rstrip(")")
+        long_elapsed = long.split("(", 1)[1].rstrip(")")
+
+        assert len(short_elapsed) == len(long_elapsed)
+        assert "m" in long_elapsed and "s" in long_elapsed
+
     def test_voice_status_bar_compacts_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._voice_mode = True
@@ -265,6 +435,68 @@ class TestCLIStatusBar:
         fragments = cli_obj._get_voice_status_fragments(width=50)
 
         assert fragments == [("class:voice-status-recording", " ● REC ")]
+
+    # Round-13 Copilot review regressions on #19835. The label in voice
+    # status bar / recording hint / placeholder must render the
+    # configured ``voice.record_key`` — not hardcoded Ctrl+B. Pinning
+    # the cache (``set_voice_record_key_cache``) keeps display in sync
+    # with the prompt_toolkit binding without re-reading config on
+    # every render.
+    def test_voice_status_bar_renders_configured_ctrl_letter(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        cli_obj.set_voice_record_key_cache("ctrl+o")
+
+        wide = cli_obj._get_voice_status_fragments(width=120)
+        assert any("Ctrl+O to record" in text for _cls, text in wide)
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+        assert compact == [("class:voice-status", " 🎤 Ctrl+O ")]
+
+    def test_voice_recording_status_bar_renders_configured_named_key(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_processing = False
+        cli_obj.set_voice_record_key_cache("ctrl+space")
+
+        fragments = cli_obj._get_voice_status_fragments(width=120)
+
+        assert fragments == [("class:voice-status-recording", " ● REC  Ctrl+Space to stop ")]
+
+    def test_voice_status_bar_falls_back_to_ctrl_b_without_cache(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        # No cache set — mirrors pre-startup state; fall back to
+        # documented Ctrl+B default (Copilot round-13 review).
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+
+        assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+    def test_voice_status_bar_renders_malformed_config_as_default(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = False
+        cli_obj._voice_continuous = False
+        # Non-string / typoed configs fall through the formatter to the
+        # documented default so the status bar never advertises an
+        # invalid shortcut.
+        cli_obj.set_voice_record_key_cache(True)
+
+        compact = cli_obj._get_voice_status_fragments(width=50)
+
+        assert compact == [("class:voice-status", " 🎤 Ctrl+B ")]
 
 
 class TestCLIUsageReport:

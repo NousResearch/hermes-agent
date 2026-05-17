@@ -37,12 +37,18 @@ hermes-agent/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
 │   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
-│   │                     #   webhook, api_server, ...). See ADDING_A_PLATFORM.md.
+│   │                     #   yuanbao, webhook, api_server, ...). See ADDING_A_PLATFORM.md.
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
-│   └── <others>/         # Dashboard, image-gen, disk-cleanup, examples, ...
+│   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, gmi, ...)
+│   ├── kanban/           # Multi-agent board dispatcher + worker plugin
+│   ├── hermes-achievements/  # Gamified achievement tracking
+│   ├── observability/    # Metrics / traces / logs plugin
+│   ├── image_gen/        # Image-generation providers
+│   └── <others>/         # disk-cleanup, example-dashboard, google_meet, platforms,
+│                         #   spotify, strike-freedom-cockpit, ...
 ├── optional-skills/      # Heavier/niche skills shipped but NOT active by default
 ├── skills/               # Built-in skills bundled with the repo
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
@@ -50,10 +56,9 @@ hermes-agent/
 ├── tui_gateway/          # Python JSON-RPC backend for the TUI
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── environments/         # RL training environments (Atropos)
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 ├── website/              # Docusaurus docs site
-└── tests/                # Pytest suite (~15k tests across ~700 files as of Apr 2026)
+└── tests/                # Pytest suite (~17k tests across ~900 files as of May 2026)
 ```
 
 **User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys only).
@@ -257,7 +262,16 @@ The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes
 
 ## Adding New Tools
 
-Requires changes in **2 files**:
+For most custom or local-only tools, do **not** edit Hermes core. Use the plugin
+route instead: create `~/.hermes/plugins/<name>/plugin.yaml` and
+`~/.hermes/plugins/<name>/__init__.py`, then register tools with
+`ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be
+enabled or disabled without touching `tools/` or `toolsets.py`.
+
+Use the built-in route below only when the user is explicitly contributing a new
+core Hermes tool that should ship in the base system.
+
+Built-in/core tools require changes in **2 files**:
 
 **1. Create `tools/your_tool.py`:**
 ```python
@@ -280,9 +294,9 @@ registry.register(
 )
 ```
 
-**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **This step is required:** auto-discovery imports the tool and registers its schema, but the tool is only *exposed to an agent* if its name appears in a toolset. `_HERMES_CORE_TOOLS` is not dead code — it's the default bundle every platform's base toolset inherits from.
 
-Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain.
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain. Wiring into a toolset is still a deliberate, manual step.
 
 The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
 
@@ -291,6 +305,29 @@ The registry handles schema collection, dispatch, availability checking, and err
 **State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
 
 **Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `tools/todo_tool.py` for the pattern.
+
+---
+
+## Dependency Pinning Policy
+
+All dependencies must have upper bounds to limit supply-chain attack surface.
+This policy was established after the litellm compromise (PR #2796, #2810) and
+reinforced after the Mini Shai-Hulud worm campaign (May 2026).
+
+| Source type | Treatment | Example |
+|---|---|---|
+| PyPI package | `>=floor,<next_major` | `"httpx>=0.28.1,<1"` |
+| Git URL | Commit SHA | `git+https://...@<40-char-sha>` |
+| GitHub Actions | Commit SHA + comment | `uses: actions/checkout@<sha>  # v4` |
+| CI-only pip | `==exact` | `pyyaml==6.0.2` |
+
+**When adding a new dependency to `pyproject.toml`:**
+1. Pin to `>=current_version,<next_major` for post-1.0 (e.g. `>=1.5.0,<2`).
+2. For pre-1.0 packages, use `<0.(current_minor + 2)` (e.g. `>=0.29,<0.32`).
+3. Never commit a bare `>=X.Y.Z` without a ceiling — CI and reviewers will reject it.
+4. Run `uv lock` to regenerate `uv.lock` with hashes.
+
+Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 
 ---
 
@@ -303,6 +340,22 @@ The registry handles schema collection, dispatch, availability checking, and err
    (renaming keys, changing structure). Adding a new key to an existing
    section is handled automatically by the deep-merge and does NOT require
    a version bump.
+
+### Top-level `config.yaml` sections (non-exhaustive):
+
+`model`, `agent`, `terminal`, `compression`, `display`, `stt`, `tts`,
+`memory`, `security`, `delegation`, `smart_model_routing`, `checkpoints`,
+`auxiliary`, `curator`, `skills`, `gateway`, `logging`, `cron`, `profiles`,
+`plugins`, `honcho`.
+
+`auxiliary` holds per-task overrides for side-LLM work (curator, vision,
+embedding, title generation, session_search, etc.) — each task can pin
+its own provider/model/base_url/max_tokens/reasoning_effort. See
+`agent/auxiliary_client.py::_resolve_auto` for resolution order.
+
+`curator` holds the background skill-maintenance config —
+`enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
+`archive_after_days`, `backup` (nested).
 
 ### .env variables (SECRETS ONLY — API keys, tokens, passwords):
 1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
@@ -482,12 +535,52 @@ generic plugin surface (new hook, new ctx method) — never hardcode
 plugin-specific logic into core. PR #5295 removed 95 lines of hardcoded
 honcho argparse from `main.py` for exactly this reason.
 
+**No new in-tree memory providers (policy, May 2026):** the set of
+built-in memory providers under `plugins/memory/` is closed. New memory
+backends must ship as **standalone plugin repos** that users install
+into `~/.hermes/plugins/` (or via pip entry points) — they implement
+the same `MemoryProvider` ABC, register through the same discovery
+path, and integrate via `hermes memory setup` / `post_setup()` without
+landing in this tree. PRs that add a new directory under
+`plugins/memory/` will be closed with a pointer to publish the
+provider as its own repo. Existing in-tree providers stay; bug fixes
+to them are welcome.
+
+### Model-provider plugins (`plugins/model-providers/<name>/`)
+
+Every inference backend (openrouter, anthropic, gmi, deepseek, nvidia, …)
+ships as a plugin here. Each plugin's `__init__.py` calls
+`providers.register_provider(ProviderProfile(...))` at module load.
+`providers/__init__.py._discover_providers()` is a **lazy, separate
+discovery system** — scanned on first `get_provider_profile()` or
+`list_providers()` call, NOT by the general PluginManager.
+
+Scan order:
+1. Bundled: `<repo>/plugins/model-providers/<name>/`
+2. User: `$HERMES_HOME/plugins/model-providers/<name>/`
+3. Legacy: `<repo>/providers/<name>.py` (back-compat)
+
+User plugins of the same name override bundled ones — `register_provider()`
+is last-writer-wins. This lets third parties swap out any built-in
+profile without a repo patch.
+
+The general PluginManager records `kind: model-provider` manifests but does
+NOT import them (would double-instantiate `ProviderProfile`). Plugins
+without an explicit `kind:` get auto-coerced via a source-text heuristic
+(`register_provider` + `ProviderProfile` in `__init__.py`).
+
+Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
+
 ### Dashboard / context-engine / image-gen plugin directories
 
-`plugins/context_engine/`, `plugins/image_gen/`, `plugins/example-dashboard/`,
-etc. follow the same pattern (ABC + orchestrator + per-plugin directory).
-Context engines plug into `agent/context_engine.py`; image-gen providers
-into `agent/image_gen_provider.py`.
+`plugins/context_engine/`, `plugins/image_gen/`, etc. follow the same
+pattern (ABC + orchestrator + per-plugin directory). Context engines
+plug into `agent/context_engine.py`; image-gen providers into
+`agent/image_gen_provider.py`. Reference / docs-companion plugins
+(`example-dashboard`, `strike-freedom-cockpit`, `plugin-llm-example`,
+`plugin-llm-async-example`) live in the
+[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
+companion repo, not in this tree.
 
 ---
 
@@ -510,11 +603,256 @@ niche skills belong in `optional-skills/`.
 
 ### SKILL.md frontmatter
 
-Standard fields: `name`, `description`, `version`, `platforms`
-(OS-gating list: `[macos]`, `[linux, macos]`, ...),
+Standard fields: `name`, `description`, `version`, `author`, `license`,
+`platforms` (OS-gating list: `[macos]`, `[linux, macos]`, ...),
 `metadata.hermes.tags`, `metadata.hermes.category`,
-`metadata.hermes.config` (config.yaml settings the skill needs — stored
-under `skills.config.<key>`, prompted during setup, injected at load time).
+`metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml
+settings the skill needs — stored under `skills.config.<key>`, prompted
+during setup, injected at load time).
+
+Top-level `tags:` and `category:` are also accepted and mirrored from
+`metadata.hermes.*` by the loader.
+
+### Skill authoring standards (HARDLINE)
+
+Every new or modernized skill — bundled, optional, or contributed —
+must meet these standards before merge. Reviewers reject PRs that
+violate them.
+
+1. **`description` ≤ 60 characters, one sentence, ends with a period.**
+   Long descriptions bloat skill listings and dilute the model's
+   attention when many skills are loaded. State the capability, not
+   the implementation. No marketing words ("powerful",
+   "comprehensive", "seamless", "advanced"). Don't repeat the skill
+   name. Verify with:
+   ```python
+   import re, pathlib
+   m = re.search(r'^description: (.*)$',
+                 pathlib.Path('skills/<cat>/<name>/SKILL.md').read_text(),
+                 re.MULTILINE)
+   assert len(m.group(1)) <= 60, len(m.group(1))
+   ```
+
+2. **Tools referenced in SKILL.md prose must be native Hermes tools or
+   MCP servers the skill explicitly expects.** When the skill needs a
+   capability, point at the proper tool by name in backticks
+   (`` `terminal` ``, `` `web_extract` ``, `` `read_file` ``,
+   `` `patch` ``, `` `search_files` ``, `` `vision_analyze` ``,
+   `` `browser_navigate` ``, `` `delegate_task` ``, etc.). Do NOT
+   name shell utilities the agent already has wrapped — `grep` →
+   `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` →
+   `patch`, `find`/`ls` → `search_files target='files'`. If the skill
+   depends on an MCP server, name the MCP server and document the
+   expected setup in `## Prerequisites`. Anything else (third-party
+   CLIs, shell pipelines, etc.) is fair game inside script files but
+   should not be the headline interaction surface in the prose.
+
+3. **`platforms:` gating audited against actual script imports.**
+   Skills that use POSIX-only primitives (`fcntl`, `termios`,
+   `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, `/tmp`
+   hardcoded, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`,
+   `systemctl`) must declare their supported platforms. Default
+   posture: try to fix it cross-platform first — `tempfile.gettempdir`,
+   `pathlib.Path`, `psutil.pid_exists`, Python-level filtering instead
+   of `grep`. Gate to a narrower set only when the dependency is
+   genuinely platform-bound.
+
+4. **`author` credits the human contributor first.** For external
+   contributions, the contributor's real name + GitHub handle goes
+   first; "Hermes Agent" is the secondary collaborator. If the
+   contributor's commit shows "Hermes Agent" as author (because they
+   used Hermes to draft the skill), replace it with their actual name
+   — credit the human, not the tool.
+
+5. **SKILL.md body uses the modern section order.** `# <Skill> Skill`
+   title, 2-3 sentence intro stating what it does and doesn't do,
+   `## When to Use`, `## Prerequisites`, `## How to Run`,
+   `## Quick Reference`, `## Procedure`, `## Pitfalls`,
+   `## Verification`. Target ~200 lines for a complex skill,
+   ~100 lines for a simple one. Cut redundant intro fluff, marketing
+   prose, and re-explanations of env vars already in
+   `## Prerequisites`.
+
+6. **Scripts go in `scripts/`, references in `references/`,
+   templates in `templates/`.** Don't expect the model to inline-write
+   parsers, XML walkers, or non-trivial logic every call — ship a
+   helper script. Reference it from SKILL.md by path relative to the
+   skill directory.
+
+7. **Tests live at `tests/skills/test_<skill>_skill.py`** and use only
+   stdlib + pytest + `unittest.mock`. No live network calls. Run via
+   `scripts/run_tests.sh tests/skills/test_<skill>_skill.py -q`.
+
+8. **`.env.example` additions are isolated to a clearly delimited
+   block.** Don't touch the surrounding file — contributor-supplied
+   `.env.example` versions are usually stale and edits outside the
+   skill's own block must be dropped during salvage.
+
+The full salvage / modernization checklist for external skill PRs
+lives in the `hermes-agent-dev` skill at
+`references/new-skill-pr-salvage.md` — load it before polishing
+contributor skill PRs.
+
+---
+
+## Toolsets
+
+All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict.
+Each platform's adapter picks a base toolset (e.g. Telegram uses
+`"messaging"`); `_HERMES_CORE_TOOLS` is the default bundle most
+platforms inherit from.
+
+Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
+`debugging`, `delegation`, `discord`, `discord_admin`, `feishu_doc`,
+`feishu_drive`, `file`, `homeassistant`, `image_gen`, `kanban`, `memory`,
+`messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
+`spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
+
+Enable/disable per platform via `hermes tools` (the curses UI) or the
+`tools.<platform>.enabled` / `tools.<platform>.disabled` lists in
+`config.yaml`.
+
+---
+
+## Delegation (`delegate_task`)
+
+`tools/delegate_tool.py` spawns a subagent with an isolated
+context + terminal session. Synchronous: the parent waits for the
+child's summary before continuing its own loop — if the parent is
+interrupted, the child is cancelled.
+
+Two shapes:
+
+- **Single:** pass `goal` (+ optional `context`, `toolsets`).
+- **Batch (parallel):** pass `tasks: [...]` — each gets its own subagent
+  running concurrently. Concurrency is capped by
+  `delegation.max_concurrent_children` (default 3).
+
+Roles:
+
+- `role="leaf"` (default) — focused worker. Cannot call `delegate_task`,
+  `clarify`, `memory`, `send_message`, `execute_code`.
+- `role="orchestrator"` — retains `delegate_task` so it can spawn its
+  own workers. Gated by `delegation.orchestrator_enabled` (default true)
+  and bounded by `delegation.max_spawn_depth` (default 2).
+
+Key config knobs (under `delegation:` in `config.yaml`):
+`max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
+`orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
+`max_iterations`.
+
+Synchronicity rule: delegate_task is **not** durable. For long-running
+work that must outlive the current turn, use `cronjob` or
+`terminal(background=True, notify_on_complete=True)` instead.
+
+---
+
+## Curator (skill lifecycle)
+
+Background skill-maintenance system that tracks usage on agent-created
+skills and auto-archives stale ones. Users never lose skills; archives
+go to `~/.hermes/skills/.archive/` and are restorable.
+
+- **Core:** `agent/curator.py` (review loop, auto-transitions, LLM review
+  prompt) + `agent/curator_backup.py` (pre-run tar.gz snapshots).
+- **CLI:** `hermes_cli/curator.py` wires `hermes curator <verb>` where
+  verbs are: `status`, `run`, `pause`, `resume`, `pin`, `unpin`,
+  `archive`, `restore`, `prune`, `backup`, `rollback`.
+- **Telemetry:** `tools/skill_usage.py` owns the sidecar
+  `~/.hermes/skills/.usage.json` — per-skill `use_count`, `view_count`,
+  `patch_count`, `last_activity_at`, `state` (active / stale /
+  archived), `pinned`.
+
+Invariants:
+- Curator only touches skills with `created_by: "agent"` provenance —
+  bundled + hub-installed skills are off-limits.
+- Never deletes; max destructive action is archive.
+- Pinned skills are exempt from every auto-transition and from the
+  LLM review pass.
+- `skill_manage(action="delete")` refuses pinned skills; patch/edit/
+  write_file/remove_file go through so the agent can keep improving
+  pinned skills.
+
+Config section (`curator:` in `config.yaml`):
+`enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
+`archive_after_days`, `backup.*`.
+
+Full user-facing docs: `website/docs/user-guide/features/curator.md`.
+
+---
+
+## Cron (scheduled jobs)
+
+`cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop). Agents
+schedule jobs via the `cronjob` tool; users via `hermes cron <verb>`
+(`list`, `add`, `edit`, `pause`, `resume`, `run`, `remove`) or the
+`/cron` slash command.
+
+Supported schedule formats:
+- Duration: `"30m"`, `"2h"`, `"1d"`
+- "every" phrase: `"every 2h"`, `"every monday 9am"`
+- 5-field cron expression: `"0 9 * * *"`
+- ISO timestamp (one-shot): `"2026-06-01T09:00:00Z"`
+
+Per-job fields include `skills` (load specific skills), `model` /
+`provider` overrides, `script` (pre-run data-collection script whose
+stdout is injected into the prompt; `no_agent=True` turns the script
+into the entire job), `context_from` (chain job A's last output into
+job B's prompt), `workdir` (run in a specific directory with its
+`AGENTS.md`/`CLAUDE.md` loaded), and multi-platform delivery.
+
+Hardening invariants:
+- **3-minute hard interrupt** on cron sessions — runaway agent loops
+  cannot monopolize the scheduler.
+- Catchup window: half the job's period, clamped to 120s–2h.
+- Grace window: 120s for one-shot jobs whose fire time was missed.
+- File lock at `~/.hermes/cron/.tick.lock` prevents duplicate ticks
+  across processes.
+- Cron sessions pass `skip_memory=True` by default; memory providers
+  intentionally do not run during cron.
+
+Cron deliveries are **not** mirrored into the target gateway session —
+they land in their own cron session with a header/footer frame so the
+main conversation's message-role alternation stays intact.
+
+---
+
+## Kanban (multi-agent work queue)
+
+Durable SQLite-backed board that lets multiple profiles / workers
+collaborate on shared tasks. Users drive it via `hermes kanban <verb>`;
+workers spawned by the dispatcher drive it via a dedicated `kanban_*`
+toolset so their schema footprint is zero when they're not inside a
+kanban task.
+
+- **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
+  `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
+  `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
+  `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
+  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
+- **Worker toolset:** `tools/kanban_tools.py` exposes `kanban_show`,
+  `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`,
+  `kanban_create`, `kanban_link` — gated by `HERMES_KANBAN_TASK` so
+  the schema only appears for processes actually running as a worker.
+- **Dispatcher:** long-lived loop that (default every 60s) reclaims
+  stale claims, promotes ready tasks, atomically claims, and spawns
+  assigned profiles. Runs **inside the gateway** by default via
+  `kanban.dispatch_in_gateway: true`.
+- **Plugin assets:** `plugins/kanban/dashboard/` (web UI) +
+  `plugins/kanban/systemd/` (`hermes-kanban-dispatcher.service` for
+  standalone dispatcher deployment).
+
+Isolation model:
+- **Board** is the hard boundary — workers are spawned with
+  `HERMES_KANBAN_BOARD` pinned in their env so they can't see other
+  boards.
+- **Tenant** is a soft namespace *within* a board — one specialist
+  fleet can serve multiple businesses with workspace-path + memory-key
+  isolation.
+- After ~5 consecutive spawn failures on the same task the dispatcher
+  auto-blocks it to prevent spin loops.
+
+Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ---
 

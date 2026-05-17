@@ -84,6 +84,47 @@ def _sanitize_single_tool(tool: dict) -> dict:
     # argument coercion (``model_tools._schema_allows_null``) can still
     # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
+    # Strip top-level combinators that strict backends (OpenAI's Codex
+    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
+    # combinators inside properties are preserved.
+    fn["parameters"] = _strip_top_level_combinators(
+        fn["parameters"], path=fn.get("name", "<tool>")
+    )
+    return out
+
+
+_TOP_LEVEL_FORBIDDEN_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
+
+
+def _strip_top_level_combinators(params: dict, *, path: str = "<tool>") -> dict:
+    """Drop combinator keywords from the top-level of a function parameters schema.
+
+    OpenAI's Codex backend (``chatgpt.com/backend-api/codex``) is stricter
+    than the public Functions API and rejects requests with::
+
+        Invalid schema for function 'X': schema must have type 'object' and
+        not have 'oneOf'/'anyOf'/'allOf'/'enum'/'not' at the top level.
+
+    These keywords are typically used for conditional required-fields hints
+    (``allOf: [{if: ..., then: {required: [...]}}]``). Removing them at the
+    top level discards the hint but does not change which argument *values*
+    are valid — the tool handler always re-validates required fields.
+
+    Only the *top* level is stripped; combinators nested inside a property's
+    schema are preserved (the strict rule only applies to the outermost
+    parameters object).
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    for key in _TOP_LEVEL_FORBIDDEN_KEYS:
+        if key in out:
+            logger.debug(
+                "schema_sanitizer[%s]: stripped top-level %r combinator "
+                "from tool parameters (strict-backend compat)",
+                path, key,
+            )
+            out.pop(key, None)
     return out
 
 
@@ -255,3 +296,75 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out["required"] = valid
 
     return out
+
+
+# =============================================================================
+# Reactive strip — only invoked when llama.cpp rejects a schema
+# =============================================================================
+
+_STRIP_ON_RECOVERY_KEYS = frozenset({"pattern", "format"})
+
+
+def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
+    """Strip ``pattern`` and ``format`` JSON Schema keywords from tool schemas.
+
+    This is a *reactive* sanitizer invoked only when llama.cpp's
+    ``json-schema-to-grammar`` converter has rejected a tool schema with an
+    HTTP 400 grammar-parse error.  llama.cpp's regex engine supports only a
+    small subset of ECMAScript regex (literals, ``.``, ``[...]``, ``|``,
+    ``*``, ``+``, ``?``, ``{n,m}``) — it rejects escape classes like ``\\d``,
+    ``\\w``, ``\\s`` and most ``format`` values.  Cloud providers (OpenAI,
+    Anthropic, OpenRouter, Gemini) accept these keywords fine and rely on
+    them as prompting hints, so we keep them in the default schema and only
+    strip on demand.
+
+    The strip operates on a sibling of ``type`` (so schema keywords are
+    removed) — a property literally *named* ``pattern`` (e.g. the first arg
+    of the built-in ``search_files`` tool) is not affected because property
+    names live in the ``properties`` dict, not as siblings of ``type``.
+
+    Args:
+        tools: OpenAI-format tool list, mutated in place for efficiency.
+            Callers that need to preserve the original should deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — the same list reference plus a count of
+        how many ``pattern``/``format`` keywords were removed across all tools.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            # Only strip as a sibling of ``type`` — i.e. when this node is
+            # itself a schema.  This avoids stripping literal property keys
+            # named "pattern" (search_files.pattern, etc.) because those live
+            # inside a ``properties`` dict, not as siblings of ``type``.
+            is_schema_node = "type" in node or "anyOf" in node or "oneOf" in node or "allOf" in node
+            for key in list(node.keys()):
+                if is_schema_node and key in _STRIP_ON_RECOVERY_KEYS:
+                    node.pop(key, None)
+                    stripped += 1
+                    continue
+                _walk(node[key])
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d pattern/format keyword(s) from "
+            "tool schemas (llama.cpp grammar-parse recovery)",
+            stripped,
+        )
+    return tools, stripped

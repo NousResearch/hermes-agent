@@ -27,6 +27,10 @@ def _ensure_ssh_available() -> None:
         raise RuntimeError(
             "SSH is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
         )
+    if not shutil.which("scp"):
+        raise RuntimeError(
+            "SCP is not installed or not in PATH. Install OpenSSH client: apt install openssh-client"
+        )
 
 
 class SSHEnvironment(BaseEnvironment):

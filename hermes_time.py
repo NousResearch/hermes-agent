@@ -50,7 +50,7 @@ def _resolve_timezone_name() -> str:
         import yaml
         config_path = get_config_path()
         if config_path.exists():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():

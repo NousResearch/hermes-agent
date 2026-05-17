@@ -56,12 +56,15 @@ _SENSITIVE_BODY_KEYS = frozenset({
 })
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=true`) cannot enable/disable redaction
-# mid-session.  OFF by default — user must opt in via
-# `security.redact_secrets: true` in config.yaml (bridged to this env var
-# in hermes_cli/main.py and gateway/run.py) or `HERMES_REDACT_SECRETS=true`
-# in ~/.hermes/.env.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("1", "true", "yes", "on")
+# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction
+# mid-session.  ON by default — secure default per issue #17691. Users who
+# need raw credential values in tool output (e.g. working on the redactor
+# itself) can opt out via `security.redact_secrets: false` in config.yaml
+# (bridged to this env var in hermes_cli/main.py, gateway/run.py, and
+# cli.py) or `HERMES_REDACT_SECRETS=false` in ~/.hermes/.env. An opt-out
+# warning is logged at gateway and CLI startup so operators see the
+# downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
+_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -305,13 +308,18 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False) -> str:
+def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
     Disabled by default — enable via security.redact_secrets: true in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
     regardless of the user's global logging redaction preference.
+
+    Set code_file=True to skip the ENV-assignment and JSON-field regex
+    patterns when the text is known to be source code (e.g. MAX_TOKENS=***
+    constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
+    private keys, DB connstrings, JWTs, and URL secrets are still redacted.
     """
     if text is None:
         return None
@@ -325,17 +333,18 @@ def redact_sensitive_text(text: str, *, force: bool = False) -> str:
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
-    # ENV assignments: OPENAI_API_KEY=sk-abc...
-    def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
-        return f"{name}={quote}{_mask_token(value)}{quote}"
-    text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+    # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
+    if not code_file:
+        def _redact_env(m):
+            name, quote, value = m.group(1), m.group(2), m.group(3)
+            return f"{name}={quote}{_mask_token(value)}{quote}"
+        text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
-    # JSON fields: "apiKey": "value"
-    def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
-    text = _JSON_FIELD_RE.sub(_redact_json, text)
+        # JSON fields: "apiKey": "***"  (skip for code files — false positives)
+        def _redact_json(m):
+            key, value = m.group(1), m.group(2)
+            return f'{key}: "{_mask_token(value)}"'
+        text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(

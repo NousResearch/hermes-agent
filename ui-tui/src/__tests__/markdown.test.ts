@@ -1,8 +1,47 @@
+import { PassThrough } from 'stream'
+
+import { Box, renderSync } from '@hermes/ink'
+import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { AUDIO_DIRECTIVE_RE, INLINE_RE, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { stripAnsi } from '../lib/text.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
+const BEL = String.fromCharCode(7)
+const ESC = String.fromCharCode(27)
+const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+
+const renderPlain = (node: React.ReactNode) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(node, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return output
+    .replace(OSC_RE, '')
+    .split('\n')
+    .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
+}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -142,5 +181,122 @@ describe('protocol sentinels', () => {
     expect(AUDIO_DIRECTIVE_RE.test('[[audio_as_voice]]')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('  [[audio_as_voice]]  ')).toBe(true)
     expect(AUDIO_DIRECTIVE_RE.test('audio_as_voice')).toBe(false)
+  })
+})
+
+describe('Md wrapping', () => {
+  it('trims spaces from word-wrap continuation lines', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 5 }, React.createElement(Md, { t: DEFAULT_THEME, text: 'Let me' }))
+    )
+
+    expect(lines).toContain('Let')
+    expect(lines).toContain('me')
+    expect(lines).not.toContain(' me')
+  })
+
+  it('keeps nested list and quote indentation out of trim-sensitive text', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { flexDirection: 'column', width: 24 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: '  - nested bullet' }),
+        React.createElement(Md, { t: DEFAULT_THEME, text: '>> nested quote' })
+      )
+    )
+
+    expect(lines).toContain('  • nested bullet')
+    expect(lines).toContain('  │ nested quote')
+  })
+
+  it('preserves original inline-code edge spaces', () => {
+    const lines = renderPlain(
+      React.createElement(Box, { width: 24 }, React.createElement(Md, { t: DEFAULT_THEME, text: '` hi ` ok' }))
+    )
+
+    expect(lines.some(line => line.startsWith(' hi  ok'))).toBe(true)
+  })
+})
+
+describe('Md link labels', () => {
+  it('renders bare URLs with readable slug labels', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
+    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+  })
+
+  it('keeps explicit markdown labels as the immediate fallback', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
+        })
+      )
+    )
+
+    expect(lines.join('\n')).toContain('Trip details')
+  })
+})
+
+describe('renderTable CJK width alignment', () => {
+  it('column starts share the same display offset across CJK rows', async () => {
+    const { stringWidth } = await import('@hermes/ink')
+
+    const md = [
+      '| 配置 | Config | 状态 |',
+      '|------|--------|------|',
+      '| Vicuna (report) | dense | × |',
+      '| ChatGLM | chat | ✓ |',
+      '| 通义千问 | qwen | × |'
+    ].join('\n')
+
+    // Pre-fix bug: ` `.repeat(w - stripInlineMarkup(...).length) used
+    // UTF-16 code units, so a CJK header cell padded to 2 cells while
+    // the body cell padded to 4, drifting subsequent columns by 2
+    // cells per CJK char.
+    //
+    // Post-fix contract: the prefix preceding the start of column N
+    // has the same display width across the header and every body row
+    // (deduped to skip the divider, which renders independently).
+    const lines = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { compact: true, t: DEFAULT_THEME, text: md }))
+    ).filter(line => line.trim().length > 0)
+
+    // Heuristic: a "data row" line either contains 'Config' (header)
+    // or one of the body labels; a divider is all box-drawing.  Use
+    // the substring 'Config' / 'dense' / 'chat' / 'qwen' as the
+    // unique anchor for column 2's start position on each row.
+    const colStarts = (line: string, anchor: string): number => {
+      const idx = line.indexOf(anchor)
+
+      return idx < 0 ? -1 : stringWidth(line.slice(0, idx))
+    }
+
+    const headerCol2 = lines.map(l => colStarts(l, 'Config')).find(v => v >= 0)
+    const denseCol2 = lines.map(l => colStarts(l, 'dense')).find(v => v >= 0)
+    const chatCol2 = lines.map(l => colStarts(l, 'chat')).find(v => v >= 0)
+    const qwenCol2 = lines.map(l => colStarts(l, 'qwen')).find(v => v >= 0)
+
+    expect(headerCol2).toBeDefined()
+    expect(denseCol2).toBe(headerCol2)
+    expect(chatCol2).toBe(headerCol2)
+    // The CJK row is the one that drifted before the fix.  It must
+    // align with the rest now.
+    expect(qwenCol2).toBe(headerCol2)
   })
 })

@@ -300,6 +300,7 @@ class DockerEnvironment(BaseEnvironment):
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
+        extra_args: list = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -476,6 +477,15 @@ class DockerEnvironment(BaseEnvironment):
         security_args = _build_security_args(run_as_host_user and bool(user_args))
 
         logger.info(f"Docker volume_args: {volume_args}")
+        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
+        # Appended last so they can override defaults if needed.
+        validated_extra = []
+        for arg in (extra_args or []):
+            if not isinstance(arg, str):
+                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                continue
+            validated_extra.append(arg)
+
         all_run_args = (
             security_args
             + user_args
@@ -483,6 +493,7 @@ class DockerEnvironment(BaseEnvironment):
             + resource_args
             + volume_args
             + env_args
+            + validated_extra
         )
         logger.info(f"Docker run_args: {all_run_args}")
 

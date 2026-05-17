@@ -505,8 +505,7 @@ def _calculate_line_positions(content_lines: List[str], start_line: int,
     """
     start_pos = sum(len(line) + 1 for line in content_lines[:start_line])
     end_pos = sum(len(line) + 1 for line in content_lines[:end_line]) - 1
-    if end_pos >= content_length:
-        end_pos = content_length
+    end_pos = min(content_length, end_pos)
     return start_pos, end_pos
 
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,7 @@ def _default_state() -> Dict[str, Any]:
         "last_run_at": None,
         "last_run_duration_seconds": None,
         "last_run_summary": None,
+        "last_run_summary_shown_at": None,
         "last_report_path": None,
         "paused": False,
         "run_count": 0,
@@ -469,6 +471,24 @@ def _reports_root() -> Path:
     return root
 
 
+def _needle_in_path_component(needle: str, path: str) -> bool:
+    """Check if *needle* is a complete filename stem or directory name in *path*.
+
+    Unlike simple substring matching, this avoids false positives where short
+    skill names are embedded in longer filenames (e.g. "api" matching
+    "references/api-design.md").  Hyphens and underscores are normalised so
+    "open-webui-setup" matches "open_webui_setup.md".
+    """
+    norm_needle = needle.replace("-", "_")
+    for part in path.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        stem = part.rsplit(".", 1)[0] if "." in part else part
+        if stem.replace("-", "_") == norm_needle:
+            return True
+    return False
+
+
 def _classify_removed_skills(
     removed: List[str],
     added: List[str],
@@ -547,15 +567,29 @@ def _classify_removed_skills(
                 continue
 
             # Look for the removed skill's name in file_path / content / raw.
-            haystacks: List[str] = []
+            # Matching strategy differs by field type:
+            #   file_path — needle must be a complete path component
+            #     (filename stem or directory name), so "api" does NOT
+            #     falsely match "references/api-design.md".
+            #   content fields — word-boundary regex so "test" does NOT
+            #     falsely match "latest" or "testing".
+            haystacks: List[tuple[str, str]] = []
             for key in ("file_path", "file_content", "content", "new_string", "_raw"):
                 v = args.get(key)
                 if isinstance(v, str):
-                    haystacks.append(v)
+                    haystacks.append((key, v))
             hit = False
-            for hay in haystacks:
+            for key, hay in haystacks:
                 for needle in needles:
-                    if needle and needle in hay:
+                    if not needle:
+                        continue
+                    if key == "file_path":
+                        matched = _needle_in_path_component(needle, hay)
+                    else:
+                        matched = bool(
+                            re.search(rf'\b{re.escape(needle)}\b', hay)
+                        )
+                    if matched:
                         hit = True
                         evidence = (
                             f"skill_manage action={args.get('action', '?')} "
@@ -841,6 +875,96 @@ def _reconcile_classification(
         })
 
     return {"consolidated": consolidated, "pruned": pruned}
+
+
+def _build_rename_summary(
+    *,
+    before_names: Set[str],
+    after_report: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+    model_final: str,
+) -> str:
+    """Format the user-visible rename map for a curator run.
+
+    Renders the "where did my skills go?" lines that get appended to the
+    `final_summary` string fed to gateway/CLI receivers. Empty string when
+    nothing was archived this run — most ticks are no-op and shouldn't add
+    extra log noise.
+
+    Format::
+
+        archived 4 skill(s):
+          • pdf-extraction → document-tools
+          • docx-extraction → document-tools
+          • flaky-thing — pruned (stale)
+          • old-utility → spreadsheet-ops
+        full report: hermes curator status
+        keep an umbrella stable: hermes curator pin document-tools
+
+    Cap is 10 entries so a 50-skill consolidation doesn't blow up
+    agent.log; the full list is always in REPORT.md. The pin hint only
+    appears when at least one consolidation produced an umbrella worth
+    pinning (pruned-only runs skip it).
+    """
+    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
+    after_names = set(after_by_name.keys())
+    removed = sorted(before_names - after_names)
+    added = sorted(after_names - before_names)
+    if not removed:
+        return ""
+
+    heuristic = _classify_removed_skills(
+        removed=removed,
+        added=added,
+        after_names=after_names,
+        tool_calls=tool_calls,
+    )
+    model_block = _parse_structured_summary(model_final)
+    destinations = set(after_names) | set(added)
+    absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
+    classification = _reconcile_classification(
+        removed=removed,
+        heuristic=heuristic,
+        model_block=model_block,
+        destinations=destinations,
+        absorbed_declarations=absorbed_declarations,
+    )
+    consolidated = classification["consolidated"]
+    pruned = classification["pruned"]
+
+    SHOW = 10
+    lines: List[str] = []
+    total = len(consolidated) + len(pruned)
+    lines.append(f"archived {total} skill(s):")
+    shown = 0
+    for entry in consolidated:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?")
+        into = entry.get("into", "?")
+        lines.append(f"  • {name} → {into}")
+        shown += 1
+    for entry in pruned:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
+        lines.append(f"  • {name} — pruned (stale)")
+        shown += 1
+    if total > SHOW:
+        lines.append(f"  … and {total - SHOW} more")
+    lines.append("full report: hermes curator status")
+    # Pin hint — only surface it when there's actually a destination skill
+    # worth pinning. The umbrella skills that absorbed content are the natural
+    # candidates: pinning one tells future curator runs to leave it alone.
+    # Pruned-only runs don't get this hint (nothing surviving to pin).
+    if consolidated:
+        umbrellas = sorted({e.get("into") for e in consolidated if e.get("into")})
+        if umbrellas:
+            example = umbrellas[0]
+            lines.append(
+                f"keep an umbrella stable: hermes curator pin {example}"
+            )
+    return "\n".join(lines)
 
 
 def _write_run_report(
@@ -1365,6 +1489,22 @@ def run_curator_review(
                 "error": str(e),
             }
 
+        # Append the rename map (`old-name → umbrella`) to the user-visible
+        # summary so people don't have to dig into REPORT.md to find out where
+        # their skills went. Best-effort: classification is pure but never
+        # block the run on a formatting issue.
+        try:
+            rename_lines = _build_rename_summary(
+                before_names=before_names,
+                after_report=skill_usage.agent_created_report(),
+                tool_calls=llm_meta.get("tool_calls", []) or [],
+                model_final=llm_meta.get("final", "") or "",
+            )
+            if rename_lines:
+                final_summary = f"{final_summary}\n{rename_lines}"
+        except Exception as e:
+            logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
+
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = load_state()
         state2["last_run_duration_seconds"] = elapsed
@@ -1574,7 +1714,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # terminal. The background-thread runner also hides it; this
         # belt-and-suspenders path matters when a caller invokes
         # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w") as _devnull, \
+        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
             conv_result = review_agent.run_conversation(user_message=prompt)

@@ -37,6 +37,19 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Ensure boto3/botocore are installed before any code in this module runs.
+# Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
+# handles on-demand installation so the Bedrock provider still works in the
+# EKS deployment without baking boto3 into the base image.
+# ---------------------------------------------------------------------------
+try:
+    from tools.lazy_deps import ensure
+    ensure("provider.bedrock", prompt=False)
+except Exception:
+    pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error
+
+
+# ---------------------------------------------------------------------------
 # Lazy boto3 import — only loaded when the Bedrock provider is actually used.
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------
@@ -631,11 +644,18 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
     stop_reason = response.get("stopReason", "end_turn")
 
     text_parts = []
+    reasoning_parts = []
     tool_calls = []
 
     for block in content_blocks:
         if "text" in block:
             text_parts.append(block["text"])
+        elif "reasoningContent" in block:
+            reasoning = block["reasoningContent"]
+            if isinstance(reasoning, dict):
+                thinking_text = reasoning.get("text", "")
+                if thinking_text:
+                    reasoning_parts.append(str(thinking_text))
         elif "toolUse" in block:
             tu = block["toolUse"]
             tool_calls.append(SimpleNamespace(
@@ -652,6 +672,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     # Build usage stats
@@ -732,6 +753,7 @@ def stream_converse_with_callbacks(
         ``normalize_converse_response()``.
     """
     text_parts: List[str] = []
+    reasoning_parts: List[str] = []
     tool_calls: List[SimpleNamespace] = []
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
@@ -777,8 +799,10 @@ def stream_converse_with_callbacks(
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict):
                     thinking_text = reasoning.get("text", "")
-                    if thinking_text and on_reasoning_delta:
-                        on_reasoning_delta(thinking_text)
+                    if thinking_text:
+                        reasoning_parts.append(str(thinking_text))
+                        if on_reasoning_delta:
+                            on_reasoning_delta(thinking_text)
 
         elif "contentBlockStop" in event:
             if current_tool is not None:
@@ -817,6 +841,7 @@ def stream_converse_with_callbacks(
         role="assistant",
         content="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls if tool_calls else None,
+        reasoning_content="\n\n".join(reasoning_parts) if reasoning_parts else None,
     )
 
     usage = SimpleNamespace(

@@ -1,0 +1,350 @@
+# Hermes statikus üzenetkatalógus -- Magyar
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
+  choose_long:     "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"
+  choose_short:    "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
+  prompt_long:     "      Választás [o/s/a/D]: "
+  prompt_short:    "      Választás [o/s/D]: "
+  timeout:         "      ⏱ Időtúllépés - parancs elutasítva"
+  allowed_once:    "      ✓ Egyszer engedélyezve"
+  allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
+  allowed_always:  "      ✓ Hozzáadva az állandó engedélylistához"
+  denied:          "      ✗ Elutasítva"
+  cancelled:       "      ✗ Megszakítva"
+  blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
+
+gateway:
+  approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
+  draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
+  goal_cleared:     "✓ A cél törölve."
+  no_active_goal:   "Nincs aktív cél."
+  config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
+  config_save_failed: "⚠️ Nem sikerült menteni a konfigurációt: {error}"
+
+  model:
+    error_prefix:           "Hiba: {error}"
+    switched:               "Modell átváltva: `{model}`"
+    provider_label:         "Szolgáltató: {provider}"
+    context_label:          "Kontextus: {tokens} token"
+    max_output_label:       "Max. kimenet: {tokens} token"
+    cost_label:             "Költség: {cost}"
+    capabilities_label:     "Képességek: {capabilities}"
+    prompt_caching_enabled: "Prompt-gyorsítótárazás: bekapcsolva"
+    warning_prefix:         "Figyelmeztetés: {warning}"
+    saved_global:           "Mentve a config.yaml fájlba (`--global`)"
+    session_only_hint:      "_(csak ehhez a munkamenethez — add hozzá a `--global` opciót a megőrzéshez)_"
+    current_label:          "Aktuális: `{model}` ezen: {provider}"
+    current_tag:            " (aktuális)"
+    more_models_suffix:     " (+{count} további)"
+    usage_switch_model:     "`/model <name>` — modell váltása"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
+    usage_persist:          "`/model <name> --global` — megőrzés"
+
+  agents:
+    header:                "🤖 **Aktív ügynökök és feladatok**"
+    active_agents:         "**Aktív ügynökök:** {count}"
+    this_chat:             " · ez a csevegés"
+    more:                  "... és még {count}"
+    running_processes:     "**Futó háttérfolyamatok:** {count}"
+    async_jobs:            "**Átjáró aszinkron feladatai:** {count}"
+    none:                  "Nincsenek aktív ügynökök vagy futó feladatok."
+    state_starting:        "indul"
+    state_running:         "fut"
+
+  approve:
+    no_pending:            "Nincs jóváhagyásra váró parancs."
+    once_singular:         "✅ Parancs jóváhagyva. Az ügynök folytatja..."
+    once_plural:           "✅ Parancsok jóváhagyva ({count} parancs). Az ügynök folytatja..."
+    session_singular:      "✅ Parancs jóváhagyva (minta jóváhagyva ehhez a munkamenethez). Az ügynök folytatja..."
+    session_plural:        "✅ Parancsok jóváhagyva (minta jóváhagyva ehhez a munkamenethez) ({count} parancs). Az ügynök folytatja..."
+    always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
+    always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
+
+  background:
+    usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
+    started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
+
+  branch:
+    db_unavailable:        "A munkamenet-adatbázis nem érhető el."
+    no_conversation:       "Nincs elágaztatható beszélgetés — küldj előbb egy üzenetet."
+    create_failed:         "Nem sikerült létrehozni az ágat: {error}"
+    switch_failed:         "Az ág létrejött, de nem sikerült rá váltani."
+    branched_one:          "⑂ Új ág: **{title}** ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
+    branched_many:         "⑂ Új ág: **{title}** ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
+
+  commands:
+    usage:                 "Használat: `/commands [page]`"
+    skill_header:          "⚡ **Készségparancsok**:"
+    default_desc:          "Készségparancs"
+    none:                  "Nincsenek elérhető parancsok."
+    header:                "📚 **Parancsok** (összesen {total}, {page}/{total_pages}. oldal)"
+    nav_prev:              "`/commands {page}` ← előző"
+    nav_next:              "következő → `/commands {page}`"
+    out_of_range:          "_(A kért {requested}. oldal a tartományon kívül esik, a(z) {page}. oldal jelenik meg.)_"
+
+  compress:
+    not_enough:            "Nincs elég beszélgetés a tömörítéshez (legalább 4 üzenet kell)."
+    no_provider:           "Nincs konfigurált szolgáltató — nem lehet tömöríteni."
+    nothing_to_do:         "Még nincs mit tömöríteni (a teljes átirat még védett kontextus)."
+    focus_line:            "Fókusz: \"{topic}\""
+    summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression modell konfigurációját."
+    aux_failed:            "ℹ️ A beállított tömörítőmodell (`{model}`) hibát adott ({error}). A főmodellel helyreállítva — a kontextus érintetlen — de érdemes ellenőrizni az `auxiliary.compression.model` beállítást a config.yaml fájlban."
+    failed:                "Tömörítés sikertelen: {error}"
+
+  debug:
+    upload_failed:         "✗ Nem sikerült feltölteni a hibakeresési jelentést: {error}"
+    header:                "**Hibakeresési jelentés feltöltve:**"
+    auto_delete:           "⏱ A beillesztések 6 óra múlva automatikusan törlődnek."
+    full_logs_hint:        "Teljes naplók feltöltéséhez használd a `hermes debug share` parancsot a CLI-ből."
+    share_hint:            "Oszd meg ezeket a hivatkozásokat a Hermes csapattal támogatásért."
+
+  deny:
+    stale:                 "❌ Parancs elutasítva (a jóváhagyás elavult)."
+    no_pending:            "Nincs elutasítható függőben lévő parancs."
+    denied_singular:       "❌ Parancs elutasítva."
+    denied_plural:         "❌ Parancsok elutasítva ({count} parancs)."
+
+  fast:
+    not_supported:         "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."
+    status:                "⚡ Priority Processing\n\nJelenlegi mód: `{mode}`\n\n_Használat:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes lehetőségek:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (csak ebben a munkamenetben)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Futási idejű lábléc: **{state}**\nMezők: `{fields}`\nPlatform: `{platform}`"
+    usage:                 "Használat: `/footer [on|off|status]`"
+    saved:                 "📎 Futási idejű lábléc: **{state}**{example}\n_(globálisan elmentve — a következő üzenettől lép életbe)_"
+    example_line:          "\nPélda: `{preview}`"
+    state_on:              "ON"
+    state_off:             "OFF"
+
+  goal:
+    unavailable:           "A célok nem érhetők el ebben a munkamenetben."
+    no_goal_set:           "Nincs cél beállítva."
+    paused:                "⏸ Cél szüneteltetve: {goal}"
+    no_resume:             "Nincs folytatható cél."
+    resumed:               "▶ Cél folytatva: {goal}\nKüldj bármilyen üzenetet a folytatáshoz, vagy várj — a következő körben megteszem a következő lépést."
+    invalid:               "Érvénytelen cél: {error}"
+    set:                   "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes parancsok**\n"
+    skill_header:          "\n⚡ **Készségparancsok** ({count} aktív):"
+    more_use_commands:     "\n... és még {count}. Használd a `/commands` parancsot a teljes, lapozható listához."
+
+  insights:
+    invalid_days:          "Érvénytelen --days érték: {value}"
+    error:                 "Hiba a betekintések generálásakor: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban hiba: {error}"
+    subscribed_suffix:     "(feliratkozva — értesítést kapsz, ha a {task_id} befejeződik vagy elakad)"
+    truncated_suffix:      "… (csonkítva; használd a `hermes kanban …` parancsot a terminálban a teljes kimenethez)"
+    no_output:             "(nincs kimenet)"
+
+  personality:
+    none_configured:       "Nincs személyiség beállítva itt: `{path}/config.yaml`"
+    header:                "🎭 **Elérhető személyiségek**\n"
+    none_option:           "• `none` — (nincs személyiségréteg)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nHasználat: `/personality <name>`"
+    save_failed:           "⚠️ Nem sikerült menteni a személyiség módosítását: {error}"
+    cleared:               "🎭 Személyiség törölve — alap ügynöki viselkedés használatban.\n_(a következő üzenettől lép életbe)_"
+    set_to:                "🎭 Személyiség beállítva: **{name}**\n_(a következő üzenettől lép életbe)_"
+    unknown:               "Ismeretlen személyiség: `{name}`\n\nElérhetők: {available}"
+
+  profile:
+    header:                "👤 **Profil:** `{profile}`"
+    home:                  "📂 **Kezdőkönyvtár:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (alapértelmezett)"
+    level_disabled:            "none (kikapcsolva)"
+    scope_session:             "munkamenet-felülbírálás"
+    scope_global:              "globális konfiguráció"
+    status:                    "🧠 **Gondolkodási beállítások**\n\n**Erőfeszítés:** `{level}`\n**Hatókör:** {scope}\n**Megjelenítés:** {display}\n\n_Használat:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "be ✓"
+    display_off:               "ki"
+    display_set_on:            "🧠 ✓ Gondolkodás megjelenítése: **BE**\nA modell gondolatai minden válasz előtt megjelennek itt: **{platform}**."
+    display_set_off:           "🧠 ✓ Gondolkodás megjelenítése: **KI** itt: **{platform}**"
+    reset_global_unsupported:  "⚠️ A `/reasoning reset --global` nem támogatott. Használd a `/reasoning <level> --global` parancsot a globális alapérték módosításához."
+    reset_done:                "🧠 ✓ A munkamenet gondolkodási felülbírálása törölve; visszaállás a globális konfigurációra."
+    unknown_arg:               "⚠️ Ismeretlen argumentum: `{arg}`\n\n**Érvényes szintek:** none, minimal, low, medium, high, xhigh\n**Megjelenítés:** show, hide\n**Megőrzés:** add hozzá a `--global` opciót a munkameneten túli mentéshez"
+    set_global:                "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (mentve a konfigurációba)\n_(a következő üzenettől lép életbe)_"
+    set_global_save_failed:    "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — a konfiguráció mentése sikertelen)\n_(a következő üzenettől lép életbe)_"
+    set_session:               "🧠 ✓ Gondolkodási erőfeszítés beállítva: `{effort}` (csak ebben a munkamenetben — add hozzá a `--global` opciót a megőrzéshez)\n_(a következő üzenettől lép életbe)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp megszakítva. Az MCP-eszközök változatlanok."
+    always_followup:       "ℹ️ A jövőbeli `/reload-mcp` hívások megerősítés nélkül futnak. Újra engedélyezhető az `approvals.mcp_reload_confirm: true` beállítással a config.yaml fájlban."
+    confirm_prompt:        "⚠️ **A /reload-mcp megerősítése**\n\nAz MCP-szerverek újratöltése újraépíti az eszközkészletet ehhez a munkamenethez, és **érvényteleníti a szolgáltató prompt-gyorsítótárát** — a következő üzenet újraküldi a teljes bemeneti tokent. Hosszú kontextusú vagy magas gondolkodási szintű modelleknél ez költséges lehet.\n\nVálassz:\n• **Egyszeri jóváhagyás** — újratöltés most\n• **Mindig jóváhagy** — újratöltés most, és ennek a kérdésnek a végleges elnémítása\n• **Megszakítás** — az MCP-eszközök változatlanok maradnak\n\n_Szöveges alternatíva: válaszolj `/approve`, `/always` vagy `/cancel` paranccsal._"
+    header:                "🔄 **MCP-szerverek újratöltve**\n"
+    reconnected:           "♻️ Újracsatlakozva: {names}"
+    added:                 "➕ Hozzáadva: {names}"
+    removed:               "➖ Eltávolítva: {names}"
+    none_connected:        "Nincsenek csatlakoztatott MCP-szerverek."
+    tools_available:       "\n🔧 {tools} eszköz érhető el {servers} szerverről"
+    failed:                "❌ MCP újratöltés sikertelen: {error}"
+
+  reload_skills:
+    header:                "🔄 **Készségek újratöltve**\n"
+    no_new:                "Nem észleltünk új készséget."
+    total:                 "\n📚 {count} készség érhető el"
+    added_header:          "➕ **Hozzáadott készségek:**"
+    removed_header:        "➖ **Eltávolított készségek:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Készségek újratöltése sikertelen: {error}"
+
+  reset:
+    header_default:        "✨ Munkamenet visszaállítva! Kezdjük tiszta lappal."
+    header_new:            "✨ Új munkamenet elindítva!"
+    header_titled:         "✨ Új munkamenet elindítva: {title}"
+    title_rejected:        "\n⚠️ Cím elutasítva: {error}"
+    title_error_untitled:  "\n⚠️ {error} — a munkamenet cím nélkül indult."
+    title_empty_untitled:  "\n⚠️ Tisztítás után a cím üres — a munkamenet cím nélkül indult."
+    tip:                   "\n✦ Tipp: {tip}"
+
+  restart:
+    in_progress:           "⏳ Az átjáró újraindítása már folyamatban van..."
+    restarting:            "♻ Átjáró újraindítása. Ha 60 másodpercen belül nem kapsz értesítést, indítsd újra a konzolból a `hermes gateway restart` paranccsal."
+
+  resume:
+    db_unavailable:        "A munkamenet-adatbázis nem érhető el."
+    no_named_sessions:     "Nem található elnevezett munkamenet.\nHasználd a `/title Saját munkamenet` parancsot a jelenlegi munkamenet elnevezéséhez, majd a `/resume Saját munkamenet` paranccsal térhetsz vissza hozzá."
+    list_header:           "📋 **Elnevezett munkamenetek**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nHasználat: `/resume <munkamenet neve>`"
+    list_failed:           "Nem sikerült listázni a munkameneteket: {error}"
+    not_found:             "Nem található '**{name}**' nevű munkamenet.\nArgumentumok nélkül használd a `/resume` parancsot az elérhető munkamenetek megtekintéséhez."
+    already_on:            "📌 Már a **{name}** munkamenetben vagy."
+    switch_failed:         "Nem sikerült munkamenetet váltani."
+    resumed_one:           "↻ **{title}** munkamenet folytatva ({count} üzenet). Beszélgetés visszaállítva."
+    resumed_many:          "↻ **{title}** munkamenet folytatva ({count} üzenet). Beszélgetés visszaállítva."
+    resumed_no_count:      "↻ **{title}** munkamenet folytatva. Beszélgetés visszaállítva."
+
+  retry:
+    no_previous:           "Nincs előző üzenet az újrapróbáláshoz."
+
+  rollback:
+    not_enabled:           "Az ellenőrzőpontok nincsenek bekapcsolva.\nKapcsold be a config.yaml fájlban:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Nem található ellenőrzőpont ehhez: {cwd}"
+    invalid_number:        "Érvénytelen ellenőrzőpont-szám. Használj 1-{max} közötti értéket."
+    restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"
+    success:               "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."
+
+  status:
+    header:                "📊 **Hermes Gateway állapot**"
+    session_id:            "**Munkamenet-azonosító:** `{session_id}`"
+    title:                 "**Cím:** {title}"
+    created:               "**Létrehozva:** {timestamp}"
+    last_activity:         "**Utolsó tevékenység:** {timestamp}"
+    tokens:                "**Tokenek:** {tokens}"
+    agent_running:         "**Ügynök fut:** {state}"
+    state_yes:             "Igen ⚡"
+    state_no:              "Nem"
+    queued:                "**Sorban álló folytatások:** {count}"
+    platforms:             "**Csatlakoztatott platformok:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
+    stopped:               "⚡ Leállítva. Folytathatod ezt a munkamenetet."
+    no_active:             "Nincs leállítható aktív feladat."
+
+  title:
+    db_unavailable:        "A munkamenet-adatbázis nem érhető el."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Tisztítás után a cím üres. Használj nyomtatható karaktereket."
+    set_to:                "✏️ Munkamenet címe beállítva: **{title}**"
+    not_found:             "A munkamenet nem található az adatbázisban."
+    current_with_title:    "📌 Munkamenet: `{session_id}`\nCím: **{title}**"
+    current_no_title:      "📌 Munkamenet: `{session_id}`\nNincs cím beállítva. Használat: `/title Saját munkamenet neve`"
+
+  topic:
+    not_telegram_dm:         "A /topic parancs csak Telegram privát csevegésekben érhető el."
+    no_session_db:           "A munkamenet-adatbázis nem érhető el."
+    unauthorized:            "Nincs jogosultságod a /topic használatához ezen a boton."
+    restore_needs_topic:     "Egy munkamenet visszaállításához először hozz létre vagy nyiss meg egy Telegram topicot, majd küldd a /topic <session-id> parancsot abban a topicban. Új topic létrehozásához nyisd meg az All Messagest, és küldj oda bármilyen üzenetet."
+    topics_disabled:         "A Telegram topicok még nincsenek engedélyezve ehhez a bothoz.\n\nHogyan engedélyezd:\n1. Nyisd meg a @BotFathert.\n2. Válaszd ki a botod.\n3. Nyisd meg a Bot Settings → Threads Settings menüt.\n4. Kapcsold be a Threaded Mode-ot, és győződj meg róla, hogy a felhasználók új threadeket hozhatnak létre.\n\nEzután küldd újra a /topic parancsot."
+    topics_user_disallowed:  "A Telegram topicok engedélyezve vannak, de a felhasználók nem hozhatnak létre topicokat.\n\nNyisd meg a @BotFather → válaszd ki a botod → Bot Settings → Threads Settings menüt, majd kapcsold ki a 'Disallow users to create new threads' opciót.\n\nEzután küldd újra a /topic parancsot."
+    enable_failed:           "Nem sikerült engedélyezni a Telegram topic módot: {error}"
+    bound_status:            "Ez a topic ehhez van kapcsolva:\nMunkamenet: {label}\nID: {session_id}\n\nHasználd a /new parancsot, hogy lecseréld ezt a topicot új munkamenetre.\nPárhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
+    thread_ready:            "A többmunkamenetes Telegram topicok engedélyezve vannak.\n\nEz a topic független Hermes-munkamenetként szolgál. Használd a /new parancsot, hogy lecseréld a topic jelenlegi munkamenetét. Párhuzamos munkához nyisd meg az All Messagest, és küldj oda egy üzenetet egy másik topic létrehozásához."
+    untitled_session:        "Cím nélküli munkamenet"
+
+  undo:
+    nothing:               "Nincs mit visszavonni."
+    removed:               "↩️ {count} üzenet visszavonva.\nEltávolítva: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ A /update csak üzenetküldő platformokról érhető el. Futtasd a `hermes update` parancsot a terminálból."
+    not_git_repo:            "✗ Nem git-tárhely — frissítés nem lehetséges."
+    hermes_cmd_not_found:    "✗ Nem sikerült megtalálni a `hermes` parancsot. A Hermes fut, de a frissítőparancs nem találta a futtatható fájlt a PATH-on vagy a jelenlegi Python interpreteren keresztül. Próbáld futtatni a `hermes update` parancsot manuálisan a terminálban."
+    start_failed:            "✗ Nem sikerült elindítani a frissítést: {error}"
+    starting:                "⚕ Hermes frissítés indítása… A folyamatot itt fogom közvetíteni."
+
+  usage:
+    rate_limits:              "⏱️ **Sebességkorlátok:** {state}"
+    header_session:           "📊 **Munkamenet tokenhasználat**"
+    label_model:              "Modell: `{model}`"
+    label_input_tokens:       "Bemeneti tokenek: {count}"
+    label_cache_read:         "Gyorsítótár-olvasási tokenek: {count}"
+    label_cache_write:        "Gyorsítótár-írási tokenek: {count}"
+    label_output_tokens:      "Kimeneti tokenek: {count}"
+    label_total:              "Összesen: {count}"
+    label_api_calls:          "API-hívások: {count}"
+    label_cost:               "Költség: {prefix}${amount}"
+    label_cost_included:      "Költség: belefoglalva"
+    label_context:            "Kontextus: {used} / {total} ({pct}%)"
+    label_compressions:       "Tömörítések: {count}"
+    header_session_info:      "📊 **Munkamenet-információ**"
+    label_messages:           "Üzenetek: {count}"
+    label_estimated_context:  "Becsült kontextus: ~{count} token"
+    detailed_after_first:     "_(A részletes használat az első ügynökválasz után érhető el)_"
+    no_data:                  "Ehhez a munkamenethez nincsenek elérhető használati adatok."
+
+  verbose:
+    not_enabled:           "A `/verbose` parancs nincs engedélyezve az üzenetküldő platformokon.\n\nEngedélyezd a `config.yaml` fájlban:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Eszközfolyamat: **OFF** — nem jelenik meg eszközaktivitás."
+    mode_new:              "⚙️ Eszközfolyamat: **NEW** — eszközváltáskor jelenik meg (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
+    mode_all:              "⚙️ Eszközfolyamat: **ALL** — minden eszközhívás megjelenik (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
+    mode_verbose:          "⚙️ Eszközfolyamat: **VERBOSE** — minden eszközhívás teljes argumentumokkal."
+    saved_suffix:          "_(elmentve ehhez: **{platform}** — a következő üzenettől lép életbe)_"
+    save_failed:           "_(nem sikerült menteni a konfigurációba: {error})_"
+
+  voice:
+    enabled_voice_only:    "Hangmód bekapcsolva.\nHanggal válaszolok, ha hangüzenetet küldesz.\nHasználd a /voice tts parancsot, hogy minden üzenetre hangválaszt kapj."
+    disabled_text:         "Hangmód kikapcsolva. Csak szöveges válaszok."
+    tts_enabled:           "Auto-TTS bekapcsolva.\nMinden válasz tartalmaz egy hangüzenetet."
+    status_mode:           "Hangmód: {label}"
+    status_channel:        "Hangcsatorna: #{channel}"
+    status_participants:   "Résztvevők: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (beszél)"
+    enabled_short:         "Hangmód bekapcsolva."
+    disabled_short:        "Hangmód kikapcsolva."
+    label_off:             "Ki (csak szöveg)"
+    label_voice_only:      "Be (hangválasz hangüzenetekre)"
+    label_all:             "TTS (hangválasz minden üzenetre)"
+
+  yolo:
+    disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."
+    enabled:                    "⚡ YOLO mód **BE** ebben a munkamenetben — minden parancs automatikusan jóváhagyva. Óvatosan használd."
+
+  shared:
+    session_db_unavailable:      "A munkamenet-adatbázis nem érhető el."
+    session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
+    session_not_found:           "A munkamenet nem található az adatbázisban."
+    warn_passthrough:            "⚠️ {error}"

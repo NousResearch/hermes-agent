@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -386,6 +387,66 @@ class TestSearchPathValidation:
         result = ops.search("pattern", path="/some/path")
         assert result.error is not None
         assert "search failed" in result.error.lower() or "Search error" in result.error
+
+
+class TestSearchFilesFallbackHiddenPaths:
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
+        """Fallback find should include visible files when path is inside hidden root."""
+        root = tmp_path / ".hermes" / "logs"
+        root.mkdir(parents=True)
+        visible_file = root / "agent.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+        nested_hidden_file = root / "nested" / ".secret.log"
+        visible_nested_file = root / "nested" / "visible.log"
+
+        for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+    def test_normal_root_still_excludes_hidden_descendants(self, tmp_path, monkeypatch):
+        """Fallback find should still exclude hidden descendant paths for normal roots."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_file = root / "agent.log"
+        visible_nested_file = root / "nested" / "visible.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+
+        for p in [visible_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
 class TestShellFileOpsWriteDenied:

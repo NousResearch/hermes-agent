@@ -125,12 +125,58 @@ your LAN through the public path).
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
 
 ```bash
-# Install and run
-git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
-npm install && npm start   # downloads Camoufox (~300MB) on first run
+# Clone the Camofox browser server first
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
 
-# Or via Docker
-docker run -d --network host -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
+# Build and start with Docker using the default container settings
+# (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
+make up
+
+# Stop and remove the default container
+make down
+
+# Force a clean rebuild (for example, after upgrading VERSION/RELEASE)
+make reset
+
+# Just download binaries without building
+make fetch
+
+# Override arch or version explicitly
+make up ARCH=x86_64
+make up VERSION=135.0.1 RELEASE=beta.24
+```
+
+`make up` starts the default container immediately. If you want custom runtime settings such as a larger Node heap, VNC, or a persistent profile directory, build the image first and then run it yourself:
+
+```bash
+# Build the image without starting the default container
+make build
+
+# Start with persistence, VNC live view, and a larger Node heap
+mkdir -p ~/.camofox-docker
+docker run -d \
+  --name camofox-browser \
+  --restart unless-stopped \
+  -p 9377:9377 \
+  -p 6080:6080 \
+  -p 5901:5900 \
+  -e CAMOFOX_PORT=9377 \
+  -e ENABLE_VNC=1 \
+  -e VNC_BIND=0.0.0.0 \
+  -e VNC_RESOLUTION=1920x1080 \
+  -e MAX_OLD_SPACE_SIZE=2048 \
+  -v ~/.camofox-docker:/root/.camofox \
+  camofox-browser:135.0.1-aarch64
+```
+
+With VNC enabled, the browser runs in headed mode and can be watched live in your browser at `http://localhost:6080` (noVNC). You can also connect a native VNC client to `localhost:5901`.
+
+If you already ran `make up`, stop and remove that default container before starting the custom one:
+
+```bash
+make down
+# then run the custom docker run command above
 ```
 
 Then set in `~/.hermes/.env`:
@@ -189,6 +235,52 @@ If step 5 logs you out, the Camofox server isn't honoring the stable `userId`. D
 
 Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/browser_auth/camofox/` (or the equivalent under `$HERMES_HOME` for non-default profiles). The actual browser profile data lives on the Camofox server side, keyed by that `userId`. To fully reset a persistent profile, clear it on the Camofox server and remove the corresponding Hermes profile's state directory.
 
+#### Externally managed Camofox sessions
+
+When another app drives the visible Camofox browser (a desktop assistant, a custom integration, another agent), configure Hermes to operate inside that same identity instead of spawning its own isolated profile.
+
+Three knobs control the behavior:
+
+| Setting | Env var | Effect |
+|---------|---------|--------|
+| `browser.camofox.user_id` | `CAMOFOX_USER_ID` | Camofox `userId` Hermes uses when creating tabs. Setting this opts the session into "externally managed" mode. |
+| `browser.camofox.session_key` | `CAMOFOX_SESSION_KEY` | `sessionKey` (a.k.a. `listItemId`) sent on tab creation. Used to match an existing tab during adoption. Defaults to a per-task value if unset. |
+| `browser.camofox.adopt_existing_tab` | `CAMOFOX_ADOPT_EXISTING_TAB` | When true, Hermes calls `GET /tabs?userId=<user_id>` on first use and reuses an existing tab before creating a new one. |
+
+Env vars take precedence over `config.yaml`. Either form works:
+
+```yaml
+browser:
+  camofox:
+    user_id: shared-camofox
+    session_key: visible-tab
+    adopt_existing_tab: true
+```
+
+```bash
+CAMOFOX_USER_ID=shared-camofox
+CAMOFOX_SESSION_KEY=visible-tab
+CAMOFOX_ADOPT_EXISTING_TAB=true
+```
+
+**What changes when `user_id` is set:**
+
+- Hermes skips destructive cleanup at task end (same as `managed_persistence: true`). The other app's tab/cookies/profile survive.
+- Hermes does **not** call `DELETE /sessions/<user_id>` — that endpoint wipes all user data, so it would nuke the external app's session if it fired.
+
+**How tab adoption works (when `adopt_existing_tab: true`):**
+
+1. On the first browser tool call after a process start, Hermes issues `GET /tabs?userId=<user_id>` (5-second timeout).
+2. If any tab in the response has `listItemId == session_key`, Hermes adopts the most recently created one in that group.
+3. Otherwise, Hermes adopts the most recently created tab for the user (any `listItemId`).
+4. If no tabs exist or the request fails, Hermes falls back to creating a new tab on the next operation.
+
+Adoption only fires until `tab_id` is populated for the session. If the external app closes the adopted tab mid-run, the next browser tool call will surface a Camofox error — Hermes does not re-poll for a fresh tab on every call.
+
+**Picking `session_key`:** if you want Hermes to reliably attach to a *specific* existing tab, set `session_key` to the `listItemId` the external app used when creating it. If you leave `session_key` unset and only set `user_id`, Hermes generates a per-task `session_key` (`task_<id>`) — Hermes will share cookies and the profile with the external app, but will open its own tab alongside instead of reusing one.
+
+**Concurrency note:** the external app and Hermes can drive the same Camofox `userId` simultaneously, but Camofox does not coordinate per-tab focus between clients. Coordinate ownership at the application layer (e.g. the external app pauses while Hermes runs).
+
 #### VNC live view
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
@@ -238,6 +330,22 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
 
+### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
+
+If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.
+
+Why:
+
+- `/browser connect` expects Hermes itself to reach a usable CDP endpoint
+- modern Chrome live-debugging sessions often expose a host-local endpoint that is not directly reachable from WSL the same way a classic `9222` port is
+- even when Windows Chrome is debuggable, the cleanest integration is often to let a Windows-side browser MCP server attach to Chrome and let Hermes talk to that MCP server
+
+For that setup, prefer `chrome-devtools-mcp` through Hermes MCP support.
+
+See the MCP guide for the practical setup:
+
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+
 ### Local browser mode
 
 If you do **not** set any cloud credentials and don't use `/browser connect`, Hermes can still use the browser tools through a local Chromium install driven by `agent-browser`.
@@ -260,6 +368,13 @@ BROWSERBASE_SESSION_TIMEOUT=600000
 
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
+
+# Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects
+# `--no-sandbox,--disable-dev-shm-usage` when it detects root or AppArmor-restricted
+# unprivileged user namespaces (Ubuntu 23.10+, DGX Spark, many container images),
+# so most users don't need to set this. Set it manually only if you need a flag
+# Hermes doesn't add automatically; setting it disables the auto-injection.
+AGENT_BROWSER_ARGS=--no-sandbox
 ```
 
 ### Install agent-browser CLI
@@ -360,6 +475,15 @@ Check the browser console for any JavaScript errors
 ```
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
+
+`browser_console` also evaluates JavaScript when called with an `expression` argument — same shape as DevTools console, the result comes back parsed (JSON-serialized objects become dicts; primitive values stay primitive).
+
+```
+browser_console(expression="document.querySelector('h1').textContent")
+browser_console(expression="JSON.stringify(performance.timing)")
+```
+
+When a CDP supervisor is active for the current session (typical for any session that's run `browser_navigate` against a CDP-capable backend), evaluation runs over the supervisor's persistent WebSocket — no subprocess startup cost. Falls through to the standard agent-browser CLI path otherwise. Behaviour is identical either way; only latency changes.
 
 ### `browser_cdp`
 

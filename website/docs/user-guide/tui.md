@@ -66,7 +66,7 @@ export HERMES_TUI_DIR=/path/to/prebuilt/ui-tui
 hermes --tui
 ```
 
-The directory must contain `dist/entry.js` and an up-to-date `node_modules`.
+The directory must contain `dist/entry.js`.
 
 ## Keybindings
 
@@ -119,15 +119,14 @@ export HERMES_TUI_THEME=light
 
 ## Busy indicator styles
 
-The status-bar FaceTicker is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style (or `none` for a minimal dot) via config:
+The status-bar busy indicator is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style via config or the `/indicator` slash command:
 
 ```yaml
 display:
-  busy_indicator:
-    style: kawaii     # kawaii | minimal | dots | wings | none
+  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii
 ```
 
-Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
+Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
 ## Auto-resume
 

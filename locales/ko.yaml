@@ -1,0 +1,350 @@
+# Hermes 정적 메시지 카탈로그 -- 한국어
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  위험한 명령: {description}"
+  choose_long:     "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"
+  choose_short:    "      [o]한 번  |  [s]세션  |  [d]거부"
+  prompt_long:     "      선택 [o/s/a/D]: "
+  prompt_short:    "      선택 [o/s/D]: "
+  timeout:         "      ⏱ 시간 초과 - 명령을 거부합니다"
+  allowed_once:    "      ✓ 한 번 허용됨"
+  allowed_session: "      ✓ 이 세션에서 허용됨"
+  allowed_always:  "      ✓ 영구 허용 목록에 추가됨"
+  denied:          "      ✗ 거부됨"
+  cancelled:       "      ✗ 취소됨"
+  blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
+
+gateway:
+  approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
+  draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
+  goal_cleared:     "✓ 목표가 삭제되었습니다."
+  no_active_goal:   "활성 목표가 없습니다."
+  config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
+  config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
+
+  model:
+    error_prefix:           "오류: {error}"
+    switched:               "모델이 `{model}`(으)로 전환되었습니다"
+    provider_label:         "제공자: {provider}"
+    context_label:          "컨텍스트: {tokens} 토큰"
+    max_output_label:       "최대 출력: {tokens} 토큰"
+    cost_label:             "비용: {cost}"
+    capabilities_label:     "기능: {capabilities}"
+    prompt_caching_enabled: "프롬프트 캐싱: 활성화됨"
+    warning_prefix:         "경고: {warning}"
+    saved_global:           "config.yaml에 저장됨 (`--global`)"
+    session_only_hint:      "_(세션 한정 — 영구 저장하려면 `--global`을 추가하세요)_"
+    current_label:          "현재: `{model}` ({provider})"
+    current_tag:            " (현재)"
+    more_models_suffix:     " (+{count}개 더 있음)"
+    usage_switch_model:     "`/model <name>` — 모델 전환"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — 제공자 전환"
+    usage_persist:          "`/model <name> --global` — 영구 저장"
+
+  agents:
+    header:                "🤖 **활성 에이전트 및 작업**"
+    active_agents:         "**활성 에이전트:** {count}"
+    this_chat:             " · 이 채팅"
+    more:                  "... 외 {count}개 더"
+    running_processes:     "**실행 중인 백그라운드 프로세스:** {count}"
+    async_jobs:            "**게이트웨이 비동기 작업:** {count}"
+    none:                  "활성 에이전트나 실행 중인 작업이 없습니다."
+    state_starting:        "시작 중"
+    state_running:         "실행 중"
+
+  approve:
+    no_pending:            "승인 대기 중인 명령이 없습니다."
+    once_singular:         "✅ 명령이 승인되었습니다. 에이전트가 재개됩니다..."
+    once_plural:           "✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다..."
+    session_singular:      "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨). 에이전트가 재개됩니다..."
+    session_plural:        "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다..."
+    always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
+    always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
+
+  background:
+    usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
+    started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."
+
+  branch:
+    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
+    no_conversation:       "분기할 대화가 없습니다 — 먼저 메시지를 보내주세요."
+    create_failed:         "분기 생성에 실패했습니다: {error}"
+    switch_failed:         "분기는 생성되었으나 전환에 실패했습니다."
+    branched_one:          "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
+    branched_many:         "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
+
+  commands:
+    usage:                 "사용법: `/commands [page]`"
+    skill_header:          "⚡ **스킬 명령**:"
+    default_desc:          "스킬 명령"
+    none:                  "사용 가능한 명령이 없습니다."
+    header:                "📚 **명령 목록** (총 {total}개, {page}/{total_pages} 페이지)"
+    nav_prev:              "`/commands {page}` ← 이전"
+    nav_next:              "다음 → `/commands {page}`"
+    out_of_range:          "_(요청한 페이지 {requested}이(가) 범위를 벗어났습니다. {page} 페이지를 표시합니다.)_"
+
+  compress:
+    not_enough:            "압축할 대화가 충분하지 않습니다 (최소 4개의 메시지가 필요합니다)."
+    no_provider:           "구성된 제공자가 없습니다 -- 압축할 수 없습니다."
+    nothing_to_do:         "아직 압축할 내용이 없습니다 (대화 내용이 모두 보호된 컨텍스트입니다)."
+    focus_line:            "초점: \"{topic}\""
+    summary_failed:        "⚠️ 요약 생성에 실패했습니다 ({error}). 과거 메시지 {count}개가 제거되어 자리표시자로 대체되었으며, 이전 컨텍스트는 더 이상 복구할 수 없습니다. auxiliary.compression 모델 설정을 확인해 보세요."
+    aux_failed:            "ℹ️ 구성된 압축 모델 `{model}`이(가) 실패했습니다 ({error}). 메인 모델로 복구되어 컨텍스트는 보존되었지만, config.yaml의 `auxiliary.compression.model` 설정을 확인하는 것이 좋습니다."
+    failed:                "압축 실패: {error}"
+
+  debug:
+    upload_failed:         "✗ 디버그 보고서 업로드 실패: {error}"
+    header:                "**디버그 보고서가 업로드되었습니다:**"
+    auto_delete:           "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
+    full_logs_hint:        "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
+    share_hint:            "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
+
+  deny:
+    stale:                 "❌ 명령이 거부되었습니다 (승인이 만료됨)."
+    no_pending:            "거부 대기 중인 명령이 없습니다."
+    denied_singular:       "❌ 명령이 거부되었습니다."
+    denied_plural:         "❌ 명령이 거부되었습니다 ({count}개)."
+
+  fast:
+    not_supported:         "⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다."
+    status:                "⚡ Priority Processing\n\n현재 모드: `{mode}`\n\n_사용법:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 옵션:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (이 세션에만 적용)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
+    usage:                 "사용법: `/footer [on|off|status]`"
+    saved:                 "📎 런타임 푸터: **{state}**{example}\n_(전역 저장됨 — 다음 메시지부터 적용됩니다)_"
+    example_line:          "\n예시: `{preview}`"
+    state_on:              "ON"
+    state_off:             "OFF"
+
+  goal:
+    unavailable:           "이 세션에서는 목표 기능을 사용할 수 없습니다."
+    no_goal_set:           "설정된 목표가 없습니다."
+    paused:                "⏸ 목표 일시정지: {goal}"
+    no_resume:             "재개할 목표가 없습니다."
+    resumed:               "▶ 목표 재개: {goal}\n메시지를 보내 계속하거나 기다려 주세요 — 다음 차례에 다음 단계를 진행하겠습니다."
+    invalid:               "잘못된 목표: {error}"
+    set:                   "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes 명령**\n"
+    skill_header:          "\n⚡ **스킬 명령** ({count}개 활성):"
+    more_use_commands:     "\n... 외 {count}개 더. 전체 목록은 `/commands`로 확인하세요."
+
+  insights:
+    invalid_days:          "잘못된 --days 값: {value}"
+    error:                 "인사이트 생성 중 오류: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban 오류: {error}"
+    subscribed_suffix:     "(구독 중 — {task_id}이(가) 완료되거나 차단되면 알림을 받습니다)"
+    truncated_suffix:      "… (잘림; 전체 출력을 보려면 터미널에서 `hermes kanban …`을 사용하세요)"
+    no_output:             "(출력 없음)"
+
+  personality:
+    none_configured:       "`{path}/config.yaml`에 구성된 성격이 없습니다"
+    header:                "🎭 **사용 가능한 성격**\n"
+    none_option:           "• `none` — (성격 오버레이 없음)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\n사용법: `/personality <name>`"
+    save_failed:           "⚠️ 성격 변경 저장에 실패했습니다: {error}"
+    cleared:               "🎭 성격이 해제되었습니다 — 기본 에이전트 동작을 사용합니다.\n_(다음 메시지부터 적용됩니다)_"
+    set_to:                "🎭 성격이 **{name}**(으)로 설정되었습니다\n_(다음 메시지부터 적용됩니다)_"
+    unknown:               "알 수 없는 성격: `{name}`\n\n사용 가능: {available}"
+
+  profile:
+    header:                "👤 **프로필:** `{profile}`"
+    home:                  "📂 **홈:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (기본값)"
+    level_disabled:            "none (비활성화됨)"
+    scope_session:             "세션 재정의"
+    scope_global:              "전역 설정"
+    status:                    "🧠 **추론 설정**\n\n**노력:** `{level}`\n**범위:** {scope}\n**표시:** {display}\n\n_사용법:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "켜짐 ✓"
+    display_off:               "꺼짐"
+    display_set_on:            "🧠 ✓ 추론 표시: **켜짐**\n**{platform}**에서 응답 전에 모델의 사고 과정이 표시됩니다."
+    display_set_off:           "🧠 ✓ 추론 표시: **꺼짐** (**{platform}**에서)"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global`은 지원되지 않습니다. 전역 기본값을 변경하려면 `/reasoning <level> --global`을 사용하세요."
+    reset_done:                "🧠 ✓ 세션 추론 재정의가 해제되었습니다. 전역 설정으로 돌아갑니다."
+    unknown_arg:               "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 수준:** none, minimal, low, medium, high, xhigh\n**표시:** show, hide\n**영구화:** 이 세션을 넘어 저장하려면 `--global`을 추가하세요"
+    set_global:                "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
+    set_global_save_failed:    "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)\n_(다음 메시지부터 적용됩니다)_"
+    set_session:               "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)\n_(다음 메시지부터 적용됩니다)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp가 취소되었습니다. MCP 도구는 변경되지 않았습니다."
+    always_followup:       "ℹ️ 이후 `/reload-mcp` 호출은 확인 없이 실행됩니다. config.yaml의 `approvals.mcp_reload_confirm: true`로 다시 활성화할 수 있습니다."
+    confirm_prompt:        "⚠️ **/reload-mcp 확인**\n\nMCP 서버를 재로드하면 이 세션의 도구 세트가 재구성되며 **제공자 프롬프트 캐시가 무효화됩니다** — 다음 메시지에서 전체 입력 토큰이 다시 전송됩니다. 긴 컨텍스트 또는 고도 추론 모델에서는 비용이 클 수 있습니다.\n\n선택하세요:\n• **한 번 승인** — 지금 재로드\n• **항상 승인** — 지금 재로드하고 이 프롬프트를 영구 비활성화\n• **취소** — MCP 도구를 변경하지 않음\n\n_텍스트 대체: `/approve`, `/always`, `/cancel`로 응답하세요._"
+    header:                "🔄 **MCP 서버가 재로드되었습니다**\n"
+    reconnected:           "♻️ 재연결됨: {names}"
+    added:                 "➕ 추가됨: {names}"
+    removed:               "➖ 제거됨: {names}"
+    none_connected:        "연결된 MCP 서버가 없습니다."
+    tools_available:       "\n🔧 {servers}개 서버에서 {tools}개 도구 사용 가능"
+    failed:                "❌ MCP 재로드 실패: {error}"
+
+  reload_skills:
+    header:                "🔄 **스킬이 재로드되었습니다**\n"
+    no_new:                "새로운 스킬이 감지되지 않았습니다."
+    total:                 "\n📚 {count}개 스킬 사용 가능"
+    added_header:          "➕ **추가된 스킬:**"
+    removed_header:        "➖ **제거된 스킬:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ 스킬 재로드 실패: {error}"
+
+  reset:
+    header_default:        "✨ 세션이 초기화되었습니다! 새로 시작합니다."
+    header_new:            "✨ 새 세션이 시작되었습니다!"
+    header_titled:         "✨ 새 세션이 시작되었습니다: {title}"
+    title_rejected:        "\n⚠️ 제목이 거부되었습니다: {error}"
+    title_error_untitled:  "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
+    title_empty_untitled:  "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
+    tip:                   "\n✦ 팁: {tip}"
+
+  restart:
+    in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
+    restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
+
+  resume:
+    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
+    no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
+    list_header:           "📋 **이름이 지정된 세션**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\n사용법: `/resume <session name>`"
+    list_failed:           "세션 목록을 가져올 수 없습니다: {error}"
+    not_found:             "'**{name}**'와 일치하는 세션이 없습니다.\n사용 가능한 세션을 보려면 인수 없이 `/resume`을 사용하세요."
+    already_on:            "📌 이미 **{name}** 세션에 있습니다."
+    switch_failed:         "세션 전환에 실패했습니다."
+    resumed_one:           "↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다."
+    resumed_many:          "↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다."
+    resumed_no_count:      "↻ **{title}** 세션 재개됨. 대화가 복원되었습니다."
+
+  retry:
+    no_previous:           "재시도할 이전 메시지가 없습니다."
+
+  rollback:
+    not_enabled:           "체크포인트가 활성화되어 있지 않습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "{cwd}에 체크포인트를 찾을 수 없습니다"
+    invalid_number:        "잘못된 체크포인트 번호입니다. 1-{max}을 사용하세요."
+    restored:              "✅ 체크포인트 {hash}(으)로 복원됨: {reason}\n롤백 전 스냅샷이 자동으로 저장되었습니다."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "홈 채널 저장에 실패했습니다: {error}"
+    success:               "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."
+
+  status:
+    header:                "📊 **Hermes 게이트웨이 상태**"
+    session_id:            "**세션 ID:** `{session_id}`"
+    title:                 "**제목:** {title}"
+    created:               "**생성됨:** {timestamp}"
+    last_activity:         "**최종 활동:** {timestamp}"
+    tokens:                "**토큰:** {tokens}"
+    agent_running:         "**에이전트 실행 중:** {state}"
+    state_yes:             "예 ⚡"
+    state_no:              "아니오"
+    queued:                "**대기 중인 후속 작업:** {count}"
+    platforms:             "**연결된 플랫폼:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
+    stopped:               "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
+    no_active:             "중지할 활성 작업이 없습니다."
+
+  title:
+    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ 정리 후 제목이 비어 있습니다. 인쇄 가능한 문자를 사용해 주세요."
+    set_to:                "✏️ 세션 제목 설정됨: **{title}**"
+    not_found:             "데이터베이스에서 세션을 찾을 수 없습니다."
+    current_with_title:    "📌 세션: `{session_id}`\n제목: **{title}**"
+    current_no_title:      "📌 세션: `{session_id}`\n제목이 설정되지 않았습니다. 사용법: `/title 내 세션 이름`"
+
+  topic:
+    not_telegram_dm:         "/topic 명령은 Telegram 비공개 채팅에서만 사용할 수 있습니다."
+    no_session_db:           "세션 데이터베이스를 사용할 수 없습니다."
+    unauthorized:            "이 봇에서 /topic을 사용할 권한이 없습니다."
+    restore_needs_topic:     "세션을 복원하려면 먼저 Telegram 토픽을 만들거나 열고, 해당 토픽 안에서 /topic <session-id>를 보내세요. 새 토픽을 만들려면 All Messages를 열고 그곳으로 메시지를 보내세요."
+    topics_disabled:         "이 봇에는 아직 Telegram 토픽이 활성화되어 있지 않습니다.\n\n활성화 방법:\n1. @BotFather를 엽니다.\n2. 봇을 선택합니다.\n3. Bot Settings → Threads Settings를 엽니다.\n4. Threaded Mode를 켜고 사용자가 새 스레드를 만들 수 있도록 허용합니다.\n\n그런 다음 다시 /topic을 보내세요."
+    topics_user_disallowed:  "Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.\n\n@BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 'Disallow users to create new threads'를 끄세요.\n\n그런 다음 다시 /topic을 보내세요."
+    enable_failed:           "Telegram 토픽 모드 활성화에 실패했습니다: {error}"
+    bound_status:            "이 토픽은 다음에 연결되어 있습니다:\n세션: {label}\nID: {session_id}\n\n이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.\n병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
+    thread_ready:            "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
+    untitled_session:        "제목 없는 세션"
+
+  undo:
+    nothing:               "되돌릴 내용이 없습니다."
+    removed:               "↩️ 메시지 {count}개를 되돌렸습니다.\n제거됨: \"{preview}\""
+
+  update:
+    platform_not_messaging:  "✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요."
+    not_git_repo:            "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
+    hermes_cmd_not_found:    "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
+    start_failed:            "✗ 업데이트 시작 실패: {error}"
+    starting:                "⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
+
+  usage:
+    rate_limits:              "⏱️ **요청 제한:** {state}"
+    header_session:           "📊 **세션 토큰 사용량**"
+    label_model:              "모델: `{model}`"
+    label_input_tokens:       "입력 토큰: {count}"
+    label_cache_read:         "캐시 읽기 토큰: {count}"
+    label_cache_write:        "캐시 쓰기 토큰: {count}"
+    label_output_tokens:      "출력 토큰: {count}"
+    label_total:              "합계: {count}"
+    label_api_calls:          "API 호출: {count}"
+    label_cost:               "비용: {prefix}${amount}"
+    label_cost_included:      "비용: 포함됨"
+    label_context:            "컨텍스트: {used} / {total} ({pct}%)"
+    label_compressions:       "압축: {count}"
+    header_session_info:      "📊 **세션 정보**"
+    label_messages:           "메시지: {count}"
+    label_estimated_context:  "예상 컨텍스트: 약 {count} 토큰"
+    detailed_after_first:     "_(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_"
+    no_data:                  "이 세션에 사용 가능한 사용량 데이터가 없습니다."
+
+  verbose:
+    not_enabled:           "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다."
+    mode_new:              "⚙️ 도구 진행 상황: **NEW** — 도구가 변경될 때 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
+    mode_all:              "⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
+    mode_verbose:          "⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다."
+    saved_suffix:          "_(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_"
+    save_failed:           "_(설정에 저장할 수 없습니다: {error})_"
+
+  voice:
+    enabled_voice_only:    "음성 모드가 활성화되었습니다.\n음성 메시지를 보내시면 음성으로 답변하겠습니다.\n모든 메시지에 대해 음성으로 응답받으려면 /voice tts를 사용하세요."
+    disabled_text:         "음성 모드가 비활성화되었습니다. 텍스트로만 응답합니다."
+    tts_enabled:           "자동 TTS가 활성화되었습니다.\n모든 응답에 음성 메시지가 포함됩니다."
+    status_mode:           "음성 모드: {label}"
+    status_channel:        "음성 채널: #{channel}"
+    status_participants:   "참가자: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (말하는 중)"
+    enabled_short:         "음성 모드가 활성화되었습니다."
+    disabled_short:        "음성 모드가 비활성화되었습니다."
+    label_off:             "꺼짐 (텍스트 전용)"
+    label_voice_only:      "켜짐 (음성 메시지에 음성으로 응답)"
+    label_all:             "TTS (모든 메시지에 음성으로 응답)"
+
+  yolo:
+    disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
+    enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
+
+  shared:
+    session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."
+    session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
+    session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
+    warn_passthrough:            "⚠️ {error}"

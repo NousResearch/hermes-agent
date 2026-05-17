@@ -15,6 +15,8 @@ import logging
 import threading
 from typing import Any, Dict, FrozenSet, Optional
 
+from urllib.parse import urlparse
+
 from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,
     _load_auth_store,
@@ -25,6 +27,46 @@ from hermes_cli.auth import (
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
+
+# Allowlist of hosts the Nous Portal proxy is willing to forward minted
+# bearer tokens to. The bearer is a long-lived agent_key minted by
+# portal.nousresearch.com — sending it anywhere else would leak it.
+_ALLOWED_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
+    "inference-api.nousresearch.com",
+})
+
+
+def _validate_nous_inference_url(url: str) -> str:
+    """Return *url* if it points at an allowlisted Nous inference host,
+    otherwise fall back to the documented default.
+
+    Defense-in-depth: ``inference_base_url`` comes from the Portal's
+    refresh / agent-key-mint response and from on-disk ``auth.json``.
+    Both are normally trustworthy, but a compromised refresh response
+    (MITM on portal.nousresearch.com, malicious local process writing
+    auth.json) could otherwise redirect every subsequent proxy request
+    — bearing the user's minted agent_key — to an attacker-controlled
+    endpoint. Validating scheme + host closes that loop.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return DEFAULT_NOUS_INFERENCE_URL
+    if parsed.scheme != "https":
+        logger.warning(
+            "proxy: refusing non-https inference_base_url scheme %r; "
+            "falling back to default",
+            parsed.scheme,
+        )
+        return DEFAULT_NOUS_INFERENCE_URL
+    if parsed.hostname not in _ALLOWED_INFERENCE_HOSTS:
+        logger.warning(
+            "proxy: refusing inference_base_url host %r not in allowlist; "
+            "falling back to default",
+            parsed.hostname,
+        )
+        return DEFAULT_NOUS_INFERENCE_URL
+    return url.rstrip("/")
 
 # Endpoints inference-api.nousresearch.com actually serves. Anything else
 # the proxy will reject with 404 — keeps stray clients from leaking weird
@@ -95,8 +137,8 @@ class NousPortalAdapter(UpstreamAdapter):
                     "Try `hermes login nous` to re-authenticate."
                 )
 
-            base_url = refreshed.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL
-            base_url = base_url.rstrip("/")
+            raw_base_url = refreshed.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL
+            base_url = _validate_nous_inference_url(raw_base_url)
 
             return UpstreamCredential(
                 bearer=agent_key,

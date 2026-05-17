@@ -1080,7 +1080,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [node, str(bundled)], bundled.parent
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
-    #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).
+    #    --dev flow: npm install if needed, then tsx src/entry.tsx.
     if _tui_need_npm_install(tui_dir):
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
@@ -1102,10 +1102,30 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
 
     if tui_dev:
+        # Keep the local @hermes/ink package exports in sync with source.
+        # --dev runs src/entry.tsx directly, but @hermes/ink resolves through
+        # packages/hermes-ink/dist/entry-exports.js. If that dist bundle is
+        # stale after a pull, newer hooks/components can exist in src while
+        # being missing at runtime (e.g. useCursorAdvance). Prebuild it here.
+        npm = _node_bin("npm")
+        ink_dir = tui_dir / "packages" / "hermes-ink"
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(ink_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI dev prebuild failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
+
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
-        npm = _node_bin("npm")
         return [npm, "start"], tui_dir
 
     # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.

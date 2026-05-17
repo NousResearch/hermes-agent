@@ -367,6 +367,7 @@ def run_doctor(args):
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
+    active_runtime_provider = ""
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -593,6 +594,7 @@ def run_doctor(args):
                     provider_ids_to_accept.add(runtime_provider)
                 except Exception:
                     runtime_provider = provider
+            active_runtime_provider = runtime_provider or provider or ""
 
             catalog_provider = provider
             if (
@@ -1661,6 +1663,23 @@ def run_doctor(args):
 
     # Clear the "Running …" line and print all results in submission order.
     print("\r" + " " * 70 + "\r", end="")
+
+    def _is_inactive_optional_provider_issue(label: str, issue: str) -> bool:
+        """Do not promote optional provider-key failures into final issues.
+
+        The row still prints as a warning/failure, but an invalid Gemini key
+        should not make doctor fail when the active runtime is GPT/Codex and
+        Gemini OAuth is not configured. Switching to Gemini will still be caught
+        by the configured-provider credential checks above.
+        """
+        normalized_label = (label or "").strip().lower()
+        active = (active_runtime_provider or "").strip().lower()
+        if "gemini" in normalized_label and not (
+            "gemini" in active or active in {"google", "google-ai"}
+        ):
+            return True
+        return False
+
     for _r in _results:
         for _glyph, _label, _detail in _r.lines:
             if _detail:
@@ -1671,6 +1690,8 @@ def run_doctor(args):
         if _issues_to_add and _has_healthy_oauth_fallback_for_apikey_provider(_r.label):
             _issues_to_add = []
         for _issue in _issues_to_add:
+            if _is_inactive_optional_provider_issue(_r.label, _issue):
+                continue
             issues.append(_issue)
 
     # =========================================================================
@@ -1699,10 +1720,8 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
-        if api_disabled:
-            issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
+        # Missing API keys disable optional toolsets, but they are not runtime
+        # health issues for installs that do not use those tools.
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     

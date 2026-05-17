@@ -6112,6 +6112,30 @@ class AIAgent:
             from agent.prompt_builder import COMPUTER_USE_GUIDANCE
             stable_parts.append(COMPUTER_USE_GUIDANCE)
 
+        # MCP Tool Search: when active, surface the deferred-tool roster so
+        # the model knows which names exist behind ``tool_search``. Without
+        # this block the model can't discover MCP tools by name. See
+        # tools/mcp_tool_search.py + issue #6839.
+        if "tool_search" in self.valid_tool_names:
+            try:
+                from tools.deferred_pool import get_pool as _get_def_pool
+                _summaries = _get_def_pool().summaries()
+            except Exception:
+                _summaries = []
+            if _summaries:
+                # Group by toolset for readability (mcp-github, mcp-slack, ...).
+                _by_ts: Dict[str, List[Tuple[str, str]]] = {}
+                for _n, _ts, _s in _summaries:
+                    _by_ts.setdefault(_ts, []).append((_n, _s))
+                _lines = [
+                    "Deferred MCP tools (full schemas not loaded; use `tool_search` to fetch):",
+                ]
+                for _ts in sorted(_by_ts.keys()):
+                    _lines.append(f"  [{_ts}]")
+                    for _n, _s in sorted(_by_ts[_ts]):
+                        _lines.append(f"    - {_n}: {_s}" if _s else f"    - {_n}")
+                stable_parts.append("\n".join(_lines))
+
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             stable_parts.append(nous_subscription_prompt)
@@ -11260,6 +11284,25 @@ class AIAgent:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+                # MCP Tool Search: a successful tool_search promotion
+                # mutates the deferred pool, so rebuild self.tools/
+                # valid_tool_names so promoted MCP tools become callable on
+                # the next round. Invalidates the cached system prompt so
+                # the deferred-roster block re-renders. See issue #6839.
+                if function_name == "tool_search":
+                    try:
+                        self.tools = get_tool_definitions(
+                            enabled_toolsets=self.enabled_toolsets,
+                            disabled_toolsets=self.disabled_toolsets,
+                            quiet_mode=self.quiet_mode,
+                        )
+                        self.valid_tool_names = (
+                            {tool["function"]["name"] for tool in self.tools}
+                            if self.tools else set()
+                        )
+                        self._cached_system_prompt = None
+                    except Exception as _tsfx:
+                        logger.warning("tool_search post-promotion refresh failed: %s", _tsfx)
             results[index] = (function_name, function_args, result, duration, is_error, False)
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
@@ -11813,6 +11856,22 @@ class AIAgent:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+                # MCP Tool Search: sequential dispatch path (see also the
+                # parallel path above). See issue #6839.
+                if function_name == "tool_search":
+                    try:
+                        self.tools = get_tool_definitions(
+                            enabled_toolsets=self.enabled_toolsets,
+                            disabled_toolsets=self.disabled_toolsets,
+                            quiet_mode=self.quiet_mode,
+                        )
+                        self.valid_tool_names = (
+                            {tool["function"]["name"] for tool in self.tools}
+                            if self.tools else set()
+                        )
+                        self._cached_system_prompt = None
+                    except Exception as _tsfx:
+                        logger.warning("tool_search post-promotion refresh failed: %s", _tsfx)
 
             # Track file-mutation outcome for the turn-end verifier.  See
             # the concurrent path for the rationale; both paths must feed

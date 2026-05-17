@@ -294,11 +294,20 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        # Include the deferred pool generation: tool_search promotions
+        # mutate which MCP tool schemas appear in filtered_tools, so a
+        # cache key blind to it would serve stale lists.
+        try:
+            from tools.deferred_pool import get_pool as _get_def_pool
+            deferred_gen = _get_def_pool().generation
+        except Exception:
+            deferred_gen = 0
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
+            deferred_gen,
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -449,6 +458,14 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # MCP Tool Search: when enabled, strip MCP tool schemas out of self.tools
+    # and park them in the deferred pool. The model interacts with them via
+    # the `tool_search` tool (tools/mcp_tool_search.py). See issue #6839.
+    try:
+        filtered_tools = _apply_mcp_tool_search(filtered_tools, quiet_mode)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("MCP tool_search pass skipped: %s", e)
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -472,6 +489,132 @@ def _compute_tool_definitions(
         logger.warning("Schema sanitization skipped: %s", e)
 
     return filtered_tools
+
+
+# =============================================================================
+# MCP Tool Search support
+# =============================================================================
+
+def _get_tool_search_config() -> Tuple[bool, bool, int]:
+    """Return (enabled, always_active, threshold_chars). Defaults: off."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        mcp_cfg = (cfg.get("mcp") or {}).get("tool_search") or {}
+        enabled = bool(mcp_cfg.get("enabled", False))
+        always_active = bool(mcp_cfg.get("always_active", False))
+        threshold = int(mcp_cfg.get("threshold_chars", 8000))
+        return enabled, always_active, threshold
+    except Exception:
+        return False, False, 8000
+
+
+def _estimate_schema_chars(tool_def: Dict[str, Any]) -> int:
+    """Cheap proxy for tokens: serialized JSON length."""
+    try:
+        return len(json.dumps(tool_def, ensure_ascii=False))
+    except Exception:
+        return 0
+
+
+def _apply_mcp_tool_search(
+    filtered_tools: List[Dict[str, Any]],
+    quiet_mode: bool,
+) -> List[Dict[str, Any]]:
+    """Strip MCP tool schemas and park them in the deferred pool.
+
+    When ``mcp.tool_search.enabled: true`` and either ``always_active`` or
+    total MCP-tool schema size exceeds ``threshold_chars``, every tool whose
+    toolset starts with ``mcp-`` is removed from the returned list and
+    inserted into the deferred pool with a 1-line summary. The ``tool_search``
+    tool's check_fn (``len(pool) > 0``) then unhides it on the next pass.
+
+    Tools that the model has already "selected" via tool_search.* on a prior
+    turn (i.e. were removed from the pool) flow through unchanged.
+    """
+    enabled, always_active, threshold = _get_tool_search_config()
+    if not enabled:
+        return filtered_tools
+
+    from tools.deferred_pool import get_pool
+    pool = get_pool()
+    rget = registry.get_toolset_for_tool
+
+    promoted = pool.promoted_names()
+    mcp_tools: List[Tuple[int, Dict[str, Any], str]] = []
+    other_tools: List[Dict[str, Any]] = []
+    for td in filtered_tools:
+        name = td.get("function", {}).get("name", "")
+        toolset = rget(name) or ""
+        if toolset.startswith("mcp-"):
+            if name in promoted:
+                # Model has already fetched this schema via tool_search —
+                # keep it directly callable.
+                other_tools.append(td)
+            else:
+                mcp_tools.append((_estimate_schema_chars(td), td, toolset))
+        else:
+            other_tools.append(td)
+
+    if not mcp_tools:
+        return filtered_tools
+
+    total_chars = sum(c for c, _, _ in mcp_tools)
+    if not always_active and total_chars < threshold:
+        # Below threshold: hand back unchanged but make sure the pool is
+        # empty so tool_search's check_fn correctly hides it.
+        if len(pool) > 0:
+            pool.clear()
+        return filtered_tools
+
+    # Above threshold (or always_active): move every MCP tool into the pool,
+    # excluding any whose name has been re-promoted to other_tools via
+    # tool_search select. (Re-promoted tools won't appear in `mcp_tools`
+    # because they pass the toolset check but were removed from the pool —
+    # so they stay visible in self.tools.) We simply clear+repopulate to
+    # avoid stale entries when MCP servers refresh.
+    pool.clear()
+    for _, td, toolset in mcp_tools:
+        fn = td.get("function", {})
+        name = fn.get("name", "")
+        desc = fn.get("description", "") or ""
+        # 1-line summary: first sentence or first 120 chars
+        summary = desc.split("\n", 1)[0].strip()
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+        pool.put(
+            name=name,
+            schema={
+                "name": name,
+                "description": desc,
+                "parameters": fn.get("parameters", {}),
+            },
+            summary=summary,
+            toolset=toolset,
+        )
+
+    # Ensure tool_search itself is visible. Its check_fn gates on pool size,
+    # which was 0 at registry.get_definitions() time (before we filled the
+    # pool above), so it gets filtered out of `filtered_tools`. Re-inject
+    # from the registry directly — it's our handle to fetch the parked MCP
+    # schemas back, so it MUST be in the returned list.
+    if not any(t.get("function", {}).get("name") == "tool_search" for t in other_tools):
+        ts_entry = registry.get_entry("tool_search")
+        if ts_entry is not None:
+            other_tools.append({"type": "function", "function": ts_entry.schema})
+
+    logger.info(
+        "MCP tool_search active: parked %d MCP tool(s) (~%d chars saved); "
+        "%d promoted",
+        len(mcp_tools), total_chars, len(promoted),
+    )
+    if not quiet_mode:
+        print(
+            f"🔍 MCP tool_search active: parked {len(mcp_tools)} MCP tool(s) "
+            f"(~{total_chars} chars saved) — use `tool_search` to fetch"
+        )
+
+    return other_tools
 
 
 # =============================================================================

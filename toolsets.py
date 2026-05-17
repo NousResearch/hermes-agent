@@ -70,6 +70,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # MCP Tool Search: deferred-tool fetch (mcp.tool_search.enabled, gated
+    # on deferred pool being non-empty via check_fn — invisible otherwise).
+    "tool_search",
 ]
 
 

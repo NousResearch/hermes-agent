@@ -179,11 +179,29 @@ These tools modify agent state directly and return synthetic tool results withou
 
 ### Iteration Budget
 
-The agent tracks iterations via `IterationBudget`:
+The agent tracks iterations via `IterationBudget` (defined in `run_agent.py`):
 
 - Default: 90 iterations (configurable via `agent.max_turns`)
 - Each agent gets its own budget. Subagents get independent budgets capped at `delegation.max_iterations` (default 50) — total iterations across parent + subagents can exceed the parent's cap
-- At 100%, the agent stops and returns a summary of work done
+- Thread-safe via `threading.Lock` — `used`, `remaining`, `consume()`, `refund()` all acquire the lock
+- `consume()` returns `False` when the budget is exhausted
+- `refund()` gives back one iteration (used by `execute_code` tool)
+
+**Pre-budget warning:** `IterationBudget` supports an `on_warn` callback that fires exactly once when remaining drops to `warn_at` (configurable via `agent.prebudget_warn_at`, default 10). This enables structured audit state capture before the hard limit is hit. The callback signature is `on_warn(used: int, max_total: int) -> None` and errors in the callback are caught so they can't crash the budget mechanism.
+
+**Hard budget exhaustion:** When the budget is exhausted, the agent:
+1. Prints `⚠ Iteration budget exhausted (N/M iterations used)` to the user
+2. Injects a `[BUDGET EXHAUSTED -- INJECTED STATE]` block into the conversation context containing recent tool calls, last reasoning content, and file changes
+3. Calls `_handle_max_iterations()` which requests a final summary from the model via one extra toolless API call
+4. If the model doesn't produce a text response, a forced user message tells it to summarise
+
+**Config:**
+
+```yaml
+agent:
+  max_turns: 90           # Hard cap (default: 90)
+  prebudget_warn_at: 10   # Emit audit dump when remaining <= N (default: 10, 0 = off)
+```
 
 ### Fallback Model
 

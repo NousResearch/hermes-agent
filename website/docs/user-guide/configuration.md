@@ -706,6 +706,20 @@ Budget pressure is enabled by default. The agent sees warnings naturally as part
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
 
+### Pre-Budget Pause
+
+When the agent approaches the iteration limit, it can emit a structured audit state dump to give the user visibility and a resumption anchor. The dump includes session ID, model/provider, iteration count, task preview, files changed, and next-step instructions. When the hard limit is reached, the dump is also injected into the conversation context so the model's summary request has accurate state rather than hallucinating.
+
+```yaml
+agent:
+  max_turns: 90                # Max iterations per conversation turn (default: 90)
+  prebudget_warn_at: 10        # Emit audit dump when remaining <= N (default: 10, 0 = off)
+  api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+```
+
+- **`max_turns`** — Hard cap. When reached, the agent stops and attempts a final summary.
+- **`prebudget_warn_at`** — Warning threshold. When iterations remaining drops to or below this value, the agent emits a structured audit dump via CLI notification, gateway message, or log. This fires exactly once per budget cycle and does not interrupt the agent — it simply surfaces state for the user. Set to `0` to disable.
+
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/docs/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
 ### API Timeouts

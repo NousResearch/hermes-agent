@@ -297,12 +297,20 @@ class IterationBudget:
 
     ``execute_code`` (programmatic tool calling) iterations are refunded via
     :meth:`refund` so they don't eat into the budget.
+
+    Pre-budget warning: when ``warn_at`` is set and remaining drops to
+    ``warn_at``, ``on_warn(used, max_total)`` is called exactly once per
+    budget cycle.  This enables structured audit state capture before the
+    hard budget limit is reached.
     """
 
-    def __init__(self, max_total: int):
+    def __init__(self, max_total: int, on_warn: callable = None, warn_at: int = 0):
         self.max_total = max_total
         self._used = 0
         self._lock = threading.Lock()
+        self._on_warn = on_warn  # callable(used: int, max_total: int) -> None
+        self._warn_at = warn_at
+        self._warned = False  # ensure on_warn fires exactly once
 
     def consume(self) -> bool:
         """Try to consume one iteration.  Returns True if allowed."""
@@ -310,6 +318,17 @@ class IterationBudget:
             if self._used >= self.max_total:
                 return False
             self._used += 1
+            # Fire warning callback exactly once when remaining drops to warn_at
+            if not self._warned and self._warn_at > 0:
+                remaining = self.max_total - self._used
+                if remaining <= self._warn_at:
+                    self._warned = True
+                    if self._on_warn is not None:
+                        try:
+                            self._on_warn(self._used, self.max_total)
+                        except Exception:
+                            # Never let callback failure crash the budget mechanism
+                            logger.debug("Budget on_warn callback failed", exc_info=True)
             return True
 
     def refund(self) -> None:
@@ -1184,6 +1203,7 @@ class AIAgent:
         args: list[str] | None = None,
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        prebudget_warn_at: int = 10,  # Emit audit dump when remaining <= N
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -1249,6 +1269,7 @@ class AIAgent:
             api_mode (str): API mode override: "chat_completions" or "codex_responses"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 90)
+            prebudget_warn_at (int): Emit structured audit dump when remaining iterations <= N. Default: 10.
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
             enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
             disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -1291,9 +1312,19 @@ class AIAgent:
 
         self.model = model
         self.max_iterations = max_iterations
+        # Pre-budget warning: fire an audit dump when remaining <= this value
+        self.prebudget_warn_at = prebudget_warn_at
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
-        self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+        # Wire callback via lambda to avoid early-bound-method resolution.
+        budget = iteration_budget
+        if budget is None:
+            budget = IterationBudget(
+                max_iterations,
+                on_warn=lambda used, max_total: self._on_budget_warn(used, max_total),
+                warn_at=self.prebudget_warn_at,
+            )
+        self.iteration_budget = budget
         self.tool_delay = tool_delay
         self.save_trajectories = save_trajectories
         self.verbose_logging = verbose_logging
@@ -2970,6 +3001,156 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    def _on_budget_warn(self, used: int, max_total: int) -> None:
+        """Called by IterationBudget.consume() when remaining <= warn_at.
+
+        Emits a structured audit state dump to both CLI and gateway channels.
+        Also returns the dump text for callers that need to log it or inject it.
+        """
+        dump = self._build_audit_dump(used, max_total)
+        self._emit_status(dump)
+        logger.info("Pre-budget audit dump emitted (%d/%d iterations used)", used, max_total)
+
+    def _build_audit_dump(self, used: int, max_total: int) -> str:
+        """Build the full structured audit dump text.
+
+        Returns a multi-section markdown-style status report that captures
+        enough context to enable resumption in a new session.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        model_info = f"{self.model} ({self.provider})" if self.provider else self.model
+        remaining = max_total - used
+
+        lines = []
+        lines.append(f"⚠️  Pre-Budget Pause -- Audit State")
+        lines.append("")
+        lines.append(f"**Session**: `{self.session_id or 'unknown'}`")
+        lines.append(f"**Model**: {model_info}")
+        lines.append(f"**Iterations**: {used} / {max_total} used, {remaining} remaining")
+        lines.append(f"**Time**: {now}")
+        lines.append("")
+
+        # --- Current Task ---
+        lines.append("### Current Task")
+        lines.append("")
+        # Extract the most recent user message (last user-role message in messages)
+        task_preview = "N/A"
+        last_assistant_text = ""
+        # We don't have direct access to `messages` here -- the budget callback
+        # fires from consume() which is called early in the loop.  We capture
+        # what we can from available state.  The hard-exhaustion path has full
+        # access to messages and will inject the richer dump there.
+        user_msg = getattr(self, "_pending_user_message", None)
+        if user_msg:
+            task_preview = str(user_msg)[:600]
+        else:
+            task_preview = "Session in progress"
+        lines.append(f"> {task_preview}")
+        lines.append("")
+
+        # --- Files Modified ---
+        lines.append("### Files Modified")
+        lines.append("")
+        file_changes = self._get_file_diff_summary()
+        if file_changes:
+            lines.append(file_changes)
+        else:
+            lines.append("No files changed in this turn.")
+        lines.append("")
+
+        # --- Decisions & Assumptions ---
+        lines.append("### Next Steps")
+        lines.append("")
+        lines.append("The agent was mid-task when the pre-budget warning fired. To resume:")
+        lines.append(f"1. `hermes --resume {self.session_id or 'latest'}`")
+        lines.append("2. The full conversation history is preserved in the session DB")
+        lines.append("3. Continue from where the agent left off")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def _get_file_diff_summary(self) -> str:
+        """Get a summary of modified files in the working directory.
+
+        Uses git diff --stat when available, falls back to git status.
+        Cap at 30 files to avoid bloating the dump.
+        """
+        # Try git diff --stat HEAD first
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "diff", "--stat", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=getattr(self, "_cwd", os.getcwd()),
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Format: " 3 files changed, 12 insertions(+), 4 deletions(-)"
+                # followed by " file | +/-" lines
+                stats = result.stdout.strip()
+                # Get changed file paths
+                lines_out = stats.split("\n")
+                if len(lines_out) > 1:
+                    # File list is all lines except the summary line
+                    file_list = [l for l in lines_out if "|" in l or "*" in l]
+                    if not file_list:
+                        file_list = [l for l in lines_out[:-1] if l.strip()]
+                    if file_list:
+                        return f"_Changed {stats.split(chr(10))[0].strip()}_\n\n" + "\n".join(
+                            f"- `{f.split('|')[0].strip()}`"
+                            for f in file_list[:30]
+                        )
+                return f"_{stats.split(chr(10))[0].strip()}_\n"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Fallback: git status --short
+        try:
+            result = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=getattr(self, "_cwd", os.getcwd()),
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                paths = []
+                for line in result.stdout.strip().split("\n")[:30]:
+                    parts = line.split("  ", 1)
+                    if len(parts) == 2:
+                        paths.append(f"- `{parts[1].strip()}`")
+                if paths:
+                    return "\n".join(paths)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Final fallback: list recently modified .py/.rs/.md files
+        try:
+            cwd = getattr(self, "_cwd", os.getcwd())
+            cutoff = time.time() - 3600  # last hour
+            recent = []
+            for root, _, files in os.walk(cwd):
+                if any(skip in root for skip in {".git", "__pycache__", "node_modules", ".venv", "venv", "build", "target"}):
+                    continue
+                for f in files:
+                    if f.endswith((".py", ".rs", ".md", ".yaml", ".yml", ".json", ".toml", ".sh", ".ts", ".tsx", ".js", ".jsx", ".css", ".html")):
+                        fp = os.path.join(root, f)
+                        try:
+                            if os.path.getmtime(fp) > cutoff:
+                                rel = os.path.relpath(fp, cwd)
+                                recent.append(f"- `{rel}`")
+                        except OSError:
+                            pass
+            if recent:
+                return "\n".join(recent[:30])
+        except Exception:
+            pass
+
+        return ""
+
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
 
@@ -3269,6 +3450,67 @@ class AIAgent:
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
         }
+
+    def _build_exhaustion_injection(self, messages: list, api_call_count: int) -> str:
+        """Build a compressed audit state string for injection into messages.
+
+        This is injected BEFORE the summary request when hard budget
+        exhaustion happens.  It gives the model accurate context so it can
+        summarise what was accomplished rather than hallucinating.
+
+        Unlike the pre-budget dump (which is for the user), this is designed
+        to be read by the model — compact, structured, tool-call aware.
+        """
+        # Gather last N assistant tool calls for "Recent Activity"
+        messages_list = list(messages)
+
+        recent_tools = []
+        for msg in reversed(messages_list[-60:]):
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict):
+                        name = tc.get("function", {}).get("name", "unknown")
+                        args = tc.get("function", {}).get("arguments", "{}")
+                        recent_tools.append((name, args[:200]))
+                    elif hasattr(tc, "function"):
+                        name = tc.function.name
+                        args = tc.function.arguments
+                        recent_tools.append((name, args[:200]))
+                if len(recent_tools) >= 5:
+                    break
+
+        # Extract last assistant reasoning content (for "Next Steps")
+        next_steps = "Continue the task where the agent left off."
+        for msg in reversed(messages_list[-20:]):
+            if msg.get("role") == "assistant" and msg.get("reasoning"):
+                reasoning = msg["reasoning"]
+                if reasoning:
+                    # Take last 300 chars of reasoning as "next steps"
+                    next_steps = reasoning[-300:].strip()
+                    break
+
+        # File diff summary
+        file_changes = self._get_file_diff_summary()
+        file_section = f"\nFiles changed: {file_changes}" if file_changes else ""
+
+        # Build compact injection text
+        lines = [
+            "[BUDGET EXHAUSTED -- INJECTED STATE]",
+            f"Iterations used: {api_call_count}/{self.max_iterations}",
+        ]
+
+        if recent_tools:
+            tool_summary = ", ".join(
+                f"{name}(args)" for name, args in recent_tools[-5:]
+            )
+            lines.append(f"Recent tools: {tool_summary}")
+
+        lines.append(f"Next: {next_steps}")
+        if file_section:
+            lines.append(f"Files{file_section}")
+
+        lines.append("[/BUDGET EXHAUSTED -- INJECTED STATE]")
+        return "\n".join(lines)
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
@@ -12247,7 +12489,14 @@ class AIAgent:
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
-        self.iteration_budget = IterationBudget(self.max_iterations)
+        # Recreate the budget each turn with prebudget_warn_at so subagents
+        # don't carry over the parent's _warned flag and so a new turn gets
+        # its own fresh warning cycle.
+        self.iteration_budget = IterationBudget(
+            self.max_iterations,
+            on_warn=lambda used, max_total: self._on_budget_warn(used, max_total),
+            warn_at=self.prebudget_warn_at,
+        )
 
         # Log conversation turn start for debugging/observability
         _preview_text = _summarize_user_message_for_log(user_message)
@@ -15763,8 +16012,10 @@ class AIAgent:
             or self.iteration_budget.remaining <= 0
         ):
             # Budget exhausted — ask the model for a summary via one extra
-            # API call with tools stripped.  _handle_max_iterations injects a
-            # user message and makes a single toolless request.
+            # API call with tools stripped.  We inject the audit dump into
+            # the messages list so the model has accurate context rather than
+            # hallucinating what it was doing.  _handle_max_iterations then
+            # appends the summary request and makes a single toolless call.
             _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
             self._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
@@ -15775,6 +16026,12 @@ class AIAgent:
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                     "— requesting summary..."
                 )
+
+            # Inject structured audit state so the model can summarise accurately
+            inject_dump = self._build_exhaustion_injection(messages, api_call_count)
+            if inject_dump:
+                messages.append({"role": "user", "content": inject_dump})
+
             final_response = self._handle_max_iterations(messages, api_call_count)
 
             # If running as a kanban worker, block the task so the dispatcher

@@ -77,6 +77,15 @@ class TestEnvLoaderSanitization:
         # Not a credential suffix — should be left alone
         assert os.environ["MY_UNICODE_VAR"] == "héllo wörld"
 
+    def test_preserves_inbound_auth_secrets(self, monkeypatch):
+        from hermes_cli.env_loader import _sanitize_loaded_credentials
+
+        monkeypatch.setenv("API_SERVER_KEY", "🔒a🔒")
+        monkeypatch.setenv("WEBHOOK_SECRET", "🔒a🔒")
+        _sanitize_loaded_credentials()
+        assert os.environ["API_SERVER_KEY"] == "🔒a🔒"
+        assert os.environ["WEBHOOK_SECRET"] == "🔒a🔒"
+
     def test_ascii_credentials_untouched(self, monkeypatch):
         from hermes_cli.env_loader import _sanitize_loaded_credentials
 
@@ -131,3 +140,31 @@ class TestEnvLoaderSanitization:
         _sanitize_loaded_credentials()
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant\x1bapi-key"
         assert capsys.readouterr().err == ""
+
+
+def test_save_env_value_preserves_inbound_auth_secrets(tmp_path, monkeypatch):
+    from hermes_cli import config
+
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    monkeypatch.setattr(config, "ensure_hermes_home", lambda: None)
+    monkeypatch.setattr(config, "get_env_path", lambda: tmp_path / ".env")
+
+    config.save_env_value("WEBHOOK_SECRET", "🔒a🔒")
+    config.save_env_value("API_SERVER_KEY", "🔑server🔑")
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "WEBHOOK_SECRET=🔒a🔒" in env_text
+    assert "API_SERVER_KEY=🔑server🔑" in env_text
+
+
+def test_save_env_value_still_strips_outbound_api_keys(tmp_path, monkeypatch):
+    from hermes_cli import config
+
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    monkeypatch.setattr(config, "ensure_hermes_home", lambda: None)
+    monkeypatch.setattr(config, "get_env_path", lambda: tmp_path / ".env")
+
+    config.save_env_value("OPENAI_API_KEY", "sk-🔒abc")
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=sk-abc" in env_text

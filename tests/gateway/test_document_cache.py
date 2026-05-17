@@ -155,3 +155,11 @@ class TestSupportedDocumentTypes:
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
+
+    @pytest.mark.parametrize(
+        "ext",
+        [".ts", ".tsx", ".js", ".jsx", ".py", ".sh", ".go", ".rs", ".rb", ".java", ".cs", ".cpp", ".c", ".h"],
+    )
+    def test_source_code_extensions_present(self, ext):
+        assert ext in SUPPORTED_DOCUMENT_TYPES
+        assert SUPPORTED_DOCUMENT_TYPES[ext] == "text/plain"

@@ -830,8 +830,19 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".ts": "text/plain",
+    ".tsx": "text/plain",
+    ".js": "text/plain",
+    ".jsx": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+    ".go": "text/plain",
+    ".rs": "text/plain",
+    ".rb": "text/plain",
+    ".java": "text/plain",
+    ".cs": "text/plain",
+    ".cpp": "text/plain",
+    ".c": "text/plain",
+    ".h": "text/plain",
 }
 
 

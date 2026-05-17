@@ -304,6 +304,28 @@ def test_xai_callback_server_accepts_fallback_code_while_browser_connection_is_s
         thread.join(timeout=1.0)
 
 
+def test_xai_callback_server_latches_first_terminal_callback_result():
+    server, thread, result, redirect_uri = _xai_start_callback_server(preferred_port=0)
+    try:
+        with urllib.request.urlopen(f"{redirect_uri}?code=first-code&state=state-1", timeout=2) as response:
+            assert response.status == 200
+        with urllib.request.urlopen(
+            f"{redirect_uri}?error=access_denied&error_description=late&state=state-2",
+            timeout=2,
+        ) as response:
+            body = response.read().decode("utf-8")
+        assert response.status == 200
+        assert "xAI authorization failed" in body
+        assert result["code"] == "first-code"
+        assert result["state"] == "state-1"
+        assert result["error"] is None
+        assert result["error_description"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+
+
 # ---------------------------------------------------------------------------
 # Token roundtrip + reads
 # ---------------------------------------------------------------------------

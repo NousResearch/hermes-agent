@@ -15,6 +15,8 @@ The pure pieces below are where every bug actually lands:
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -148,6 +150,46 @@ class TestPermissionModeSafety:
                 permission_mode="dontAsk",
                 prompt="hi",
             )
+
+    def test_spawn_refuses_bypass_before_environment_checks(self, tmp_path):
+        with pytest.raises(op.OperatorError, match="refused"):
+            op.spawn(
+                project="test",
+                worker="claude",
+                intent="bypass",
+                workdir=tmp_path,
+                prompt="hi",
+                permission_mode="bypassPermissions",
+                binary="definitely-not-a-real-claude-binary",
+                tmux_binary="definitely-not-a-real-tmux-binary",
+            )
+
+    def test_cli_refusal_exits_nonzero(self, tmp_path):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hermes_cli.main",
+                "claude-operator",
+                "spawn",
+                "--project",
+                "test",
+                "--intent",
+                "bypass",
+                "--workdir",
+                str(tmp_path),
+                "--permission-mode",
+                "bypassPermissions",
+                "--prompt",
+                "hi",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "refused" in result.stderr
 
 
 # ---------------------------------------------------------------------------

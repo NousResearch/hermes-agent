@@ -5567,7 +5567,7 @@ def cmd_claude_operator(args):
     """Claude Code worker fleet — spawn/list/status/attach/stop in tmux."""
     from hermes_cli.claude_operator import operator_command
 
-    return operator_command(args)
+    sys.exit(operator_command(args))
 
 
 def cmd_hooks(args):

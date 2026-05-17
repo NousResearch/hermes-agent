@@ -269,6 +269,8 @@ def spawn(
     pinned file under ``~/.hermes/claude-operator/prompts/`` so the
     operator (and the Archivist role) can replay or audit it later.
     """
+    validate_permission_mode(permission_mode)
+
     workdir = Path(workdir).expanduser().resolve()
     if not workdir.is_dir():
         raise OperatorError(f"workdir does not exist or is not a directory: {workdir}")

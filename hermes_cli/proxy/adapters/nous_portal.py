@@ -19,13 +19,16 @@ from typing import Any, Dict, FrozenSet, Optional
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
+    NOUS_INFERENCE_AUTH_AUTO,
+    NOUS_INFERENCE_AUTH_LEGACY,
     _load_auth_store,
     _is_terminal_nous_refresh_error,
     _quarantine_nous_oauth_state,
+    _quarantine_nous_pool_entries,
     _save_auth_store,
     _write_shared_nous_state,
     refresh_nous_oauth_from_state,
-)
+    )
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,21 @@ class NousPortalAdapter(UpstreamAdapter):
         )
 
     def get_credential(self) -> UpstreamCredential:
+        return self._get_credential(auth_mode=NOUS_INFERENCE_AUTH_AUTO)
+
+    def get_retry_credential(
+        self,
+        *,
+        failed_credential: UpstreamCredential,
+        status_code: int,
+    ) -> Optional[UpstreamCredential]:
+        del failed_credential
+        if status_code != 401:
+            return None
+        logger.info("proxy: Nous upstream rejected bearer; retrying with legacy session key")
+        return self._get_credential(auth_mode=NOUS_INFERENCE_AUTH_LEGACY)
+
+    def _get_credential(self, *, auth_mode: str) -> UpstreamCredential:
         with self._lock:
             state = self._read_state()
             if state is None:
@@ -84,7 +102,10 @@ class NousPortalAdapter(UpstreamAdapter):
                 )
 
             try:
-                refreshed = refresh_nous_oauth_from_state(state)
+                refreshed = refresh_nous_oauth_from_state(
+                    state,
+                    auth_mode=auth_mode,
+                )
             except AuthError as exc:
                 if _is_terminal_nous_refresh_error(exc):
                     _quarantine_nous_oauth_state(
@@ -92,7 +113,11 @@ class NousPortalAdapter(UpstreamAdapter):
                         exc,
                         reason="proxy_refresh_failure",
                     )
-                    self._save_state(state)
+                    self._save_state(
+                        state,
+                        quarantine_error=exc,
+                        quarantine_reason="proxy_refresh_failure",
+                    )
                 raise RuntimeError(
                     f"Failed to refresh Nous Portal credentials: {exc}"
                 ) from exc
@@ -136,9 +161,21 @@ class NousPortalAdapter(UpstreamAdapter):
             return None
         return dict(state)  # copy so the refresh helper can mutate freely
 
-    def _save_state(self, state: Dict[str, Any]) -> None:
+    def _save_state(
+        self,
+        state: Dict[str, Any],
+        *,
+        quarantine_error: Optional[AuthError] = None,
+        quarantine_reason: Optional[str] = None,
+    ) -> None:
         try:
             store = _load_auth_store()
+            if quarantine_error is not None and quarantine_reason:
+                _quarantine_nous_pool_entries(
+                    store,
+                    quarantine_error,
+                    reason=quarantine_reason,
+                )
             providers = store.setdefault("providers", {})
             providers["nous"] = state
             _save_auth_store(store)

@@ -141,6 +141,45 @@ def test_nous_adapter_get_credential_refreshes_and_persists(tmp_path, monkeypatc
     assert stored["providers"]["nous"]["agent_key"] == "minted-bearer"
 
 
+def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "jwt-access",
+        "refresh_token": "refresh-tok",
+        "client_id": "hermes-cli",
+        "portal_base_url": "https://portal.nousresearch.com",
+        "inference_base_url": "https://inference-api.nousresearch.com/v1",
+        "agent_key": "jwt-access",
+    })
+
+    refreshed_state = {
+        "access_token": "jwt-access",
+        "refresh_token": "refresh-tok",
+        "client_id": "hermes-cli",
+        "portal_base_url": "https://portal.nousresearch.com",
+        "inference_base_url": "https://inference-api.nousresearch.com/v1",
+        "agent_key": "legacy-bearer",
+        "agent_key_expires_at": "2099-01-01T00:00:00Z",
+    }
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+        return_value=refreshed_state,
+    ) as mock_refresh:
+        adapter = NousPortalAdapter()
+        cred = adapter.get_retry_credential(
+            failed_credential=UpstreamCredential(
+                bearer="jwt-access",
+                base_url="https://inference-api.nousresearch.com/v1",
+            ),
+            status_code=401,
+        )
+
+    assert cred is not None
+    assert cred.bearer == "legacy-bearer"
+    assert mock_refresh.call_args.kwargs["auth_mode"] == "legacy"
+
+
 def test_nous_adapter_get_credential_raises_when_not_logged_in(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = NousPortalAdapter()
@@ -166,6 +205,7 @@ def test_nous_adapter_get_credential_raises_on_refresh_failure(tmp_path, monkeyp
 
 def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch):
     from hermes_cli.auth import AuthError
+    from agent.credential_pool import load_pool
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
@@ -173,6 +213,7 @@ def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch
         "refresh_token": "refresh-tok",
         "agent_key": "stale-agent-key",
     })
+    assert load_pool("nous").select() is not None
 
     with patch(
         "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
@@ -193,6 +234,7 @@ def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch
     assert not nous_state.get("access_token")
     assert not nous_state.get("agent_key")
     assert nous_state["last_auth_error"]["code"] == "invalid_grant"
+    assert stored.get("credential_pool", {}).get("nous") == []
 
 
 def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
@@ -291,12 +333,15 @@ class FakeAdapter(UpstreamAdapter):
     """A test adapter that returns a fixed credential without touching disk."""
 
     def __init__(self, base_url: str, bearer: str = "test-bearer",
-                 allowed=None, raise_on_credential=False):
+                 allowed=None, raise_on_credential=False,
+                 retry_bearer: str | None = None):
         self._base_url = base_url
         self._bearer = bearer
         self._allowed = frozenset(allowed or ["/chat/completions"])
         self._raise = raise_on_credential
+        self._retry_bearer = retry_bearer
         self.calls = 0
+        self.retry_calls = 0
 
     @property
     def name(self): return "fake"
@@ -315,6 +360,17 @@ class FakeAdapter(UpstreamAdapter):
             raise RuntimeError("simulated auth failure")
         return UpstreamCredential(
             bearer=self._bearer, base_url=self._base_url,
+            expires_at="2099-01-01T00:00:00Z",
+        )
+
+    def get_retry_credential(self, *, failed_credential, status_code):
+        del failed_credential
+        self.retry_calls += 1
+        if status_code != 401 or not self._retry_bearer:
+            return None
+        return UpstreamCredential(
+            bearer=self._retry_bearer,
+            base_url=self._base_url,
             expires_at="2099-01-01T00:00:00Z",
         )
 
@@ -358,6 +414,25 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
     return app
 
 
+def _build_retrying_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
+    async def maybe_unauthorized(request):
+        body = await request.read()
+        auth = request.headers.get("Authorization")
+        captured["requests"].append({
+            "method": request.method,
+            "path": request.path,
+            "auth": auth,
+            "body": body.decode("utf-8") if body else "",
+        })
+        if auth == "Bearer jwt-bearer":
+            return web.json_response({"error": "bad token"}, status=401)
+        return web.json_response({"ok": True})
+
+    app = web.Application()
+    app.router.add_route("*", "/v1/chat/completions", maybe_unauthorized)
+    return app
+
+
 def test_server_forwards_chat_completions():
     async def run():
         captured: Dict[str, Any] = {"requests": []}
@@ -381,6 +456,41 @@ def test_server_forwards_chat_completions():
             req = captured["requests"][0]
             assert req["auth"] == "Bearer real-portal-key"
             assert "Hermes-4-70B" in req["body"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_retries_once_with_adapter_retry_credential_on_401():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_retrying_fake_upstream(captured)
+        )
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="jwt-bearer",
+            retry_bearer="legacy-bearer",
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={"model": "Hermes-4-70B"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["ok"] is True
+
+            assert adapter.retry_calls == 1
+            assert [req["auth"] for req in captured["requests"]] == [
+                "Bearer jwt-bearer",
+                "Bearer legacy-bearer",
+            ]
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()

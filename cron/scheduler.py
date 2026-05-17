@@ -1960,18 +1960,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True, registry=None) -> int:
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        registry: Optional agent profile registry for multi-agent mode, used to
+            bind per-agent profile/paths when running scheduled jobs. ``None``
+            keeps single-agent behaviour.
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """

@@ -1970,11 +1970,13 @@ def terminal_tool(
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                         _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -2011,6 +2013,7 @@ def terminal_tool(
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,
+                            "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                         })
 

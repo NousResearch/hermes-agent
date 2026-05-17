@@ -53,13 +53,9 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
-# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
-# that imports the SDK on first call/isinstance check. This preserves:
-#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
-#       _create_openai_client, and
-#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-#
+# OpenAI is imported during module initialization so later model-controlled
+# file writes cannot plant a shadow ``openai`` module before first use.
+# Keep the module-level ``OpenAI`` name for existing patch("run_agent.OpenAI", ...) tests.
 # NOTE: `fire` is ONLY used in the `__main__` block below (for running
 # run_agent.py directly as a CLI) — it is NOT needed for library usage.
 # It is imported there, not here, so that importing run_agent from a
@@ -69,36 +65,13 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-
-
-_OPENAI_CLS_CACHE: Optional[type] = None
+from openai import OpenAI
 
 
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
+    """Return the eagerly imported ``openai.OpenAI`` class."""
+    return OpenAI
 
-
-class _OpenAIProxy:
-    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
-
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.

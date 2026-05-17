@@ -32,6 +32,14 @@ try:
         ContextTypes,
         filters,
     )
+    # MessageReactionHandler ships with python-telegram-bot 20.7+ (issue #27438).
+    # We import lazily because some downstream installs pin a stale PTB; the
+    # adapter degrades gracefully when the handler isn't available rather
+    # than refusing to start.
+    try:
+        from telegram.ext import MessageReactionHandler  # type: ignore[attr-defined]
+    except ImportError:
+        MessageReactionHandler = None  # type: ignore[assignment]
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -47,6 +55,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = None  # type: ignore[assignment]
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -113,6 +122,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global MessageReactionHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -134,6 +144,10 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import MessageReactionHandler as _MRH  # type: ignore[attr-defined]
+        except ImportError:
+            _MRH = None  # type: ignore[assignment]
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -148,6 +162,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -1292,6 +1307,30 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
+            # Emoji-reaction reinforcement (issue #27438).
+            # Only register when:
+            #   - PTB version exposes MessageReactionHandler (20.7+)
+            #   - reaction_signals.enabled is true (env / YAML)
+            # Update.ALL_TYPES already passes message_reaction updates
+            # through (see start_polling calls below), so no separate
+            # allowed_updates change is required here.
+            if MessageReactionHandler is not None:
+                try:
+                    from gateway.reactions import ReactionConfig
+                    if ReactionConfig.from_env().enabled:
+                        self._app.add_handler(
+                            MessageReactionHandler(self._handle_message_reaction)
+                        )
+                        logger.info(
+                            "[%s] MessageReactionHandler registered "
+                            "(reaction_signals enabled)", self.name,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Could not register MessageReactionHandler: %s",
+                        self.name, exc,
+                    )
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2619,6 +2658,95 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
+
+    async def _handle_message_reaction(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Translate a Telegram ``MessageReactionUpdated`` into a ReactionEvent.
+
+        Issue #27438.  Telegram delivers per-user reaction changes via
+        ``update.message_reaction``.  For each new reaction in
+        ``new_reaction`` we build a :class:`gateway.reactions.ReactionEvent`
+        and dispatch through :meth:`BasePlatformAdapter.handle_reaction`
+        which honours the master flag and persists to reactions.db.
+
+        Defensive: anything that goes wrong here is logged and swallowed.
+        A faulty reaction parser must NOT crash the gateway.
+        """
+        try:
+            mr = getattr(update, "message_reaction", None)
+            if mr is None:
+                return
+
+            chat = getattr(mr, "chat", None)
+            user = getattr(mr, "user", None)
+            actor_user_id = getattr(user, "id", None) if user is not None else None
+            channel_id = getattr(chat, "id", None) if chat is not None else None
+            target_message_id = getattr(mr, "message_id", None)
+
+            if actor_user_id is None or channel_id is None or target_message_id is None:
+                # Anonymous group reactions arrive without user; we drop
+                # them rather than attribute the signal to "unknown" --
+                # that's the right call for a learning feature.
+                return
+
+            from gateway.reactions import build_reaction_event, ReactionConfig
+            cfg = ReactionConfig.from_env()
+            if not cfg.enabled:
+                return
+
+            old_reactions = list(getattr(mr, "old_reaction", []) or [])
+            new_reactions = list(getattr(mr, "new_reaction", []) or [])
+
+            # Compute set diff so we emit one event per *change* rather
+            # than one per reaction the user holds.  Telegram resends
+            # the full set on every change, so a naive "iterate new_reaction"
+            # would create N duplicate rows on every tap.
+            def _key(r: Any) -> Optional[str]:
+                # ReactionTypeEmoji -> .emoji; ReactionTypeCustomEmoji ignored
+                # for v1 since custom emoji aren't in DEFAULT_REACTION_WEIGHTS.
+                return getattr(r, "emoji", None)
+
+            old_keys = {_key(r) for r in old_reactions if _key(r)}
+            new_keys = {_key(r) for r in new_reactions if _key(r)}
+            added = new_keys - old_keys
+            removed = old_keys - new_keys
+
+            platform_data = {
+                "chat_type": getattr(chat, "type", None),
+                "chat_title": getattr(chat, "title", None),
+            }
+
+            for emoji in added:
+                event = build_reaction_event(
+                    platform="telegram",
+                    channel_id=channel_id,
+                    actor_user_id=actor_user_id,
+                    target_message_id=target_message_id,
+                    emoji=emoji,
+                    added=True,
+                    platform_data=platform_data,
+                    config=cfg,
+                )
+                if event is not None:
+                    await self.handle_reaction(event)
+
+            for emoji in removed:
+                event = build_reaction_event(
+                    platform="telegram",
+                    channel_id=channel_id,
+                    actor_user_id=actor_user_id,
+                    target_message_id=target_message_id,
+                    emoji=emoji,
+                    added=False,
+                    platform_data=platform_data,
+                    config=cfg,
+                )
+                if event is not None:
+                    await self.handle_reaction(event)
+
+        except Exception as exc:
+            logger.warning("[%s] _handle_message_reaction failed: %s", self.name, exc)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"

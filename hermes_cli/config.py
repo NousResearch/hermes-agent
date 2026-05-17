@@ -1350,6 +1350,22 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
+    # Emoji-reaction reinforcement (issue #27438).
+    #
+    # Captures 👍 / ❤️ / 👎 / 💩 / … reactions on Hermes messages and
+    # persists them to reactions.db under HERMES_HOME so future features
+    # (memory weighting, skill confidence, response-style tuning) can
+    # read the signal.  This block is *separate* from
+    # ``telegram.reactions`` / ``discord.reactions`` / ``slack.reactions``
+    # which control the outgoing 👀/✅/❌ processing-lifecycle reactions.
+    # Defaults to disabled — feature is strictly opt-in.
+    "reaction_signals": {
+        "enabled": False,              # Master switch
+        "min_signal_threshold": 0.5,   # Aggregated weight magnitude below which a message is treated as "no clear signal"
+        "decay_days": 30,              # Older events are eligible for prune_older_than()
+        "include_unknown": False,      # When True, unrecognised emoji are recorded with neutral weight
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk

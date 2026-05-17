@@ -1148,6 +1148,20 @@ def load_gateway_config() -> GatewayConfig:
                 if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
                     os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
 
+            # Emoji-reaction reinforcement (issue #27438) -> env vars.
+            # Top-level block, distinct from the lifecycle ``*.reactions``
+            # booleans on per-platform blocks (which drive 👀/✅/❌).
+            reaction_signals_cfg = yaml_cfg.get("reaction_signals", {})
+            if isinstance(reaction_signals_cfg, dict):
+                if "enabled" in reaction_signals_cfg and not os.getenv("HERMES_REACTION_SIGNALS_ENABLED"):
+                    os.environ["HERMES_REACTION_SIGNALS_ENABLED"] = str(reaction_signals_cfg["enabled"]).lower()
+                if "min_signal_threshold" in reaction_signals_cfg and not os.getenv("HERMES_REACTION_MIN_SIGNAL"):
+                    os.environ["HERMES_REACTION_MIN_SIGNAL"] = str(reaction_signals_cfg["min_signal_threshold"])
+                if "decay_days" in reaction_signals_cfg and not os.getenv("HERMES_REACTION_DECAY_DAYS"):
+                    os.environ["HERMES_REACTION_DECAY_DAYS"] = str(reaction_signals_cfg["decay_days"])
+                if "include_unknown" in reaction_signals_cfg and not os.getenv("HERMES_REACTION_INCLUDE_UNKNOWN"):
+                    os.environ["HERMES_REACTION_INCLUDE_UNKNOWN"] = str(reaction_signals_cfg["include_unknown"]).lower()
+
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "

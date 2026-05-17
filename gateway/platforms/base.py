@@ -469,6 +469,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.reactions import ReactionEvent  # noqa: F401 -- forward-ref target for handle_reaction signature
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
 
@@ -2421,6 +2422,52 @@ class BasePlatformAdapter(ABC):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
+
+    async def handle_reaction(self, reaction_event: "ReactionEvent") -> None:
+        """Default sink for incoming emoji-reaction events (issue #27438).
+
+        Adapters that capture reactions (Telegram MessageReactionHandler,
+        Discord ``on_raw_reaction_add``, Slack ``reaction_added``) build a
+        :class:`gateway.reactions.ReactionEvent` and dispatch through this
+        method.  The default implementation:
+
+        1. Honours the master ``HERMES_REACTION_SIGNALS_ENABLED`` flag --
+           when disabled, this is a no-op so accidentally-registered
+           handlers can't pollute reactions.db.
+        2. Persists the event via :func:`gateway.reaction_store.get_reaction_store`.
+        3. Fires :meth:`on_reaction` so subclasses (and future consumers --
+           memory weighting, skill confidence) can subscribe without
+           having to know about the storage layer.
+
+        All failures are logged and swallowed -- a reaction handler bug
+        must never break the main message flow.
+        """
+        try:
+            from gateway.reactions import ReactionConfig
+            from gateway.reaction_store import get_reaction_store
+        except Exception as exc:
+            logger.debug("[%s] reaction subsystem unavailable: %s", self.name, exc)
+            return
+
+        cfg = ReactionConfig.from_env()
+        if not cfg.enabled:
+            return
+
+        try:
+            get_reaction_store().record(reaction_event)
+        except Exception as exc:
+            logger.warning("[%s] failed to persist reaction event: %s", self.name, exc)
+
+        await self._run_processing_hook("on_reaction", reaction_event)
+
+    async def on_reaction(self, reaction_event: "ReactionEvent") -> None:
+        """Subclass extension point fired after a reaction has been stored.
+
+        Default no-op.  Override to drive memory weighting, skill
+        confidence scoring, response-style tuning, etc.  Exceptions
+        raised here are caught by :meth:`_run_processing_hook` and never
+        affect the writer path.
+        """
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""

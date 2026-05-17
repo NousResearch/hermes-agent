@@ -4300,6 +4300,8 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         raise HTTPException(status_code=403, detail="Path traversal blocked")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+    if target.suffix.lower() in {".py", ".pyc", ".pyo"}:
+        raise HTTPException(status_code=404, detail="File not found")
 
     # Guess content type
     suffix = target.suffix.lower()

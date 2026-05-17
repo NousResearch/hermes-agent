@@ -2050,6 +2050,27 @@ class TestDashboardPluginManifestExtensions:
             "chat:top",
         ]
 
+    @pytest.mark.asyncio
+    async def test_plugin_asset_route_does_not_serve_backend_python(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "python-backend", {
+            "name": "python-backend",
+            "label": "Python Backend",
+            "tab": {"path": "/python-backend"},
+            "entry": "dist/index.js",
+            "api": "plugin_api.py",
+        })
+        plugin_file = tmp_path / "plugins" / "python-backend" / "dashboard" / "plugin_api.py"
+        plugin_file.write_text("SECRET = 'should-not-be-static'\n")
+
+        from fastapi import HTTPException
+        from hermes_cli import web_server
+
+        web_server._dashboard_plugins_cache = None
+        with pytest.raises(HTTPException) as exc:
+            await web_server.serve_plugin_asset("python-backend", "plugin_api.py")
+        assert exc.value.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.

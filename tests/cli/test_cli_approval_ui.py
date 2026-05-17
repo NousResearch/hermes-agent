@@ -109,14 +109,40 @@ class TestCliApprovalUi:
                 600,
             )
 
-        assert "Hermes CLI 권한 승인 요청" in message
-        assert "세션: 업무 환경 상황 파악" in message
-        assert "세션 ID: 20260512_151213_8a0a60" in message
-        assert "작업 위치: /tmp/hermes-work" in message
-        assert "원격 승인" in message
-        assert "/approve" in message
-        assert "터미널에서도" in message
+        assert "[Hermes 승인 요청]" in message
+        assert "무엇을 승인하나요?" in message
+        assert "어디서 요청했나요?" in message
+        assert "- 안건: recursive delete" in message
+        assert "- 프로젝트: hermes-work" in message
+        assert "- 세션: 업무 환경 상황 파악" in message
+        assert "- 세션 ID: 20260512_151213_8a0a60" in message
+        assert "- 작업 위치: /tmp/hermes-work" in message
+        assert "승인/거절은 현재 열려 있는 Hermes 터미널" in message
+        assert "telegram:<chat_id>" in message
         assert "rm -rf /tmp/demo" in message
+
+    def test_approval_notification_lists_remote_telegram_reply_commands(self):
+        cli = _make_cli_stub()
+        cli.session_id = "20260512_151213_8a0a60"
+        cli._pending_title = "llm-eval-pipeline"
+        cli._session_db = None
+
+        with patch("os.getcwd", return_value="/workspace/work/llm-eval-pipeline"):
+            message = cli._build_approval_notification_message(
+                "python run_benchmark.py --target demo",
+                "benchmark execution",
+                600,
+                "telegram:8584626899",
+            )
+
+        assert "- 프로젝트: llm-eval-pipeline" in message
+        assert "- 세션: llm-eval-pipeline" in message
+        assert "- 안건: benchmark execution" in message
+        assert "- 이번 1회만 승인: /approve" in message
+        assert "- 이 세션 동안 같은 유형 승인: /approve session" in message
+        assert "- 항상 승인 규칙 저장: /approve always" in message
+        assert "- 거절: /deny" in message
+        assert "자연어 '승인'은 명령이 아닙니다" in message
 
     def test_approval_callback_includes_view_for_long_commands(self):
         cli = _make_cli_stub()

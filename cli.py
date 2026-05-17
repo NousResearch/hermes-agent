@@ -10805,32 +10805,54 @@ class HermesCLI:
         except Exception:
             cwd = "unknown"
 
+        if cwd and cwd != "unknown":
+            project = os.path.basename(cwd.rstrip(os.sep)) or cwd
+        else:
+            project = "unknown"
+
         try:
             pid = os.getpid()
         except Exception:
             pid = "unknown"
 
-        remote_line = (
-            "원격 승인: Telegram/Gateway에서 /approve, /approve session, /approve always 또는 /deny를 보내면 이 CLI 대기가 해제됩니다."
-            if ":" in str(notify_target or "")
-            else "원격 승인: notify_target이 특정 채팅으로 지정된 경우에만 /approve 또는 /deny로 이 CLI 대기를 해제할 수 있습니다."
-        )
+        remote_enabled = ":" in str(notify_target or "")
+        if remote_enabled:
+            answer_lines = textwrap.dedent("""\
+            답변 방법:
+            - 이번 1회만 승인: /approve
+            - 이 세션 동안 같은 유형 승인: /approve session
+            - 항상 승인 규칙 저장: /approve always
+            - 거절: /deny
+            """).strip()
+        else:
+            answer_lines = textwrap.dedent("""\
+            답변 방법:
+            - 이 알림은 확인용입니다.
+            - 승인/거절은 현재 열려 있는 Hermes 터미널에서 선택해야 합니다.
+            - 원격 승인을 쓰려면 approvals.notify_target을 telegram:<chat_id>처럼 특정 채팅으로 지정하세요.
+            """).strip()
 
-        return textwrap.dedent(f"""\
-        Hermes CLI 권한 승인 요청
-
-        세션: {title}
-        세션 ID: {session_id}
-        작업 위치: {cwd}
-        프로세스: {pid}
-
-        설명: {desc}
-        명령: {cmd}
-        제한시간: {timeout}초
-
-        {remote_line}
-        터미널에서도 기존처럼 once/session/always/deny를 직접 선택할 수 있습니다.
-        """).strip()
+        return "\n".join([
+            "[Hermes 승인 요청]",
+            "",
+            "무엇을 승인하나요?",
+            f"- 안건: {desc}",
+            f"- 실행 명령: {cmd}",
+            f"- 제한시간: {timeout}초",
+            "",
+            "어디서 요청했나요?",
+            f"- 프로젝트: {project}",
+            f"- 작업 위치: {cwd}",
+            f"- 세션: {title}",
+            f"- 세션 ID: {session_id}",
+            f"- 프로세스: {pid}",
+            "",
+            answer_lines,
+            "",
+            "참고:",
+            "- 자연어 '승인'은 명령이 아닙니다. 위 slash command로 답하세요.",
+            "- 터미널에서도 기존처럼 once/session/always/deny를 직접 선택할 수 있습니다.",
+        ]).strip()
 
     def _send_approval_notification(self, target: str, command: str, description: str, timeout: int) -> None:
         """Best-effort out-of-band notification for dangerous-command approvals.

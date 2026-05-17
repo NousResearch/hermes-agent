@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -78,6 +80,54 @@ def test_create_task_unknown_parent_errors(kanban_home):
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
+
+
+def test_create_task_defaults_worker_and_checkpoint_policy(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="policy defaults")
+        task = kb.get_task(conn, tid)
+    assert task.worker_policy == "standard"
+    assert task.checkpoint_policy == "auto"
+
+
+def test_create_task_rejects_invalid_worker_policy(kanban_home):
+    with kb.connect() as conn, pytest.raises(ValueError, match="worker_policy"):
+        kb.create_task(conn, title="bad policy", worker_policy="root_vm")
+
+
+def test_worker_policy_contract_is_structured_and_honest():
+    contract = kb.worker_policy_contract("read_only")
+
+    assert contract["name"] == "read_only"
+    assert contract["allows_edits"] is False
+    assert contract["allows_destructive_commands"] is False
+    assert contract["enforcement_level"] == "contract"
+    assert contract["policy_enforced_by"] == "contract"
+    assert contract["os_sandbox"] is False
+    assert contract["container_sandbox"] is False
+    assert contract["allowed_operations"]
+    assert contract["forbidden_operations"]
+    assert any("Do not edit files" in item for item in contract["instructions"])
+    assert "OS/container sandbox" in contract["honest_sandbox_note"]
+
+
+@pytest.mark.parametrize(
+    "policy,allows_edits,expected_instruction",
+    [
+        ("test_only", False, "Do not edit files"),
+        ("code_edit", True, "workspace-scoped edits"),
+        ("sandbox_strict", True, "strongest available isolation"),
+    ],
+)
+def test_worker_policy_contract_policy_specific_instructions(
+    policy, allows_edits, expected_instruction,
+):
+    contract = kb.worker_policy_contract(policy)
+
+    assert contract["allows_edits"] is allows_edits
+    assert any(expected_instruction in item for item in contract["instructions"])
+    assert contract["os_sandbox"] is False
+    assert contract["enforcement_level"] == "contract"
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +628,41 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
     assert "CLARIFICATION_MARKER" in ctx
     assert c in ctx
     assert "child" in ctx
+
+
+def test_worker_context_includes_read_only_policy_contract(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="review only",
+            assignee="alice",
+            worker_policy="read_only",
+        )
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert "## Worker policy contract" in ctx
+    assert "Policy: read_only" in ctx
+    assert "Do not edit files" in ctx
+    assert "os_sandbox=false" in ctx
+    assert "container_sandbox=false" in ctx
+    assert "enforced_by=contract" in ctx
+
+
+def test_worker_context_includes_code_edit_workspace_scope(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="edit code",
+            assignee="alice",
+            worker_policy="code_edit",
+            workspace_path="/tmp/example-workspace",
+        )
+        ctx = kb.build_worker_context(conn, tid)
+
+    assert "## Worker policy contract" in ctx
+    assert "Policy: code_edit" in ctx
+    assert "workspace-scoped edits" in ctx
+    assert "outside the assigned workspace" in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1169,349 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+
+    def test_default_spawn_injects_worker_policy_checkpoint_and_capabilities(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        task = kb.Task(
+            id="t_dispatch_policy_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            current_run_id=7,
+            worker_policy="sandbox_strict",
+        )
+        checkpoint = kb.create_workspace_checkpoint(task, workspace)
+        setattr(task, "checkpoint_id", checkpoint["id"])
+        task.checkpoint_policy = "auto"
+        task.workspace_path = str(workspace)
+
+        kb._default_spawn(task, str(workspace))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_WORKER_POLICY"] == "sandbox_strict"
+        assert env["HERMES_KANBAN_CHECKPOINT_ID"] == checkpoint["id"]
+        contract = json.loads(env["HERMES_KANBAN_POLICY_CONTRACT"])
+        assert contract["name"] == "sandbox_strict"
+        assert contract["enforcement_level"] == "contract"
+        assert contract["os_sandbox"] is False
+        assert contract["container_sandbox"] is False
+        assert contract["capabilities"]["os_sandbox"] is False
+        caps = kb.json.loads(env["HERMES_KANBAN_ISOLATION_CAPABILITIES"])
+        assert caps["os_sandbox"] is False
+        assert caps["workspace_kind"] == "scratch"
+
+
+def test_dispatcher_records_checkpoint_event_and_run_metadata(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+    spawned: list[tuple[str, str]] = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, workspace))
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="dispatch metadata",
+            assignee="alice",
+            worker_policy="code_edit",
+            checkpoint_policy="manifest",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert res.spawned and spawned
+    assert task.workspace_path
+    assert any(e.kind == "workspace_checkpoint" for e in events)
+    assert run.metadata["worker_policy"]["name"] == "code_edit"
+    assert run.metadata["policy_contract"]["name"] == "code_edit"
+    assert run.metadata["policy_contract"]["allows_edits"] is True
+    assert run.metadata["policy_contract"]["allows_destructive_commands"] is False
+    assert run.metadata["policy_contract"]["os_sandbox"] is False
+    assert run.metadata["checkpoint"]["policy"] == "manifest"
+    assert run.metadata["workspace_capabilities"]["os_sandbox"] is False
+
+
+def test_git_workspace_evidence_is_bounded_and_reports_status(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    (repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+
+    task = kb.Task(
+        id="t_git_evidence",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(repo),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    evidence = kb.collect_workspace_evidence(task, repo)
+
+    assert evidence["kind"] == "git"
+    assert evidence["head"]
+    assert " M tracked.txt" in evidence["status_short"]
+    assert "?? untracked.txt" in evidence["status_short"]
+    assert "tracked.txt" in evidence["diff_stat"]
+    assert "diff --git" not in evidence["diff_stat"]
+    assert len(evidence["status_short"]) <= kb.WORKSPACE_EVIDENCE_MAX_TEXT_BYTES
+
+
+def test_local_workspace_capability_does_not_overclaim_os_sandbox(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    task = kb.Task(
+        id="t_caps",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="ready",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        worker_policy="sandbox_strict",
+    )
+    caps = kb.workspace_capabilities(task, workspace)
+    assert caps["os_sandbox"] is False
+    assert caps["container_sandbox"] is False
+    assert caps["policy_enforced_by"] == "contract"
+
+
+def test_checkpoint_policy_off_suppresses_workspace_evidence(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _profile: True)
+
+    def fake_spawn(task, workspace):
+        return 1234
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="no evidence",
+            assignee="alice",
+            checkpoint_policy="off",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+        assert res.spawned
+        run = kb.latest_run(conn, tid)
+        assert run.metadata["checkpoint"]["enabled"] is False
+        assert "workspace_pre_evidence" not in run.metadata
+
+        kb.complete_task(conn, tid, summary="done")
+        done_run = kb.latest_run(conn, tid)
+        assert "workspace_final_evidence" not in done_run.metadata
+
+
+def test_manifest_workspace_evidence_stops_at_file_cap(tmp_path):
+    workspace = tmp_path / "big"
+    workspace.mkdir()
+    for i in range(kb.WORKSPACE_EVIDENCE_MAX_FILES + 25):
+        (workspace / f"file-{i:03d}.txt").write_text("x", encoding="utf-8")
+    task = kb.Task(
+        id="t_manifest_cap",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="manifest",
+    )
+    evidence = kb.collect_workspace_evidence(task, workspace, mode="manifest")
+    assert evidence["kind"] == "manifest"
+    assert evidence["file_count"] == kb.WORKSPACE_EVIDENCE_MAX_FILES
+    assert evidence["omitted_count"] >= 1
+
+
+def test_scratch_rollback_plan_only_auto_discards_managed_workspace(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    unsafe_workspace = tmp_path / "unsafe"
+    managed_root.mkdir()
+    unsafe_workspace.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(managed_root))
+    task = kb.Task(
+        id="t_unsafe_scratch",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(unsafe_workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, unsafe_workspace)
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["can_rollback"] is False
+    assert plan["safe_to_auto_discard"] is False
+    assert "rm -rf" not in plan["suggested_commands"]
+
+
+def test_manifest_workspace_evidence_stops_at_directory_cap(tmp_path):
+    workspace = tmp_path / "many-dirs"
+    workspace.mkdir()
+    for i in range(kb.WORKSPACE_EVIDENCE_MAX_DIRS + 25):
+        (workspace / f"dir-{i:03d}").mkdir()
+    task = kb.Task(
+        id="t_manifest_dir_cap",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="manifest",
+    )
+    evidence = kb.collect_workspace_evidence(task, workspace, mode="manifest")
+    assert evidence["kind"] == "manifest"
+    assert evidence["dir_count"] == kb.WORKSPACE_EVIDENCE_MAX_DIRS
+    assert evidence["omitted_count"] >= 1
+
+
+def test_scratch_rollback_plan_rejects_managed_root_itself(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(managed_root))
+    task = kb.Task(
+        id="t_managed_root",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="scratch",
+        workspace_path=str(managed_root),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, managed_root)
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["can_rollback"] is False
+    assert plan["safe_to_auto_discard"] is False
+    assert "rm -rf" not in plan["suggested_commands"]
+
+
+def test_workspace_rollback_plan_is_safe_descriptor_not_execution(tmp_path):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=workspace, check=True)
+    (workspace / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=workspace, check=True, capture_output=True, text=True)
+
+    task = kb.Task(
+        id="t_rollback_plan",
+        title="x",
+        body=None,
+        assignee="coder",
+        status="running",
+        priority=0,
+        created_by=None,
+        created_at=0,
+        started_at=None,
+        completed_at=None,
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        claim_lock=None,
+        claim_expires=None,
+        tenant=None,
+        checkpoint_policy="git",
+    )
+    checkpoint = kb.create_workspace_checkpoint(task, workspace)
+    (workspace / "tracked.txt").write_text("changed\n", encoding="utf-8")
+
+    plan = kb.workspace_rollback_plan(task, checkpoint)
+
+    assert plan["checkpoint_id"] == checkpoint["id"]
+    assert plan["kind"] == "git"
+    assert plan["can_rollback"] is True
+    assert plan["executes"] is False
+    assert plan["requires_human_review"] is True
+    assert plan["target_ref"] == checkpoint["evidence"]["head"]
+    assert "git reset --hard" in plan["suggested_commands"]
+    assert (workspace / "tracked.txt").read_text(encoding="utf-8") == "changed\n"
 
 
 # ---------------------------------------------------------------------------

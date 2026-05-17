@@ -62,6 +62,7 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                agent_id=None,
             ),
             call(
                 "post_tool_call",
@@ -72,6 +73,7 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 duration_ms=ANY,
+                agent_id=None,
             ),
             call(
                 "transform_tool_result",
@@ -82,6 +84,7 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
                 duration_ms=ANY,
+                agent_id=None,
             ),
         ]
 

@@ -697,9 +697,14 @@ class TestUpdateInHelp:
 
     def test_update_is_known_command(self):
         """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
+        # _known_commands is local to the message-handling pipeline; verify by
+        # grepping the message-handler bodies.  Multi-agent split the body
+        # into ``_handle_message`` (ContextVar plumbing) and
+        # ``_handle_message_inner`` (legacy logic), so we accept either.
         from gateway.run import GatewayRunner
         import inspect
         source = inspect.getsource(GatewayRunner._handle_message)
+        inner = getattr(GatewayRunner, "_handle_message_inner", None)
+        if inner is not None:
+            source += inspect.getsource(inner)
         assert '"update"' in source

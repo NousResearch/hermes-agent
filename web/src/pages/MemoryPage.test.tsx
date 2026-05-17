@@ -146,8 +146,7 @@ describe("MemoryPage", () => {
     await user.type(topComposer, "New memory fact");
 
     const targetSelect = screen.getByRole("combobox", { name: /memory target/i });
-    await user.click(targetSelect);
-    await user.click(screen.getByRole("option", { name: /memory notes/i }));
+    await user.selectOptions(targetSelect, "memory");
 
     await user.click(screen.getByRole("button", { name: /add entry/i }));
 

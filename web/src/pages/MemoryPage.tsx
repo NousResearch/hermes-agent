@@ -3,8 +3,8 @@ import { Brain, ChevronDown, ChevronRight, Pencil, RefreshCw, Save, Search, Tras
 import { api } from "@/lib/api";
 import type { MemoryEntry, MemoryResponse, MemoryStoreResponse } from "@/lib/api";
 import { Toast } from "@/components/Toast";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,7 +14,7 @@ import { useI18n } from "@/i18n";
 const MEMORY_TEXT = {
   title: "Memory",
   userProfile: "User profile",
-  notes: "Assistant notes",
+  notes: "Memory notes",
   builtInOnly: "built-in only",
   provider: "Provider",
   builtIn: "Built-in memory",
@@ -90,10 +90,10 @@ function StoreSection({
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
             <CardTitle className="text-sm">{title}</CardTitle>
-            <Badge variant="secondary" className="text-[10px]">
+            <Badge tone="secondary" className="text-[10px]">
               {store.entry_count} {m.entryCount}
             </Badge>
-            <Badge variant="outline" className="text-[10px]">
+            <Badge tone="outline" className="text-[10px]">
               {store.char_count}/{store.char_limit} {m.chars}
             </Badge>
           </div>
@@ -140,7 +140,7 @@ function StoreSection({
                     {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
                     <span className="font-medium text-sm truncate">{previewForEntry(entry.content)}</span>
                   </div>
-                  <Badge variant="outline" className="text-[10px]">#{entry.index + 1}</Badge>
+                  <Badge tone="outline" className="text-[10px]">#{entry.index + 1}</Badge>
                 </button>
                 {expanded && (
                   <div className="border-t border-border bg-background/50 p-4 grid gap-3">
@@ -165,14 +165,14 @@ function StoreSection({
                           {savingKey === entry.id ? t.common.saving : t.common.save}
                         </Button>
                       ) : (
-                        <Button size="sm" variant="outline" onClick={() => onStartEdit(entry)} className="gap-1.5">
+                        <Button size="sm" ghost onClick={() => onStartEdit(entry)} className="gap-1.5">
                           <Pencil className="h-3.5 w-3.5" />
                           {m.edit}
                         </Button>
                       )}
                       <Button
                         size="sm"
-                        variant="ghost"
+                        ghost
                         onClick={() => onDelete(entry.id)}
                         disabled={savingKey === entry.id}
                         className="gap-1.5 text-destructive hover:text-destructive hover:bg-destructive/10"
@@ -296,9 +296,9 @@ export default function MemoryPage() {
         <div className="flex items-center gap-2 min-w-0">
           <Brain className="h-5 w-5 text-muted-foreground shrink-0" />
           <h1 className="text-base font-semibold">{m.title}</h1>
-          <Badge variant="secondary" className="text-xs">{totalEntries} {m.entryCount}</Badge>
+          <Badge tone="secondary" className="text-xs">{totalEntries} {m.entryCount}</Badge>
         </div>
-        <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void load()}>
+        <Button size="sm" ghost className="gap-1.5" onClick={() => void load()}>
           <RefreshCw className="h-3.5 w-3.5" />
           {m.refresh}
         </Button>

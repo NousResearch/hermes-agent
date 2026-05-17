@@ -24,7 +24,7 @@ vi.mock("@/lib/api", () => ({
     deleteSession: vi.fn(),
     getLogs: vi.fn(),
     getAnalytics: vi.fn(),
-    getConfig: vi.fn(),
+    getConfig: vi.fn().mockResolvedValue({ dashboard: {} }),
     getDefaults: vi.fn(),
     getSchema: vi.fn(),
     getModelInfo: vi.fn(),

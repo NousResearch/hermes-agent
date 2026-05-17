@@ -1,6 +1,5 @@
 """
 Browser Provider ABC
-====================
 
 Defines the pluggable-backend interface for cloud browser providers
 (Browserbase, Browser Use, Firecrawl, …). Providers register instances via

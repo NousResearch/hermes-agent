@@ -1204,7 +1204,7 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
         )
         self._send_chunk_retries = int(
-            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
+            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "5")
         )
         self._send_chunk_retry_delay_seconds = float(
             extra.get("send_chunk_retry_delay_seconds")
@@ -1634,10 +1634,15 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff for rate limits, capped at 10 min.
+                            # With base=10s, mult=3, cap=600s, retries=5 →
+                            # waits: 10s, 30s, 90s, 270s, 600s (last attempt ~10 min later).
+                            base_wait = max(self._send_chunk_retry_delay_seconds * 10, 10.0)
+                            wait = min(base_wait * (3 ** attempt), 600.0)
                             logger.warning(
-                                "[%s] rate limited for %s; backing off %.1fs before retry",
+                                "[%s] rate limited for %s; backing off %.1fs before retry (attempt %d/%d)",
                                 self.name, _safe_id(chat_id), wait,
+                                attempt + 1, self._send_chunk_retries + 1,
                             )
                             await asyncio.sleep(wait)
                             continue

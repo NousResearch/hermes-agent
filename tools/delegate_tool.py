@@ -2681,6 +2681,15 @@ def _finalize_child_results(
             from hermes_cli.plugins import invoke_hook as invoke_hook
         except Exception:
             invoke_hook = None
+        agent_id = None
+        try:
+            from agent.profile import get_active_profile
+
+            _p = get_active_profile()
+            if _p:
+                agent_id = _p.id
+        except Exception:
+            pass
 
         children_cost_total = 0.0
         for entry in results:
@@ -2708,6 +2717,7 @@ def _finalize_child_results(
                         entry.get("tool_trace")
                     ),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                    agent_id=agent_id,
                 )
             except Exception:
                 logger.debug("subagent_stop hook invocation failed", exc_info=True)

@@ -541,6 +541,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+        # Dynamic echo-back detection: if the API included reasoning_content,
+        # this provider enforces the thinking-mode echo protocol.  Set a
+        # session-level flag so _needs_thinking_reasoning_pad() returns True
+        # for the rest of the conversation — even for providers not covered
+        # by the static name-based checks (Qwen-TP, GLM, MiniMax, custom
+        # gateways, etc.).  Refs #27297.
+        if not getattr(agent, "_requires_reasoning_echo", False):
+            agent._requires_reasoning_echo = True
+            logger.debug("Auto-detected thinking-mode echo-back protocol from API response")
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
         # both require reasoning_content on every assistant tool-call

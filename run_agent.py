@@ -3592,10 +3592,25 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
-        of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+        Detection is two-tier:
+
+        1. **Dynamic (primary):** If the API response included
+           ``reasoning_content``, the session flag
+           ``_requires_reasoning_echo`` is set at message-build time
+           (see ``agent.chat_completion_helpers.build_assistant_message``).
+           This works for *any* thinking-mode provider — including custom
+           gateways, new providers, and providers behind reverse proxies —
+           without requiring a code change.
+
+        2. **Static (fallback):** Hardcoded provider-name / domain checks
+           for DeepSeek, Kimi/Moonshot, and Xiaomi MiMo.  These cover edge
+           cases where the dynamic flag isn't set yet (e.g. history replay
+           on a fresh session that hasn't seen a thinking response).
+
+        Refs #15250, #17400, #17341.
         """
+        if getattr(self, "_requires_reasoning_echo", False):
+            return True
         return (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()

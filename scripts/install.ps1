@@ -1766,7 +1766,7 @@ function Start-GatewayIfConfigured {
 function Write-Completion {
     Write-Host ""
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
-    Write-Host "|              [OK] Installation Complete!                   |" -ForegroundColor Green
+    Write-Host "|              [OK] Installation Complete!                |" -ForegroundColor Green
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
     Write-Host ""
     

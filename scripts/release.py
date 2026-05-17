@@ -1086,6 +1086,8 @@ AUTHOR_MAP = {
     "nightcityblade@gmail.com": "nightcityblade",  # PR #24138 (docs voice/tts table)
     "pol.kuijken@gmail.com": "polkn",  # PR #6136 salvage (skill_view collision refusal)
     "robin@soal.org": "rewbs",
+    "109617724+0xchainer@users.noreply.github.com": "0xchainer",  # PR #27154/27138/27147 salvage
+    "201800237+kronexoi@users.noreply.github.com": "kronexoi",  # PR #27167 salvage (Teams port fallback)
 }
 
 

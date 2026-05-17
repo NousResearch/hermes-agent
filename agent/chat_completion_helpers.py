@@ -971,6 +971,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
+        elif agent.api_mode == "bedrock_converse":
+            bedrock_kwargs = agent._build_api_kwargs(api_messages)
+            bedrock_kwargs.pop("toolConfig", None)
+            summary_response = agent._interruptible_api_call(bedrock_kwargs)
+            _ct_sum = agent._get_transport()
+            _cnr_sum = _ct_sum.normalize_response(summary_response)
+            final_response = (_cnr_sum.content or "").strip()
         else:
             summary_kwargs = {
                 "model": agent.model,
@@ -1062,6 +1069,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
+            elif agent.api_mode == "bedrock_converse":
+                bedrock_kwargs = agent._build_api_kwargs(api_messages)
+                bedrock_kwargs.pop("toolConfig", None)
+                retry_response = agent._interruptible_api_call(bedrock_kwargs)
+                _ct_retry = agent._get_transport()
+                _cnr_retry = _ct_retry.normalize_response(retry_response)
+                final_response = (_cnr_retry.content or "").strip()
             else:
                 summary_kwargs = {
                     "model": agent.model,

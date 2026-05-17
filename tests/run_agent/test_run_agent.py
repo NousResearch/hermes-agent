@@ -5210,12 +5210,13 @@ class TestMemoryNudgeCounterPersistence:
         # The preamble resets many fields (retry counts, budget, etc.)
         # before the main loop. Find that reset block and verify our
         # counters aren't in it. The reset block ends at iteration_budget.
-        # After the run_agent.py refactor the body uses ``agent.X`` instead
-        # of ``self.X``, so accept either form.
-        preamble_end = src.index("iteration_budget = IterationBudget")
+        # The extracted body uses ``agent.X`` (not ``self.X``).  Anchor
+        # exactly on ``agent.iteration_budget = IterationBudget`` so an
+        # unrelated identifier ending in ``iteration_budget`` (e.g.
+        # ``_iteration_budget`` or ``shared_iteration_budget``) can't
+        # match the boundary.
+        preamble_end = src.index("agent.iteration_budget = IterationBudget")
         preamble = src[:preamble_end]
-        assert "self._turns_since_memory = 0" not in preamble
-        assert "self._iters_since_skill = 0" not in preamble
         assert "agent._turns_since_memory = 0" not in preamble
         assert "agent._iters_since_skill = 0" not in preamble
 
@@ -5316,9 +5317,6 @@ class TestMemoryProviderTurnStart:
         import inspect
         from agent.conversation_loop import run_conversation as _rc
         src = inspect.getsource(_rc)
-        # After the run_agent.py refactor the body uses ``agent.X`` instead
-        # of ``self.X``.  Accept either spelling.
-        assert (
-            "on_turn_start(self._user_turn_count" in src
-            or "on_turn_start(agent._user_turn_count" in src
-        )
+        # The extracted body uses ``agent.X`` rather than ``self.X``;
+        # assert the extracted-form spelling directly.
+        assert "on_turn_start(agent._user_turn_count" in src

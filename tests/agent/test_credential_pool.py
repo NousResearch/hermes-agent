@@ -566,7 +566,7 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
     assert pool_entry["agent_key_expires_at"] == expires_at
 
 
-def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):
+def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
     _write_auth_store(
@@ -591,7 +591,7 @@ def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):
         },
     )
 
-    from agent.credential_pool import load_pool
+    from agent.credential_pool import PooledCredential, load_pool
     from hermes_cli import auth as auth_mod
     from hermes_cli.auth import AuthError
 
@@ -606,18 +606,30 @@ def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):
             relogin_required=True,
         )
 
+    pool = load_pool("nous")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "device_code"
+    pool.add_entry(PooledCredential.from_dict("nous", {
+        "id": "legacy-seeded",
+        "source": "manual:device_code",
+        "auth_type": "oauth",
+        "access_token": "old-access-token",
+        "refresh_token": "old-refresh-token",
+        "agent_key": "old-agent-key",
+    }))
+    pool.add_entry(PooledCredential.from_dict("nous", {
+        "id": "manual-key",
+        "source": "manual",
+        "auth_type": "api_key",
+        "access_token": "manual-nous-key",
+    }))
+
     monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _terminal_refresh_failure)
 
-    pool = load_pool("nous")
-    assert pool.select() is not None
     assert pool.try_refresh_current() is None
 
-    entry = pool.entries()[0]
-    assert entry.last_status == "exhausted"
-    assert entry.last_error_code == 401
-    assert entry.refresh_token is None
-    assert entry.access_token is None
-    assert entry.agent_key is None
+    assert [entry.id for entry in pool.entries()] == ["manual-key"]
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     nous_state = auth_payload["providers"]["nous"]
@@ -625,9 +637,61 @@ def test_nous_pool_terminal_refresh_clears_tokens(tmp_path, monkeypatch):
     assert not nous_state.get("access_token")
     assert not nous_state.get("agent_key")
     assert nous_state["last_auth_error"]["code"] == "invalid_grant"
+    assert [entry["id"] for entry in auth_payload["credential_pool"]["nous"]] == ["manual-key"]
 
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_load_pool_removes_nous_device_code_when_singleton_quarantined(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "last_auth_error": {"code": "invalid_grant"},
+                }
+            },
+            "credential_pool": {
+                "nous": [
+                    {
+                        "id": "seeded-current",
+                        "source": "device_code",
+                        "auth_type": "oauth",
+                        "access_token": "stale-access",
+                        "refresh_token": "stale-refresh",
+                        "agent_key": "stale-agent",
+                    },
+                    {
+                        "id": "seeded-legacy",
+                        "source": "manual:device_code",
+                        "auth_type": "oauth",
+                        "access_token": "older-stale-access",
+                    },
+                    {
+                        "id": "manual-key",
+                        "source": "manual",
+                        "auth_type": "api_key",
+                        "access_token": "manual-nous-key",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+
+    assert [entry.id for entry in pool.entries()] == ["manual-key"]
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["id"] for entry in auth_payload["credential_pool"]["nous"]] == ["manual-key"]
 
 
 def test_load_pool_removes_stale_file_backed_singleton_entry(tmp_path, monkeypatch):

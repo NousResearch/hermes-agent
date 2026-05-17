@@ -2899,8 +2899,8 @@ DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 # Patterns in last_failure_error that indicate a quota / auth blocker.
 # These errors won't resolve by retrying immediately — auto-block instead.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|auth(?:entic|oriz)|"
-    r"403|unauthorized|forbidden|billing|subscription|"
+    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",
     re.IGNORECASE,
@@ -3899,12 +3899,23 @@ def dispatch_once(
             if guard_reason == "blocker_auth" and not dry_run:
                 # Auto-block to stop the cycle — quota/auth errors are
                 # deterministic and retrying immediately wastes quota.
+                # block_task emits its own "blocked" event, so no
+                # additional respawn_guarded event is needed here.
                 if block_task(conn, row["id"], reason=f"respawn_guard: {guard_reason}"):
                     result.auto_blocked.append(row["id"])
                 else:
                     result.respawn_guarded.append((row["id"], guard_reason))
             else:
                 result.respawn_guarded.append((row["id"], guard_reason))
+                # Emit an event so operators can see why the task was
+                # skipped when reading `hermes kanban tail` — without
+                # this the task appears stuck in ready with no diagnosis.
+                if not dry_run:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

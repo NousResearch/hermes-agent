@@ -4813,6 +4813,7 @@ class TestNewEndpoints:
         data = resp.json()
         assert "daily" in data
         assert "by_model" in data
+        assert "by_provider" in data
         assert "totals" in data
         assert "skills" in data
         assert isinstance(data["daily"], list)
@@ -4877,6 +4878,51 @@ class TestNewEndpoints:
         assert row["output_tokens"] == 7_100
         assert row["api_calls"] == 9
         assert row["avg_tokens_per_session"] == 13_550
+
+    def test_analytics_usage_groups_by_billing_provider(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="provider-analytics-openrouter",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "provider-analytics-openrouter",
+                input_tokens=100,
+                output_tokens=50,
+                estimated_cost_usd=0.12,
+                actual_cost_usd=0.10,
+                billing_provider="openrouter",
+            )
+            db.create_session(
+                session_id="provider-analytics-anthropic",
+                source="cli",
+                model="claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "provider-analytics-anthropic",
+                input_tokens=25,
+                output_tokens=10,
+                estimated_cost_usd=0.05,
+                actual_cost_usd=0.04,
+                billing_provider="anthropic",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        by_provider = resp.json()["by_provider"]
+
+        openrouter = next(row for row in by_provider if row["provider"] == "openrouter")
+        assert openrouter["input_tokens"] == 100
+        assert openrouter["output_tokens"] == 50
+        assert openrouter["estimated_cost"] == 0.12
+        assert openrouter["actual_cost"] == 0.10
+        assert openrouter["sessions"] == 1
 
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB

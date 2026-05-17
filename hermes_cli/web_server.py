@@ -14020,6 +14020,23 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
+        cur_provider = db._conn.execute("""
+            SELECT COALESCE(NULLIF(billing_provider, ''), 'unknown') as provider,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls
+            FROM sessions WHERE started_at > ?
+            GROUP BY provider
+            ORDER BY COALESCE(SUM(actual_cost_usd), SUM(estimated_cost_usd), 0) DESC,
+                     SUM(input_tokens) + SUM(output_tokens) DESC
+        """, (cutoff,))
+        by_provider = [dict(r) for r in cur_provider.fetchall()]
+
         cur3 = db._conn.execute("""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -14046,6 +14063,7 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            "by_provider": by_provider,
             "totals": totals,
             "period_days": days,
             "skills": skills,

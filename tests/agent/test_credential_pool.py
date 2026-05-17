@@ -625,7 +625,7 @@ def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypa
         "access_token": "manual-nous-key",
     }))
 
-    monkeypatch.setattr(auth_mod, "refresh_nous_oauth_from_state", _terminal_refresh_failure)
+    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _terminal_refresh_failure)
 
     assert pool.try_refresh_current() is None
 

@@ -139,6 +139,11 @@ function Install-Uv {
     
     # Install uv
     Write-Info "Installing uv (fast Python package manager)..."
+    # Capture EAP outside the try block so the catch's restore call always
+    # has a meaningful value -- if the assignment lived inside try and the
+    # try body threw before reaching it, the catch would see $prevEAP
+    # unset and leave EAP at whatever the previous protected call set.
+    $prevEAP = $ErrorActionPreference
     try {
         # Relax ErrorActionPreference around the nested astral installer.
         # The astral installer (a separate `powershell -c "irm ... | iex"`)
@@ -151,7 +156,6 @@ function Install-Uv {
         # pattern Test-Python uses for `uv python install`; verify success
         # via Test-Path on the expected binary afterwards, which is more
         # reliable than exit-code/stderr signal anyway.
-        $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         $ErrorActionPreference = $prevEAP
@@ -267,6 +271,9 @@ function Test-Python {
     
     # Python not found -- use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
+    # Capture EAP outside the try block so the catch's restore call always
+    # has a meaningful value (see Install-Uv for the full rationale).
+    $prevEAP = $ErrorActionPreference
     try {
         # Temporarily relax ErrorActionPreference: uv writes download progress
         # ("Downloading cpython-3.11.15-windows-x86_64-none (24.5MiB)") to
@@ -278,7 +285,6 @@ function Test-Python {
         # afterwards, which is the reliable signal regardless of exit-code
         # semantics or stderr noise.  This fix was previously landed as
         # commit ec1714e71 and then lost in a release squash; reapplied here.
-        $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         $uvOutput = & $UvCmd python install $PythonVersion 2>&1
         $uvExitCode = $LASTEXITCODE
@@ -656,12 +662,14 @@ function Test-Node {
     # locked firewall, etc.) but the user is willing to consent to UAC.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Info "Falling back to winget (may prompt UAC -- check your taskbar for a flashing icon)..."
+        # Capture EAP outside the try block so the catch's restore call always
+        # has a meaningful value (see Install-Uv for the full rationale).
+        $prevEAP = $ErrorActionPreference
         try {
             # Relax EAP=Stop so stderr lines from winget don't get wrapped
             # as ErrorRecords and short-circuit the 2>&1 pipe before we can
             # check the post-condition.  See the long comment in Install-Uv
             # for the same pattern.
-            $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
@@ -1367,6 +1375,9 @@ function Install-NodeDeps {
     # it works uniformly for npm.cmd, npx.cmd, and bare .exe files.
     function _Run-NpmInstall([string]$label, [string]$installDir, [string]$logPath, [string]$npmPath) {
         Push-Location $installDir
+        # Capture EAP outside the try block so the catch's restore call always
+        # has a meaningful value (see Install-Uv for the full rationale).
+        $prevEAP = $ErrorActionPreference
         try {
             # Stream npm's output to BOTH the console and the log file via
             # Tee-Object.  Previously this called ``& npm install --silent
@@ -1391,7 +1402,6 @@ function Install-NodeDeps {
             # is the same issue Test-Python and Install-Uv work around
             # for uv's stderr-emitting installer.  Check success via
             # $LASTEXITCODE, which is reliable regardless of stderr noise.
-            $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             & $npmPath install --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
             $code = $LASTEXITCODE
@@ -1456,6 +1466,10 @@ function Install-NodeDeps {
             } else {
                 $pwLog = "$env:TEMP\hermes-playwright-install-$(Get-Random).log"
                 Push-Location $InstallDir
+                # Capture EAP outside the try block so the catch's restore call
+                # always has a meaningful value (see Install-Uv for the full
+                # rationale).
+                $prevEAP = $ErrorActionPreference
                 try {
                     # Playwright Chromium is ~170MB compressed and the
                     # download regularly takes 3-10 minutes on a fresh
@@ -1489,7 +1503,6 @@ function Install-NodeDeps {
                     # each pipeline item to a string strips that wrapper so
                     # the user sees clean playwright output instead of the
                     # alarming-looking error formatting.
-                    $prevEAP = $ErrorActionPreference
                     $ErrorActionPreference = "Continue"
                     & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
                     $pwCode = $LASTEXITCODE
@@ -1985,6 +1998,13 @@ function Invoke-Stage {
             # caller can stream progress.  In default interactive mode we
             # stay silent here (the worker already wrote human output).
             $result | ConvertTo-Json -Compress | Write-Output
+            # Tell the entry-point catch that we've already emitted a
+            # frame for this failure (when $result.ok = $false), so it
+            # doesn't double-emit a second JSON object and break the
+            # one-line-per-stage contract the driver protocol promises.
+            if (-not $result.ok) {
+                $script:_StageEmittedErrorFrame = $true
+            }
         }
     }
 }
@@ -2062,13 +2082,20 @@ try {
 } catch {
     if ($Json -or $Stage) {
         # Stage-driver mode: caller wants JSON they can parse.  Emit a
-        # structured error frame and exit non-zero.
-        $err = @{
-            ok     = $false
-            stage  = if ($Stage) { $Stage } else { $null }
-            reason = "$_"
+        # structured error frame and exit non-zero -- BUT only if
+        # Invoke-Stage didn't already emit one for this same failure.
+        # The inner finally emits the authoritative per-stage frame
+        # (with duration_ms + skipped fields); a second emit here
+        # would produce two concatenated JSON objects on stdout and
+        # break drivers that parse one-line-per-invocation.
+        if (-not $script:_StageEmittedErrorFrame) {
+            $err = @{
+                ok     = $false
+                stage  = if ($Stage) { $Stage } else { $null }
+                reason = "$_"
+            }
+            $err | ConvertTo-Json -Compress | Write-Output
         }
-        $err | ConvertTo-Json -Compress | Write-Output
         exit 1
     }
 

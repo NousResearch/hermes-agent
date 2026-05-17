@@ -7598,6 +7598,27 @@ def _reapply_patches_after_update() -> None:
         logger.debug("Patch reapplication failed: %s", e)
 
 
+
+def _reapply_community_patches() -> None:
+    """Reapply community patches after hermes update. Idempotent."""
+    import subprocess as _sp
+    patches_dir = Path.home() / ".hermes" / "patches"
+    install_sh = patches_dir / "install.sh"
+    if not install_sh.exists():
+        return
+    print()
+    print("📦 Reapplying community patches...")
+    try:
+        result = _sp.run(["bash", str(install_sh)], cwd=str(patches_dir),
+                         capture_output=True, text=True, timeout=120)
+        for line in result.stdout.splitlines():
+            if line.strip() and not line.startswith(("╔", "║", "╚")):
+                print(f"  {line}")
+        if result.returncode != 0:
+            print(f"  ⚠️  Patch reapplication had issues (exit {result.returncode})")
+    except Exception:
+        pass
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -8676,6 +8697,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _kill_stale_dashboard_processes()
 
         print()
+        _reapply_community_patches()
+
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
 

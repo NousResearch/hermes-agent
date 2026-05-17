@@ -1151,6 +1151,140 @@ class TestCallLlmPaymentFallback:
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
 
+
+class TestAuxiliaryFallbackLayering:
+    """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
+
+    def _make_payment_err(self):
+        exc = Exception("Payment Required: insufficient credits")
+        exc.status_code = 402
+        return exc
+
+    def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
+        """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        chain_client = MagicMock()
+        chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ])
+
+        main_called = MagicMock()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(chain_client, "gpt-4o-mini", "fallback_chain[0](openai)")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   side_effect=main_called):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert chain_client.chat.completions.create.called
+        # Main agent fallback should NOT have been consulted — chain succeeded first
+        main_called.assert_not_called()
+
+    def test_explicit_provider_falls_back_to_main_when_chain_exhausted(self, monkeypatch):
+        """If configured fallback_chain returns nothing, main agent model is tried next."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_client = MagicMock()
+        main_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main agent"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert main_client.chat.completions.create.called
+
+    def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
+        """When chain AND main model both fail, a user-visible warning fires before re-raise."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")), \
+             caplog.at_level("WARNING", logger="agent.auxiliary_client"):
+            with pytest.raises(Exception, match="Payment Required"):
+                call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        assert any(
+            "all fallbacks exhausted" in r.message for r in caplog.records
+        ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+
+
+class TestTryMainAgentModelFallback:
+    """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""
+
+    def test_returns_none_when_main_provider_is_auto(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="some-model"):
+            client, model, label = _try_main_agent_model_fallback("glm", task="vision")
+        assert client is None and model is None and label == ""
+
+    def test_returns_none_when_failed_provider_equals_main(self):
+        """If the thing that failed IS the main model, no point retrying it."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"):
+            client, model, label = _try_main_agent_model_fallback("openrouter", task="vision")
+        assert client is None and label == ""
+
+    def test_resolves_main_provider_client(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "anthropic/claude-sonnet-4")):
+            client, model, label = _try_main_agent_model_fallback("glm", task="vision")
+        assert client is fake_client
+        assert model == "anthropic/claude-sonnet-4"
+        assert label == "main-agent(openrouter)"
+
+    def test_skips_when_main_provider_is_unhealthy(self):
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="anthropic/claude-sonnet-4"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=True):
+            client, model, label = _try_main_agent_model_fallback("glm", task="vision")
+        assert client is None
+
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------

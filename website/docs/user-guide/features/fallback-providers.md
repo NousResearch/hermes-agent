@@ -320,6 +320,55 @@ auxiliary:
 
 ---
 
+## Auxiliary Capacity-Error Fallback
+
+When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: glm`), Hermes treats that as your preferred choice — but if the provider literally cannot serve the request because of a **capacity error** (HTTP 402 payment required, HTTP 429 daily-quota exhaustion, connection failure), Hermes falls back through a layered chain instead of failing silently:
+
+1. **Primary aux provider** — the one you configured (tried first, always)
+2. **`auxiliary.<task>.fallback_chain`** — your per-task override list, if you wrote one
+3. **Main agent provider + model** — last-resort safety net (always tried, even if you didn't write a chain)
+4. **Warn + re-raise** — if every layer fails, Hermes logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
+
+Transient HTTP 429 rate limits (`Retry-After: ...`) are treated as request constraints, not capacity problems — they respect your explicit provider choice and do **not** trigger the fallback ladder. Only daily/monthly quota exhaustion, payment errors, and connection failures bypass the explicit-provider gate.
+
+For users on `provider: auto` (no explicit aux provider), the existing auto-detection chain runs in place of steps 2–3. Its first step is already the main agent model, so `auto` users get the same outcome with zero config.
+
+### Optional: per-task fallback chain
+
+If you want a different fallback ordering than "main agent model first", configure `fallback_chain` explicitly. Each entry needs at least `provider`; `model`, `base_url`, and `api_key` are optional.
+
+```yaml
+auxiliary:
+  vision:
+    provider: glm
+    model: glm-4v-flash
+    fallback_chain:
+      - provider: openrouter
+        model: google/gemini-3-flash-preview
+      - provider: nous
+        model: anthropic/claude-sonnet-4
+
+  compression:
+    provider: openrouter
+    fallback_chain:
+      - provider: openai
+        model: gpt-4o-mini
+```
+
+You do **not** need to configure `fallback_chain` to get fallback — the main-agent safety net runs regardless. Use it only when you specifically want a different order than the default.
+
+### Provider quota errors that trigger fallback
+
+Hermes recognizes these as capacity-equivalent to 402 credit exhaustion (not transient rate limits):
+
+- Bedrock / LiteLLM: `Too many tokens per day`, `daily limit`, `tokens per day`
+- Vertex AI / GCP: `quota exceeded`, `resource exhausted`, `RESOURCE_EXHAUSTED`
+- Generic: `daily quota`, `quota_exceeded`
+
+If your provider returns a different phrase for daily-quota exhaustion and Hermes doesn't trigger fallback, that's a bug — open an issue with the exact error string.
+
+---
+
 ## Context Compression Fallback
 
 Context compression uses the `auxiliary.compression` config block to control which model and provider handles summarization:
@@ -378,14 +427,16 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
 | Main agent model | `fallback_model` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_model:` (top-level) |
-| Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
-| Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
-| Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` |
-| Session search | Auto-detection chain | `auxiliary.session_search` |
-| Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
-| MCP helpers | Auto-detection chain | `auxiliary.mcp` |
-| Approval classification | Auto-detection chain | `auxiliary.approval` |
-| Title generation | Auto-detection chain | `auxiliary.title_generation` |
-| Triage specifier | Auto-detection chain | `auxiliary.triage_specifier` |
+| Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
+| Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors only | `auxiliary.<task>.fallback_chain` |
+| Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |
+| Web extraction | Layered (see above) + internal OpenRouter retry | `auxiliary.web_extract` |
+| Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
+| Session search | Layered (see above) | `auxiliary.session_search` |
+| Skills hub | Layered (see above) | `auxiliary.skills_hub` |
+| MCP helpers | Layered (see above) | `auxiliary.mcp` |
+| Approval classification | Layered (see above) | `auxiliary.approval` |
+| Title generation | Layered (see above) | `auxiliary.title_generation` |
+| Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |

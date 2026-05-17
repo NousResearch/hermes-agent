@@ -307,6 +307,31 @@ def is_local_model_name(model_name: str) -> bool:
     return any(marker in name for marker in local_markers)
 
 
+def _get_tool_args(call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract parsed arguments dict from a tool call object.
+
+    Handles both direct ``call["arguments"]`` and the nested
+    ``call["function"]["arguments"]`` shapes used by different
+    OpenAI-compatible API versions.  Returns ``None`` when arguments
+    cannot be extracted or parsed.
+    """
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        fn = {}
+    raw = call.get("arguments") or fn.get("arguments")
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+    return None
+
+
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_names: Set[str] = set()
     tool_sequence: List[str] = []
@@ -330,27 +355,16 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
-                # Count memory write operations: mnemosyne_remember always counts,
-                # and memory tool with action 'add' or 'replace' counts as write.
-                if name == "mnemosyne_remember":
-                    memory_write_count += 1
-                elif name == "memory":
-                    # Extract arguments from the tool call
-                    args = None
-                    if "arguments" in call:
-                        args = call["arguments"]
-                    elif "function" in call and "arguments" in call["function"]:
-                        args = call["function"]["arguments"]
-                    # Parse JSON string if needed
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            args = None
-                    if isinstance(args, dict):
-                        action = args.get("action", "").lower()
-                        if action in ("add", "replace"):
-                            memory_write_count += 1
+            # Count memory write operations: mnemosyne_remember always counts,
+            # and memory tool with action 'add' or 'replace' counts as write.
+            if name == "mnemosyne_remember":
+                memory_write_count += 1
+            elif name == "memory":
+                args = _get_tool_args(call)
+                if isinstance(args, dict):
+                    action = str(args.get("action", "")).lower()
+                    if action in ("add", "replace"):
+                        memory_write_count += 1
         if ERROR_RE.search(text):
             error_count += 1
         blob = text

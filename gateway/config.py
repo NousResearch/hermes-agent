@@ -854,7 +854,7 @@ def load_gateway_config() -> GatewayConfig:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
-                    plat_data["enabled"] = _coerce_bool(platform_cfg["enabled"], False)
+                    plat_data["enabled"] = platform_cfg["enabled"]
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)

@@ -1311,6 +1311,19 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
+        # Google Gemini CLI / Code Assist can be configured from the official
+        # Gemini CLI OAuth store even when Hermes auth.json has no provider or
+        # credential-pool row. The runtime resolver is the source of truth for
+        # whether Hermes can actually use this provider, so mirror that here for
+        # model-picker discovery.
+        if not has_creds and hermes_slug == "google-gemini-cli":
+            try:
+                from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+                creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+                if creds.get("api_key"):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Google Gemini CLI OAuth check failed: %s", exc)
         # Fallback: check the credential pool with full auto-seeding.
         # This catches credentials that exist in external stores (e.g.
         # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()

@@ -3267,6 +3267,35 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Google Gemini CLI / Code Assist OAuth ────────────────────────
+    if provider == "google-gemini-cli":
+        # This provider is not OpenAI-compatible at the URL layer; use the
+        # Cloud Code Assist facade. Main-agent fallback calls this resolver
+        # with raw_codex=True, so resolving it here is required for Codex →
+        # Gemini fallback chains to work instead of silently exhausting the
+        # chain as "provider not configured".
+        try:
+            from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+            from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+            creds = resolve_gemini_oauth_runtime_credentials()
+            final_model = _normalize_resolved_model(
+                model or "gemini-3.1-pro-preview", provider
+            )
+            client = GeminiCloudCodeClient(
+                api_key=creds.get("api_key") or "google-oauth",
+                base_url=creds.get("base_url") or explicit_base_url or "cloudcode-pa://google",
+                project_id=creds.get("project_id", ""),
+            )
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                    else (client, final_model))
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but OAuth "
+                "credentials are unavailable or invalid: %s", exc,
+            )
+            return None, None
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:

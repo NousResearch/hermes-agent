@@ -279,7 +279,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Anthropic",
         auth_type="api_key",
         inference_base_url="https://api.anthropic.com",
-        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
         base_url_env_var="ANTHROPIC_BASE_URL",
     ),
     "alibaba": ProviderConfig(

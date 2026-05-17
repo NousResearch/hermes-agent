@@ -90,7 +90,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",
-        extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        extra_env_vars=("ANTHROPIC_TOKEN",),
     ),
     "zai": HermesOverlay(
         transport="openai_chat",

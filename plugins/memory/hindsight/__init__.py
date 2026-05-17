@@ -1425,6 +1425,15 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("sync_turn: skipped (shutting down)")
             return
 
+        # Skip retain for platforms whose messages cannot be attributed to
+        # real users (e.g. iLink WeChat bot reports all messages as bot's own
+        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
+        # extend; set to "" to disable the gate entirely.
+        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
+        if _skip and self._platform in {p.strip() for p in _skip.split(",") if p.strip()}:
+            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
+            return
+
         if session_id:
             self._session_id = str(session_id).strip()
 

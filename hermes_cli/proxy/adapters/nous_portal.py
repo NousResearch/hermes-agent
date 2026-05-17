@@ -27,6 +27,7 @@ from hermes_cli.auth import (
     _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries,
     _save_auth_store,
+    _validate_nous_inference_url_from_network,
     _write_shared_nous_state,
     resolve_nous_runtime_credentials,
 )
@@ -137,7 +138,10 @@ class NousPortalAdapter(UpstreamAdapter):
                     "Try `hermes login nous` to re-authenticate."
                 )
 
-            base_url = refreshed.get("base_url") or DEFAULT_NOUS_INFERENCE_URL
+            base_url = (
+                _validate_nous_inference_url_from_network(refreshed.get("base_url"))
+                or DEFAULT_NOUS_INFERENCE_URL
+            )
             base_url = base_url.rstrip("/")
 
             return UpstreamCredential(

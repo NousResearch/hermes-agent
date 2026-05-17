@@ -731,7 +731,15 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook auth/signature headers.
+
+        Supported formats:
+        - Svix/AgentMail: svix-id + svix-timestamp + svix-signature
+        - GitHub: X-Hub-Signature-256 = sha256=<hex HMAC-SHA256>
+        - GitLab: X-Gitlab-Token = <plain secret>
+        - Generic: X-Webhook-Signature = <hex HMAC-SHA256>
+        - Bearer: Authorization = Bearer <plain secret>
+        """
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -778,9 +786,15 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return hmac.compare_digest(generic_sig, expected)
 
-        # No recognised signature header but secret is configured → reject
+        # Bearer token: Authorization = Bearer <plain secret>
+        auth_header = request.headers.get("Authorization", "")
+        auth_scheme, _, auth_token = auth_header.partition(" ")
+        if auth_scheme.lower() == "bearer" and auth_token:
+            return hmac.compare_digest(auth_token.strip(), secret)
+
+        # No recognised signature/auth header but secret is configured → reject
         logger.debug(
-            "[webhook] Secret configured but no signature header found"
+            "[webhook] Secret configured but no signature/auth header found"
         )
         return False
 

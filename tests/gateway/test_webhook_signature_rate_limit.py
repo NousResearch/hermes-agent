@@ -140,6 +140,86 @@ class TestSignatureBeforeRateLimit:
         assert len(captured_events) == 1
 
     @pytest.mark.asyncio
+    async def test_authorization_bearer_token_is_accepted(self):
+        """Accept Authorization: Bearer <secret> as plain route-secret auth."""
+        secret = "test-secret-key"
+        route_name = "test-route"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "events": ["push"],
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Event": "push",
+                    "Authorization": f"Bearer {secret}",
+                    "X-GitHub-Delivery": "bearer-001",
+                },
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+
+        assert len(captured_events) == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_authorization_bearer_token_is_rejected(self):
+        """Reject Authorization: Bearer tokens that do not match the secret."""
+        secret = "test-secret-key"
+        route_name = "test-route"
+        routes = {
+            route_name: {
+                "secret": secret,
+                "events": ["push"],
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        captured_events = []
+
+        async def _capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+        body = json.dumps(SIMPLE_PAYLOAD).encode()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/webhooks/{route_name}",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Event": "push",
+                    "Authorization": "Bearer wrong-secret",
+                    "X-GitHub-Delivery": "bearer-bad-001",
+                },
+            )
+            assert resp.status == 401
+
+        assert captured_events == []
+
+    @pytest.mark.asyncio
     async def test_valid_signature_still_rate_limited(self):
         """Verify that VALID requests still respect rate limiting normally."""
         secret = "test-secret-key"

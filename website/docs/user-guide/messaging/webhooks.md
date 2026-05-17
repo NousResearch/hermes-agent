@@ -6,7 +6,7 @@ description: "Receive events from GitHub, GitLab, and other services to trigger 
 
 # Webhooks
 
-Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
+Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures or bearer/plain-token auth, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
 
 The agent processes the event and can respond by posting comments on PRs, sending messages to Telegram/Discord, or logging the result.
 
@@ -79,7 +79,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | Property | Required | Description |
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
-| `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `secret` | **Yes** | Secret used for signature validation or plain-token authentication. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `skills` | No | List of skill names to load for the agent run. |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -311,7 +311,7 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
-| `401 Unauthorized` | HMAC signature invalid or missing. |
+| `401 Unauthorized` | Signature/auth token invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
@@ -381,15 +381,18 @@ The agent can create subscriptions via the terminal tool when guided by the `web
 
 The webhook adapter includes multiple layers of security:
 
-### HMAC signature validation
+### Authentication and signature validation
 
-The adapter validates incoming webhook signatures using the appropriate method for each source:
+The adapter validates incoming webhooks using the appropriate method for each source:
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
-- **Generic**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest
+- **Generic HMAC**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest
+- **Bearer token**: `Authorization: Bearer <secret>` header — plain secret string match
 
-If a secret is configured but no recognized signature header is present, the request is rejected.
+Use HMAC signatures when your webhook provider supports them. Bearer-token auth is useful for services that can send a fixed authorization token but cannot compute per-payload HMAC signatures.
+
+If a secret is configured but no recognized signature or auth header is present, the request is rejected.
 
 ### Secret is required
 
@@ -454,6 +457,8 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For generic HMAC integrations, check `X-Webhook-Signature`
+- For bearer-token integrations, check `Authorization: Bearer <secret>`
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

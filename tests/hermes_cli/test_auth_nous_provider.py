@@ -555,7 +555,7 @@ class TestLoginNousSkipKeepsCurrent:
         auth_path = hermes_home / "auth.json"
         auth_after = json.loads(auth_path.read_text())
         # active_provider should NOT be set to "nous" after Skip
-        assert auth_after.get("active_provider") in (None, "")
+        assert auth_after.get("active_provider") in {None, ""}
         # But Nous creds are still saved
         assert "nous" in auth_after.get("providers", {})
 

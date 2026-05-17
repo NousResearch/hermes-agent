@@ -122,7 +122,7 @@ def fetch(
 
     with zipfile.ZipFile(zip_path) as zf:
         for node_type, csv_substring in targets:
-            relevant_needles = [n for (k, n) in needles if k in (node_type, "Entity", "Officer")] or []
+            relevant_needles = [n for (k, n) in needles if k in {node_type, "Entity", "Officer"}] or []
             # Only scan a CSV if we have a needle that could plausibly match it,
             # or if we have ONLY a jurisdiction filter.
             applicable_needles = [n for (k, n) in needles if k == node_type]

@@ -325,7 +325,7 @@ class RequestCache:
 
     def mark_delivered(self, request_id: str) -> None:
         entry = self._entries.get(request_id)
-        if entry is None or entry.state not in (State.READY, State.ERROR):
+        if entry is None or entry.state not in {State.READY, State.ERROR}:
             return
         entry.state = State.DELIVERED
         entry.updated_at = time.time()
@@ -614,7 +614,7 @@ def _truthy_env(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
     if v is None:
         return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    return v.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -910,7 +910,7 @@ class LineAdapter(BasePlatformAdapter):
             await self._handle_message_event(event)
         elif event_type == "postback":
             await self._handle_postback_event(event)
-        elif event_type in ("follow", "unfollow", "join", "leave"):
+        elif event_type in {"follow", "unfollow", "join", "leave"}:
             logger.info("LINE: lifecycle event %s from %s", event_type, source)
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
@@ -939,7 +939,7 @@ class LineAdapter(BasePlatformAdapter):
 
         if msg_type == "text":
             text = msg.get("text", "") or ""
-        elif msg_type in ("image", "audio", "video", "file"):
+        elif msg_type in {"image", "audio", "video", "file"}:
             local_path = await self._download_media(message_id, msg_type)
             if local_path:
                 media_urls.append(local_path)

@@ -209,7 +209,7 @@ def _maybe_apply_codex_app_server_runtime(
     Returns the (possibly-rewritten) api_mode."""
     if not model_cfg:
         return api_mode
-    if provider not in ("openai", "openai-codex"):
+    if provider not in {"openai", "openai-codex"}:
         return api_mode
     runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
     if runtime == "codex_app_server":

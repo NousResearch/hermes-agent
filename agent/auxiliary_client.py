@@ -755,7 +755,8 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                if not timed_out.is_set():
+                    _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -1233,7 +1234,7 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract the best API key from a Nous provider state dict."""
+    """Extract the Nous runtime credential from the compatibility field."""
     return provider.get("agent_key") or provider.get("access_token", "")
 
 
@@ -1246,7 +1247,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
-    clients aligned with the singleton auth store + mint flow instead of
+    clients aligned with the singleton auth store + JWT/mint flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """

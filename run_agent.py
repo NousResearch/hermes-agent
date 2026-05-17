@@ -700,6 +700,24 @@ class AIAgent:
         from agent.stream_diag import flatten_exception_chain
         return flatten_exception_chain(error)
 
+    def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
+        """Return True for malformed provider streaming data from SDK parsers.
+
+        Some Anthropic-compatible streaming providers can send a malformed
+        event-stream frame.  The Anthropic SDK surfaces that as a plain
+        ``ValueError`` such as ``expected ident at line 1 column 149``.  That
+        is provider wire-format trouble, not local request validation, so it
+        should follow the same retry path as a truncated JSON body.
+        """
+        if getattr(self, "api_mode", None) != "anthropic_messages":
+            return False
+        if not isinstance(error, ValueError):
+            return False
+        if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):
+            return False
+        message = str(error).strip().lower()
+        return "expected ident at line" in message
+
     def _log_stream_retry(
         self,
         *,
@@ -1334,6 +1352,12 @@ class AIAgent:
         str(error) for everything else.
         """
         raw = str(error)
+
+        if (
+            isinstance(error, ValueError)
+            and "expected ident at line" in raw.lower()
+        ):
+            return f"Malformed provider streaming response: {raw[:300]}"
 
         # Cloudflare / proxy HTML pages: grab the <title> for a clean summary
         if "<!DOCTYPE" in raw or "<html" in raw:

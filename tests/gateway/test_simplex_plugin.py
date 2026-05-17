@@ -415,6 +415,46 @@ async def test_seed_seen_items_does_not_consume_unread_inbound_text(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_connect_runs_polling_outside_gateway_event_loop(monkeypatch):
+    """SimpleX polling must not starve behind long gateway/agent turns."""
+    import sys
+    import types
+
+    from gateway.config import PlatformConfig
+
+    class FakeConnect:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    fake_websockets = types.SimpleNamespace(connect=lambda *_a, **_kw: FakeConnect())
+    monkeypatch.setitem(sys.modules, "websockets", fake_websockets)
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    async def noop_seed():
+        return None
+
+    async def idle_task():
+        await _simplex.asyncio.sleep(60)
+
+    adapter._seed_seen_items = noop_seed  # type: ignore[method-assign]
+    adapter._ws_listener = idle_task  # type: ignore[method-assign]
+    adapter._health_monitor = idle_task  # type: ignore[method-assign]
+
+    assert await adapter.connect() is True
+    try:
+        assert adapter._poll_task is None
+        assert adapter._poll_thread is not None
+        assert adapter._poll_thread.is_alive()
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_poll_dispatches_preconnect_unread_inbound_text(monkeypatch, tmp_path):
     """Unread user text remains actionable even if its timestamp predates reconnect."""
     from gateway.config import PlatformConfig

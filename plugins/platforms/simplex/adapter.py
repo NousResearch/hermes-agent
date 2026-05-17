@@ -32,14 +32,16 @@ is present, so the gateway will not attempt to instantiate the adapter.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import random
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
 # Imported at module top because they're stdlib-only inside Hermes — no
@@ -148,6 +150,9 @@ class SimplexAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_stop = threading.Event()
+        self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._last_ws_activity = 0.0
@@ -155,6 +160,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._seen_items_path = get_hermes_home() / "simplex_seen_items.json"
         self._connected_at = 0.0
         self._poll_dispatch_tasks: set[asyncio.Task] = set()
+        self._poll_dispatch_futures: set[concurrent.futures.Future] = set()
         self._read_receipt_tasks: set[asyncio.Task] = set()
         self._last_poll_started_at = 0.0
         self._processing_notice_tasks: Dict[str, asyncio.Task] = {}
@@ -210,13 +216,14 @@ class SimplexAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
+        self._gateway_loop = asyncio.get_running_loop()
         self._last_ws_activity = time.time()
         self._connected_at = time.time()
         self._load_seen_items()
         await self._seed_seen_items()
         self._ws_task = asyncio.create_task(self._ws_listener())
         self._health_task = asyncio.create_task(self._health_monitor())
-        self._poll_task = asyncio.create_task(self._poll_unread_items())
+        self._start_poll_thread()
 
         logger.info("SimpleX: connected to %s", self.ws_url)
         return True
@@ -224,6 +231,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop WebSocket listener and clean up."""
         self._running = False
+        self._stop_poll_thread()
 
         if self._ws_task:
             self._ws_task.cancel()
@@ -252,6 +260,10 @@ class SimplexAdapter(BasePlatformAdapter):
             await asyncio.gather(*self._poll_dispatch_tasks, return_exceptions=True)
             self._poll_dispatch_tasks.clear()
 
+        for future in list(self._poll_dispatch_futures):
+            future.cancel()
+        self._poll_dispatch_futures.clear()
+
         for task in list(self._read_receipt_tasks):
             task.cancel()
         if self._read_receipt_tasks:
@@ -276,6 +288,62 @@ class SimplexAdapter(BasePlatformAdapter):
             self._ws = None
 
         logger.info("SimpleX: disconnected")
+
+    def _start_poll_thread(self) -> None:
+        """Run the `/tail 50` fallback from a dedicated thread.
+
+        Gateway message handling and agent/tool execution can monopolize the
+        main asyncio loop for long stretches. SimpleX polling is the recovery
+        path for missed daemon push events, so it must keep checking daemon
+        truth even while a Matrix turn or tool call is busy.
+        """
+        if self._poll_thread and self._poll_thread.is_alive():
+            return
+        self._poll_stop.clear()
+        self._poll_thread = threading.Thread(
+            target=self._poll_thread_main,
+            name="simplex-poll",
+            daemon=True,
+        )
+        self._poll_thread.start()
+
+    def _stop_poll_thread(self) -> None:
+        self._poll_stop.set()
+        thread = self._poll_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=max(POLL_WALL_TIMEOUT + 1.0, 5.0))
+            if thread.is_alive():
+                logger.warning("SimpleX poll: worker thread did not stop cleanly")
+        self._poll_thread = None
+
+    def _poll_thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._poll_unread_items_thread())
+        except Exception:
+            logger.exception("SimpleX poll: worker thread crashed")
+        finally:
+            try:
+                pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            finally:
+                loop.close()
+
+    async def _poll_unread_items_thread(self) -> None:
+        while self._running and not self._poll_stop.is_set():
+            await asyncio.sleep(POLL_INTERVAL)
+            if not self._running or self._poll_stop.is_set():
+                break
+            try:
+                await self._poll_unread_items_once()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("SimpleX poll: failed to poll unread items")
 
     def _item_key(self, wrapper: dict) -> Optional[str]:
         """Return a stable per-chat key for a SimpleX chat item."""
@@ -584,88 +652,95 @@ class SimplexAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("SimpleX poll: initial seed failed: %s", e)
 
+    async def _poll_unread_items_once(self) -> None:
+        start = time.time()
+        if self._last_poll_started_at:
+            poll_gap = start - self._last_poll_started_at
+            if poll_gap > POLL_STALL_WARN_SECONDS:
+                logger.warning(
+                    "SimpleX poll: loop stalled for %.2fs before next /tail",
+                    poll_gap,
+                )
+        self._last_poll_started_at = start
+        resp = await self._command_once(
+            "/tail 50",
+            timeout=POLL_COMMAND_TIMEOUT,
+            open_timeout=POLL_CONNECT_TIMEOUT,
+            wall_timeout=POLL_WALL_TIMEOUT,
+        )
+        poll_elapsed = time.time() - start
+        wrappers = (resp or {}).get("resp", {}).get("chatItems", []) or []
+        if resp is None:
+            logger.warning(
+                "SimpleX poll: /tail 50 timed out after %.2fs",
+                poll_elapsed,
+            )
+        elif poll_elapsed > POLL_COMMAND_TIMEOUT:
+            logger.warning(
+                "SimpleX poll: /tail 50 slow response %.2fs",
+                poll_elapsed,
+            )
+        logger.debug(
+            "SimpleX poll: got %d items in %.2fs (seen=%d)",
+            len(wrappers), poll_elapsed, len(self._seen_item_ids)
+        )
+        dispatch_items: list[tuple[dict, str]] = []
+        for wrapper in wrappers:
+            chat_item = wrapper.get("chatItem") or {}
+            meta = chat_item.get("meta") or {}
+            item_key = self._item_key(wrapper)
+            if item_key is None:
+                continue
+            if item_key in self._seen_item_ids:
+                continue
+            if not self._is_unread_inbound_text(wrapper):
+                item_ts = self._item_timestamp_epoch(wrapper)
+                if item_ts is not None and self._connected_at and item_ts < self._connected_at - 5:
+                    self._seen_item_ids.add(item_key)
+                    self._save_seen_items()
+                    logger.info(
+                        "SimpleX poll: marking stale pre-connect item seen: %s",
+                        item_key,
+                    )
+                    continue
+                status = (meta.get("itemStatus") or {}).get("type", "")
+                if status != "rcvNew":
+                    self._seen_item_ids.add(item_key)
+                    if len(self._seen_item_ids) > 1000:
+                        self._save_seen_items()
+                    continue
+                content = chat_item.get("content") or {}
+                if content.get("type") != "rcvMsgContent":
+                    self._seen_item_ids.add(item_key)
+                    if len(self._seen_item_ids) > 1000:
+                        self._save_seen_items()
+                    continue
+            logger.info(
+                "SimpleX poll: dispatching unread item %s",
+                item_key,
+            )
+            self._seen_item_ids.add(item_key)
+            self._save_seen_items()
+            dispatch_items.append((wrapper, item_key))
+        if dispatch_items:
+            self._dispatch_polled_items(dispatch_items)
+
     async def _poll_unread_items(self) -> None:
         """Poll recent chat history for unread inbound items missed by push WS."""
         while self._running:
             await asyncio.sleep(POLL_INTERVAL)
             try:
-                start = time.time()
-                if self._last_poll_started_at:
-                    poll_gap = start - self._last_poll_started_at
-                    if poll_gap > POLL_STALL_WARN_SECONDS:
-                        logger.warning(
-                            "SimpleX poll: loop stalled for %.2fs before next /tail",
-                            poll_gap,
-                        )
-                self._last_poll_started_at = start
-                resp = await self._command_once(
-                    "/tail 50",
-                    timeout=POLL_COMMAND_TIMEOUT,
-                    open_timeout=POLL_CONNECT_TIMEOUT,
-                    wall_timeout=POLL_WALL_TIMEOUT,
-                )
-                poll_elapsed = time.time() - start
-                wrappers = (resp or {}).get("resp", {}).get("chatItems", []) or []
-                if resp is None:
-                    logger.warning(
-                        "SimpleX poll: /tail 50 timed out after %.2fs",
-                        poll_elapsed,
-                    )
-                elif poll_elapsed > POLL_COMMAND_TIMEOUT:
-                    logger.warning(
-                        "SimpleX poll: /tail 50 slow response %.2fs",
-                        poll_elapsed,
-                    )
-                logger.debug(
-                    "SimpleX poll: got %d items in %.2fs (seen=%d)",
-                    len(wrappers), poll_elapsed, len(self._seen_item_ids)
-                )
-                dispatch_items: list[tuple[dict, str]] = []
-                for wrapper in wrappers:
-                    chat_item = wrapper.get("chatItem") or {}
-                    meta = chat_item.get("meta") or {}
-                    item_key = self._item_key(wrapper)
-                    if item_key is None:
-                        continue
-                    if item_key in self._seen_item_ids:
-                        continue
-                    if not self._is_unread_inbound_text(wrapper):
-                        item_ts = self._item_timestamp_epoch(wrapper)
-                        if item_ts is not None and self._connected_at and item_ts < self._connected_at - 5:
-                            self._seen_item_ids.add(item_key)
-                            self._save_seen_items()
-                            logger.info(
-                                "SimpleX poll: marking stale pre-connect item seen: %s",
-                                item_key,
-                            )
-                            continue
-                        status = (meta.get("itemStatus") or {}).get("type", "")
-                        if status != "rcvNew":
-                            self._seen_item_ids.add(item_key)
-                            if len(self._seen_item_ids) > 1000:
-                                self._save_seen_items()
-                            continue
-                        content = chat_item.get("content") or {}
-                        if content.get("type") != "rcvMsgContent":
-                            self._seen_item_ids.add(item_key)
-                            if len(self._seen_item_ids) > 1000:
-                                self._save_seen_items()
-                            continue
-                    logger.info(
-                        "SimpleX poll: dispatching unread item %s",
-                        item_key,
-                    )
-                    self._seen_item_ids.add(item_key)
-                    self._save_seen_items()
-                    dispatch_items.append((wrapper, item_key))
-                if dispatch_items:
-                    self._dispatch_polled_items(dispatch_items)
+                await self._poll_unread_items_once()
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("SimpleX poll: failed to poll unread items")
 
-    def _dispatch_polled_item(self, wrapper: dict, item_key: str) -> asyncio.Task:
+    def _dispatch_polled_item(
+        self,
+        wrapper: dict,
+        item_key: str,
+    ) -> Union[asyncio.Task, concurrent.futures.Future]:
         """Dispatch one polled item asynchronously.
 
         Kept as a small compatibility wrapper for tests and callers that hand us
@@ -675,7 +750,10 @@ class SimplexAdapter(BasePlatformAdapter):
         """
         return self._dispatch_polled_items([(wrapper, item_key)])
 
-    def _dispatch_polled_items(self, items: list[tuple[dict, str]]) -> asyncio.Task:
+    def _dispatch_polled_items(
+        self,
+        items: list[tuple[dict, str]],
+    ) -> Union[asyncio.Task, concurrent.futures.Future]:
         """Dispatch polled items in order while keeping the poll loop free."""
         first_key = items[0][1] if items else "empty"
         started = time.time()
@@ -710,10 +788,25 @@ class SimplexAdapter(BasePlatformAdapter):
                     batch_elapsed,
                 )
 
-        task = asyncio.create_task(_runner(), name=f"simplex-poll-dispatch:{first_key}")
-        self._poll_dispatch_tasks.add(task)
-        task.add_done_callback(self._poll_dispatch_tasks.discard)
-        return task
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is not None:
+            task = running_loop.create_task(_runner(), name=f"simplex-poll-dispatch:{first_key}")
+            self._poll_dispatch_tasks.add(task)
+            task.add_done_callback(self._poll_dispatch_tasks.discard)
+            return task
+
+        gateway_loop = self._gateway_loop
+        if gateway_loop is None or not gateway_loop.is_running():
+            raise RuntimeError("SimpleX poll dispatch has no running gateway loop")
+
+        future = asyncio.run_coroutine_threadsafe(_runner(), gateway_loop)
+        self._poll_dispatch_futures.add(future)
+        future.add_done_callback(self._poll_dispatch_futures.discard)
+        return future
 
     async def _resolve_chat_target(self, chat_id: str) -> str:
         """Resolve Hermes IDs to simplex-chat command targets.

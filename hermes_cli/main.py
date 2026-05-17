@@ -5563,6 +5563,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_claude_operator(args):
+    """Claude Code worker fleet — spawn/list/status/attach/stop in tmux."""
+    from hermes_cli.claude_operator import operator_command
+
+    return operator_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -9626,8 +9633,8 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "checkpoints", "claw", "completion",
-        "computer-use",
+        "acp", "auth", "backup", "checkpoints", "claude-operator", "claw",
+        "completion", "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
@@ -10531,6 +10538,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # claude-operator command — Claude Code worker fleet (tmux-managed)
+    # =========================================================================
+    from hermes_cli.claude_operator import build_parser as _build_operator_parser
+
+    operator_parser = _build_operator_parser(subparsers)
+    operator_parser.set_defaults(func=cmd_claude_operator)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

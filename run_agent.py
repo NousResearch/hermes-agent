@@ -1546,9 +1546,20 @@ class AIAgent:
                 except Exception:
                     pass  # corrupted existing file — allow the overwrite
 
+            # Collect all distinct model names used in this session so that
+            # downstream consumers (e.g. the achievements plugin) can identify
+            # open-weight / local models without parsing raw message content.
+            session_model_names: list[str] = []
+            if self.model:
+                session_model_names.append(self.model)
+            for msg in cleaned:
+                mn = msg.get("model")
+                if mn and mn not in session_model_names:
+                    session_model_names.append(mn)
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,
+                "model_names": session_model_names,
                 "base_url": self.base_url,
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),

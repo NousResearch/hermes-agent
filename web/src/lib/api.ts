@@ -525,6 +525,7 @@ export interface ModelsAnalyticsModelEntry {
   tool_calls: number;
   last_used_at: number;
   avg_tokens_per_session: number;
+  runtime_context_length?: number;
   capabilities: {
     supports_tools?: boolean;
     supports_vision?: boolean;

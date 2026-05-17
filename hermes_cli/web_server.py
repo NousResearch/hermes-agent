@@ -3035,9 +3035,28 @@ async def get_models_analytics(days: int = 30):
     try:
         cutoff = time.time() - (days * 86400)
 
-        cur = db._conn.execute("""
+        active_session_filter = """
+            started_at > ?
+            AND model IS NOT NULL
+            AND model != ''
+            AND NOT (
+                COALESCE(message_count, 0) = 0
+                AND COALESCE(api_call_count, 0) = 0
+                AND COALESCE(tool_call_count, 0) = 0
+                AND COALESCE(input_tokens, 0) = 0
+                AND COALESCE(output_tokens, 0) = 0
+                AND COALESCE(cache_read_tokens, 0) = 0
+                AND COALESCE(cache_write_tokens, 0) = 0
+                AND COALESCE(reasoning_tokens, 0) = 0
+                AND COALESCE(estimated_cost_usd, 0) = 0
+                AND COALESCE(actual_cost_usd, 0) = 0
+            )
+        """
+
+        cur = db._conn.execute(f"""
             SELECT model,
                    billing_provider,
+                   MAX(NULLIF(billing_base_url, '')) as billing_base_url,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
@@ -3049,7 +3068,7 @@ async def get_models_analytics(days: int = 30):
                    SUM(tool_call_count) as tool_calls,
                    MAX(started_at) as last_used_at,
                    AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            FROM sessions WHERE {active_session_filter}
             GROUP BY model, billing_provider
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
@@ -3058,7 +3077,20 @@ async def get_models_analytics(days: int = 30):
         models = []
         for row in rows:
             provider = row.get("billing_provider") or ""
+            base_url = row.get("billing_base_url") or ""
             model_name = row["model"]
+            runtime_context_length = 0
+            try:
+                from agent.model_metadata import get_model_context_length
+                runtime_context_length = get_model_context_length(
+                    model=model_name,
+                    provider=provider,
+                    base_url=base_url,
+                    config_context_length=None,
+                ) or 0
+            except Exception:
+                runtime_context_length = 0
+
             caps = {}
             try:
                 from agent.models_dev import get_model_capabilities
@@ -3089,10 +3121,11 @@ async def get_models_analytics(days: int = 30):
                 "tool_calls": row["tool_calls"],
                 "last_used_at": row["last_used_at"],
                 "avg_tokens_per_session": row["avg_tokens_per_session"],
+                "runtime_context_length": runtime_context_length,
                 "capabilities": caps,
             })
 
-        totals_cur = db._conn.execute("""
+        totals_cur = db._conn.execute(f"""
             SELECT COUNT(DISTINCT model) as distinct_models,
                    SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -3102,7 +3135,7 @@ async def get_models_analytics(days: int = 30):
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            FROM sessions WHERE {active_session_filter}
         """, (cutoff,))
         totals = dict(totals_cur.fetchone())
 

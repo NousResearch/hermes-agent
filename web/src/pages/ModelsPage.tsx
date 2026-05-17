@@ -323,6 +323,9 @@ function ModelCard({
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
+  const runtimeContext = entry.runtime_context_length ?? 0;
+  const catalogContext = caps.context_window ?? 0;
+  const showCatalogContext = catalogContext > 0 && catalogContext !== runtimeContext;
 
   const isMain =
     !!main &&
@@ -364,9 +367,14 @@ function ModelCard({
                   {provider}
                 </Badge>
               )}
-              {caps.context_window && caps.context_window > 0 && (
+              {runtimeContext > 0 && (
                 <span className="text-[10px] text-muted-foreground">
-                  {formatTokenCount(caps.context_window)} ctx
+                  {formatTokenCount(runtimeContext)} runtime ctx
+                </span>
+              )}
+              {showCatalogContext && (
+                <span className="text-[10px] text-muted-foreground/70">
+                  {formatTokenCount(catalogContext)} catalog ctx
                 </span>
               )}
               {caps.max_output_tokens && caps.max_output_tokens > 0 && (

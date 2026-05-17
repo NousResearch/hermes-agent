@@ -1319,6 +1319,86 @@ class TestModelInfoEndpoint:
         assert data["auto_context_length"] == 0
 
 
+class TestModelsAnalyticsEndpoint:
+    """Tests for GET /api/analytics/models."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_models_analytics_omits_empty_ghost_sessions(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("ghost", "tui", model="gpt-5.5")
+            db.create_session("real", "cli", model="gpt-5.5")
+            db.update_token_counts(
+                "real",
+                input_tokens=100,
+                output_tokens=20,
+                model="gpt-5.5",
+                billing_provider="openai-codex",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=30")
+
+        assert resp.status_code == 200
+        models = resp.json()["models"]
+        assert [(m["model"], m["provider"]) for m in models] == [
+            ("gpt-5.5", "openai-codex")
+        ]
+        assert resp.json()["totals"]["total_sessions"] == 1
+
+    def test_models_analytics_reports_runtime_context_separately_from_catalog(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("codex", "cli", model="gpt-5.5")
+            db.update_token_counts(
+                "codex",
+                input_tokens=100,
+                output_tokens=20,
+                model="gpt-5.5",
+                billing_provider="openai-codex",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        mock_caps = MagicMock()
+        mock_caps.supports_tools = True
+        mock_caps.supports_vision = True
+        mock_caps.supports_reasoning = True
+        mock_caps.context_window = 1_050_000
+        mock_caps.max_output_tokens = 128_000
+        mock_caps.model_family = "gpt"
+
+        with patch("agent.models_dev.get_model_capabilities", return_value=mock_caps), \
+             patch("agent.model_metadata.get_model_context_length", return_value=272_000):
+            resp = self.client.get("/api/analytics/models?days=30")
+
+        assert resp.status_code == 200
+        entry = resp.json()["models"][0]
+        assert entry["runtime_context_length"] == 272_000
+        assert entry["capabilities"]["context_window"] == 1_050_000
+
+
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------

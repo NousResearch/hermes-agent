@@ -1138,7 +1138,6 @@ AUTHOR_MAP = {
     "sp_ps@Mac-mini.lan": "phoenixshen",  # PR #26768 (respect user-configured vision model)
     "1594534+phoenixshen@users.noreply.github.com": "phoenixshen",
     "147827411+AhmetArif0@users.noreply.github.com": "AhmetArif0",  # PR #26635 (line proxy env vars)
-<<<<<<< HEAD
     # batch salvage (May 2026 LHF run, group 5)
     "hari@Hariharans-MacBook-Air-8.local": "haran2001",  # PR #27070 (i18n catalog test)
     "hariharan15151@gmail.com": "haran2001",  # PR #27068 (qwen3.6-plus 1M context)

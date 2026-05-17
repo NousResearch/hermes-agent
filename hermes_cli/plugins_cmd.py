@@ -741,7 +741,7 @@ def _discover_all_plugins() -> list:
             if (
                 depth == 0
                 and source == "bundled"
-                and d.name in {"memory", "context_engine"}
+                and d.name in {"memory", "context_engine", "model-providers"}
             ):
                 continue
             manifest_file = d / "plugin.yaml"

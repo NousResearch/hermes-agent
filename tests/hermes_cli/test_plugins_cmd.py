@@ -496,6 +496,25 @@ class TestDiscoverAllPlugins:
         assert "context_engine/compressor" not in entries
         assert "observability/langfuse" in entries
 
+    def test_bundled_model_providers_skipped(self, tmp_path, monkeypatch):
+        """``plugins/model-providers/`` has its own provider registry loader.
+
+        Bundled providers should not appear in ``hermes plugins list`` as
+        general opt-in plugins, or users get a misleading enable/disable
+        surface for providers selected via ``model.provider`` / ``--provider``.
+        """
+        bundled, _, discover = self._entries_by_key(tmp_path, monkeypatch)
+        self._write_plugin(
+            bundled,
+            ["model-providers", "openrouter"],
+            manifest_name="openrouter-provider",
+        )
+        self._write_plugin(bundled, ["observability", "langfuse"])
+
+        entries = discover()
+        assert "model-providers/openrouter" not in entries
+        assert "observability/langfuse" in entries
+
     def test_user_memory_subdir_is_still_scanned(self, tmp_path, monkeypatch):
         """The memory/context_engine skip only applies to *bundled* — a user
         plugin at ``~/.hermes/plugins/memory/<x>/`` should still be discovered

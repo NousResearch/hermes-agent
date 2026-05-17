@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+pytest.importorskip("lark_oapi")
 
 from tests.gateway.feishu_helpers import (
     install_dedup_state,

@@ -49,6 +49,12 @@ Use native `/goal` for the standing crypto_bot objective. Use the native
 Kanban `crypto_bot` board as lifecycle truth for cards, dependency links,
 assignees, comments, and blocked/done status. The strategic plan remains the
 backlog source, but native Kanban is the durable work queue once imported.
+When planning files disagree, prefer live machine-verifiable control-plane state
+in this order: managed-project descriptor/readiness gates, native Kanban audit,
+PR/CI audit, completion-gate/PR evidence artifacts, then strategic-plan fields.
+Do not select a `plan.json` top-level `next_recommended_session_id` when the
+session list, remaining-screen notes, native Kanban state, or autonomy readiness
+show a lifecycle blocker. Report the conflict and close the blocker first.
 If the board has not been imported, generate/read the machine-verifiable import
 preview and ask for exact Operator approval before any live board mutation.
 Board import approval may authorize only creation/import of the previewed
@@ -321,17 +327,23 @@ then classify the result as a valid remote lifecycle block such as
 `IMPORT_VALID_REMOTE_LIFECYCLE_BLOCKED` when PR exists but CI evidence remains
 pending. See `references/control-plane-lifecycle-consistency.md` for the
 session-derived repair recipe, validator quartet, and reporting pattern. See
-`references/runner-recovery-ci-evidence.md` for the gated runner-recovery
+`references/planning-readiness-arbitration.md` for the planning-review rule:
+when `plan.json`, strategic summaries, native Kanban, and readiness disagree,
+close live control-plane/readiness blockers before selecting S007A, S017A, or
+any other next product task. See `references/runner-recovery-ci-evidence.md` for the gated runner-recovery
 inspection-first pattern and runner-label mismatch triage. See
 `references/dedicated-ci-runner-image.md` for the dedicated job image,
 act_runner job-container network requirement, rerun evidence sequence, and
 temporary-token hygiene. See `references/runner-networking-ci-recovery.md` for
 fail-closed repair/inspection of `actions/checkout` DNS failures caused by job
 containers not joining `crypto-bot-gitea-net`. See
-`references/local-gitea-actions-toolcache-hardening.md` when CI gets past Node
+See `references/local-gitea-actions-toolcache-hardening.md` when CI gets past Node
 and checkout but fails because local act_runner job images/toolcache lack
 GitHub-hosted-runner assumptions such as Python 3.13 arm64 toolcache metadata or
-`ripgrep`.
+`ripgrep`. See `references/pr-ci-deterministic-validator-iteration.md` when PR
+sync CI reaches deterministic validators and fails on missing evidence fixtures
+or commit-reachability false negatives; it records the evidence-first repair,
+validator rerun, commit/push, and final status-reporting loop.
 
 Evidence issue statuses are `active`, `repair_attempted`, `repaired`,
 `invalidated`, and `superseded`. A dev13-005-style completion failure stays

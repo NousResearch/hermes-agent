@@ -68,6 +68,8 @@ hermes memory setup        # select "honcho" — runs the Honcho-specific post-s
 
 The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
+**Cloud privacy notice:** When configured for Honcho cloud, Hermes sends conversation messages, peer/session identifiers, memory facts/conclusions, and context requests to `api.honcho.dev`. Honcho cloud may run backend LLM inference for observation, summaries, peer representations, and dialectic reasoning. Choose the `local` setup option for a self-hosted Honcho server instead.
+
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>

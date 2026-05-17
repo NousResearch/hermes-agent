@@ -354,6 +354,18 @@ def _ensure_sdk_installed() -> bool:
         return False
 
 
+def _confirm_cloud_data_flow() -> bool:
+    """Ask for explicit consent before configuring the hosted Honcho service."""
+    print("\n  Honcho cloud privacy notice:")
+    print("    - Hermes will send conversation messages, peer/session identifiers,")
+    print("      memory facts/conclusions, and context requests to api.honcho.dev.")
+    print("    - Honcho cloud may run backend LLM inference for observation,")
+    print("      summaries, peer representations, and dialectic reasoning.")
+    print("    - Choose 'local' instead if you want to use a self-hosted Honcho server.")
+    answer = _prompt("Continue with Honcho cloud?", default="n")
+    return answer.lower() in ("y", "yes")
+
+
 def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
     cfg = _read_config()
@@ -383,6 +395,9 @@ def cmd_setup(args) -> None:
     ) else "cloud"
     deploy = _prompt("Cloud or local?", default=current_deploy)
     is_local = deploy.lower() in ("local", "l")
+    if not is_local and not _confirm_cloud_data_flow():
+        print("\n  Honcho cloud setup canceled. Re-run setup and choose 'local' for a self-hosted server.\n")
+        return
 
     # Clean up legacy snake_case key
     cfg.pop("base_url", None)

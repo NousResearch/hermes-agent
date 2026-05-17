@@ -16544,6 +16544,37 @@ class GatewayRunner:
                     entry.session_id = agent.session_id
                     self.session_store._save()
 
+                # If this is a Telegram DM and source.thread_id was lost during
+                # the session split (synthetic / recovered event), restore it
+                # from the binding so _thread_metadata_for_source produces the
+                # correct message_thread_id instead of routing to the General
+                # thread.  Failure here is non-fatal — we log and continue;
+                # worst case the message lands in General, which is the
+                # pre-fix behaviour.
+                if (
+                    getattr(source, "platform", None) == Platform.TELEGRAM
+                    and getattr(source, "chat_type", None) == "dm"
+                    and getattr(source, "thread_id", None) is None
+                    and self._session_db is not None
+                ):
+                    try:
+                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                            session_id=agent.session_id,
+                        )
+                        if _binding and _binding.get("thread_id"):
+                            source.thread_id = str(_binding["thread_id"])
+                            logger.debug(
+                                "Restored source.thread_id=%s from binding after session split %s → %s",
+                                source.thread_id,
+                                session_id,
+                                agent.session_id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Failed to restore thread_id from binding after session split",
+                            exc_info=True,
+                        )
+
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 
             # When compression created a new session, the messages list was

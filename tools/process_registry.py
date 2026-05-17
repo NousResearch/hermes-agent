@@ -891,6 +891,10 @@ class ProcessRegistry:
         """Check if a completion notification was already consumed via wait/poll/log."""
         return session_id in self._completion_consumed
 
+    def mark_completion_consumed(self, session_id: str) -> None:
+        """Explicitly mark a session as consumed (e.g., after TUI notification delivery)."""
+        self._completion_consumed.add(session_id)
+
     def drain_notifications(self) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 

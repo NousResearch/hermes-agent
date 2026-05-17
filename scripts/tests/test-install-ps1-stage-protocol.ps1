@@ -5,7 +5,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-stage-protocol.ps1
 #
 # These tests only exercise the metadata surface (-ProtocolVersion, -Manifest,
-# unknown -Stage handling).  They DO NOT actually run any install stages —
+# unknown -Stage handling).  They DO NOT actually run any install stages --
 # those have heavy side effects (winget, git clone, pip install, PATH writes)
 # and are out of scope for a unit smoke test.  All three metadata commands
 # below return without invoking Main / Invoke-AllStages.

@@ -27,8 +27,25 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Prefer a .venv in the current tree, fall back to the main checkout's venv
 # (useful for worktrees where we don't always duplicate the venv).
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in \
+  "$REPO_ROOT/.venv" \
+  "$REPO_ROOT/venv" \
+  "$HOME/.hermes/hermes-agent-current/venv" \
+  "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
+    candidate_python="$candidate/bin/python"
+    if ! "$candidate_python" - <<'PY' >/dev/null 2>&1
+import pytest  # noqa: F401
+import aiohttp  # noqa: F401
+import fastapi  # noqa: F401
+import websockets  # noqa: F401
+import mcp  # noqa: F401
+import acp  # noqa: F401
+PY
+    then
+      echo "→ skipping incomplete test venv: $candidate"
+      continue
+    fi
     VENV="$candidate"
     break
   fi
@@ -41,15 +58,22 @@ fi
 
 PYTHON="$VENV/bin/python"
 
-# ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
+# ── Ensure pytest runner plugins are installed ─────────────────────────────
+_missing_pytest_plugins=()
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
-  echo "→ installing pytest-split into $VENV"
+  _missing_pytest_plugins+=("pytest-split>=0.9,<1")
+fi
+if ! "$PYTHON" -c "import xdist" 2>/dev/null; then
+  _missing_pytest_plugins+=("pytest-xdist>=3,<4")
+fi
+if [ "${#_missing_pytest_plugins[@]}" -gt 0 ]; then
+  echo "→ installing pytest runner plugins into $VENV"
   if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$PYTHON" --quiet "pytest-split>=0.9,<1"
+    uv pip install --python "$PYTHON" --quiet "${_missing_pytest_plugins[@]}"
   elif "$PYTHON" -m pip --version >/dev/null 2>&1; then
-    "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+    "$PYTHON" -m pip install --quiet "${_missing_pytest_plugins[@]}"
   else
-    echo "error: neither uv nor pip is available in $VENV — pytest-split is missing" >&2
+    echo "error: neither uv nor pip is available in $VENV — pytest runner plugins are missing" >&2
     echo "  fix: run  uv pip install -e \".[dev]\"  from $REPO_ROOT" >&2
     exit 1
   fi
@@ -120,10 +144,15 @@ echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
-  -o "addopts=" \
-  -n "$WORKERS" \
-  --ignore=tests/integration \
-  --ignore=tests/e2e \
-  -m "not integration" \
-  "${ARGS[@]}"
+PYTEST_CMD=(
+  "$PYTHON" -m pytest
+  -o "addopts="
+  -n "$WORKERS"
+  --ignore=tests/integration
+  --ignore=tests/e2e
+  -m "not integration"
+)
+if [ "${#ARGS[@]}" -gt 0 ]; then
+  PYTEST_CMD+=("${ARGS[@]}")
+fi
+exec "${PYTEST_CMD[@]}"

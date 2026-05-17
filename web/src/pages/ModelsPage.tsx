@@ -551,8 +551,8 @@ export default function ModelsPage() {
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                       <div className="flex items-center gap-2">
                         <Settings2 className="h-4 w-4 text-muted-foreground" />
-                        <CardTitle className="text-sm">Fallback Chain</CardTitle>
-                        <span className="text-[10px] text-muted-foreground">providers tried in order when main fails</span>
+                        <CardTitle className="text-sm">Fallback Providers</CardTitle>
+                        <span className="text-[10px] text-muted-foreground">additional providers used if the main model is unavailable</span>
                       </div>
                     </div>
                   </CardHeader>

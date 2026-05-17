@@ -45,15 +45,36 @@ _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
 )
+_UNTERMINATED_INTERNAL_CONTEXT_RE = re.compile(
+    r'<\s*memory-context\s*>\s*'
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.'
+    r'[\s\S]*$',
+    re.IGNORECASE,
+)
 _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    re.IGNORECASE,
+)
+_LEADING_COMPACTION_FALLBACK_RE = re.compile(
+    r'^\s*\[CONTEXT COMPACTION\s+[^\]]*\]'
+    r'[\s\S]*?'
+    r'(?:Summary generation was unavailable\.[^\n]*(?:\n|$))'
+    r'(?:[^\n]*removed to free context space[^\n]*(?:\n|$))?'
+    r'(?:[^\n]*messages contained earlier work[^\n]*(?:\n|$))?',
+    re.IGNORECASE,
+)
+_LEADING_GATEWAY_SYSTEM_NOTE_RE = re.compile(
+    r'^\s*\[System note:\s*Your previous turn(?: in this session)? (?:was interrupted|in this session was interrupted)[^\]]*\]\s*',
     re.IGNORECASE,
 )
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _LEADING_COMPACTION_FALLBACK_RE.sub('', text)
+    text = _LEADING_GATEWAY_SYSTEM_NOTE_RE.sub('', text)
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _UNTERMINATED_INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text

@@ -293,9 +293,9 @@ def compress_context(
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
-            agent._emit_warning(
-                f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+            logger.warning(
+                "Compression summary failed during context compaction; fallback marker inserted internally: %s",
+                summary_error,
             )
     else:
         # No hard failure — but did the configured aux model error out
@@ -309,10 +309,10 @@ def compress_context(
             _aux_key = (_aux_fail_model, _aux_fail_err)
             if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
                 agent._last_aux_fallback_warning_key = _aux_key
-                agent._emit_warning(
-                    f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                    f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                    "check auxiliary.compression.model in config.yaml."
+                logger.warning(
+                    "Configured compression model %r failed during context compaction; recovered using main model: %s",
+                    _aux_fail_model,
+                    _aux_fail_err or "unknown error",
                 )
 
     todo_snapshot = agent._todo_store.format_for_injection()

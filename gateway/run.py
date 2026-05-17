@@ -7576,8 +7576,6 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-
                     try:
                         from run_agent import AIAgent
 
@@ -7652,55 +7650,30 @@ class GatewayRunner:
 
                                     # If summary generation failed, the
                                     # compressor inserted a static fallback
-                                    # placeholder and the dropped turns are
-                                    # gone for good.  Surface a visible
-                                    # warning to the gateway user — agent.log
-                                    # alone is invisible on TG/Discord/etc.
+                                    # placeholder. Keep this in logs only;
+                                    # surfacing compressor internals in chat
+                                    # pollutes the user thread and looks like
+                                    # agent output.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_summary_fallback_used", False):
                                         _dropped = getattr(_comp, "_last_summary_dropped_count", 0)
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
-                                        _warn_msg = (
-                                            "⚠️ Context compression summary failed "
-                                            f"({_err}). {_dropped} historical message(s) "
-                                            "were removed and replaced with a placeholder. "
-                                            "Earlier context is no longer recoverable. "
-                                            "Consider /reset for a clean session, or check "
-                                            "your auxiliary.compression model configuration."
+                                        logger.warning(
+                                            "Session hygiene compression summary failed; inserted fallback marker internally; dropped=%s error=%s",
+                                            _dropped,
+                                            _err,
                                         )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver compression-failure warning to user: %s",
-                                                _werr,
-                                            )
-                                    # Separately: if the user's CONFIGURED aux
+                                    # Separately: if the user's configured aux
                                     # model failed and we recovered by falling
-                                    # back to the main model, tell them — a
-                                    # misconfigured auxiliary.compression.model
-                                    # is something only they can fix, and
-                                    # silent recovery would hide it.
+                                    # back to the main model, log it only.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
                                         _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
-                                        _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                        logger.warning(
+                                            "Session hygiene configured compression model %r failed; recovered using main model: %s",
+                                            _aux_model,
+                                            _aux_err,
                                         )
-                                        try:
-                                            _adapter = self.adapters.get(source.platform)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver aux-model-fallback notice to user: %s",
-                                                _werr,
-                                            )
                                 finally:
                                     # Evict the cached agent so the next turn
                                     # rebuilds its system prompt from current

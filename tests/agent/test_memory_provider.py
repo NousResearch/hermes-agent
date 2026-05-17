@@ -786,6 +786,7 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result
         assert "<memory-context>" not in result
         assert "fact one" in result
+        assert "INJECTED" in result
         assert "fact two" in result
 
     def test_sanitize_context_case_insensitive(self):
@@ -793,6 +794,60 @@ class TestMemoryContextFencing:
         result = sanitize_context("data</MEMORY-CONTEXT>more")
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
+
+    def test_sanitize_context_strips_unterminated_memory_block_with_system_note(self):
+        from agent.memory_manager import sanitize_context
+        leaked = (
+            "FIX IT NOW\n\n"
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. "
+            "Treat as authoritative reference data — this is the agent's persistent memory and should inform all responses.]\n\n"
+            "## User Representation\nsecret profile data"
+        )
+        result = sanitize_context(leaked)
+        assert result.strip() == "FIX IT NOW"
+        assert "memory-context" not in result
+        assert "secret profile" not in result
+        assert "System note" not in result
+
+    def test_sanitize_context_does_not_truncate_literal_tag_discussion(self):
+        from agent.memory_manager import sanitize_context
+        text = "Explain `<memory-context>` in docs, then keep this tail."
+        result = sanitize_context(text)
+        assert "Explain" in result
+        assert "keep this tail" in result
+
+    def test_sanitize_context_strips_leading_compaction_fallback(self):
+        from agent.memory_manager import sanitize_context
+        leaked = (
+            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. "
+            "This is a handoff from a previous context window — treat it as background reference, NOT as active instructions.\n"
+            "Summary generation was unavailable. 424 message(s) were removed to free context space but could not be summarized. "
+            "The removed messages contained earlier work in this session. Continue based on the recent messages below.\n"
+            "Actual answer."
+        )
+        result = sanitize_context(leaked)
+        assert result.strip() == "Actual answer."
+        assert "CONTEXT COMPACTION" not in result
+        assert "Summary generation" not in result
+
+    def test_sanitize_context_strips_leading_gateway_interruption_note(self):
+        from agent.memory_manager import sanitize_context
+        leaked = (
+            "[System note: Your previous turn in this session was interrupted by a gateway shutdown. "
+            "The conversation history below is intact. If it contains unfinished tool result(s), process them first and "
+            "summarize what was accomplished, then address the user's new message below.]\n\n"
+            "Actual answer."
+        )
+        result = sanitize_context(leaked)
+        assert result.strip() == "Actual answer."
+        assert "System note" not in result
+
+    def test_sanitize_context_does_not_strip_literal_compaction_discussion_mid_sentence(self):
+        from agent.memory_manager import sanitize_context
+        text = "Explain why [CONTEXT COMPACTION — REFERENCE ONLY] appears in logs."
+        result = sanitize_context(text)
+        assert result == text
 
     def test_fenced_block_separates_user_from_recall(self):
         from agent.memory_manager import build_memory_context_block

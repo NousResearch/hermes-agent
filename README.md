@@ -53,6 +53,8 @@ If you already have Git installed, the installer detects it and uses that instea
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
 > **Windows:** Native Windows is supported as an **early beta** — the PowerShell one-liner above installs everything, but expect rough edges and please file issues when you hit them. If you'd rather use WSL2 (our most battle-tested Windows path), the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
+>
+> **WSL2 + xAI SuperGrok OAuth — known issue:** On WSL2 with mirrored networking (Microsoft's current default), `hermes auth add xai-oauth --type oauth` opens a loopback listener that the Windows Hyper-V Firewall blocks by default (`DefaultInboundAction = Block` on the WSL VM). The browser lands on xAI's "Could not establish connection" fallback page with the auth code as text, and Hermes has no `--code` flag to paste it back. Community-maintained fix (wrapper script + one-shot `New-NetFirewallHyperVRule` for the permanent fix): [jettoptx/hermes-xai-oauth-wsl](https://github.com/jettoptx/hermes-xai-oauth-wsl).
 
 After installation:
 

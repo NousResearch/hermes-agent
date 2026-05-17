@@ -944,3 +944,21 @@ def test_run_doctor_ignores_invalid_direct_keys_when_oauth_fallback_is_healthy(
 
     assert "invalid API key" in out
     assert unexpected_issue not in out
+
+
+class TestHasHealthyOauthFallbackForXai:
+    def test_returns_true_when_xai_oauth_healthy(self, monkeypatch):
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": True})
+        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+        assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is True
+
+    def test_returns_false_when_xai_oauth_not_logged_in(self, monkeypatch):
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+        assert _has_healthy_oauth_fallback_for_apikey_provider("xai") is False
+
+    def test_returns_false_for_unknown_provider(self):
+        from hermes_cli.doctor import _has_healthy_oauth_fallback_for_apikey_provider
+        assert _has_healthy_oauth_fallback_for_apikey_provider("unknown-provider") is False

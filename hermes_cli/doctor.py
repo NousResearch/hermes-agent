@@ -164,6 +164,7 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
         from hermes_cli.auth import (
             get_gemini_oauth_auth_status,
             get_minimax_oauth_auth_status,
+            get_xai_oauth_auth_status,
         )
     except Exception:
         return False
@@ -173,6 +174,8 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
         return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
     if normalized == "minimax":
         return bool((get_minimax_oauth_auth_status() or {}).get("logged_in"))
+    if normalized == "xai":
+        return bool((get_xai_oauth_auth_status() or {}).get("logged_in"))
     return False
 
 

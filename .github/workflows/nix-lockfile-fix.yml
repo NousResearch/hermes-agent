@@ -191,6 +191,9 @@ jobs:
        && !contains(github.event.changes.body.from, '[x] **Apply lockfile fix**'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Authorize & resolve PR
         id: resolve
@@ -256,7 +259,7 @@ jobs:
         with:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
           ref: ${{ steps.resolve.outputs.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: ./.github/actions/nix-setup
@@ -267,11 +270,20 @@ jobs:
         id: apply
         run: nix run .#fix-lockfiles
 
+      - name: Generate GitHub App token
+        if: steps.apply.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          git remote set-url origin "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}.git"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nix/tui.nix nix/web.nix

@@ -450,6 +450,12 @@ def build_skill_invocation_message(
     )
 
 
+_MISSING_SKILL_WARNING = (
+    "Unknown skill(s) requested, skipping: %s. "
+    "Available skills can be listed with `hermes skills list`."
+)
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,

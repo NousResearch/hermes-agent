@@ -1867,18 +1867,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
-        from agent.skill_commands import build_preloaded_skills_prompt
+        from agent.skill_commands import _MISSING_SKILL_WARNING, build_preloaded_skills_prompt
 
         skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
         if missing_skills:
-            logger.warning(
-                "Unknown skill(s) requested, skipping: %s. "
-                "Available skills can be listed with `hermes skills list`.",
-                ", ".join(missing_skills),
-            )
+            logger.warning(_MISSING_SKILL_WARNING, ", ".join(missing_skills))
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part

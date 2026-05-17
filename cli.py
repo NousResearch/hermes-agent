@@ -2411,6 +2411,7 @@ def _looks_like_slash_command(text: str) -> bool:
 # ============================================================================
 
 from agent.skill_commands import (
+    _MISSING_SKILL_WARNING,
     scan_skill_commands,
     get_skill_commands,
     build_skill_invocation_message,
@@ -14079,11 +14080,7 @@ def main(
         )
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            logger.warning(
-                "Unknown skill(s) requested, skipping: %s. "
-                "Available skills can be listed with `hermes skills list`.",
-                missing_display,
-            )
+            logger.warning(_MISSING_SKILL_WARNING, missing_display)
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

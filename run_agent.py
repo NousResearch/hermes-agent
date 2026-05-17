@@ -3176,9 +3176,21 @@ class AIAgent:
             if not provider or not model:
                 return False
             caps = get_model_capabilities(provider, model)
-            if caps is None:
-                return False
-            return bool(caps.supports_vision)
+            if caps is not None:
+                return bool(caps.supports_vision)
+            # Fall back to config: if agent.image_input_mode is "native",
+            # treat the model as vision-capable even when models.dev has no entry.
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                if isinstance(cfg, dict):
+                    agent_cfg = cfg.get("agent") or {}
+                    if isinstance(agent_cfg, dict):
+                        if agent_cfg.get("image_input_mode") == "native":
+                            return True
+            except Exception:
+                pass
+            return False
         except Exception:
             return False
 

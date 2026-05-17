@@ -94,6 +94,7 @@ deepseek = DeepSeekProfile(
         "deepseek-reasoner",
     ),
     base_url="https://api.deepseek.com/v1",
+    default_aux_model="deepseek-chat",
 )
 
 register_provider(deepseek)

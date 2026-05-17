@@ -840,6 +840,85 @@ async def test_operator_declared_topic_is_not_auto_renamed(tmp_path):
     fake.rename_dm_topic.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_disable_topic_auto_rename_extra_skips_rename(tmp_path):
+    """extra.disable_topic_auto_rename=True must short-circuit auto-rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    # Flip the operator switch.
+    runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Auto-generated title",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_schedule_topic_rename_respects_disable_flag(tmp_path):
+    """The scheduling entry-point must also honour disable_topic_auto_rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = "yes"
+
+    # If the flag is honoured we never schedule the coroutine, so
+    # _rename_telegram_topic_for_session_title is never invoked.
+    called = False
+
+    async def _spy(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    runner._rename_telegram_topic_for_session_title = _spy
+
+    runner._schedule_telegram_topic_title_rename(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Auto-generated title",
+    )
+
+    # Give any (incorrectly scheduled) coroutine a chance to run.
+    import asyncio
+    await asyncio.sleep(0)
+    assert called is False
+
+
+def test_telegram_topic_auto_rename_disabled_string_truthy(tmp_path):
+    """Common truthy string forms ('1', 'true', 'on', 'yes') must disable rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    source = _make_source(thread_id="42")
+
+    cfg_extra = runner.config.platforms[Platform.TELEGRAM].extra
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        cfg_extra["disable_topic_auto_rename"] = value
+        assert runner._telegram_topic_auto_rename_disabled(source) is True, value
+
+    for value in ("0", "false", "no", "off", "", None):
+        cfg_extra["disable_topic_auto_rename"] = value
+        assert runner._telegram_topic_auto_rename_disabled(source) is False, value
+
+    # Explicit bools still work.
+    cfg_extra["disable_topic_auto_rename"] = True
+    assert runner._telegram_topic_auto_rename_disabled(source) is True
+    cfg_extra["disable_topic_auto_rename"] = False
+    assert runner._telegram_topic_auto_rename_disabled(source) is False
+
+
 def test_general_topic_is_treated_as_root_lobby(tmp_path):
     """Messages in the Telegram General topic (thread_id=1) route to the lobby, not a lane."""
     db = SessionDB(db_path=tmp_path / "state.db")

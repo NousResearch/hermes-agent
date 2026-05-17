@@ -4871,6 +4871,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._threads.mark(thread_id)
 
+        # Stamp agent_id before batching so the batch key reflects the
+        # routed agent (idempotent — handle_message will skip re-stamping).
+        self._attach_agent_id(event)
+
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the Discord client.
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:

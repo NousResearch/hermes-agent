@@ -106,6 +106,9 @@ from gateway.platforms.qqbot.constants import (
     MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS,
     DEDUP_MAX_SIZE,
+    LAST_MSG_CACHE_MAX,
+    TYPING_CACHE_MAX,
+    TYPING_CACHE_WINDOW_SECONDS,
     MSG_TYPE_TEXT,
     MSG_TYPE_MARKDOWN,
     MSG_TYPE_MEDIA,
@@ -861,7 +864,10 @@ class QQAdapter(BasePlatformAdapter):
     async def handle_message(self, event: MessageEvent) -> None:
         """Cache the last message ID per chat, then delegate to base."""
         if event.message_id and event.source.chat_id:
-            self._last_msg_id[event.source.chat_id] = event.message_id
+            chat_id = event.source.chat_id
+            if len(self._last_msg_id) >= LAST_MSG_CACHE_MAX and chat_id not in self._last_msg_id:
+                self._last_msg_id.pop(next(iter(self._last_msg_id)))
+            self._last_msg_id[chat_id] = event.message_id
         await super().handle_message(event)
 
     async def _on_message(self, event_type: str, d: Any) -> None:
@@ -2964,6 +2970,11 @@ class QQAdapter(BasePlatformAdapter):
                 "msg_seq": msg_seq,
             }
             await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            if len(self._typing_sent_at) > TYPING_CACHE_MAX:
+                cutoff = now - TYPING_CACHE_WINDOW_SECONDS
+                self._typing_sent_at = {
+                    k: v for k, v in self._typing_sent_at.items() if v > cutoff
+                }
             self._typing_sent_at[chat_id] = now
         except Exception as exc:
             logger.debug("[%s] send_typing failed: %s", self._log_tag, exc)

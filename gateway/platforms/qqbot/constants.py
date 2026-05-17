@@ -54,6 +54,9 @@ ONBOARD_API_TIMEOUT = 10.0
 MAX_MESSAGE_LENGTH = 4000
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
+LAST_MSG_CACHE_MAX = 2000
+TYPING_CACHE_MAX = 2000
+TYPING_CACHE_WINDOW_SECONDS = 3600
 
 # ---------------------------------------------------------------------------
 # QQ Bot message types

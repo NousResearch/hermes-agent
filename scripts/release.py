@@ -1088,6 +1088,14 @@ AUTHOR_MAP = {
     "robin@soal.org": "rewbs",
     "109617724+0xchainer@users.noreply.github.com": "0xchainer",  # PR #27154/27138/27147 salvage
     "201800237+kronexoi@users.noreply.github.com": "kronexoi",  # PR #27167 salvage (Teams port fallback)
+    # batch salvage (May 2026 LHF run)
+    "sauravsejal40@gmail.com": "Saurav0989",  # PR #27071 (docs: hermes-eval community link)
+    "220110965+Saurav0989@users.noreply.github.com": "Saurav0989",
+    "aviarchi1994@gmail.com": "avifenesh",  # PR #25902 (docs: computer-use-linux MCP)
+    "55848801+avifenesh@users.noreply.github.com": "avifenesh",
+    "279959838+BROCCOLO1D@users.noreply.github.com": "BROCCOLO1D",  # PR #26796 (docs: spotify + HA)
+    "m@matthewlai.ca": "matthewlai",  # PR #25293 (feat: gemma 4 reasoning allowlist)
+    "4296245+matthewlai@users.noreply.github.com": "matthewlai",
 }
 
 

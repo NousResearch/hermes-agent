@@ -88,11 +88,39 @@ CONFIGURABLE_TOOLSETS = [
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default — gated on xAI credentials (SuperGrok OAuth
-# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
-# which walks them through credential setup. The tool's check_fn means
-# the schema won't appear to the model even if enabled without credentials.
+# X search is off by default for users without xAI credentials, but
+# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
+# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
+# `hermes tools` → X (Twitter) Search setup walks users through credential
+# setup. The tool's check_fn means the schema still won't appear to the
+# model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+
+
+def _xai_credentials_present() -> bool:
+    """Cheap, side-effect-free check for usable xAI credentials.
+
+    Used to auto-enable the ``x_search`` toolset when the user has either
+    completed xAI Grok OAuth (SuperGrok subscription) or set
+    ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
+    auth store and environment. The tool's runtime ``check_fn`` still
+    gates schema registration if creds later expire or get revoked.
+    """
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens
+
+        _read_xai_oauth_tokens()
+        return True
+    except Exception:
+        pass
+    try:
+        from tools.xai_http import get_env_value as _xai_get_env_value
+
+        if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
+            return True
+    except Exception:
+        pass
+    return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -1129,6 +1157,23 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
+        # Auto-enable ``x_search`` when xAI credentials are configured.
+        # Unlike ``homeassistant`` (whose ``ha_*`` tools live inside the
+        # platform composite and thus pass the subset check above),
+        # ``x_search`` is its own one-tool toolset that the composite does
+        # NOT include, so the subset loop never picks it up. Inject it
+        # directly here, mirroring the HASS_TOKEN → ``homeassistant`` rule
+        # below: once you have working creds, you don't have to also click
+        # through ``hermes tools`` to flip the toolset on. Only fires when
+        # the user has not yet saved an explicit toolset list — once they
+        # do, the saved list is authoritative.
+        x_search_auto_enabled = (
+            _toolset_allowed_for_platform("x_search", platform)
+            and _xai_credentials_present()
+        )
+        if x_search_auto_enabled:
+            enabled_toolsets.add("x_search")
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
         # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
@@ -1146,6 +1191,11 @@ def _get_platform_tools(
         # regressed after #14798 made cron honor per-platform tool config.
         if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
             default_off.remove("homeassistant")
+        # Symmetric carve-out for x_search auto-enable (see the inject
+        # block above). Without this, the default_off subtraction would
+        # strip the entry we just added.
+        if x_search_auto_enabled and "x_search" in default_off:
+            default_off.remove("x_search")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
@@ -2548,6 +2598,9 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    if provider.get("post_setup"):
+        _run_post_setup(provider["post_setup"])
 
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")

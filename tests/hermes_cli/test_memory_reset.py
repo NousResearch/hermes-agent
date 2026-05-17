@@ -43,9 +43,9 @@ def _run_memory_reset(target="all", yes=False, monkeypatch=None, confirm_input="
 
     mem_dir = get_hermes_home() / "memories"
     files_to_reset = []
-    if target in ("all", "memory"):
+    if target in {"all", "memory"}:
         files_to_reset.append(("MEMORY.md", "agent notes"))
-    if target in ("all", "user"):
+    if target in {"all", "user"}:
         files_to_reset.append(("USER.md", "user profile"))
 
     existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]

@@ -1396,7 +1396,7 @@ def _detect_light_mode() -> bool:
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
             if last.isdigit():
                 bg = int(last)
-                if bg in (7, 15):
+                if bg in {7, 15}:
                     result = True
                     _LIGHT_MODE_CACHE = result
                     return result
@@ -2412,6 +2412,7 @@ def _looks_like_slash_command(text: str) -> bool:
 
 from agent.skill_commands import (
     scan_skill_commands,
+    get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
 )
@@ -7706,7 +7707,7 @@ class HermesCLI:
             # google-gemini/gemini-cli#19332.
             _rest = cmd_original.split(None, 1)
             _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
-            if _args in ("--delete", "-d"):
+            if _args in {"--delete", "-d"}:
                 self._delete_session_on_exit = True
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
@@ -9656,12 +9657,18 @@ class HermesCLI:
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import reload_skills, get_skill_commands
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
+
+            # Sync cli.py's module-level _skill_commands so all consumers
+            # (help display, command dispatch, Tab-completion lambda) see the
+            # updated dict without needing to restart the session.
+            global _skill_commands
+            _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -12667,7 +12674,7 @@ class HermesCLI:
 
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
@@ -13835,7 +13842,7 @@ class HermesCLI:
             if _errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
             elif (
-                _errno in (errno.EINVAL, errno.EBADF)
+                _errno in {errno.EINVAL, errno.EBADF}
                 or "is not registered" in _msg
                 or "Bad file descriptor" in _msg
                 or "Invalid argument" in _msg

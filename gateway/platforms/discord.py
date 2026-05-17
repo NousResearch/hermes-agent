@@ -3639,18 +3639,18 @@ class DiscordAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("thread_require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         configured = self.config.extra.get("history_backfill")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() not in ("false", "0", "no", "off")
+                return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in ("true", "1", "yes")
+        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
 
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
@@ -3737,7 +3737,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     break
 
                 # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in (discord.MessageType.default, discord.MessageType.reply):
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     continue
 
                 # Respect DISCORD_ALLOW_BOTS for other bots.

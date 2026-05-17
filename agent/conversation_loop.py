@@ -925,16 +925,30 @@ def run_conversation(
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    request_messages = api_kwargs.get("messages")
+                    if not isinstance(request_messages, list):
+                        request_messages = api_kwargs.get("input")
+                    if not isinstance(request_messages, list):
+                        request_messages = api_messages
+                    # Shallow-copy the outer list so plugins that retain the
+                    # reference for async snapshotting don't observe later
+                    # mutations of api_messages.  The inner dicts are not
+                    # mutated by the agent loop, so a shallow copy is
+                    # sufficient; a deepcopy would walk every tool result
+                    # and base64 image on every API call.
                     _invoke_hook(
                         "pre_api_request",
                         task_id=effective_task_id,
                         session_id=agent.session_id or "",
+                        user_message=original_user_message,
+                        conversation_history=list(messages),
                         platform=agent.platform or "",
                         model=agent.model,
                         provider=agent.provider,
                         base_url=agent.base_url,
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
+                        request_messages=list(request_messages) if isinstance(request_messages, list) else [],
                         message_count=len(api_messages),
                         tool_count=len(agent.tools or []),
                         approx_input_tokens=approx_tokens,
@@ -2839,7 +2853,9 @@ def run_conversation(
                     finish_reason=finish_reason,
                     message_count=len(api_messages),
                     response_model=getattr(response, "model", None),
+                    response=response,
                     usage=agent._usage_summary_for_api_request_hook(response),
+                    assistant_message=assistant_message,
                     assistant_content_chars=len(_assistant_text),
                     assistant_tool_call_count=len(_assistant_tool_calls),
                 )

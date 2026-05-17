@@ -165,6 +165,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket: markets, prices, orderbooks, history. | `research/polymarket` |
 | [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
 
+## sinko
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`sinko-sequential-ticket-train-cron`](/docs/user-guide/skills/bundled/sinko/sinko-sinko-sequential-ticket-train-cron) | Create a batch of Sinko Plane tickets and a cron job that processes exactly one ticket every N minutes using Claude Code, auto-review, PR, and merge without deploying. | `sinko/sinko-sequential-ticket-train-cron` |
+
 ## smart-home
 
 | Skill | Description | Path |

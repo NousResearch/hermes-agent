@@ -322,6 +322,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'sinko',
+                  key: 'skills-bundled-sinko',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/sinko/sinko-sinko-sequential-ticket-train-cron',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'smart-home',
                   key: 'skills-bundled-smart-home',
                   collapsed: true,

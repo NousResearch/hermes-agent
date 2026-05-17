@@ -75,6 +75,7 @@ export const ko: Translations = {
       explorer: "탐색기",
       keys: "키",
       logs: "로그",
+      cockpit: "Cockpit",
       models: "모델",
       profiles: "프로필: 멀티 에이전트",
       plugins: "플러그인",

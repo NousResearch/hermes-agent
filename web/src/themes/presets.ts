@@ -204,6 +204,40 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+export const hermesCommandNoirTheme: DashboardTheme = {
+  name: "hermes-command-noir",
+  label: "Command Noir",
+  description: "Dark navy terminal — multi-layer operational status theme",
+  palette: {
+    background: { hex: "#07090f", alpha: 1 },
+    midground: { hex: "#a8c0d6", alpha: 1 },
+    foreground: { hex: "#e8e8e8", alpha: 0 },
+    warmGlow: "rgba(0, 210, 190, 0.16)",
+    noiseOpacity: 0.03,
+  },
+  typography: {
+    fontSans: SYSTEM_MONO,
+    fontMono: SYSTEM_MONO,
+    baseSize: "14px",
+    lineHeight: "1.5",
+    letterSpacing: "0.02em",
+  },
+  layout: {
+    radius: "0.25rem",
+    density: "compact",
+  },
+  layoutVariant: "cockpit",
+  colorOverrides: {
+    success: "#00e87a",
+    warning: "#f5a623",
+    destructive: "#e84040",
+    muted: "#1e2840",
+    mutedForeground: "#6a8099",
+    primary: "#00d2be",
+    primaryForeground: "#07090f",
+  },
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -212,4 +246,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "hermes-command-noir": hermesCommandNoirTheme,
 };

@@ -75,6 +75,7 @@ export const zhHant: Translations = {
       explorer: "程式碼探索",
       keys: "金鑰",
       logs: "日誌",
+      cockpit: "Cockpit",
       models: "模型",
       profiles: "多代理設定檔",
       plugins: "外掛管理",

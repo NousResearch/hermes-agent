@@ -91,6 +91,7 @@ export interface Translations {
       explorer: string;
       keys: string;
       logs: string;
+      cockpit: string;
       models: string;
       profiles: string;
       plugins: string;

@@ -75,6 +75,7 @@ export const en: Translations = {
       explorer: "Explorer",
       keys: "Keys",
       logs: "Logs",
+      cockpit: "Cockpit",
       models: "Models",
       profiles: "Profiles",
       plugins: "Plugins",

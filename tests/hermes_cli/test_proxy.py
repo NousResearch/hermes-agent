@@ -169,7 +169,7 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         adapter = NousPortalAdapter()
         cred = adapter.get_retry_credential(
             failed_credential=UpstreamCredential(
-                bearer="jwt-access",
+                bearer="header.jwt.signature",
                 base_url="https://inference-api.nousresearch.com/v1",
             ),
             status_code=401,
@@ -177,7 +177,31 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
 
     assert cred is not None
     assert cred.bearer == "legacy-bearer"
-    assert mock_refresh.call_args.kwargs["auth_mode"] == "legacy"
+    assert mock_refresh.call_args.kwargs["inference_auth_mode"] == "legacy"
+
+
+def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_auth_store(tmp_path, {
+        "access_token": "jwt-access",
+        "refresh_token": "refresh-tok",
+        "agent_key": "opaque-bearer",
+    })
+
+    with patch(
+        "hermes_cli.proxy.adapters.nous_portal.refresh_nous_oauth_from_state",
+    ) as mock_refresh:
+        adapter = NousPortalAdapter()
+        cred = adapter.get_retry_credential(
+            failed_credential=UpstreamCredential(
+                bearer="opaque-bearer",
+                base_url="https://inference-api.nousresearch.com/v1",
+            ),
+            status_code=401,
+        )
+
+    assert cred is None
+    mock_refresh.assert_not_called()
 
 
 def test_nous_adapter_get_credential_raises_when_not_logged_in(tmp_path, monkeypatch):
@@ -364,7 +388,7 @@ class FakeAdapter(UpstreamAdapter):
         )
 
     def get_retry_credential(self, *, failed_credential, status_code):
-        del failed_credential
+        _ = failed_credential
         self.retry_calls += 1
         if status_code != 401 or not self._retry_bearer:
             return None

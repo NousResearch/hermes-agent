@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import queue
 import re
@@ -196,6 +197,35 @@ class GatewayStreamConsumer:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
+
+    async def _edit_message(
+        self,
+        *,
+        message_id: str,
+        content: str,
+        finalize: bool = False,
+    ):
+        """Edit via the adapter, passing routing metadata when supported."""
+        kwargs = {
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "content": content,
+        }
+        # Keep the long-standing stream-consumer contract: concrete adapters
+        # must accept finalize= even when it is False (guarded by tests).
+        kwargs["finalize"] = finalize
+
+        if self.metadata:
+            try:
+                params = inspect.signature(self.adapter.edit_message).parameters
+                if "metadata" in params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in params.values()
+                ):
+                    kwargs["metadata"] = self.metadata
+            except (TypeError, ValueError):
+                pass
+        return await self.adapter.edit_message(**kwargs)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -733,8 +763,7 @@ class GatewayStreamConsumer:
                 ):
                     clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
                     try:
-                        result = await self.adapter.edit_message(
-                            chat_id=self.chat_id,
+                        result = await self._edit_message(
                             message_id=self._message_id,
                             content=clean_text,
                         )
@@ -959,8 +988,7 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self.adapter.edit_message(
-                chat_id=self.chat_id,
+            await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
@@ -1167,8 +1195,7 @@ class GatewayStreamConsumer:
                     ):
                         return True
                     # Edit existing message
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
+                    result = await self._edit_message(
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,

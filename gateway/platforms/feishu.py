@@ -1450,6 +1450,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._message_context_cache: Dict[str, tuple[Optional[str], List[str], List[str]]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2984,7 +2985,14 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text = None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            reply_to_text, reply_media_urls, reply_media_types = await self._fetch_message_context(reply_to_message_id)
+            if reply_media_urls:
+                media_urls = [*reply_media_urls, *media_urls]
+                media_types = [*reply_media_types, *media_types]
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3874,10 +3882,26 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
     async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        text, _media_urls, _media_types = await self._fetch_message_context(message_id)
+        return text
+
+    async def _fetch_message_context(self, message_id: str) -> tuple[Optional[str], List[str], List[str]]:
         if not self._client or not message_id:
-            return None
-        if message_id in self._message_text_cache:
-            return self._message_text_cache[message_id]
+            return None, [], []
+
+        context_cache = getattr(self, "_message_context_cache", None)
+        if context_cache is None:
+            context_cache = {}
+            self._message_context_cache = context_cache
+        if message_id in context_cache:
+            cached_text, cached_urls, cached_types = context_cache[message_id]
+            return cached_text, list(cached_urls), list(cached_types)
+
+        text_cache = getattr(self, "_message_text_cache", None)
+        if text_cache is None:
+            text_cache = {}
+            self._message_text_cache = text_cache
+
         try:
             request = self._build_get_message_request(message_id)
             response = await asyncio.to_thread(self._client.im.v1.message.get, request)
@@ -3885,23 +3909,44 @@ class FeishuAdapter(BasePlatformAdapter):
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
                 logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
-                return None
+                return None, [], []
             items = getattr(getattr(response, "data", None), "items", None) or []
             parent = items[0] if items else None
+            if parent is None:
+                context_cache[message_id] = (None, [], [])
+                text_cache[message_id] = None
+                return None, [], []
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
-            parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
+            parent_mentions = getattr(parent, "mentions", None)
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+                bot=self._bot_identity(),
             )
-            self._message_text_cache[message_id] = text
-            return text
+            text = self._text_from_normalized_context(normalized)
+            media_urls, media_types = await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+            context_cache[message_id] = (text, list(media_urls), list(media_types))
+            text_cache[message_id] = text
+            return text, media_urls, media_types
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None, [], []
+
+    @staticmethod
+    def _text_from_normalized_context(normalized: FeishuNormalizedMessage) -> Optional[str]:
+        if normalized.text_content:
+            return normalized.text_content
+        placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
+        if placeholder is None:
             return None
+        text = str(placeholder).strip()
+        return text or None
 
     def _extract_text_from_raw_content(
         self,
@@ -3918,8 +3963,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         if normalized.text_content:
             return normalized.text_content
-        placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
-        return str(placeholder).strip() or None
+        return self._text_from_normalized_context(normalized)
 
     @staticmethod
     def _default_image_media_type(ext: str) -> str:

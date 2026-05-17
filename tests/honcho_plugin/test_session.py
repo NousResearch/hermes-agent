@@ -573,7 +573,7 @@ class TestToolsModeInitBehavior:
     """Verify initOnSessionStart controls session init timing in tools mode."""
 
     def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False,
-                                    peer_name=None, user_id=None):
+                                    peer_name=None, user_id=None, user_id_alt=None):
         """Create a HonchoMemoryProvider with mocked config and dependencies."""
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -598,6 +598,8 @@ class TestToolsModeInitBehavior:
         init_kwargs = {}
         if user_id:
             init_kwargs["user_id"] = user_id
+        if user_id_alt:
+            init_kwargs["user_id_alt"] = user_id_alt
 
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
@@ -654,6 +656,15 @@ class TestToolsModeInitBehavior:
         )
         assert cfg.peer_name is None
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "8439114563"
+
+    def test_user_id_alt_is_passed_to_session_manager(self):
+        """Gateway alternate user IDs are available for Honcho alias matching."""
+        _, _, mock_manager_cls = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=True,
+            peer_name=None, user_id="open-id", user_id_alt="union-id",
+        )
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "open-id"
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name_alt"] == "union-id"
 
 
 class TestPerSessionMigrateGuard:

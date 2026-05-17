@@ -2088,6 +2088,36 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
+    def _is_safe_media_path(path: str) -> bool:
+        """Validate a media file path is safe for delivery.
+
+        Blocks path traversal (../), absolute paths outside allowed dirs,
+        and paths containing null bytes or shell metacharacters.
+        """
+        import os
+        if not path or "\x00" in path:
+            return False
+        # Block shell metacharacters
+        if any(c in path for c in ("|", "&", ";", "$", "`", "\n", "\r")):
+            return False
+        # Normalize and check for traversal
+        expanded = os.path.expanduser(path)
+        try:
+            resolved = os.path.realpath(expanded)
+        except (OSError, ValueError):
+            return False
+        # Block paths that escape home or tmp directories
+        home = os.path.expanduser("~")
+        allowed_prefixes = (home, "/tmp", "/var/tmp")
+        if not any(resolved.startswith(p) for p in allowed_prefixes):
+            return False
+        # Block symlink attacks — resolved path should not point to sensitive files
+        sensitive = ("/etc/shadow", "/etc/passwd", ".ssh/", ".gnupg/", "credentials")
+        if any(s in resolved for s in sensitive):
+            return False
+        return True
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.

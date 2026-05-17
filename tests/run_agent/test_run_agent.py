@@ -4793,9 +4793,10 @@ class TestAnthropicInterruptHandler:
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_streaming_api_call)
+        from agent.chat_completion_helpers import interruptible_streaming_api_call
+        source = inspect.getsource(interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
-            "_streaming_api_call must handle Anthropic interrupt"
+            "interruptible_streaming_api_call must handle Anthropic interrupt"
 
 
 # ---------------------------------------------------------------------------

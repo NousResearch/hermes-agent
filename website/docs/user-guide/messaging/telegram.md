@@ -864,6 +864,22 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+### Capturing user reactions as feedback (#27438)
+
+Separately from the lifecycle markers above, Hermes can **capture** the
+emoji reactions users tap on its own messages and use them as a
+lightweight reinforcement signal.  See the dedicated
+[Reaction Reinforcement](../reaction-reinforcement.md) page for the full
+mapping table and config surface.  For Telegram specifically:
+
+- Enable with `HERMES_REACTION_SIGNALS_ENABLED=true` (or
+  `reaction_signals.enabled: true` in `config.yaml`).
+- The bot must be a **group admin** to receive `message_reaction`
+  updates from Telegram in groups / supergroups.  DMs work without
+  extra setup.
+- Captured events land in `$HERMES_HOME/reactions.db` and never leave
+  your machine.
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

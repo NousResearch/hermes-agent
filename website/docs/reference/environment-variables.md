@@ -501,6 +501,22 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_CRON_SCRIPT_TIMEOUT` | Timeout for pre-run scripts attached to cron jobs in seconds (default: `120`). Override for scripts that need longer execution (e.g., randomized delays for anti-bot timing). Also configurable via `cron.script_timeout_seconds` in `config.yaml`. |
 | `HERMES_CRON_MAX_PARALLEL` | Max cron jobs run in parallel per tick (default: `4`). |
 
+## Emoji Reaction Reinforcement
+
+Captures `👍 / ❤️ / 👎 / 💩 / …` reactions on Hermes messages and persists them
+to `reactions.db` under `HERMES_HOME` so future features (memory weighting,
+skill confidence, response-style tuning) can read the signal. See
+[Reaction Reinforcement](../user-guide/reaction-reinforcement.md) for the
+user guide. Distinct from the `*_REACTIONS` lifecycle variables above which
+control the outgoing `👀/✅/❌` markers on the user's trigger message.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_REACTION_SIGNALS_ENABLED` | Master switch. `true` enables capture of incoming emoji reactions on supported platforms (Telegram in v1; Discord and Slack follow). Default `false` -- the feature is strictly opt-in. |
+| `HERMES_REACTION_MIN_SIGNAL` | Aggregated weight magnitude below which a message is treated as "no clear signal". Default `0.5`. Consumers (memory weighting, skill scoring) read this to avoid acting on noise. |
+| `HERMES_REACTION_DECAY_DAYS` | How long a reaction event is retained before `ReactionStore.prune_older_than()` is eligible to delete it. Default `30`. Set higher to keep a longer history; pruning is opt-in (no automatic cron yet). |
+| `HERMES_REACTION_INCLUDE_UNKNOWN` | When `true`, emoji outside the built-in weight table are recorded with neutral weight `0.0`. Useful for telemetry / engagement counts. Default `false`. |
+
 ## Agent Behavior
 
 | Variable | Description |

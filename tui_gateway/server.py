@@ -1874,7 +1874,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
             task_id=session_id or key,
         )
         if missing_skills:
-            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            logger.warning(
+                "Unknown skill(s) requested, skipping: %s. "
+                "Available skills can be listed with `hermes skills list`.",
+                ", ".join(missing_skills),
+            )
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part

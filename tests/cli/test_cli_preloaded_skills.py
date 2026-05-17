@@ -92,7 +92,7 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
 
-def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
+def test_main_warns_for_unknown_preloaded_skill(monkeypatch, caplog):
     import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "HermesCLI", lambda **kwargs: _DummyCLI(**kwargs))
@@ -102,8 +102,10 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         lambda skills, task_id=None: ("", [], ["missing-skill"]),
     )
 
-    with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
+    with pytest.raises(SystemExit):
         cli_mod.main(skills="missing-skill", list_tools=True)
+
+    assert "Unknown skill(s) requested, skipping: missing-skill" in caplog.text
 
 
 def test_show_banner_does_not_print_skills():

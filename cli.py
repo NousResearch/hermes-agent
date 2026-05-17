@@ -14079,7 +14079,11 @@ def main(
         )
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            logger.warning(
+                "Unknown skill(s) requested, skipping: %s. "
+                "Available skills can be listed with `hermes skills list`.",
+                missing_display,
+            )
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

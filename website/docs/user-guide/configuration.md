@@ -1319,11 +1319,16 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 
 ```yaml
 stt:
-  provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  provider: "local"            # "local" | "groq" | "openai" | "deepgram" | "mistral"
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  deepgram:
+    model: "nova-3"            # nova-3 | nova-2 | nova-2-phonecall | nova-2-meeting
+    language: ""               # optional BCP-47 language tag; empty = Deepgram default
+    smart_format: true
+    punctuate: true
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
@@ -1332,8 +1337,9 @@ Provider behavior:
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+- `deepgram` uses Deepgram's pre-recorded `/v1/listen` API and reads `DEEPGRAM_API_KEY`. It is explicit opt-in: set `stt.provider: deepgram`.
 
-If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
+If no provider is explicitly configured, Hermes auto-detects in this order: `local` → `groq` → `openai` → `xai`.
 
 Groq and OpenAI model overrides are environment-driven:
 

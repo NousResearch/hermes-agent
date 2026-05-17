@@ -1349,13 +1349,19 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "deepgram" (Nova STT) | "mistral" (Voxtral Transcribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+        "deepgram": {
+            "model": "nova-3",  # nova-3, nova-2, nova-2-phonecall, nova-2-meeting, etc.
+            "language": "",  # optional BCP-47 language tag; empty = Deepgram default
+            "smart_format": True,
+            "punctuate": True,
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
@@ -2688,6 +2694,14 @@ OPTIONAL_ENV_VARS = {
         "description": "Mistral API key for Voxtral TTS and transcription (STT)",
         "prompt": "Mistral API key",
         "url": "https://console.mistral.ai/",
+        "password": True,
+        "category": "tool",
+    },
+    "DEEPGRAM_API_KEY": {
+        "description": "Deepgram API key for Nova speech-to-text transcription",
+        "prompt": "Deepgram API key",
+        "url": "https://console.deepgram.com/",
+        "tools": ["voice_transcription"],
         "password": True,
         "category": "tool",
     },

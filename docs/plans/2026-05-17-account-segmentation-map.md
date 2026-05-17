@@ -146,3 +146,81 @@ Based on the current setup:
 - treat "no VPN blocking" as useful flexibility, not as the security model
 
 That gives you three clean lanes instead of one big account swamp.
+
+---
+
+## 7. Suggested first-wave rollout
+
+This is the cleanest first pass if you want the structure to stay manageable as business work comes online.
+
+### Now
+
+#### `qa-testing`
+
+- **Role:** testing / QA / messy flows
+- **Purpose:** user testing, demos, throwaway sign-ins, breakable workflows
+- **Owner:** Haz
+- **Trust level:** low
+- **Browser profile:** dedicated testing profile on the MacBook
+- **Notes:** keep it intentionally disposable; do not let business or research state leak in
+
+#### `research-m3-global`
+
+- **Role:** high-trust research
+- **Purpose:** secure research, sensitive vendor work, locked-down sessions
+- **Owner:** Haz
+- **Trust level:** high
+- **Browser profile:** dedicated secure research profile
+- **Notes:** keep extensions minimal and sign-ins limited
+
+#### `recovery-admin`
+
+- **Role:** recovery / backup control
+- **Purpose:** account setup, recovery email/phone, backup codes, emergency access
+- **Owner:** Haz
+- **Trust level:** highest
+- **Browser profile:** separate recovery-only profile
+- **Notes:** never use for day-to-day work
+
+### When business accounts come online
+
+Create these only when there is a real workflow attached:
+
+#### `business-admin-<brand>`
+
+- **Role:** live admin / operations
+- **Purpose:** billing, settings, ownership, core admin tasks
+- **Owner:** Haz unless another human is the explicit business owner
+- **Trust level:** high
+- **Browser profile:** dedicated business admin profile
+- **Notes:** one per brand or business entity; avoid mixing clients in one login unless the platform forces it
+
+#### `business-support-<brand>`
+
+- **Role:** support / day-to-day ops
+- **Purpose:** customer support, inbox handling, low-risk operational work
+- **Owner:** Haz or designated ops lead
+- **Trust level:** medium-high
+- **Browser profile:** dedicated support profile
+- **Notes:** separate from admin if the platform supports that split
+
+#### Optional client-facing sub-accounts
+
+- **Role:** per-client or per-workstream access
+- **Purpose:** only if the platform needs separate access boundaries
+- **Owner:** named business owner or client lead
+- **Trust level:** based on the workflow
+- **Browser profile:** only if the platform cannot cleanly separate by permissions alone
+- **Notes:** do not create these pre-emptively
+
+### Rollout rule
+
+If the account does not have:
+
+1. a named purpose
+2. a named owner
+3. a recovery path
+4. a browser profile
+5. a clear trust level
+
+then it is not ready to create.

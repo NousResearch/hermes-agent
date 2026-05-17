@@ -15378,6 +15378,32 @@ class GatewayRunner:
                 _raw_progress_limit - (64 if _raw_progress_limit > 128 else 0),
             )
 
+            # Detect whether the adapter's edit_message accepts metadata so
+            # overflow edits preserve Telegram topic/thread routing (#27487).
+            _edit_accepts_metadata = False
+            if _progress_metadata:
+                try:
+                    _edit_params = inspect.signature(adapter.edit_message).parameters
+                    _edit_accepts_metadata = (
+                        "metadata" in _edit_params
+                        or any(
+                            param.kind is inspect.Parameter.VAR_KEYWORD
+                            for param in _edit_params.values()
+                        )
+                    )
+                except (TypeError, ValueError):
+                    _edit_accepts_metadata = False
+
+            async def _edit_progress_message(message_id: str, content: str):
+                kwargs = {
+                    "chat_id": source.chat_id,
+                    "message_id": message_id,
+                    "content": content,
+                }
+                if _edit_accepts_metadata:
+                    kwargs["metadata"] = _progress_metadata
+                return await adapter.edit_message(**kwargs)
+
             def _progress_text(lines: list) -> str:
                 return "\n".join(str(line) for line in lines)
 
@@ -15429,11 +15455,7 @@ class GatewayRunner:
 
                 first_text = _progress_text(groups[0])
                 if progress_msg_id is not None:
-                    result = await adapter.edit_message(
-                        chat_id=source.chat_id,
-                        message_id=progress_msg_id,
-                        content=first_text,
-                    )
+                    result = await _edit_progress_message(progress_msg_id, first_text)
                     if not result.success:
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
@@ -15532,11 +15554,7 @@ class GatewayRunner:
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=progress_msg_id,
-                            content=full_text,
-                        )
+                        result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
                             # Transient network errors (ConnectError, timeouts)
@@ -15622,11 +15640,7 @@ class GatewayRunner:
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await adapter.edit_message(
-                                            chat_id=source.chat_id,
-                                            message_id=progress_msg_id,
-                                            content=_pending_text,
-                                        )
+                                        await _edit_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -15644,11 +15658,7 @@ class GatewayRunner:
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await adapter.edit_message(
-                                chat_id=source.chat_id,
-                                message_id=progress_msg_id,
-                                content=full_text,
-                            )
+                            await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:
                             pass
                     return

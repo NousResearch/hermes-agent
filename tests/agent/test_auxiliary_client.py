@@ -715,6 +715,47 @@ class TestVisionClientFallback:
         assert model == "claude-haiku-4-5-20251001"
 
 
+class TestMiniMaxOAuthAuxResolution:
+    def test_resolve_provider_client_wraps_minimax_oauth_as_anthropic(self):
+        fake_real_anthropic = MagicMock()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=None),
+            patch(
+                "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+                return_value={
+                    "provider": "minimax-oauth",
+                    "api_key": "mini-token",
+                    "base_url": "https://api.minimax.io/anthropic",
+                    "source": "oauth",
+                },
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=fake_real_anthropic,
+            ),
+        ):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M2.7")
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "MiniMax-M2.7"
+        assert str(client.base_url) == "https://api.minimax.io/anthropic"
+
+    def test_resolve_provider_client_minimax_oauth_returns_none_when_not_logged_in(self):
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=None),
+            patch(
+                "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+                side_effect=Exception("not logged in"),
+            ),
+        ):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M2.7")
+
+        assert client is None
+        assert model is None
+
+
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
         class _Entry:

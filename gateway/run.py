@@ -241,8 +241,43 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "finish_reason",
 )
 
+# Provider slugs that produce per-turn-independent reasoning content.
+# These models generate fresh thinking each turn and do NOT need
+# ``reasoning_content`` preserved in replay history (unlike DeepSeek/Kimi
+# which HTTP 400 without it).
+_REASONING_BLOAT_PROVIDERS: frozenset[str] = frozenset({
+    "minimax", "minimax-cn", "minimax-oauth",
+})
 
-def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[str, Any]:
+
+def _is_reasoning_content_replay_bloat_model(
+    provider: str, model: str, base_url: str,
+) -> bool:
+    """Return True when the current model generates ``reasoning_content`` that
+    is independent per-turn and safe to omit from replay history.
+
+    Reasoning models that use a fresh thinking process each turn (MiniMax,
+    etc.) are bloat-safe — their previous thinking carries no semantic value
+    on the next turn and only inflates context.
+
+    Models that require preserved ``reasoning_content`` to avoid HTTP 400
+    (DeepSeek/Kimi thinking-mode, Anthropic extended-thinking) are NOT
+    returned as bloat.
+    """
+    _p = (provider or "").lower().strip()
+    if _p in _REASONING_BLOAT_PROVIDERS:
+        return True
+    # Host-based catch-all for custom endpoints pointing at MiniMax
+    _b = (base_url or "").lower()
+    if "api.minimax.io" in _b or "api.minimaxi.com" in _b:
+        return True
+    return False
+
+
+def _build_replay_entry(
+    role: str, content: Any, msg: Dict[str, Any],
+    *, reasoning_bloat_model: bool = False,
+) -> Dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving the
     assistant fields the agent's API builders rely on for multi-turn fidelity.
 
@@ -258,11 +293,23 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     Dropping it here would make the gateway send no ``reasoning_content`` at
     all on the next turn, which can cause HTTP 400 from strict thinking
     providers.
+
+    When ``reasoning_bloat_model`` is True, reasoning fields (``reasoning``,
+    ``reasoning_content``, ``reasoning_details``) are skipped — the model
+    generates fresh thinking each turn and does not require preserved
+    reasoning in replay (MiniMax et al.).
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:
+                continue
+            # Skip reasoning fields for per-turn-independent reasoning models
+            # (MiniMax).  DeepSeek/Kimi/Anthropic require reasoning_content
+            # in replay and are NOT caught here.
+            if reasoning_bloat_model and _rkey in (
+                "reasoning", "reasoning_content", "reasoning_details",
+            ):
                 continue
             _rval = msg.get(_rkey)
             if _rkey == "reasoning_content":
@@ -15506,7 +15553,15 @@ class GatewayRunner:
                         # provider-specific echo requirements survive session
                         # reload.  See ``_ASSISTANT_REPLAY_FIELDS`` for the full
                         # whitelist and rationale.
-                        entry = _build_replay_entry(role, content, msg)
+                        _replay_bloat = _is_reasoning_content_replay_bloat_model(
+                            runtime_kwargs.get("provider", ""),
+                            turn_route.get("model", ""),
+                            runtime_kwargs.get("base_url", ""),
+                        )
+                        entry = _build_replay_entry(
+                            role, content, msg,
+                            reasoning_bloat_model=_replay_bloat,
+                        )
                         agent_history.append(entry)
             
             # Collect MEDIA paths already in history so we can exclude them

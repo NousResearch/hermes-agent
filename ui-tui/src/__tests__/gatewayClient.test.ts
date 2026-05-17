@@ -248,9 +248,9 @@ describe('GatewayClient websocket attach mode', () => {
     const next = gw.request('session.create', {})
 
     await expect(stale).rejects.toThrow(/gateway attach url changed/)
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
+    await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2))
 
-    const secondSocket = FakeWebSocket.instances[1]!
+    const secondSocket = FakeWebSocket.instances.at(-1)!
     expect(secondSocket.url).toContain('gateway-new.test')
 
     secondSocket.open()

@@ -21,15 +21,27 @@ const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 // Terminal display width: ASCII=1, CJK/fullwidth=2
-const charDispWidth = (c: string) => (c.charCodeAt(0) > 0x7f ? 2 : 1)
-const dispWidth = (s: string) => { let w = 0; for (const c of s) w += charDispWidth(c); return w }
+const charDispWidth = (c: string) => {
+  const code = c.codePointAt(0) ?? 0
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6)
+  ) ? 2 : 1
+}
+export const displayWidth = (s: string) => { let w = 0; for (const c of s) w += charDispWidth(c); return w }
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = Math.max(...getThinkingVerbs('en').concat(getThinkingVerbs('zh')).map(v => dispWidth(v))) + 1 // + ellipsis
+export const VERB_PAD_LEN = Math.max(...getThinkingVerbs('en').concat(getThinkingVerbs('zh')).map(v => displayWidth(v))) + 1 // + ellipsis
 export const padVerb = (verb: string) => {
   const text = `${verb}…`
-  const pad = Math.max(0, VERB_PAD_LEN - dispWidth(text))
+  const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
   return text + ' '.repeat(pad)
 }
 

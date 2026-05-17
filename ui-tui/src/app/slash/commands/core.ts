@@ -200,7 +200,7 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SessionTitleResponse>(r => {
               const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(current ? translate(ctx.ui.locale,'sys.titleSet', { title: current, suffix: '' }) : translate(ctx.ui.locale,'sys.noTitleSet'))
+              ctx.transcript.sys(current ? translate(ctx.ui.locale,'sys.titleCurrent', { title: current }) : translate(ctx.ui.locale,'sys.noTitleSet'))
             })
           )
           .catch(ctx.guardedErr)
@@ -218,7 +218,7 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
             const suffix = r?.pending ? ' (queued while session initializes)' : ''
-            ctx.transcript.sys(`session title set: ${next}${suffix}`)
+            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.titleSet', { title: next, suffix }))
           })
         )
         .catch(ctx.guardedErr)

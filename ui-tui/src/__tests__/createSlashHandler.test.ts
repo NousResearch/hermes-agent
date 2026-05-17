@@ -256,7 +256,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/voice on')).toBe(true)
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('Voice mode enabled')
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('  Alt+R to start/stop recording')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Alt+R to start/stop recording')
     })
     expect(ctx.voice.setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'r', mod: 'alt' }))
   })

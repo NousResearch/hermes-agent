@@ -231,7 +231,7 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
-      const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate('zh', key, vars)
+      const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ctx.ui.locale, key, vars)
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)

@@ -2158,6 +2158,8 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+        close_calls = []
+
         class SlowAliveStream:
             def __enter__(self):
                 return self
@@ -2183,7 +2185,10 @@ class TestCodexAuxiliaryAdapterTimeout:
             def stream(self, **kwargs):
                 return SlowAliveStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            close=lambda: close_calls.append(True),
+        )
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
         started = time.monotonic()
@@ -2194,6 +2199,7 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+        assert close_calls, "total timeout should close the underlying stream client"
 
 
 # ---------------------------------------------------------------------------

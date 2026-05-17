@@ -113,6 +113,23 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_uses_provider_default_temperature(self):
+        """Title generation must not send non-default temperature to Azure reasoning models."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Short Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", "answer") == "Short Title"
+
+        assert captured_kwargs["task"] == "title_generation"
+        assert captured_kwargs["temperature"] is None
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

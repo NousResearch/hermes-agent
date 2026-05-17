@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -755,7 +756,7 @@ class _CodexCompletionsAdapter:
 
         def _check_cancelled() -> None:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out.set()
+                _close_client_on_timeout()
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
@@ -780,20 +781,73 @@ class _CodexCompletionsAdapter:
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
+            def _collect_stream_event(_event: Any) -> None:
+                nonlocal has_function_calls
+                _check_cancelled()
+                _etype = getattr(_event, "type", "")
+                if _etype == "response.output_item.done":
+                    _done = getattr(_event, "item", None)
+                    if _done is not None:
+                        collected_output_items.append(_done)
+                elif "output_text.delta" in _etype:
+                    _delta = getattr(_event, "delta", "")
+                    if _delta:
+                        collected_text_deltas.append(_delta)
+                elif "function_call" in _etype:
+                    has_function_calls = True
+
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
+                if deadline is None:
+                    for _event in stream:
+                        _collect_stream_event(_event)
+                else:
+                    # A sync streaming iterator can keep yielding keepalive
+                    # events without letting the SDK's per-request timeout fire.
+                    # Consume it in a daemon thread so this adapter can enforce
+                    # the caller's *total* auxiliary timeout even while next()
+                    # is sleeping or waiting for the next event.
+                    event_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+
+                    def _pump_stream() -> None:
+                        try:
+                            for _event in stream:
+                                event_queue.put(("event", _event))
+                                if timed_out.is_set():
+                                    break
+                            event_queue.put(("done", None))
+                        except BaseException as exc:  # propagate SDK/iterator errors
+                            event_queue.put(("error", exc))
+
+                    pump_thread = threading.Thread(target=_pump_stream, daemon=True)
+                    pump_thread.start()
+                    while True:
+                        _check_cancelled()
+                        try:
+                            _kind, _payload = event_queue.get_nowait()
+                        except queue.Empty as exc:
+                            # On some macOS/CI runtimes, Condition.wait(timeout)
+                            # and even tiny sleeps can overshoot short deadlines by
+                            # >100 ms. For the final small window, poll monotonic
+                            # directly so a 50 ms auxiliary timeout is enforced as
+                            # a total deadline rather than "next scheduler wakeup".
+                            remaining = float(deadline - time.monotonic())
+                            if remaining <= 0:
+                                timed_out.set()
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message()) from exc
+                            if remaining > 0.2:
+                                try:
+                                    _kind, _payload = event_queue.get(timeout=min(0.1, remaining - 0.1))
+                                except queue.Empty:
+                                    continue
+                            else:
+                                continue
+                        if _kind == "event":
+                            _collect_stream_event(_payload)
+                        elif _kind == "done":
+                            break
+                        elif _kind == "error":
+                            raise _payload
                 _check_cancelled()
                 final = stream.get_final_response()
 

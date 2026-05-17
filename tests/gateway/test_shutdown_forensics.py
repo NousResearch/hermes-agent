@@ -202,6 +202,40 @@ class TestSpawnAsyncDiagnostic:
         # is plenty of headroom and proves we're not waiting on it.
         assert elapsed < 1.0, f"spawn blocked for {elapsed:.2f}s"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_uses_python_timeout_wrapper_not_platform_timeout_binary(self, tmp_path, monkeypatch):
+        """Regression: macOS does not ship GNU ``timeout``.
+
+        The detached diagnostic must spawn a Python wrapper that calls
+        ``subprocess.run(..., timeout=timeout_seconds)`` instead of shelling
+        out through a platform-specific ``timeout`` command.
+        """
+        popen_calls = []
+
+        class FakeProc:
+            pid = 4242
+
+        def fake_popen(args, **kwargs):
+            popen_calls.append((args, kwargs))
+            return FakeProc()
+
+        monkeypatch.setattr(sf.subprocess, "Popen", fake_popen)
+
+        result = sf.spawn_async_diagnostic(
+            tmp_path / "diag.log", "SIGTERM", timeout_seconds=1.25
+        )
+
+        assert result == 4242
+        assert len(popen_calls) == 1
+        args, kwargs = popen_calls[0]
+        assert args[0] == sys.executable
+        assert args[1] == "-c"
+        child_code = args[2]
+        assert "subprocess.run(['bash', '-c', script]" in child_code
+        assert "timeout=timeout_seconds" in child_code
+        assert "['timeout'" not in child_code
+        assert kwargs["start_new_session"] is True
+
 
 # ---------------------------------------------------------------------------
 # _parse_systemd_duration_to_us

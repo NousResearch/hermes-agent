@@ -229,24 +229,34 @@ def spawn_async_diagnostic(
     script = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+        "echo '--- ps snapshot (top 60 by cpu when supported) ---'; "
+        "ps auxf --sort=-pcpu 2>/dev/null | head -60 || ps aux 2>/dev/null | head -60 || true; "
         "echo '--- pstree of self ---'; "
         f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
+        "echo '--- loadavg ---'; "
+        "cat /proc/loadavg 2>/dev/null || uptime 2>/dev/null || true; "
+        "echo '--- recent dmesg/journal (oom/killed) ---'; "
         "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
         "echo '=== end ==='"
     )
 
-    try:
-        # Open the log file in append mode and let the subprocess inherit.
-        # We use os.O_APPEND so concurrent diagnostics from rapid signals
-        # don't trample each other.
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    except OSError:
-        return None
+    # Use a tiny Python wrapper instead of the GNU `timeout` binary.  macOS
+    # does not ship `timeout`, and returning None there would silently disable
+    # the diagnostic exactly where Dynaev development commonly runs.
+    child_code = (
+        "import subprocess, sys\n"
+        f"log_path = {str(log_path)!r}\n"
+        f"script = {script!r}\n"
+        f"timeout_seconds = {float(timeout_seconds)!r}\n"
+        "try:\n"
+        "    with open(log_path, 'ab', buffering=0) as fh:\n"
+        "        try:\n"
+        "            subprocess.run(['bash', '-c', script], stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=timeout_seconds, check=False)\n"
+        "        except subprocess.TimeoutExpired:\n"
+        "            fh.write(f'=== diagnostic timed out after {timeout_seconds:.0f}s ===\\n'.encode())\n"
+        "except Exception:\n"
+        "    sys.exit(0)\n"
+    )
 
     try:
         # Detach from our process group so the subprocess survives even
@@ -255,25 +265,15 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
-            stdout=fd,
-            stderr=subprocess.STDOUT,
+            [sys.executable, "-c", child_code],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
         )
     except (FileNotFoundError, OSError):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
         return None
-    finally:
-        # Subprocess inherited the fd; we can drop our handle.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
 
     return proc.pid
 

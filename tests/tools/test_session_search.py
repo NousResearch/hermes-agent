@@ -253,7 +253,7 @@ class TestRecentSessionListing:
         assert result["success"] is True
         mock_db.list_sessions_rich.assert_called_once_with(
             limit=10,
-            exclude_sources=["tool"],
+            exclude_sources=["tool", "weixin"],
             order_by_last_active=True,
         )
 

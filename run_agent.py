@@ -10033,6 +10033,11 @@ class AIAgent:
             if _ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None
 
+            # Strip image parts for non-vision models that have provider profiles
+            # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
+            # registered providers with profiles were bypassing the strip.
+            api_messages = self._prepare_messages_for_non_vision_model(api_messages)
+
             return _ct.build_kwargs(
                 model=self.model,
                 messages=api_messages,

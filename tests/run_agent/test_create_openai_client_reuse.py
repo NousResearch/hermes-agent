@@ -135,6 +135,78 @@ def test_second_create_does_not_wrap_closed_transport_from_first():
             )
 
 
+def test_replace_primary_openai_client_backfills_minimax_api_key_from_headers():
+    """MiniMax rebuilds must satisfy the OpenAI SDK api_key validator.
+
+    MiniMax Anthropic-compatible endpoints authenticate with ``x-api-key`` in
+    default headers.  A stale-stream rebuild reuses cached ``_client_kwargs``;
+    if that cache has no OpenAI-style ``api_key``, the SDK constructor raises
+    before the header-auth client can recover the session.
+    """
+    agent = _make_agent()
+    agent.provider = "minimax"
+    constructed: list = []
+
+    class _ValidatingFakeOpenAI:
+        def __init__(self, **kwargs):
+            if not kwargs.get("api_key"):
+                raise ValueError("api_key client option must be set")
+            self._kwargs = kwargs
+            self._http_client = kwargs.get("http_client")
+            self._closed = False
+            constructed.append(self)
+
+        def close(self):
+            self._closed = True
+
+    agent._client_kwargs = {
+        "base_url": "https://api.minimax.io/anthropic",
+        "default_headers": {"x-api-key": "mm-header-key"},
+    }
+
+    with patch("run_agent.OpenAI", _ValidatingFakeOpenAI):
+        ok = agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+
+    assert ok
+    assert agent.client is constructed[0]
+    assert constructed[0]._kwargs["api_key"] == "mm-header-key"
+    assert agent._client_kwargs == {
+        "base_url": "https://api.minimax.io/anthropic",
+        "default_headers": {"x-api-key": "mm-header-key"},
+    }
+
+
+def test_replace_primary_openai_client_backfills_minimax_cn_api_key_from_env(monkeypatch):
+    """MiniMax-CN rebuilds can recover when the cached header is absent."""
+    agent = _make_agent()
+    agent.provider = "minimax-cn"
+    constructed: list = []
+
+    class _ValidatingFakeOpenAI:
+        def __init__(self, **kwargs):
+            if not kwargs.get("api_key"):
+                raise ValueError("api_key client option must be set")
+            self._kwargs = kwargs
+            self._http_client = kwargs.get("http_client")
+            self._closed = False
+            constructed.append(self)
+
+        def close(self):
+            self._closed = True
+
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "mm-cn-env-key")
+    agent._client_kwargs = {
+        "base_url": "https://api.minimaxi.com/anthropic",
+        "default_headers": {},
+    }
+
+    with patch("run_agent.OpenAI", _ValidatingFakeOpenAI):
+        ok = agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+
+    assert ok
+    assert constructed[0]._kwargs["api_key"] == "mm-cn-env-key"
+
+
 def test_replace_primary_openai_client_survives_repeated_rebuilds():
     """Full rebuild path: exercise _replace_primary_openai_client three times
     back-to-back and confirm every resulting ``self.client`` is a fresh,

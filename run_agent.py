@@ -2456,7 +2456,14 @@ class AIAgent:
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
-                new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
+                client_kwargs = dict(self._client_kwargs)
+                provider = (getattr(self, "provider", "") or "").strip().lower()
+                if provider in {"minimax", "minimax-cn"} and not client_kwargs.get("api_key"):
+                    headers = client_kwargs.get("default_headers") or {}
+                    header_key = headers.get("x-api-key") or headers.get("X-Api-Key")
+                    env_name = "MINIMAX_CN_API_KEY" if provider == "minimax-cn" else "MINIMAX_API_KEY"
+                    client_kwargs["api_key"] = header_key or os.getenv(env_name) or "unused-minimax-sdk-key"
+                new_client = self._create_openai_client(client_kwargs, reason=reason, shared=True)
             except Exception as exc:
                 logger.warning(
                     "Failed to rebuild shared OpenAI client (%s) %s error=%s",

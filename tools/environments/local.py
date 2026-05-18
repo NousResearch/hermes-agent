@@ -66,9 +66,7 @@ def _build_provider_env_blocklist() -> frozenset:
         from hermes_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
-            if category in {"tool", "messaging"}:
-                blocked.add(name)
-            elif category == "setting" and metadata.get("password"):
+            if category in {"tool", "messaging"} or metadata.get("password"):
                 blocked.add(name)
     except ImportError:
         pass
@@ -156,24 +154,20 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
-    try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
-    except Exception:
-        _is_passthrough = lambda _: False  # noqa: E731
-
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
-            sanitized[key] = value
+        if key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            continue
+        sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             sanitized[key] = value
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
@@ -251,18 +245,13 @@ _SANE_PATH = (
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
-    try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
-    except Exception:
-        _is_passthrough = lambda _: False  # noqa: E731
-
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
+        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     # The "/usr/bin not already present → inject sane POSIX path" heuristic
@@ -600,3 +589,7 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
+        try:
+            os.rmdir(self._artifact_dir)
+        except OSError:
+            pass

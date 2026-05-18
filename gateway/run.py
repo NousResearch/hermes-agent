@@ -3452,6 +3452,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            if hasattr(adapter, "set_interaction_authorizer"):
+                adapter.set_interaction_authorizer(self._is_user_authorized)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4733,6 +4735,8 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    if hasattr(adapter, "set_interaction_authorizer"):
+                        adapter.set_interaction_authorizer(self._is_user_authorized)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -12872,6 +12876,9 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            guild_id=str(context.source.guild_id) if context.source.guild_id else "",
+            parent_chat_id=str(context.source.parent_chat_id) if context.source.parent_chat_id else "",
+            message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:

@@ -24,6 +24,7 @@ except ImportError:
 from pathlib import Path
 from typing import Callable
 
+from agent.file_safety import is_write_denied
 from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
@@ -351,6 +352,14 @@ class FileSyncManager:
                                 )
                                 continue
 
+                        if is_write_denied(host_path):
+                            logger.warning(
+                                "sync_back: skipping %s -> %s (host write denied)",
+                                remote_path,
+                                host_path,
+                            )
+                            continue
+
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)
                             if host_hash != pushed_hash:
@@ -390,10 +399,20 @@ class FileSyncManager:
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
         """
         mapping = file_mapping if file_mapping is not None else []
+        hermes_home = get_hermes_home().resolve()
         for host, remote in mapping:
             remote_dir = str(Path(remote).parent)
             if remote_path.startswith(remote_dir + "/"):
-                host_dir = str(Path(host).parent)
+                host_dir = Path(host).parent
+                try:
+                    if host_dir.resolve() == hermes_home:
+                        logger.warning(
+                            "sync_back: skipping inferred top-level HERMES_HOME path %s",
+                            remote_path,
+                        )
+                        continue
+                except OSError:
+                    pass
                 suffix = remote_path[len(remote_dir):]
-                return host_dir + suffix
+                return str(host_dir) + suffix
         return None

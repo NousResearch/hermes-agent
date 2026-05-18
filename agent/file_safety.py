@@ -74,7 +74,21 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str, home: str | None = None) -> bool:
+def resolve_for_safety(path: str, base_dir: str | None = None, home: str | None = None) -> str:
+    """Resolve a path for safety checks, honoring base_dir for relative paths."""
+    expanded = str(path)
+    if home:
+        if expanded == "~":
+            expanded = home
+        elif expanded.startswith("~/"):
+            expanded = os.path.join(home, expanded[2:])
+    expanded = os.path.expanduser(expanded)
+    if base_dir and not os.path.isabs(expanded):
+        expanded = os.path.join(os.path.expanduser(str(base_dir)), expanded)
+    return os.path.realpath(expanded)
+
+
+def is_write_denied(path: str, home: str | None = None, base_dir: str | None = None) -> bool:
     """Return True if path is blocked by the write denylist or safe root.
 
     Args:
@@ -82,9 +96,10 @@ def is_write_denied(path: str, home: str | None = None) -> bool:
         home: Optional target-environment home directory. When file tools run
             over SSH or another remote backend, this must be the remote home
             rather than the local Hermes process home.
+        base_dir: Optional execution cwd used to resolve relative paths.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    resolved = resolve_for_safety(path, base_dir=base_dir, home=home)
 
     if resolved in build_write_denied_paths(home):
         return True

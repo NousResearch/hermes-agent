@@ -59,7 +59,7 @@ set -euo pipefail
 # Ensure GH CLI is installed and authenticated
 if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null; then
   echo "GitHub CLI (gh) is not installed or not authenticated."
-  exit 1
+  return 1 2>/dev/null || exit 1
 fi
 
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
@@ -103,7 +103,7 @@ rm -f "$PRS_TO_REVIEW.candidates"
 
 if [ ! -s "$PRS_TO_REVIEW" ]; then
   echo "No authorized PRs to review."
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 # Ensure the jules-reviewed label exists before we attempt to apply it.

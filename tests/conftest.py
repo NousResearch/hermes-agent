@@ -162,6 +162,7 @@ def _looks_like_credential(name: str) -> bool:
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_YOLO_MODE",
+    "HERMES_ONESHOT_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -173,6 +174,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_CRON_SESSION",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -527,7 +529,7 @@ def mock_config():
     }
 
 
-# ── Global test timeout ─────────────────────────────────────────────────────
+# ── Global test timeout ───────────────────────────────────────────────────
 # Kill any individual test that takes longer than 30 seconds.
 # Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
 # entire test suite.

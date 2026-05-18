@@ -85,9 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str) -> bool:
+def _is_write_denied(path: str, base_dir: str = None) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
+    return _shared_is_write_denied(path, base_dir=base_dir)
 
 
 # =============================================================================
@@ -507,15 +507,16 @@ class ShellFileOperations(FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
 
-        # Resolve cwd from the live env so `cd` commands are picked up.
-        # Fall through to init-time self.cwd only if the env doesn't track cwd.
-        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
-        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        result = self.env.execute(command, cwd=self._effective_cwd(cwd), **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
         )
     
+    def _effective_cwd(self, cwd: str = None) -> str:
+        """Return the cwd that _exec() will use for relative paths."""
+        return cwd or getattr(self.env, 'cwd', None) or self.cwd
+
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
@@ -570,14 +571,14 @@ class ShellFileOperations(FileOperations):
             return self._environment_home
         return None
 
-    def _is_write_denied(self, path: str) -> bool:
+    def _is_write_denied(self, path: str, base_dir: str = None) -> bool:
         """Return True if a write path is denied locally or for this backend."""
-        if _is_write_denied(path):
+        if _is_write_denied(path, base_dir=base_dir):
             return True
 
         environment_home = self._get_environment_home()
         if environment_home:
-            return _shared_is_write_denied(path, home=environment_home)
+            return _shared_is_write_denied(path, home=environment_home, base_dir=base_dir)
         return False
 
     def _expand_path(self, path: str) -> str:
@@ -816,7 +817,7 @@ class ShellFileOperations(FileOperations):
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file via rm."""
         path = self._expand_path(path)
-        if self._is_write_denied(path):
+        if self._is_write_denied(path, base_dir=self._effective_cwd()):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
         result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
         if result.exit_code != 0:
@@ -828,7 +829,7 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if self._is_write_denied(p):
+            if self._is_write_denied(p, base_dir=self._effective_cwd()):
                 return WriteResult(error=f"Move denied: {p} is a protected path")
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
@@ -867,7 +868,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if self._is_write_denied(path):
+        if self._is_write_denied(path, base_dir=self._effective_cwd()):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Capture pre-write content for lint-delta computation.  Only do this
@@ -946,7 +947,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if self._is_write_denied(path):
+        if self._is_write_denied(path, base_dir=self._effective_cwd()):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content

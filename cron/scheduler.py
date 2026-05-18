@@ -15,6 +15,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,126 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+_EXPLICIT_TOOL_CODE_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+_EXPLICIT_TOOL_POSITIVE_RE = re.compile(
+    r"\b(must|require(?:d|s)?|use|call|invoke|run|execute|search with|via)\b"
+    r"|必ず|必須|使(?:う|用)|呼び出|実行|検索",
+    re.IGNORECASE,
+)
+_EXPLICIT_TOOL_NEGATIVE_RE = re.compile(
+    r"\b(do not|don't|never|avoid|without|not\s+(?:use|call|invoke|run|execute))\b"
+    r"|禁止|使わない|使用しない|呼び出さない|実行しない",
+    re.IGNORECASE,
+)
+
+
+def _line_looks_like_positive_tool_requirement(line: str) -> bool:
+    """Heuristic: distinguish required tool mentions from prohibitions/docs."""
+    if _EXPLICIT_TOOL_NEGATIVE_RE.search(line):
+        return False
+    return bool(_EXPLICIT_TOOL_POSITIVE_RE.search(line))
+
+
+def _resolve_tool_names_for_toolsets(toolsets: list[str] | None) -> set[str] | None:
+    """Return requested tool names for *toolsets*, or None for full defaults."""
+    if toolsets is None:
+        return None
+    requested: set[str] = set()
+    try:
+        from model_tools import _LEGACY_TOOLSET_MAP
+        from toolsets import resolve_toolset, validate_toolset
+    except Exception:
+        return requested
+
+    for toolset_name in toolsets:
+        if validate_toolset(toolset_name):
+            requested.update(resolve_toolset(toolset_name))
+        elif toolset_name in _LEGACY_TOOLSET_MAP:
+            requested.update(_LEGACY_TOOLSET_MAP[toolset_name])
+    return requested
+
+
+def _explicit_prompt_tool_availability_error(
+    prompt: str,
+    *,
+    enabled_toolsets: list[str] | None,
+    disabled_toolsets: list[str] | None,
+) -> str | None:
+    """Return a cron preflight error when prompt-required tools are hidden.
+
+    Cron jobs are unattended and auto-delivered. If the assembled prompt says
+    things like ``必ず `x_search` ツール`` but the effective cron toolsets do not
+    expose that tool (or the tool's check_fn filters it out), running the LLM is
+    wasteful and often produces a misleading "success".  We only inspect exact
+    markdown-code references to known Hermes tool names to avoid flagging prose,
+    commands, paths, or skill names.
+    """
+    if not prompt:
+        return None
+
+    try:
+        import model_tools
+        from model_tools import get_tool_definitions
+        from tools.registry import registry
+    except Exception as exc:
+        logger.warning("Cron explicit-tool preflight skipped: %s", exc)
+        return None
+
+    known_tool_names = set(registry.get_all_tool_names())
+    explicit: set[str] = set()
+    for line in prompt.splitlines():
+        for segment in re.split(r"(?<=[。.!?])\s+|[。.!?]", line):
+            if not _line_looks_like_positive_tool_requirement(segment):
+                continue
+            explicit.update(
+                match.group(1)
+                for match in _EXPLICIT_TOOL_CODE_RE.finditer(segment)
+                if match.group(1) in known_tool_names
+            )
+    explicit_tool_names = sorted(explicit)
+    if not explicit_tool_names:
+        return None
+
+    available_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in get_tool_definitions(  # type: ignore[arg-type]
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+    }
+    missing = [name for name in explicit_tool_names if name not in available_tool_names]
+    if not missing:
+        return None
+
+    requested_names = _resolve_tool_names_for_toolsets(enabled_toolsets)
+    disabled_names = _resolve_tool_names_for_toolsets(disabled_toolsets) or set()
+    enabled_display = ", ".join(enabled_toolsets) if enabled_toolsets is not None else "<default/full>"
+    disabled_display = ", ".join(disabled_toolsets or []) or "<none>"
+
+    detail_lines: list[str] = []
+    for tool_name in missing:
+        toolset = model_tools.get_toolset_for_tool(tool_name) or "unknown"
+        if tool_name in disabled_names:
+            reason = f"toolset '{toolset}' is disabled"
+        elif requested_names is not None and tool_name not in requested_names:
+            reason = f"toolset '{toolset}' is not included in enabled_toolsets"
+        else:
+            reason = "tool requirements/check_fn failed (credential or runtime dependency unavailable)"
+        detail_lines.append(f"- `{tool_name}` (toolset `{toolset}`): {reason}")
+
+    return (
+        "Assembled cron prompt explicitly requires tool(s) that are not exposed "
+        "to this job. Refusing to run the unattended LLM tick.\n\n"
+        f"enabled_toolsets: {enabled_display}\n"
+        f"disabled_toolsets: {disabled_display}\n\n"
+        + "\n".join(detail_lines)
+        + "\n\nFix: add the missing toolset(s) to this cron job's `enabled_toolsets`, "
+        "enable the required credentials/dependencies, or remove the explicit "
+        "tool requirement from the prompt/attached skills."
+    )
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -79,7 +200,6 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
         if name and name not in disabled:
             disabled.append(name)
     return disabled
-
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
@@ -1702,6 +1822,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        cron_enabled_toolsets = _resolve_cron_enabled_toolsets(
+            job,
+            _cfg if isinstance(_cfg, dict) else {},
+        )
+        cron_disabled_toolsets = _resolve_cron_disabled_toolsets(
+            _cfg if isinstance(_cfg, dict) else {},
+        )
+
         # Initialize MCP servers so configured mcp_servers are available to
         # the agent's tool registry before AIAgent is constructed. Without
         # this, cron jobs never saw any MCP tools — only the gateway / CLI
@@ -1723,6 +1851,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        tool_preflight_error = _explicit_prompt_tool_availability_error(
+            prompt,
+            enabled_toolsets=cron_enabled_toolsets,
+            disabled_toolsets=cron_disabled_toolsets,
+        )
+        if tool_preflight_error:
+            raise RuntimeError(tool_preflight_error)
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1741,8 +1877,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            enabled_toolsets=cron_enabled_toolsets,  # type: ignore[arg-type]
+            disabled_toolsets=cron_disabled_toolsets,
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

@@ -648,6 +648,7 @@ AUTHOR_MAP = {
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
     "kagura.chen28@gmail.com": "kagura-agent",
+    "kagura.agent.ai@gmail.com": "kagura-agent",
     "1342088860@qq.com": "youngDoo",
     "kamil@gwozdz.me": "kamil-gwozdz",
     "skmishra1991@gmail.com": "bugkill3r",

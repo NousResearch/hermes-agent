@@ -2712,14 +2712,15 @@ def specify_triage_task(
     *,
     title: Optional[str] = None,
     body: Optional[str] = None,
+    assignee: Optional[str] = None,
     author: Optional[str] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
-    Atomically updates ``title`` / ``body`` (when provided) and transitions
-    ``status: triage -> todo`` in a single write txn. Returns False when
-    the task is missing or not in the ``triage`` column — callers should
-    surface that as "nothing to specify" rather than an error.
+    Atomically updates ``title`` / ``body`` / ``assignee`` (when provided)
+    and transitions ``status: triage -> todo`` in a single write txn. Returns
+    False when the task is missing or not in the ``triage`` column — callers
+    should surface that as "nothing to specify" rather than an error.
 
     ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
     promotes parent-free / parent-done todos to ``ready`` on the next
@@ -2727,14 +2728,15 @@ def specify_triage_task(
     for specified tasks that happen to have open parents.
 
     ``author`` is recorded on an audit comment only when at least one of
-    ``title`` / ``body`` actually changed — avoids noisy comment spam for
-    status-only promotions.
+    ``title`` / ``body`` / ``assignee`` actually changed — avoids noisy
+    comment spam for status-only promotions.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
+    assignee = _canonical_assignee(assignee)
     with write_txn(conn):
         existing = conn.execute(
-            "SELECT title, body FROM tasks WHERE id = ? AND status = 'triage'",
+            "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
         if existing is None:
@@ -2750,6 +2752,10 @@ def specify_triage_task(
             sets.append("body = ?")
             params.append(body)
             changed_fields.append("body")
+        if assignee is not None and assignee != (existing["assignee"] or None):
+            sets.append("assignee = ?")
+            params.append(assignee)
+            changed_fields.append("assignee")
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "

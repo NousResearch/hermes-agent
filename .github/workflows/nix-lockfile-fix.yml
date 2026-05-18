@@ -261,16 +261,6 @@ jobs:
 
             Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
-      - name: Checkout trusted workflow files
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-
-      - uses: ./.github/actions/nix-setup
-        with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Checkout target branch
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
@@ -278,6 +268,15 @@ jobs:
           ref: ${{ steps.resolve.outputs.ref }}
           persist-credentials: false
           fetch-depth: 0
+
+      # Use pinned third-party actions directly here instead of local actions.
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
+        with:
+          name: hermes-agent
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        continue-on-error: true
+
       - name: Apply lockfile hashes
         id: apply
         run: nix run .#fix-lockfiles

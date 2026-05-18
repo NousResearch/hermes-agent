@@ -137,6 +137,8 @@ platforms:
 
 ### Env var overrides (`_apply_env_overrides()` in `gateway/config.py`)
 
+`.env` is the wizard's primary output, matching every other Hermes platform. Hand-editing `config.yaml` remains supported for structured overrides the wizard doesn't ask about (multi-URL `servers`, `heartbeat_interval_s`, `max_payload`, `attachments_ok`, `ack_keepalive_interval_s`). Env vars stamp on top of `config.yaml` per-key.
+
 | Env var                    | Overrides                        | Notes                                                      |
 |----------------------------|----------------------------------|------------------------------------------------------------|
 | `NATS_URL`                 | `extra.servers` (single-URL list) | Canonical env name in the NATS ecosystem                   |
@@ -145,7 +147,7 @@ platforms:
 | `HERMES_NATS_OWNER`        | `extra.owner`                     | Common in multi-tenant deployments                          |
 | `HERMES_NATS_SESSION_NAME` | `extra.session_name`              | The 5th subject token; required                             |
 
-Pattern mirrors Signal (`gateway/config.py:926-943`): if the env var is set, ensure the platform entry exists, set `enabled=True`, and `update()` the `extra` dict.
+Pattern mirrors Signal (`gateway/config.py:926-943`): if the env var is set, ensure the platform entry exists, set `enabled=True`, and `update()` the `extra` dict. The wizard (`hermes_cli/setup.py:_setup_nats`) writes these vars via `save_env_value()` — no direct config.yaml mutation. Multi-URL `servers` lists are config.yaml-only because env vars carry single strings; that's a deliberate edge-case escape hatch, not a missing feature.
 
 ### `get_connected_platforms()` rule
 

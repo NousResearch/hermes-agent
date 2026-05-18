@@ -816,3 +816,26 @@ If `TaskList` is empty after a context clear and you need to recreate the tasks,
 | T9.3   | T9.3 — Example hermes config snippet in docs                            | Adding example config snippet           |
 
 Descriptions for each task are listed in the design doc's Phase tables + the plan the user originally approved. Short paraphrase of each is given in the phase checklist above — sufficient for TaskCreate.
+
+---
+
+## Phase 12 — Pre-PR cleanup: align wizard with Hermes conventions (2026-05-06)
+
+Pre-PR review of how NATS configuration compared with the rest of Hermes turned up an asymmetry. Other platforms — Telegram, Discord, Slack, Mattermost, Matrix, Webhook, API Server, Yuanbao, all of them — drive their setup wizards through `save_env_value()` writes to `~/.hermes/.env`. NATS was the lone snowflake: `_setup_nats(config: dict)` mutated `platforms.nats.extra` in `config.yaml`, never touched `.env`.
+
+Two changes folded into a single landing here:
+
+1. **Brief detour, then reverted.** A first attempt (`b6049f12`) ripped out env-var support entirely on the (mistaken) claim that "Hermes reserves env vars for secrets." Audit of `website/docs/reference/environment-variables.md` showed that's not the convention — `MATRIX_HOMESERVER`, `MATRIX_USER_ID`, `MATTERMOST_URL`, `EMAIL_IMAP_HOST`/`SMTP_HOST`, `WHATSAPP_ENABLED`, `WEBHOOK_PORT`, `API_SERVER_HOST`, `HASS_URL`, every `*_ALLOWED_USERS`, plus the entire Yuanbao set are non-secret config carried as env vars. The rip-out was reverted before push.
+
+2. **Wizard refactor (this commit's substance).** `_setup_nats(config)` → `_setup_nats()`: drops the `config` parameter and the `load_config()`/`save_config()` machinery; each `extra[X] = Y` mutation is now `save_env_value(...)` to `~/.hermes/.env`. Cross-profile collision check (`_find_nats_profile_collisions`) extended to scan sibling profile `.env` files via `dotenv.dotenv_values()`; if both `.env` and `config.yaml` are present, env wins per-key (mirroring how `_apply_env_overrides()` materializes them at runtime). Multi-URL `servers` lists and tuning knobs (`heartbeat_interval_s`, `max_payload`, `attachments_ok`, `ack_keepalive_interval_s`) are not wizard-prompted — those stay in `config.yaml` as the structured-override path for advanced users.
+
+After this phase, NATS configuration follows the prevailing Hermes pattern: wizard → `.env`, `config.yaml` is the structured-override escape hatch, env vars stamp on top per-key at runtime.
+
+Touched:
+
+- `hermes_cli/setup.py:_setup_nats` — wizard rewrite (env-var output).
+- `hermes_cli/setup.py:_find_nats_profile_collisions` — `.env` scanner added; `.env` and `config.yaml` merged with env-wins-per-key.
+- `tests/hermes_cli/test_setup_nats_collision.py` — 5 new tests covering `.env`-driven sibling profiles, env-overrides-yaml priority, and yaml-only backward compatibility (14 tests total, all green).
+- `website/docs/user-guide/messaging/nats.md` — Step 1 restructured: wizard recommended, manual `.env` editing as alternative, `config.yaml` documented as the advanced-overrides path.
+- `docs/nats-gateway-design.md` §4 — env var override section updated to describe the `.env`-primary, `config.yaml`-as-overrides split.
+- `docs/nats-gateway.md` — smoke-test recipe annotated to point at the wizard for persistent config; inline-env overrides remain as the one-shot smoke pattern.

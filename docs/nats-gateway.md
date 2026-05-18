@@ -28,7 +28,8 @@ Local broker + gateway + one-shot prompt:
 # terminal 1 — broker
 nats-server -p 4222 -a 127.0.0.1
 
-# terminal 2 — gateway (uses config.yaml or env vars)
+# terminal 2 — gateway. Persist via `hermes setup gateway` (writes ~/.hermes/.env);
+# inline-env override below is fine for one-shot smoke runs.
 NATS_URL=nats://127.0.0.1:4222 HERMES_NATS_OWNER=dev HERMES_NATS_SESSION_NAME=smoke \
   hermes gateway run
 

@@ -22,9 +22,23 @@ Use the NATS gateway when you want to reach Hermes programmatically from other s
 
 ## Step 1: Configure the Gateway
 
-### Option A: Environment variables (fastest for local testing)
+### Recommended: the interactive wizard
 
-Add to `~/.hermes/.env`:
+```bash
+hermes setup gateway
+```
+
+Pick **NATS** from the platform checklist. The wizard offers a 3-way transport menu (public demo server / custom URL / existing NATS CLI context auto-discovered from `~/.config/nats/context/`), prompts for owner and session_name, runs a cross-profile collision check on `(agent, owner, session_name)`, and writes the result to `~/.hermes/.env`:
+
+```bash
+NATS_URL=nats://demo.nats.io      # OR NATS_CONTEXT=local-nats
+HERMES_NATS_OWNER=yourname
+HERMES_NATS_SESSION_NAME=default
+```
+
+### Manual: edit `.env` directly
+
+If you'd rather skip the wizard, set the same vars by hand:
 
 ```bash
 NATS_URL=nats://127.0.0.1:4222
@@ -32,46 +46,28 @@ HERMES_NATS_OWNER=yourname
 HERMES_NATS_SESSION_NAME=default
 ```
 
-Any NATS env var sets `enabled=true` automatically. `HERMES_NATS_AGENT` defaults to `hermes`; override it if you want a different service family name.
+`HERMES_NATS_AGENT` defaults to `hermes`; set it only if you want a different service family name. Any NATS env var sets `enabled=true` automatically.
 
-### Option B: `config.yaml`
+### Advanced: structured overrides via `config.yaml`
+
+For knobs the wizard doesn't ask about — multi-URL `servers` lists, custom heartbeat interval, payload limits, ack-keepalive timing — hand-edit `~/.hermes/config.yaml`. Env vars stamp on top per-key, so you can mix and match:
 
 ```yaml
 platforms:
   nats:
     enabled: true
     extra:
-      # One of `servers` or `context` is required.
-      servers: ["nats://127.0.0.1:4222"]
-      # OR
-      # context: "local-nats"       # reads $NATS_CONFIG_HOME/context/<name>.json
+      # Multi-URL is config.yaml-only (NATS_URL is single-URL).
+      servers: ["nats://primary:4222", "nats://failover:4222"]
 
-      # Identity on the wire — produces subject
-      # agents.prompt.hermes.<owner>.<session_name>
-      agent: hermes                  # default "hermes"; rarely changed
-      owner: yourname                # required
-      session_name: default          # required — the 5th subject token
-
-      # Behavior tuning (all optional, defaults shown)
+      # Behavior tuning (all optional, defaults shown).
       heartbeat_interval_s: 30
       max_payload: "1MB"
       attachments_ok: true
       ack_keepalive_interval_s: 20
 ```
 
-### Option C: NATS context
-
-If you already manage NATS credentials via `nats context`, set `extra.context` to the context name and omit `servers`:
-
-```yaml
-platforms:
-  nats:
-    enabled: true
-    extra:
-      context: "my-synadia-cloud-ctx"
-      owner: yourname
-      session_name: default
-```
+If you already manage NATS credentials via `nats context`, set `NATS_CONTEXT` (env) or `extra.context` (yaml) instead of `NATS_URL` / `extra.servers`. The wizard surfaces existing contexts as one of the 3 transport options automatically.
 
 ### Multiple sessions
 
@@ -79,11 +75,11 @@ Protocol v0.3 collapsed `name` and `session` into a single `session_name` token:
 
 ```bash
 hermes -p alice profile create
-hermes -p alice setup            # configure HERMES_NATS_SESSION_NAME=alice
+hermes -p alice setup gateway    # pick NATS, set session_name=alice
 hermes -p bob profile create
-hermes -p bob setup              # configure HERMES_NATS_SESSION_NAME=bob
+hermes -p bob setup gateway      # pick NATS, set session_name=bob
 
-# Each profile gets its own AgentService and its own session_name token.
+# Each profile gets its own .env, AgentService, and session_name token.
 ```
 
 ## Step 2: Start the Gateway

@@ -36,8 +36,19 @@ Not changed:
 - R109 fire.
 - Git push, merge, deploy, or production mutation.
 
+## Current-main cross-check after Codex Wave 1.16.E
+
+Rechecked after operate-report-service PR #349 landed at `d234cd89d38daadbdfb8b99b036dbe5c1edaee7b`.
+
+- Claude verified docs now exist in operate-report-service and confirm `--max-budget-usd`, `--output-format`, `--no-session-persistence`, `--plugin-dir`, and related flags.
+- Claude verified docs also report non-interactive subscription auth is still blocked by `401 Invalid authentication credentials`; production Claude subprocess routing remains blocked.
+- Codex verified docs report `codex --print` is not supported. The verified non-interactive path is `codex -a never exec ... -s read-only --output-last-message ...`.
+- The installed Codex binary exists at `/Applications/Codex.app/Contents/Resources/codex`, but `codex` is not on this shell PATH, so this A-slice continues to fail closed through missing-binary or unresolved-flag results.
+- This branch remains correct as a local preflight foundation. The next Hermes phase should reconcile the Codex wrapper naming and command assembly against verified `codex exec`, not a nonexistent `codex --print` surface.
+
 ## Known dependencies for later phases
 
-- Codex Wave 1.16.E verified flag docs are still required before activation.
-- `codex` must be present on PATH or the Codex wrapper remains disabled.
+- Claude auth must be repaired or an API-key/helper path must be explicitly approved before production Claude subprocess routing.
+- Codex Phase 1 should use the verified `codex exec` pattern from Wave 1.16.E rather than `codex --print`.
+- `codex` must either be placed on PATH or wrappers must use the verified app binary path intentionally.
 - Any Telegram or gateway exposure requires separate exact approval.

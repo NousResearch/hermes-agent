@@ -32,6 +32,13 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.config import (
+    AgentConfig,
+    CallbackConfig,
+    CheckpointConfig,
+    PlatformContext,
+    coerce_init_agent_configs,
+)
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
@@ -72,71 +79,14 @@ def _ra():
 
 
 def init_agent(
-    agent,
-    base_url: str = None,
-    api_key: str = None,
-    provider: str = None,
-    api_mode: str = None,
-    acp_command: str = None,
-    acp_args: list[str] | None = None,
-    command: str = None,
-    args: list[str] | None = None,
-    model: str = "",
-    max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
-    tool_delay: float = 1.0,
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
-    save_trajectories: bool = False,
-    verbose_logging: bool = False,
-    quiet_mode: bool = False,
-    ephemeral_system_prompt: str = None,
-    log_prefix_chars: int = 100,
-    log_prefix: str = "",
-    providers_allowed: List[str] = None,
-    providers_ignored: List[str] = None,
-    providers_order: List[str] = None,
-    provider_sort: str = None,
-    provider_require_parameters: bool = False,
-    provider_data_collection: str = None,
-    openrouter_min_coding_score: Optional[float] = None,
-    session_id: str = None,
-    tool_progress_callback: callable = None,
-    tool_start_callback: callable = None,
-    tool_complete_callback: callable = None,
-    thinking_callback: callable = None,
-    reasoning_callback: callable = None,
-    clarify_callback: callable = None,
-    step_callback: callable = None,
-    stream_delta_callback: callable = None,
-    interim_assistant_callback: callable = None,
-    tool_gen_callback: callable = None,
-    status_callback: callable = None,
-    max_tokens: int = None,
-    reasoning_config: Dict[str, Any] = None,
-    service_tier: str = None,
-    request_overrides: Dict[str, Any] = None,
-    prefill_messages: List[Dict[str, Any]] = None,
-    platform: str = None,
-    user_id: str = None,
-    user_name: str = None,
-    chat_id: str = None,
-    chat_name: str = None,
-    chat_type: str = None,
-    thread_id: str = None,
-    gateway_session_key: str = None,
-    skip_context_files: bool = False,
-    load_soul_identity: bool = False,
-    skip_memory: bool = False,
-    session_db=None,
-    parent_session_id: str = None,
-    iteration_budget: "IterationBudget" = None,
-    fallback_model: Dict[str, Any] = None,
-    credential_pool=None,
-    checkpoints_enabled: bool = False,
-    checkpoint_max_snapshots: int = 20,
-    checkpoint_max_total_size_mb: int = 500,
-    checkpoint_max_file_size_mb: int = 10,
-    pass_session_id: bool = False,
+    agent: Any,
+    *legacy_args: Any,
+    config: AgentConfig | None = None,
+    agent_config: AgentConfig | None = None,
+    callback_config: CallbackConfig | None = None,
+    platform_context: PlatformContext | None = None,
+    checkpoint_config: CheckpointConfig | None = None,
+    **legacy_kwargs: Any,
 ):
     """
     Initialize the AI Agent.
@@ -187,6 +137,86 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+
+    agent_config, callback_config, platform_context, checkpoint_config = (
+        coerce_init_agent_configs(
+            legacy_args,
+            legacy_kwargs,
+            config=config,
+            agent_config=agent_config,
+            callback_config=callback_config,
+            platform_context=platform_context,
+            checkpoint_config=checkpoint_config,
+        )
+    )
+
+    base_url = agent_config.base_url
+    api_key = agent_config.api_key
+    provider = agent_config.provider
+    api_mode = agent_config.api_mode
+    acp_command = agent_config.acp_command
+    acp_args = agent_config.acp_args
+    command = agent_config.command
+    args = agent_config.args
+    model = agent_config.model
+    max_iterations = agent_config.max_iterations
+    tool_delay = agent_config.tool_delay
+    enabled_toolsets = agent_config.enabled_toolsets
+    disabled_toolsets = agent_config.disabled_toolsets
+    save_trajectories = agent_config.save_trajectories
+    verbose_logging = agent_config.verbose_logging
+    quiet_mode = agent_config.quiet_mode
+    ephemeral_system_prompt = agent_config.ephemeral_system_prompt
+    log_prefix_chars = agent_config.log_prefix_chars
+    log_prefix = agent_config.log_prefix
+    providers_allowed = agent_config.providers_allowed
+    providers_ignored = agent_config.providers_ignored
+    providers_order = agent_config.providers_order
+    provider_sort = agent_config.provider_sort
+    provider_require_parameters = agent_config.provider_require_parameters
+    provider_data_collection = agent_config.provider_data_collection
+    openrouter_min_coding_score = agent_config.openrouter_min_coding_score
+    session_id = agent_config.session_id
+    max_tokens = agent_config.max_tokens
+    reasoning_config = agent_config.reasoning_config
+    service_tier = agent_config.service_tier
+    request_overrides = agent_config.request_overrides
+    prefill_messages = agent_config.prefill_messages
+    skip_context_files = agent_config.skip_context_files
+    load_soul_identity = agent_config.load_soul_identity
+    skip_memory = agent_config.skip_memory
+    session_db = agent_config.session_db
+    parent_session_id = agent_config.parent_session_id
+    iteration_budget = agent_config.iteration_budget
+    fallback_model = agent_config.fallback_model
+    credential_pool = agent_config.credential_pool
+    pass_session_id = agent_config.pass_session_id
+
+    tool_progress_callback = callback_config.tool_progress_callback
+    tool_start_callback = callback_config.tool_start_callback
+    tool_complete_callback = callback_config.tool_complete_callback
+    thinking_callback = callback_config.thinking_callback
+    reasoning_callback = callback_config.reasoning_callback
+    clarify_callback = callback_config.clarify_callback
+    step_callback = callback_config.step_callback
+    stream_delta_callback = callback_config.stream_delta_callback
+    interim_assistant_callback = callback_config.interim_assistant_callback
+    tool_gen_callback = callback_config.tool_gen_callback
+    status_callback = callback_config.status_callback
+
+    platform = platform_context.platform
+    user_id = platform_context.user_id
+    user_name = platform_context.user_name
+    chat_id = platform_context.chat_id
+    chat_name = platform_context.chat_name
+    chat_type = platform_context.chat_type
+    thread_id = platform_context.thread_id
+    gateway_session_key = platform_context.gateway_session_key
+
+    checkpoints_enabled = checkpoint_config.enabled
+    checkpoint_max_snapshots = checkpoint_config.max_snapshots
+    checkpoint_max_total_size_mb = checkpoint_config.max_total_size_mb
+    checkpoint_max_file_size_mb = checkpoint_config.max_file_size_mb
 
     agent.model = model
     agent.max_iterations = max_iterations

@@ -2830,6 +2830,9 @@ class HermesCLI:
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
         self._delete_session_on_exit = False
+        # When set, the interactive CLI relaunches this subcommand after
+        # prompt_toolkit exits cleanly (see _handle_update_command).
+        self._pending_relaunch_argv: list[str] | None = None
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
@@ -7949,7 +7952,8 @@ class HermesCLI:
         elif canonical == "debug":
             self._handle_debug_command()
         elif canonical == "update":
-            self._handle_update_command()
+            if not self._handle_update_command():
+                return False
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -9232,37 +9236,50 @@ class HermesCLI:
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
 
-    def _handle_update_command(self):
+    def _handle_update_command(self) -> bool:
         """Handle /update — update Hermes Agent to the latest version.
 
-        In the classic CLI this exits the session and relaunches as
-        ``hermes update`` so the user sees update output directly and gets
-        the new version on next launch.
+        Returns True to keep the CLI running, False to exit and relaunch as
+        ``hermes update`` on the main thread after prompt_toolkit cleanup.
         """
         from hermes_cli.config import is_managed, format_managed_message
 
         if is_managed():
             print(f"  ✗ {format_managed_message('update Hermes Agent')}")
-            return
+            return True
 
-        # Confirm with user
-        try:
-            answer = input("  Update Hermes Agent to the latest version? This will exit the current session. [Y/n] ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return
-        if answer.strip().lower() in ("n", "no"):
-            return
+        choices = [
+            ("yes", "Yes", "exit this session and run hermes update"),
+            ("no", "No", "stay in the current session"),
+        ]
+        raw = self._prompt_text_input_modal(
+            title="⚕ /update — update Hermes Agent",
+            detail=(
+                "This exits the current session and runs `hermes update` so you\n"
+                "see update output directly."
+            ),
+            choices=choices,
+        )
+        answer = self._normalize_yes_no_confirm(raw)
+        if answer is None:
+            print("  /update cancelled.")
+            return True
+        if answer == "no":
+            return True
 
-        print()
-        print("  ⚕ Launching update...")
-        print()
+        self._pending_relaunch_argv = ["update"]
+        return False
 
-        # Use relaunch() which handles Windows (.cmd shims) and POSIX (execvp).
-        # preserve_inherited=False avoids carrying --tui or other flags into
-        # the update subcommand.
-        from hermes_cli.relaunch import relaunch
-        relaunch(["update"], preserve_inherited=False)
+    def _normalize_yes_no_confirm(self, raw: str | None) -> str | None:
+        """Map modal/stdin input to ``yes`` / ``no``, or None if unrecognized."""
+        if raw is None:
+            return None
+        choice = raw.strip().lower()
+        if choice in ("", "y", "yes", "1", "yes (update)"):
+            return "yes"
+        if choice in ("n", "no", "2", "no (cancel)"):
+            return "no"
+        return None
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
@@ -13969,6 +13986,14 @@ class HermesCLI:
                 except Exception:
                     pass
             _run_cleanup()
+            pending_relaunch = getattr(self, "_pending_relaunch_argv", None)
+            if pending_relaunch:
+                from hermes_cli.relaunch import relaunch
+
+                print()
+                print("  ⚕ Launching update...")
+                print()
+                relaunch(pending_relaunch, preserve_inherited=False)
             self._print_exit_summary()
 
 

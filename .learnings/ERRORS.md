@@ -1,0 +1,1 @@
+- 🧠 **Memory cap while saving xAI note** — `memory.add` failed at 2,182/2,200 chars; fixed by replacing the compact Hermes entry with `xAI OAuth+x_search verified`.

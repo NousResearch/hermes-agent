@@ -416,7 +416,7 @@ export default function App() {
   return (
     <div
       data-layout-variant={layoutVariant}
-      className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
+      className="font-mondwest flex min-h-dvh flex-col overflow-visible bg-black uppercase text-midground antialiased"
     >
       <SelectionSwitcher />
       <Backdrop />
@@ -469,7 +469,7 @@ export default function App() {
 
       <PluginSlot name="header-banner" />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-visible pt-12 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"

@@ -104,6 +104,36 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
+function isVisualViewportScaled(): boolean {
+  return (window.visualViewport?.scale ?? 1) > 1.01;
+}
+
+function isHorizontalPan(ev: WheelEvent): boolean {
+  return Math.abs(ev.deltaX) > Math.abs(ev.deltaY);
+}
+
+function documentCanPanHorizontally(): boolean {
+  const scrollingElement =
+    document.scrollingElement ?? document.documentElement;
+  return scrollingElement.scrollWidth > scrollingElement.clientWidth + 1;
+}
+
+function shouldLetBrowserHandleWheel(ev: WheelEvent): boolean {
+  if (ev.ctrlKey || ev.metaKey) return true;
+
+  if (isVisualViewportScaled()) {
+    return isHorizontalPan(ev);
+  }
+
+  return documentCanPanHorizontally() && isHorizontalPan(ev);
+}
+
+function keepBrowserViewportWheelOutOfTerminal(ev: WheelEvent): void {
+  if (shouldLetBrowserHandleWheel(ev)) {
+    ev.stopPropagation();
+  }
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -345,7 +375,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -414,6 +444,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // correctly (`Shift+Up` / `Shift+Down`, `PageUp` / `PageDown`), so we
     // translate browser wheel gestures into those known-good key sequences.
     term.attachCustomWheelEventHandler((ev) => {
+      if (shouldLetBrowserHandleWheel(ev)) {
+        return false;
+      }
+
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
         return false;
       }
@@ -436,6 +470,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ev.preventDefault();
       ev.stopPropagation();
       return false;
+    });
+    host.addEventListener("wheel", keepBrowserViewportWheelOutOfTerminal, {
+      capture: true,
+      passive: true,
     });
 
     const unicode11 = new Unicode11Addon();
@@ -655,6 +693,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         "resize",
         scheduleSyncTerminalMetrics,
       );
+      host.removeEventListener("wheel", keepBrowserViewportWheelOutOfTerminal, {
+        capture: true,
+      });
       ro.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);

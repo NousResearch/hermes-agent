@@ -3973,3 +3973,30 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestSummaryPromptBounding:
+    def test_oversized_summary_prompt_is_bounded_and_preserves_edges(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "bounded summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": f"turn-{i}-" + ("x" * 6000)}
+            for i in range(80)
+        ]
+        messages[0]["content"] = "FIRST_SENTINEL " + messages[0]["content"]
+        messages[-1]["content"] = "LAST_SENTINEL " + messages[-1]["content"]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert len(prompt) < 180_000
+        assert "summary input truncated" in prompt
+        assert "FIRST_SENTINEL" in prompt
+        assert "LAST_SENTINEL" in prompt

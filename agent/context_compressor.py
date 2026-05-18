@@ -2330,6 +2330,7 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+    _SUMMARY_INPUT_MAX_CHARS = 160_000  # total serialized turns sent to aux summarizer
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -2625,6 +2626,39 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         return summary
 
+    @classmethod
+    def _bound_summary_input(cls, content: str) -> str:
+        """Cap total summarizer input while preserving beginning and recent tail.
+
+        Per-message truncation alone is not enough for very long sessions: a
+        compression window with hundreds of messages can still produce a huge
+        single prompt that slow auxiliary backends time out on. Keep both edges
+        because the beginning often has task setup and the tail has the most
+        recent state; explicitly mark the omitted middle so the summarizer knows
+        context was intentionally compressed before it saw the prompt.
+        """
+        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return content
+
+        marker_template = (
+            "\n\n...[summary input truncated: omitted "
+            "{omitted:,} chars from the middle to keep compression prompt bounded]...\n\n"
+        )
+        # Estimate once, then rebuild with the exact omitted span after the
+        # head/tail split is known. The second marker can differ by a few chars
+        # if the comma-formatted number changes width, so recompute once.
+        marker = marker_template.format(omitted=len(content))
+        remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+        head_chars = int(remaining * 0.45)
+        tail_chars = remaining - head_chars
+        omitted = max(len(content) - head_chars - tail_chars, 0)
+        marker = marker_template.format(omitted=omitted)
+        remaining = max(cls._SUMMARY_INPUT_MAX_CHARS - len(marker), 0)
+        head_chars = int(remaining * 0.45)
+        tail_chars = remaining - head_chars
+        tail = content[-tail_chars:].lstrip() if tail_chars else ""
+        return content[:head_chars].rstrip() + marker + tail
+
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
@@ -2697,7 +2731,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._previous_summary = _redact_compaction_text(self._previous_summary)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
-        content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        content_to_summarize = self._bound_summary_input(
+            self._serialize_for_summary(turns_to_summarize)
+        )
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
             _sanitized_memory_context,

@@ -615,6 +615,15 @@ async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(ada
 import discord as _discord_mod  # noqa: E402 — mock or real, used below
 
 
+class _FakeDiscordThread:
+    pass
+
+
+@pytest.fixture(autouse=True)
+def _stub_discord_channel_types(monkeypatch):
+    monkeypatch.setattr(_discord_mod, "Thread", _FakeDiscordThread, raising=False)
+
+
 class _FakeTextChannel:
     """A channel that is NOT a discord.Thread or discord.DMChannel."""
 
@@ -625,7 +634,7 @@ class _FakeTextChannel:
         self.topic = None
 
 
-class _FakeThreadChannel(_discord_mod.Thread):
+class _FakeThreadChannel(_FakeDiscordThread):
     """isinstance(ch, discord.Thread) → True."""
 
     def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):

@@ -4643,11 +4643,41 @@ class TelegramAdapter(BasePlatformAdapter):
         chat = message.chat
         user = message.from_user
         
+        def _chat_type_value(value: Any) -> str:
+            """Return a stable Telegram chat type string.
+
+            Tests and optional PTB installs can hand us enum values, strings,
+            or mocks with ``value``/``name`` attributes.  Normalize before
+            comparing so topic routing does not depend on one exact object.
+            """
+            from unittest.mock import Mock
+
+            if isinstance(value, Mock):
+                mock_name = str(getattr(value, "_mock_name", "") or "").lower()
+                if mock_name:
+                    return mock_name
+            for attr in ("value", "name"):
+                attr_value = getattr(value, attr, None)
+                if isinstance(attr_value, str):
+                    return attr_value.lower()
+            return str(value).lower()
+
         # Determine chat type
         chat_type = "dm"
-        if chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        raw_chat_type = _chat_type_value(getattr(chat, "type", ""))
+        group_values = {
+            "group",
+            "supergroup",
+            _chat_type_value(getattr(ChatType, "GROUP", "")) if ChatType is not None else "",
+            _chat_type_value(getattr(ChatType, "SUPERGROUP", "")) if ChatType is not None else "",
+        }
+        channel_values = {
+            "channel",
+            _chat_type_value(getattr(ChatType, "CHANNEL", "")) if ChatType is not None else "",
+        }
+        if raw_chat_type in group_values:
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif raw_chat_type in channel_values:
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding.

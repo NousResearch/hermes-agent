@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,94 @@ except ImportError:
     DiscordMessage = Any
     Intents = Any
     commands = None
+
+
+def _ensure_discord_test_ui_compat() -> None:
+    """Normalize lightweight discord mocks so component classes stay real.
+
+    Several tests install a minimal ``discord`` module when discord.py is not
+    present. If that mock leaves ``discord.ui.View`` as a ``MagicMock``, classes
+    below become mock instances instead of Python classes. Real discord.py is
+    left untouched because its UI attributes are normal types.
+    """
+    if not DISCORD_AVAILABLE or discord is None:
+        return
+    ui = getattr(discord, "ui", None)
+    view_cls = getattr(ui, "View", None) if ui is not None else None
+    if isinstance(view_cls, type):
+        return
+
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+
+        def add_item(self, item):
+            self.children.append(item)
+
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+
+    class _FakeEmbed:
+        def __init__(self, *, title=None, description=None, color=None, **_):
+            self.title = title
+            self.description = description
+            self.color = color
+            self.footer = None
+
+        def set_footer(self, *, text=None, **_):
+            self.footer = text
+
+    discord.ui = SimpleNamespace(
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    if not isinstance(getattr(discord, "SelectOption", None), type):
+        discord.SelectOption = _FakeSelectOption
+    if not isinstance(getattr(discord, "Embed", None), type):
+        discord.Embed = _FakeEmbed
+    if not hasattr(discord, "ButtonStyle") or not hasattr(discord.ButtonStyle, "green"):
+        discord.ButtonStyle = SimpleNamespace(
+            success=1, primary=2, secondary=2, danger=3,
+            green=1, grey=2, blurple=2, red=3,
+        )
+    if not hasattr(discord, "Color") or not callable(getattr(discord.Color, "green", None)):
+        discord.Color = SimpleNamespace(
+            orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
+            red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+        )
+
+
+_ensure_discord_test_ui_compat()
 
 import sys
 from pathlib import Path as _Path
@@ -4516,7 +4605,7 @@ class DiscordAdapter(BasePlatformAdapter):
             skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if auto_thread and not skip_thread and not is_free_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)

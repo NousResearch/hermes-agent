@@ -77,6 +77,10 @@ def _ensure_discord_mock():
     # by another test's _ensure_discord_mock, force the AllowedMentions
     # stand-in onto it — _build_allowed_mentions() reads this attribute.
     sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
+    platform_mod = sys.modules.get("gateway.platforms.discord")
+    if platform_mod is not None:
+        platform_mod.discord = sys.modules["discord"]
+        platform_mod.DISCORD_AVAILABLE = True
 
 
 _ensure_discord_mock()

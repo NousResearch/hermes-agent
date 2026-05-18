@@ -126,6 +126,24 @@ def adapter():
 _SENTINEL = object()
 
 
+class _FakeDMChannel:
+    pass
+
+
+class _FakeThread:
+    def __init__(self):
+        self.id = None
+        self.parent_id = None
+
+
+@pytest.fixture(autouse=True)
+def _stub_discord_channel_types(monkeypatch):
+    import discord
+
+    monkeypatch.setattr(discord, "DMChannel", _FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord, "Thread", _FakeThread, raising=False)
+
+
 def _make_interaction(
     user_id, *, channel_id=12345, guild_id=42, in_dm=False, in_thread=False,
     parent_channel_id=None, user=_SENTINEL,

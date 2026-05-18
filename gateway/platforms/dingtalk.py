@@ -103,6 +103,65 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
+
+class _SDKModelShim:
+    """Small stand-in for Alibaba SDK model objects in dependency-light tests."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _SDKModelsShim:
+    def __getattr__(self, _name: str):
+        return _SDKModelShim
+
+
+class _FallbackChatbotMessage:
+    """Minimal dingtalk-stream ChatbotMessage shape used when SDK is absent."""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]):
+        obj = cls()
+        if not isinstance(data, dict):
+            data = {}
+        field_map = {
+            "message_id": ("message_id", "msgId", "messageId", "openMsgId"),
+            "conversation_id": ("conversation_id", "conversationId", "openConversationId"),
+            "conversation_type": ("conversation_type", "conversationType"),
+            "sender_id": ("sender_id", "senderId"),
+            "sender_staff_id": ("sender_staff_id", "senderStaffId"),
+            "sender_nick": ("sender_nick", "senderNick"),
+            "session_webhook": ("session_webhook", "sessionWebhook"),
+            "session_webhook_expired_time": (
+                "session_webhook_expired_time",
+                "sessionWebhookExpiredTime",
+            ),
+            "is_in_at_list": ("is_in_at_list", "isInAtList"),
+            "msgtype": ("msgtype", "msgType"),
+            "create_at": ("create_at", "createAt"),
+        }
+        for attr, keys in field_map.items():
+            for key in keys:
+                if key in data:
+                    setattr(obj, attr, data[key])
+                    break
+        text = data.get("text")
+        obj.text = text.get("content", "") if isinstance(text, dict) else (text or "")
+        obj.rich_text = data.get("richText") or data.get("rich_text")
+        obj.rich_text_content = data.get("richTextContent") or data.get("rich_text_content")
+        obj.at_users = data.get("atUsers") or data.get("at_users") or []
+        return obj
+
+
+if ChatbotMessage is None:
+    ChatbotMessage = _FallbackChatbotMessage  # type: ignore[assignment]
+if dingtalk_card_models is None:
+    dingtalk_card_models = _SDKModelsShim()  # type: ignore[assignment]
+if dingtalk_robot_models is None:
+    dingtalk_robot_models = _SDKModelsShim()  # type: ignore[assignment]
+if tea_util_models is None:
+    tea_util_models = _SDKModelsShim()  # type: ignore[assignment]
+
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
     "picture": "image",

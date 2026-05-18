@@ -167,6 +167,17 @@ async def test_send_does_not_retry_on_unrelated_errors():
 import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
 
 
+class _FakeForumChannel:
+    pass
+
+
+@pytest.fixture(autouse=True)
+def _stub_discord_channel_types(monkeypatch):
+    monkeypatch.setattr(
+        _discord_mod, "ForumChannel", _FakeForumChannel, raising=False
+    )
+
+
 class TestIsForumParent:
     def test_none_returns_false(self):
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))

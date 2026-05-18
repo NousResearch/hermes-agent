@@ -1,0 +1,3 @@
+name: memory-integration
+version: 0.1.0
+description: Vault memory integration status provider (read-only skeleton).

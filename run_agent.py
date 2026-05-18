@@ -481,6 +481,15 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            run_agent_deps={
+                "logger": logger,
+                "openrouter_prewarm_done": _openrouter_prewarm_done,
+                "hermes_home": _hermes_home,
+                "routermint_headers": _routermint_headers,
+                "qwen_portal_headers": _qwen_portal_headers,
+                "get_tool_definitions": get_tool_definitions,
+                "check_toolset_requirements": check_toolset_requirements,
+            },
         )
 
     def _get_session_db_for_recall(self):
@@ -1080,7 +1089,12 @@ class AIAgent:
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Forwarder — see ``agent.chat_completion_helpers.cleanup_task_resources``."""
         from agent.chat_completion_helpers import cleanup_task_resources
-        return cleanup_task_resources(self, task_id)
+        return cleanup_task_resources(
+            self,
+            task_id,
+            cleanup_vm=cleanup_vm,
+            cleanup_browser=cleanup_browser,
+        )
 
     # ------------------------------------------------------------------
     # Background memory/skill review — prompts live in agent.background_review
@@ -2151,12 +2165,30 @@ class AIAgent:
     def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
         """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
         from agent.system_prompt import build_system_prompt_parts
-        return build_system_prompt_parts(self, system_message=system_message)
+        return build_system_prompt_parts(
+            self,
+            system_message=system_message,
+            load_soul_md=load_soul_md,
+            build_nous_subscription_prompt=build_nous_subscription_prompt,
+            get_toolset_for_tool=get_toolset_for_tool,
+            build_skills_system_prompt=build_skills_system_prompt,
+            build_environment_hints=build_environment_hints,
+            build_context_files_prompt=build_context_files_prompt,
+        )
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
         from agent.system_prompt import build_system_prompt
-        return build_system_prompt(self, system_message=system_message)
+        return build_system_prompt(
+            self,
+            system_message=system_message,
+            load_soul_md=load_soul_md,
+            build_nous_subscription_prompt=build_nous_subscription_prompt,
+            get_toolset_for_tool=get_toolset_for_tool,
+            build_skills_system_prompt=build_skills_system_prompt,
+            build_environment_hints=build_environment_hints,
+            build_context_files_prompt=build_context_files_prompt,
+        )
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:
@@ -2188,7 +2220,12 @@ class AIAgent:
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.sanitize_api_messages``."""
         from agent.agent_runtime_helpers import sanitize_api_messages
-        return sanitize_api_messages(messages)
+        return sanitize_api_messages(
+            messages,
+            valid_api_roles=AIAgent._VALID_API_ROLES,
+            get_tool_call_id_static=AIAgent._get_tool_call_id_static,
+            get_tool_call_name_static=AIAgent._get_tool_call_name_static,
+        )
 
     @staticmethod
     def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
@@ -2250,7 +2287,10 @@ class AIAgent:
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
-        return drop_thinking_only_and_merge_users(messages)
+        return drop_thinking_only_and_merge_users(
+            messages,
+            is_thinking_only_assistant=AIAgent._is_thinking_only_assistant,
+        )
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -2412,7 +2452,13 @@ class AIAgent:
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         """Forwarder — see ``agent.agent_runtime_helpers.create_openai_client``."""
         from agent.agent_runtime_helpers import create_openai_client
-        return create_openai_client(self, client_kwargs, reason=reason, shared=shared)
+        return create_openai_client(
+            self,
+            client_kwargs,
+            reason=reason,
+            shared=shared,
+            openai_client_cls=OpenAI,
+        )
 
     @staticmethod
     def _force_close_tcp_sockets(client: Any) -> int:
@@ -3699,7 +3745,12 @@ class AIAgent:
     ) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.sanitize_tool_call_arguments``."""
         from agent.agent_runtime_helpers import sanitize_tool_call_arguments
-        return sanitize_tool_call_arguments(messages, logger=logger, session_id=session_id)
+        return sanitize_tool_call_arguments(
+            messages,
+            logger=logger,
+            session_id=session_id,
+            corruption_marker=AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER,
+        )
 
     def _should_sanitize_tool_calls(self) -> bool:
         """Determine if tool_calls need sanitization for strict APIs.
@@ -3814,7 +3865,16 @@ class AIAgent:
                      pre_tool_block_checked: bool = False) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
-        return invoke_tool(self, function_name, function_args, effective_task_id, tool_call_id, messages, pre_tool_block_checked)
+        return invoke_tool(
+            self,
+            function_name,
+            function_args,
+            effective_task_id,
+            tool_call_id,
+            messages,
+            pre_tool_block_checked,
+            handle_function_call=handle_function_call,
+        )
 
     @staticmethod
     def _wrap_verbose(label: str, text: str, indent: str = "     ") -> str:
@@ -3844,12 +3904,27 @@ class AIAgent:
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Forwarder — see ``agent.tool_executor.execute_tool_calls_concurrent``."""
         from agent.tool_executor import execute_tool_calls_concurrent
-        return execute_tool_calls_concurrent(self, assistant_message, messages, effective_task_id, api_call_count)
+        return execute_tool_calls_concurrent(
+            self,
+            assistant_message,
+            messages,
+            effective_task_id,
+            api_call_count,
+            set_interrupt=_set_interrupt,
+            handle_function_call=handle_function_call,
+        )
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Forwarder — see ``agent.tool_executor.execute_tool_calls_sequential``."""
         from agent.tool_executor import execute_tool_calls_sequential
-        return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
+        return execute_tool_calls_sequential(
+            self,
+            assistant_message,
+            messages,
+            effective_task_id,
+            api_call_count,
+            handle_function_call=handle_function_call,
+        )
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
@@ -3867,7 +3942,18 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        return run_conversation(
+            self,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            set_interrupt=_set_interrupt,
+            handle_function_call=handle_function_call,
+            get_tool_call_name_static=AIAgent._get_tool_call_name_static,
+        )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

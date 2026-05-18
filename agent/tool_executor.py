@@ -5,9 +5,8 @@ Both AIAgent methods (``_execute_tool_calls_sequential`` and
 functions that take the parent ``AIAgent`` as their first argument.
 
 ``run_agent`` keeps thin wrappers so existing call sites work; tests
-that patch ``run_agent._set_interrupt`` are honored because the
-extracted functions reach back through the ``run_agent`` module via
-``_ra()`` for that symbol.
+that patch ``run_agent._set_interrupt`` / ``run_agent.handle_function_call``
+are honored because ``run_agent.AIAgent`` passes those callables explicitly.
 """
 
 from __future__ import annotations
@@ -55,13 +54,17 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_WORKERS = 8
 
 
-def _ra():
-    """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
-    import run_agent
-    return run_agent
 
-
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+def execute_tool_calls_concurrent(
+    agent,
+    assistant_message,
+    messages: list,
+    effective_task_id: str,
+    api_call_count: int = 0,
+    *,
+    set_interrupt: callable,
+    handle_function_call: callable,
+) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
     Results are collected in the original tool-call order and appended to
@@ -208,7 +211,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # the tool returns True on the next poll.
         if agent._interrupt_requested:
             try:
-                _ra()._set_interrupt(True, _worker_tid)
+                set_interrupt(True, _worker_tid)
             except Exception:
                 pass
         # Set the activity callback on THIS worker thread so
@@ -258,7 +261,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.discard(_worker_tid)
         try:
-            _ra()._set_interrupt(False, _worker_tid)
+            set_interrupt(False, _worker_tid)
         except Exception:
             pass
         # Clear thread-local callbacks so a recycled worker thread
@@ -471,7 +474,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
+def execute_tool_calls_sequential(
+    agent,
+    assistant_message,
+    messages: list,
+    effective_task_id: str,
+    api_call_count: int = 0,
+    *,
+    handle_function_call: callable,
+) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
@@ -751,7 +762,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
+                function_result = handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
@@ -771,7 +782,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
+                function_result = handle_function_call(
                     function_name, function_args, effective_task_id,
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",

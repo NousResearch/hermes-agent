@@ -44,14 +44,64 @@ from agent.trajectory import convert_scratchpad_to_think
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("run_agent")
 
 
-def _ra():
-    """Lazy ``run_agent`` reference for test-patch routing."""
-    import run_agent
-    return run_agent
 
+_TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
+    "[hermes-agent: tool call arguments were corrupted in this session and "
+    "have been dropped to keep the conversation alive. See issue #15236.]"
+)
+_VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+
+def _get_tool_call_id_static(tc) -> str:
+    if isinstance(tc, dict):
+        return tc.get("call_id", "") or tc.get("id", "") or ""
+    return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+
+
+def _get_tool_call_name_static(tc) -> str:
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return fn.get("name", "") or ""
+        return ""
+    fn = getattr(tc, "function", None)
+    return getattr(fn, "name", "") or ""
+
+
+def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return False
+    if msg.get("tool_calls"):
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            return False
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                if block:
+                    return False
+                continue
+            btype = block.get("type")
+            if btype in {"thinking", "redacted_thinking"}:
+                continue
+            if btype == "text":
+                text = block.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    return False
+                continue
+            return False
+    elif content is not None and content != "":
+        return False
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return True
+    rd = msg.get("reasoning_details")
+    return isinstance(rd, list) and bool(rd)
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -230,6 +280,7 @@ def sanitize_tool_call_arguments(
     *,
     logger=None,
     session_id: str = None,
+    corruption_marker: str = _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER,
 ) -> int:
     """Repair corrupted assistant tool-call argument JSON in-place."""
     log = logger or logging.getLogger(__name__)
@@ -237,7 +288,7 @@ def sanitize_tool_call_arguments(
         return 0
 
     repaired = 0
-    marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    marker = corruption_marker
 
     def _prepend_marker(tool_msg: dict) -> None:
         existing = tool_msg.get("content")
@@ -573,7 +624,7 @@ def recover_with_credential_pool(
         rotate_status = status_code if status_code is not None else 402
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
         if next_entry is not None:
-            _ra().logger.info(
+            logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
                 rotate_status,
                 getattr(next_entry, "id", "?"),
@@ -596,7 +647,7 @@ def recover_with_credential_pool(
         rotate_status = status_code if status_code is not None else 429
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
         if next_entry is not None:
-            _ra().logger.info(
+            logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
                 rotate_status,
                 getattr(next_entry, "id", "?"),
@@ -607,7 +658,7 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.auth:
         if agent._is_entitlement_failure(error_context, status_code):
-            _ra().logger.info(
+            logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "
                 "skipping pool refresh (account lacks subscription, "
                 "not a transient auth failure).",
@@ -617,7 +668,7 @@ def recover_with_credential_pool(
             return False, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
-            _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
+            logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
             agent._swap_credential(refreshed)
             return True, has_retried_429
         # Refresh failed — rotate to next credential instead of giving up.
@@ -625,7 +676,7 @@ def recover_with_credential_pool(
         rotate_status = status_code if status_code is not None else 401
         next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
         if next_entry is not None:
-            _ra().logger.info(
+            logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
                 rotate_status,
                 getattr(next_entry, "id", "?"),
@@ -723,6 +774,8 @@ def try_recover_primary_transport(
 
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
+    *,
+    is_thinking_only_assistant: callable = _is_thinking_only_assistant,
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
@@ -744,7 +797,7 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 1: drop thinking-only assistant turns.
-    kept = [m for m in messages if not _ra().AIAgent._is_thinking_only_assistant(m)]
+    kept = [m for m in messages if not is_thinking_only_assistant(m)]
     dropped = len(messages) - len(kept)
     if dropped == 0:
         return messages
@@ -797,7 +850,7 @@ def drop_thinking_only_and_merge_users(
         else:
             merged.append(m)
 
-    _ra().logger.debug(
+    logger.debug(
         "Pre-call sanitizer: dropped %d thinking-only assistant turn(s), "
         "merged %d adjacent user message(s)",
         dropped,
@@ -1007,7 +1060,7 @@ def dump_api_request_debug(
         try:
             api_key = getattr(agent.client, "api_key", None)
         except Exception as e:
-            _ra().logger.debug("Could not extract API key for debug dump: %s", e)
+            logger.debug("Could not extract API key for debug dump: %s", e)
 
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
@@ -1044,7 +1097,7 @@ def dump_api_request_debug(
                     error_info["response_status"] = getattr(response_obj, "status_code", None)
                     error_info["response_text"] = response_obj.text
                 except Exception as e:
-                    _ra().logger.debug("Could not extract error response details: %s", e)
+                    logger.debug("Could not extract error response details: %s", e)
 
             dump_payload["error"] = error_info
 
@@ -1174,7 +1227,14 @@ def anthropic_prompt_cache_policy(
 
 
 
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+def create_openai_client(
+    agent,
+    client_kwargs: dict,
+    *,
+    reason: str,
+    shared: bool,
+    openai_client_cls: callable,
+) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
@@ -1191,7 +1251,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         from agent.copilot_acp_client import CopilotACPClient
 
         client = CopilotACPClient(**client_kwargs)
-        _ra().logger.info(
+        logger.info(
             "Copilot ACP client created (%s, shared=%s) %s",
             reason,
             shared,
@@ -1207,7 +1267,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
         }
         client = GeminiCloudCodeClient(**safe_kwargs)
-        _ra().logger.info(
+        logger.info(
             "Gemini Cloud Code Assist client created (%s, shared=%s) %s",
             reason,
             shared,
@@ -1228,7 +1288,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
             client = GeminiNativeClient(**safe_kwargs)
-            _ra().logger.info(
+            logger.info(
                 "Gemini native client created (%s, shared=%s) %s",
                 reason,
                 shared,
@@ -1258,8 +1318,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs["http_client"] = keepalive_http
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
-    client = _ra().OpenAI(**client_kwargs)
-    _ra().logger.info(
+    client = openai_client_cls(**client_kwargs)
+    logger.info(
         "OpenAI client created (%s, shared=%s) %s",
         reason,
         shared,
@@ -1470,9 +1530,17 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
 
 
-def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
-                 pre_tool_block_checked: bool = False) -> str:
+def invoke_tool(
+    agent,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+    tool_call_id: Optional[str] = None,
+    messages: list = None,
+    pre_tool_block_checked: bool = False,
+    *,
+    handle_function_call: callable,
+) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -1553,7 +1621,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
     else:
-        return _ra().handle_function_call(
+        return handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
@@ -1637,7 +1705,13 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
-def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sanitize_api_messages(
+    messages: List[Dict[str, Any]],
+    *,
+    valid_api_roles: frozenset[str] = _VALID_API_ROLES,
+    get_tool_call_id_static: callable = _get_tool_call_id_static,
+    get_tool_call_name_static: callable = _get_tool_call_name_static,
+) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
     Runs unconditionally — not gated on whether the context compressor
@@ -1648,8 +1722,8 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     filtered = []
     for msg in messages:
         role = msg.get("role")
-        if role not in _ra().AIAgent._VALID_API_ROLES:
-            _ra().logger.debug(
+        if role not in valid_api_roles:
+            logger.debug(
                 "Pre-call sanitizer: dropping message with invalid role %r",
                 role,
             )
@@ -1661,7 +1735,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     for msg in messages:
         if msg.get("role") == "assistant":
             for tc in msg.get("tool_calls") or []:
-                cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                cid = get_tool_call_id_static(tc)
                 if cid:
                     surviving_call_ids.add(cid)
 
@@ -1679,7 +1753,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             m for m in messages
             if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
         ]
-        _ra().logger.debug(
+        logger.debug(
             "Pre-call sanitizer: removed %d orphaned tool result(s)",
             len(orphaned_results),
         )
@@ -1692,16 +1766,16 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             patched.append(msg)
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
-                    cid = _ra().AIAgent._get_tool_call_id_static(tc)
+                    cid = get_tool_call_id_static(tc)
                     if cid in missing_results:
                         patched.append({
                             "role": "tool",
-                            "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                            "name": get_tool_call_name_static(tc),
                             "content": "[Result unavailable — see context summary above]",
                             "tool_call_id": cid,
                         })
         messages = patched
-        _ra().logger.debug(
+        logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
@@ -1915,14 +1989,14 @@ def cleanup_dead_connections(agent) -> bool:
                 except OSError:
                     pass
         if dead_count > 0:
-            _ra().logger.warning(
+            logger.warning(
                 "Found %d dead connection(s) in client pool — rebuilding client",
                 dead_count,
             )
             agent._replace_primary_openai_client(reason="dead_connection_cleanup")
             return True
     except Exception as exc:
-        _ra().logger.debug("Dead connection check error: %s", exc)
+        logger.debug("Dead connection check error: %s", exc)
     return False
 
 
@@ -2050,7 +2124,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
-    _ra().logger.info(
+    logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
@@ -2113,7 +2187,7 @@ def force_close_tcp_sockets(client: Any) -> int:
                 pass
             closed += 1
     except Exception as exc:
-        _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)
+        logger.debug("Force-close TCP sockets sweep error: %s", exc)
     return closed
 
 

@@ -62,14 +62,6 @@ from utils import base_url_host_matches
 logger = logging.getLogger("run_agent")
 
 
-def _ra():
-    """Lazy reference to ``run_agent`` so callers can patch
-    ``run_agent.OpenAI`` / ``run_agent.cleanup_vm`` / ... and have those
-    patches reach this code path.
-    """
-    import run_agent
-    return run_agent
-
 
 def init_agent(
     agent,
@@ -137,6 +129,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    run_agent_deps: Dict[str, Any] | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -187,6 +180,29 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+
+    deps = run_agent_deps or {}
+    run_agent_logger = deps.get("logger", logger)
+    openrouter_prewarm_done = deps.get("openrouter_prewarm_done")
+    hermes_home = deps.get("hermes_home")
+    routermint_headers = deps.get("routermint_headers")
+    qwen_portal_headers = deps.get("qwen_portal_headers")
+    get_tool_definitions_dep = deps.get("get_tool_definitions")
+    check_toolset_requirements_dep = deps.get("check_toolset_requirements")
+    missing_deps = [
+        name
+        for name, value in {
+            "openrouter_prewarm_done": openrouter_prewarm_done,
+            "hermes_home": hermes_home,
+            "routermint_headers": routermint_headers,
+            "qwen_portal_headers": qwen_portal_headers,
+            "get_tool_definitions": get_tool_definitions_dep,
+            "check_toolset_requirements": check_toolset_requirements_dep,
+        }.items()
+        if value is None
+    ]
+    if missing_deps:
+        raise TypeError(f"init_agent missing run_agent_deps: {', '.join(missing_deps)}")
 
     agent.model = model
     agent.max_iterations = max_iterations
@@ -316,8 +332,8 @@ def init_agent(
     # each message leaks one OS thread and the process eventually exhausts
     # the system thread limit (RuntimeError: can't start new thread).
     if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
-            not _ra()._openrouter_prewarm_done.is_set():
-        _ra()._openrouter_prewarm_done.set()
+            not openrouter_prewarm_done.is_set():
+        openrouter_prewarm_done.set()
         threading.Thread(
             target=fetch_model_metadata,
             daemon=True,
@@ -451,11 +467,11 @@ def init_agent(
     # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
     # (which creates a new AIAgent per message) won't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    setup_logging(hermes_home=hermes_home)
 
     if agent.verbose_logging:
         setup_verbose_logging()
-        _ra().logger.info("Verbose logging enabled (third-party library logs suppressed)")
+        run_agent_logger.info("Verbose logging enabled (third-party library logs suppressed)")
     elif agent.quiet_mode:
         # In quiet mode (CLI default), keep console output clean —
         # but DO NOT raise per-logger levels. Doing so prevents the
@@ -630,7 +646,7 @@ def init_agent(
                 from agent.auxiliary_client import build_nvidia_nim_headers
                 client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
             elif base_url_host_matches(effective_base, "api.routermint.com"):
-                client_kwargs["default_headers"] = _ra()._routermint_headers()
+                client_kwargs["default_headers"] = routermint_headers()
             elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
@@ -640,7 +656,7 @@ def init_agent(
                     "User-Agent": "claude-code/0.1.0",
                 }
             elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-                client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
+                client_kwargs["default_headers"] = qwen_portal_headers()
             elif base_url_host_matches(effective_base, "chatgpt.com"):
                 from agent.auxiliary_client import _codex_cloudflare_headers
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
@@ -815,7 +831,7 @@ def init_agent(
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
-    agent.tools = _ra().get_tool_definitions(
+    agent.tools = get_tool_definitions_dep(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
@@ -839,7 +855,7 @@ def init_agent(
     
     # Check tool requirements
     if agent.tools and not agent.quiet_mode:
-        requirements = _ra().check_toolset_requirements()
+        requirements = check_toolset_requirements_dep()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
             print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
@@ -938,7 +954,7 @@ def init_agent(
             )
         )
     except Exception as _tlg_err:
-        _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+        run_agent_logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
@@ -1024,18 +1040,18 @@ def init_agent(
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    run_agent_logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    run_agent_logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None
         except Exception as _mpe:
-            _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+            run_agent_logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
     # Inject memory provider tool schemas into the tool surface.
     # Skip tools whose names already exist (plugins may register the
     # same tools via ctx.register_tool(), which lands in agent.tools
-    # through _ra().get_tool_definitions()).  Duplicate function names cause
+    # through get_tool_definitions_dep()).  Duplicate function names cause
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
     if agent._memory_manager and agent.tools is not None:
@@ -1138,7 +1154,7 @@ def init_agent(
                     raise ValueError
                 agent.max_tokens = _parsed_max_tokens
             except (TypeError, ValueError):
-                _ra().logger.warning(
+                run_agent_logger.warning(
                     "Invalid model.max_tokens in config.yaml: %r — "
                     "must be a positive integer (e.g. 4096). "
                     "Falling back to provider default.",
@@ -1161,7 +1177,7 @@ def init_agent(
         try:
             _config_context_length = int(_config_context_length)
         except (TypeError, ValueError):
-            _ra().logger.warning(
+            run_agent_logger.warning(
                 "Invalid model.context_length in config.yaml: %r — "
                 "must be a plain integer (e.g. 256000, not '256K'). "
                 "Falling back to auto-detection.",
@@ -1223,7 +1239,7 @@ def init_agent(
                                     if _parsed <= 0:
                                         raise ValueError
                                 except (TypeError, ValueError):
-                                    _ra().logger.warning(
+                                    run_agent_logger.warning(
                                         "Invalid context_length for model %r in "
                                         "custom_providers: %r — must be a positive "
                                         "integer (e.g. 256000, not '256K'). "
@@ -1265,7 +1281,7 @@ def init_agent(
             from plugins.context_engine import load_context_engine
             _selected_engine = load_context_engine(_engine_name)
         except Exception as _ce_load_err:
-            _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
+            run_agent_logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
 
         # Try general plugin system as fallback
         if _selected_engine is None:
@@ -1278,7 +1294,7 @@ def init_agent(
                 pass
 
         if _selected_engine is None:
-            _ra().logger.warning(
+            run_agent_logger.warning(
                 "Context engine '%s' not found — falling back to built-in compressor",
                 _engine_name,
             )
@@ -1304,7 +1320,7 @@ def init_agent(
             provider=agent.provider,
         )
         if not agent.quiet_mode:
-            _ra().logger.info("Using context engine: %s", _selected_engine.name)
+            run_agent_logger.info("Using context engine: %s", _selected_engine.name)
     else:
         agent.context_compressor = ContextCompressor(
             model=agent.model,
@@ -1336,7 +1352,7 @@ def init_agent(
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
-    # Skip names that are already present — the _ra().get_tool_definitions()
+    # Skip names that are already present — the get_tool_definitions_dep()
     # quiet_mode cache returned a shared list pre-#17335, so a stray
     # mutation here would poison subsequent agent inits in the same
     # Gateway process and trip provider-side 'duplicate tool name'
@@ -1372,7 +1388,7 @@ def init_agent(
                 context_length=getattr(agent.context_compressor, "context_length", 0),
             )
         except Exception as _ce_err:
-            _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
+            run_agent_logger.debug("Context engine on_session_start: %s", _ce_err)
 
     agent._subdirectory_hints = SubdirectoryHintTracker(
         working_dir=os.getenv("TERMINAL_CWD") or None,
@@ -1408,7 +1424,7 @@ def init_agent(
         try:
             agent._ollama_num_ctx = int(_ollama_num_ctx_override)
         except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
+            run_agent_logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # ``agent.api_key`` may be a callable (Entra token provider).
@@ -1420,7 +1436,7 @@ def init_agent(
             if _detected and _detected > 0:
                 agent._ollama_num_ctx = _detected
         except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
+            run_agent_logger.debug("Ollama num_ctx detection failed: %s", exc)
     # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
     # Without this, GGUF metadata can advertise 256K+ which Ollama honours
     # by allocating that much VRAM — blowing up small GPUs even though the
@@ -1431,13 +1447,13 @@ def init_agent(
         and _ollama_num_ctx_override is None  # don't override explicit ollama_num_ctx
         and agent._ollama_num_ctx > _config_context_length
     ):
-        _ra().logger.info(
+        run_agent_logger.info(
             "Ollama num_ctx capped: %d -> %d (model.context_length override)",
             agent._ollama_num_ctx, _config_context_length,
         )
         agent._ollama_num_ctx = _config_context_length
     if agent._ollama_num_ctx and not agent.quiet_mode:
-        _ra().logger.info(
+        run_agent_logger.info(
             "Ollama num_ctx: will request %d tokens (model max from /api/show)",
             agent._ollama_num_ctx,
         )

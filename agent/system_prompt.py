@@ -42,22 +42,18 @@ from agent.prompt_builder import (
 )
 
 
-def _ra():
-    """Lazy reference to the ``run_agent`` module.
 
-    Helpers like ``load_soul_md``, ``build_environment_hints``,
-    ``build_context_files_prompt``, ``build_nous_subscription_prompt``,
-    ``build_skills_system_prompt`` and ``get_toolset_for_tool`` are
-    imported into ``run_agent``'s namespace.  Many tests
-    ``patch("run_agent.load_soul_md", ...)``; if we imported them
-    directly here those patches would not reach us.  Looking them up
-    through ``run_agent`` on every call preserves the patch contract.
-    """
-    import run_agent
-    return run_agent
-
-
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+def build_system_prompt_parts(
+    agent: Any,
+    system_message: Optional[str] = None,
+    *,
+    load_soul_md: callable,
+    build_nous_subscription_prompt: callable,
+    get_toolset_for_tool: callable,
+    build_skills_system_prompt: callable,
+    build_environment_hints: callable,
+    build_context_files_prompt: callable,
+) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
     Returns a dict with three keys:
@@ -75,11 +71,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     session — that's the only way to keep upstream prompt caches
     warm across turns.
     """
-    # Local import to avoid pulling model_tools at module load.  Tests
-    # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
-    # we resolve through ``_ra()`` to honor those patches.
-    _r = _ra()
-
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -88,7 +79,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md()
+        _soul_content = load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -123,7 +114,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
 
-    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+    nous_subscription_prompt = build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
@@ -167,11 +158,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         avail_toolsets = {
             toolset
             for toolset in (
-                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+                get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
             )
             if toolset
         }
-        skills_prompt = _r.build_skills_system_prompt(
+        skills_prompt = build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
         )
@@ -197,7 +188,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
-    _env_hints = _r.build_environment_hints()
+    _env_hints = build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
 
@@ -228,7 +219,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # dir, so os.getcwd() would pick up the repo's AGENTS.md and
         # other dev files — inflating token usage by ~10k for no benefit.
         _context_cwd = os.getenv("TERMINAL_CWD") or None
-        context_files_prompt = _r.build_context_files_prompt(
+        context_files_prompt = build_context_files_prompt(
             cwd=_context_cwd, skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
@@ -280,7 +271,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     }
 
 
-def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
+def build_system_prompt(
+    agent: Any,
+    system_message: Optional[str] = None,
+    **prompt_deps: Any,
+) -> str:
     """Assemble the full system prompt from all layers.
 
     Called once per session (cached on ``agent._cached_system_prompt``) and
@@ -295,7 +290,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
     """
-    parts = build_system_prompt_parts(agent, system_message=system_message)
+    parts = build_system_prompt_parts(agent, system_message=system_message, **prompt_deps)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
 

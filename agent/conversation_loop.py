@@ -7,11 +7,12 @@ compression, post-turn hooks, background memory/skill review nudges).
 
 The function takes the parent ``AIAgent`` instance as its first
 argument (``agent``) and accesses its state via attribute lookup.
-``_ra().AIAgent.run_conversation`` is now a thin forwarder.
+``run_agent.AIAgent.run_conversation`` is now a thin forwarder.
 
 Symbols that production code or tests patch on ``run_agent`` directly
-(``handle_function_call``, ``_set_interrupt``, ``OpenAI``, ...) are
-resolved through :func:`_ra` so those patches keep working.
+(``handle_function_call``, ``_set_interrupt``, static tool-call helpers) are
+passed in explicitly by ``run_agent.AIAgent.run_conversation`` so those
+patches keep working without a lazy import back-edge.
 """
 
 from __future__ import annotations
@@ -72,14 +73,6 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
-
-def _ra():
-    """Lazy reference to ``run_agent`` so callers can patch
-    ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
-    ``run_agent.OpenAI`` and have those patches reach this code path.
-    """
-    import run_agent
-    return run_agent
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -192,6 +185,10 @@ def run_conversation(
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[str] = None,
+    *,
+    set_interrupt: callable,
+    handle_function_call: callable,
+    get_tool_call_name_static: callable,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -550,9 +547,9 @@ def run_conversation(
     # Always clear stale per-thread state from a previous turn. If an
     # interrupt arrived before startup finished, preserve it and bind it
     # to this execution thread now instead of dropping it on the floor.
-    _ra()._set_interrupt(False, agent._execution_thread_id)
+    set_interrupt(False, agent._execution_thread_id)
     if agent._interrupt_requested:
-        _ra()._set_interrupt(True, agent._execution_thread_id)
+        set_interrupt(True, agent._execution_thread_id)
         agent._interrupt_thread_signal_pending = False
     else:
         agent._interrupt_message = None
@@ -3777,7 +3774,7 @@ def run_conversation(
                         if tc["id"] not in answered_ids:
                             err_msg = {
                                 "role": "tool",
-                                "name": _ra().AIAgent._get_tool_call_name_static(tc),
+                                "name": get_tool_call_name_static(tc),
                                 "tool_call_id": tc["id"],
                                 "content": f"Error executing tool: {error_msg}",
                             }
@@ -3826,7 +3823,7 @@ def run_conversation(
         _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
-                _ra().handle_function_call(
+                handle_function_call(
                     "kanban_block",
                     {
                         "task_id": _kanban_task,

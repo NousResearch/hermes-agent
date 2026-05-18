@@ -9,8 +9,8 @@ Each function takes the parent ``AIAgent`` as its first argument
 (``agent``).  :class:`AIAgent` keeps thin forwarder methods so call
 sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 ``cleanup_vm`` / ``cleanup_browser`` in
-``test_zombie_process_cleanup.py``) are resolved through
-:func:`_ra` so the patch contract is preserved.
+``test_zombie_process_cleanup.py``) are passed in explicitly by
+``run_agent.AIAgent`` so the patch contract is preserved.
 """
 
 from __future__ import annotations
@@ -63,16 +63,6 @@ from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
-
-def _ra():
-    """Lazy ``run_agent`` reference.
-
-    Used to honor test patches like
-    ``patch("run_agent.cleanup_vm")`` / ``patch("run_agent.cleanup_browser")``
-    that target symbols imported into ``run_agent``'s namespace.
-    """
-    import run_agent
-    return run_agent
 
 
 
@@ -1118,7 +1108,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 
-def cleanup_task_resources(agent, task_id: str) -> None:
+def cleanup_task_resources(
+    agent,
+    task_id: str,
+    *,
+    cleanup_vm: callable,
+    cleanup_browser: callable,
+) -> None:
     """Clean up VM and browser resources for a given task.
 
     Skips ``cleanup_vm`` when the active terminal environment is marked
@@ -1137,12 +1133,12 @@ def cleanup_task_resources(agent, task_id: str) -> None:
                     f"idle reaper will handle it."
                 )
         else:
-            _ra().cleanup_vm(task_id)
+            cleanup_vm(task_id)
     except Exception as e:
         if agent.verbose_logging:
             logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
     try:
-        _ra().cleanup_browser(task_id)
+        cleanup_browser(task_id)
     except Exception as e:
         if agent.verbose_logging:
             logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")

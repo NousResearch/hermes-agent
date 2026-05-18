@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -206,6 +207,8 @@ class MemoryStore:
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
+        path = self._path_for(target)
+        self._backup_pre_write(path)
         layout = self._file_layouts[target]
         content = self._render_file_content(
             self._entries_for(target),
@@ -213,7 +216,7 @@ class MemoryStore:
             suffix=layout["suffix"],
             wrapped=layout["wrapped"],
         )
-        self._write_raw_file(self._path_for(target), content)
+        self._write_raw_file(path, content)
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -325,6 +328,11 @@ class MemoryStore:
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
+            # Check for dramatic shrinkage that suggests data loss
+            shrinkage_err = self._check_shrinkage(target, test_entries)
+            if shrinkage_err:
+                return {"success": False, "error": shrinkage_err}
+
             if new_total > limit:
                 return {
                     "success": False,
@@ -369,6 +377,12 @@ class MemoryStore:
 
             idx = matches[0][0]
             entries.pop(idx)
+
+            # Check for dramatic shrinkage that suggests data loss
+            shrinkage_err = self._check_shrinkage(target, entries)
+            if shrinkage_err:
+                return {"success": False, "error": shrinkage_err}
+
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -532,6 +546,62 @@ class MemoryStore:
                 raise
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
+
+    @staticmethod
+    def _backup_pre_write(path: Path):
+        """Save a pre-write snapshot before overwriting.
+
+        Creates ``<file>.bak.pre.<timestamp>`` so recovery is possible even
+        after a destructive write. This is purely defensive — the marker-based
+        merge-on-write logic should prevent data loss in the first place.
+        """
+        if not path.exists():
+            return
+        try:
+            bak_path = path.with_suffix(
+                path.suffix + ".bak.pre." + str(int(time.time()))
+            )
+            bak_path.write_bytes(path.read_bytes())
+        except Exception as exc:
+            logger.warning("Failed to create pre-write backup of %s: %s", path.name, exc)
+
+    def _check_shrinkage(self, target: str, new_entries: List[str]) -> Optional[str]:
+        """Refuse writes that would shrink the file by more than 75%.
+
+        A dramatic size reduction usually means the memory tool's view of the
+        file does not reflect all content on disk — external entries from
+        patch/shell were merged into a single entry that got replaced, or the
+        marker-based merge missed something.
+
+        Skips files under 2 KB — small files are unlikely to contain important
+        external content that the tool doesn't know about.
+        """
+        path = self._path_for(target)
+        if not path.exists():
+            return None
+        try:
+            current_size = path.stat().st_size
+        except OSError:
+            return None
+
+        if current_size < 2048:
+            return None
+
+        new_content = ENTRY_DELIMITER.join(new_entries) if new_entries else ""
+        new_size = len(new_content.encode("utf-8"))
+
+        if new_size < current_size * 0.25:
+            bak_hint = (
+                " Pre-write backups are saved as .bak.pre.* files "
+                "in the same directory for recovery."
+            )
+            return (
+                f"This change would shrink {path.name} from {current_size:,} to "
+                f"{new_size:,} bytes ({(1 - new_size/current_size)*100:.0f}% "
+                f"reduction). This likely means external-written entries would "
+                f"be lost. Refusing to proceed.{bak_hint}"
+            )
+        return None
 
 
 def memory_tool(

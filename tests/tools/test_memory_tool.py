@@ -244,7 +244,7 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry", encoding="utf-8")
 
         store = MemoryStore()
         store.load_from_disk()
@@ -286,6 +286,61 @@ class TestMemoryStorePersistence:
         reloaded.load_from_disk()
         assert reloaded.memory_entries == []
         assert "## Vendor Master" in mem_file.read_text(encoding="utf-8")
+
+
+class TestMemoryStoreShrinkageGuardrail:
+    def test_replace_refuses_dramatic_size_reduction(self, tmp_path, monkeypatch):
+        """replace() that would shrink file by >75% is refused."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=10000, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", "A" * 4000)
+
+        result = store.replace("memory", "AAA", "short")
+        assert result["success"] is False
+        assert "shrink" in result["error"].lower()
+
+    def test_remove_refuses_dramatic_size_reduction(self, tmp_path, monkeypatch):
+        """remove() that would shrink file by >75% is refused."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=10000, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", "X" * 4000)
+
+        result = store.remove("memory", "XXX")
+        assert result["success"] is False
+        assert "shrink" in result["error"].lower()
+
+    def test_shrinkage_guardrail_skipped_for_small_file(self, tmp_path, monkeypatch):
+        """Files under 2 KB bypass the shrinkage check (too small to matter)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", "small entry")
+
+        # Replace everything with something short — should succeed because
+        # the file is tiny (< 2 KB).
+        result = store.replace("memory", "small", "ok")
+        assert result["success"] is True
+
+
+class TestMemoryStoreBackup:
+    def test_backup_pre_write_created_on_save(self, tmp_path, monkeypatch):
+        """save_to_disk() creates a .bak.pre.* file before overwriting."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        store.add("memory", "entry before backup")
+
+        mem_file = tmp_path / "MEMORY.md"
+        original_content = mem_file.read_text(encoding="utf-8")
+
+        store.add("memory", "another entry")
+
+        # Should have created a backup file
+        bak_files = list(tmp_path.glob("MEMORY.md.bak.pre.*"))
+        assert len(bak_files) == 1
+        assert bak_files[0].read_bytes() == original_content.encode("utf-8")
 
 
 class TestMemoryStoreSnapshot:

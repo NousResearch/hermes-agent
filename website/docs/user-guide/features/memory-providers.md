@@ -40,6 +40,29 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 
 ## Available Providers
 
+### Memori
+
+Structured long-term memory using Memori Cloud, with background completed-turn capture, Hermes-processed tool trace, and explicit recall tools for facts, summaries, quota, signup, and feedback.
+
+| | |
+|---|---|
+| **Best for** | Agent-controlled recall with structured project and session attribution |
+| **Requires** | `pip install hermes-memori` + `hermes-memori install` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Data storage** | Memori Cloud |
+| **Cost** | Memori pricing |
+
+**Tools:** `memori_recall` (search long-term memory), `memori_recall_summary` (summarized context), `memori_quota` (usage/quota), `memori_signup` (request signup email), `memori_feedback` (send integration feedback)
+
+**Setup:**
+```bash
+pip install hermes-memori
+hermes-memori install
+hermes config set memory.provider memori
+hermes memory setup
+```
+
+Memori is distributed as a standalone provider rather than an in-tree Hermes provider. It uses the same memory provider lifecycle and can receive completed-turn tool trace metadata when available. That trace can include tool arguments and final tool result content, so enable Memori only for workspaces where sending those outputs to Memori Cloud is acceptable.
+
 ### Honcho
 
 AI-native cross-session user modeling with dialectic reasoning, session-scoped context injection, semantic search, and persistent conclusions. Base context now includes the session summary alongside user representation and peer cards, giving the agent awareness of what has already been discussed.
@@ -526,6 +549,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Agent trace memory + structured recall |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |

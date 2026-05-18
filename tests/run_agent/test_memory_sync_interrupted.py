@@ -35,6 +35,7 @@ def _bare_agent():
     # providers that cache per-session state can update it mid-process
     # (see #6672).
     agent.session_id = "test_session_001"
+    agent._turn_tool_trace = []
     return agent
 
 
@@ -90,6 +91,117 @@ class TestSyncExternalMemoryForTurn:
             "What's the weather in Paris?",
             session_id="test_session_001",
         )
+
+    def test_completed_turn_syncs_tool_trace_when_present(self):
+        agent = _bare_agent()
+        agent._record_turn_tool_trace(
+            tool_call_id="call-1",
+            name="terminal",
+            arguments={"command": "pytest"},
+            result_content="pre-budget output",
+            duration=1.25,
+            is_error=False,
+        )
+        messages = [
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "call-1",
+                "content": "final Hermes-processed output",
+            }
+        ]
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="run tests",
+            final_response="tests passed",
+            interrupted=False,
+            messages=messages,
+        )
+
+        trace = {
+            "version": 1,
+            "capture_policy": "full_raw_after_hermes_processing",
+            "tool_calls": [
+                {
+                    "order": 1,
+                    "tool_call_id": "call-1",
+                    "name": "terminal",
+                    "arguments": {"command": "pytest"},
+                    "result_content": "final Hermes-processed output",
+                    "duration_seconds": 1.25,
+                    "is_error": False,
+                    "blocked": False,
+                    "cancelled": False,
+                }
+            ],
+        }
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "run tests",
+            "tests passed",
+            session_id="test_session_001",
+            trace=trace,
+        )
+
+    def test_tool_trace_preserves_recorded_order(self):
+        agent = _bare_agent()
+        agent._record_turn_tool_trace(
+            tool_call_id="call-a",
+            name="read_file",
+            arguments={"path": "a.py"},
+            result_content="old-a",
+            duration=0.1,
+            is_error=False,
+        )
+        agent._record_turn_tool_trace(
+            tool_call_id="call-b",
+            name="read_file",
+            arguments={"path": "b.py"},
+            result_content="old-b",
+            duration=0.2,
+            is_error=False,
+        )
+
+        trace = agent._build_external_memory_trace([
+            {"role": "tool", "tool_call_id": "call-a", "content": "final-a"},
+            {"role": "tool", "tool_call_id": "call-b", "content": "final-b"},
+        ])
+
+        assert [item["tool_call_id"] for item in trace["tool_calls"]] == [
+            "call-a",
+            "call-b",
+        ]
+        assert [item["result_content"] for item in trace["tool_calls"]] == [
+            "final-a",
+            "final-b",
+        ]
+
+    def test_tool_trace_records_blocked_and_cancelled_status(self):
+        agent = _bare_agent()
+        agent._record_turn_tool_trace(
+            tool_call_id="call-blocked",
+            name="terminal",
+            arguments={"command": "rm -rf /"},
+            result_content="blocked",
+            duration=0,
+            is_error=True,
+            blocked=True,
+        )
+        agent._record_turn_tool_trace(
+            tool_call_id="call-cancelled",
+            name="read_file",
+            arguments={"path": "slow.txt"},
+            result_content="cancelled",
+            duration=0,
+            is_error=True,
+            cancelled=True,
+        )
+
+        trace = agent._build_external_memory_trace([])
+
+        assert trace["tool_calls"][0]["blocked"] is True
+        assert trace["tool_calls"][0]["cancelled"] is False
+        assert trace["tool_calls"][1]["blocked"] is False
+        assert trace["tool_calls"][1]["cancelled"] is True
 
     # --- Edge cases (pre-existing behaviour preserved) ------------------
 

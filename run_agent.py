@@ -1952,6 +1952,7 @@ class AIAgent:
         original_user_message: Any,
         final_response: Any,
         interrupted: bool,
+        messages: list | None = None,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 
@@ -1984,16 +1985,83 @@ class AIAgent:
         if not (self._memory_manager and final_response and original_user_message):
             return
         try:
-            self._memory_manager.sync_all(
-                original_user_message, final_response,
-                session_id=self.session_id or "",
-            )
+            trace = self._build_external_memory_trace(messages or [])
+            if trace is not None:
+                self._memory_manager.sync_all(
+                    original_user_message,
+                    final_response,
+                    session_id=self.session_id or "",
+                    trace=trace,
+                )
+            else:
+                self._memory_manager.sync_all(
+                    original_user_message,
+                    final_response,
+                    session_id=self.session_id or "",
+                )
             self._memory_manager.queue_prefetch_all(
                 original_user_message,
                 session_id=self.session_id or "",
             )
         except Exception:
             pass
+
+    def _record_turn_tool_trace(
+        self,
+        *,
+        tool_call_id: str,
+        name: str,
+        arguments: dict,
+        result_content: str,
+        duration: float,
+        is_error: bool,
+        blocked: bool = False,
+        cancelled: bool = False,
+    ) -> None:
+        """Record a tool observation for completed-turn memory providers."""
+        try:
+            self._turn_tool_trace.append(
+                {
+                    "order": len(self._turn_tool_trace) + 1,
+                    "tool_call_id": str(tool_call_id or ""),
+                    "name": str(name or ""),
+                    "arguments": copy.deepcopy(arguments or {}),
+                    "result_content": str(result_content or ""),
+                    "duration_seconds": float(duration or 0.0),
+                    "is_error": bool(is_error),
+                    "blocked": bool(blocked),
+                    "cancelled": bool(cancelled),
+                }
+            )
+        except Exception:
+            pass
+
+    def _build_external_memory_trace(self, messages: list) -> dict | None:
+        """Build final post-Hermes tool trace for completed-turn sync."""
+        if not self._turn_tool_trace:
+            return None
+
+        final_tool_content: dict[str, str] = {}
+        for msg in messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tool_call_id = str(msg.get("tool_call_id") or "")
+            if tool_call_id:
+                final_tool_content[tool_call_id] = str(msg.get("content") or "")
+
+        tool_calls = []
+        for entry in self._turn_tool_trace:
+            item = copy.deepcopy(entry)
+            tool_call_id = item.get("tool_call_id") or ""
+            if tool_call_id in final_tool_content:
+                item["result_content"] = final_tool_content[tool_call_id]
+            tool_calls.append(item)
+
+        return {
+            "version": 1,
+            "capture_policy": "full_raw_after_hermes_processing",
+            "tool_calls": tool_calls,
+        }
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.

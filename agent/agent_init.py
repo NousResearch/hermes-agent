@@ -343,6 +343,7 @@ def init_agent(
     agent._executing_tools = False
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+    agent._turn_tool_trace: list[dict[str, Any]] = []
 
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False

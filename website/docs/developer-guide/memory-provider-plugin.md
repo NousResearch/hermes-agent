@@ -77,7 +77,7 @@ class MyMemoryProvider(MemoryProvider):
 | `system_prompt_block()` | System prompt assembly | Static provider info |
 | `prefetch(query)` | Before each API call | Return recalled context |
 | `queue_prefetch(query)` | After each turn | Pre-warm for next turn |
-| `sync_turn(user, assistant)` | After each completed turn | Persist conversation |
+| `sync_turn(user, assistant, trace=None)` | After each completed turn | Persist conversation and optional execution trace |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
@@ -154,10 +154,10 @@ hooks:
 **`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread:
 
 ```python
-def sync_turn(self, user_content, assistant_content):
+def sync_turn(self, user_content, assistant_content, *, session_id="", trace=None):
     def _sync():
         try:
-            self._api.ingest(user_content, assistant_content)
+            self._api.ingest(user_content, assistant_content, session_id=session_id, trace=trace)
         except Exception as e:
             logger.warning("Sync failed: %s", e)
 
@@ -166,6 +166,12 @@ def sync_turn(self, user_content, assistant_content):
     self._sync_thread = threading.Thread(target=_sync, daemon=True)
     self._sync_thread.start()
 ```
+
+`trace` is optional structured metadata for the completed turn. When present, it contains Hermes-processed tool observations such as tool name, arguments, final result content, duration, and blocked/cancelled status. Providers that do not need tool traces can omit the `trace` parameter; Hermes will continue calling them with the legacy signature.
+
+Cloud providers should document what parts of the trace are sent off-device.
+Tool arguments and final tool results may contain file paths, command output,
+or other workspace data.
 
 ## Profile Isolation
 

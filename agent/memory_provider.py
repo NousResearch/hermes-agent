@@ -111,11 +111,21 @@ class MemoryProvider(ABC):
         that do background prefetching should override this.
         """
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        trace: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Persist a completed turn to the backend.
 
         Called after each turn. Should be non-blocking — queue for
         background processing if the backend has latency.
+
+        ``trace`` is optional structured execution metadata for the
+        completed turn. Providers that do not need tool traces can ignore it.
         """
 
     @abstractmethod

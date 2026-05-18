@@ -314,11 +314,42 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    @staticmethod
+    def _provider_sync_accepts_trace(provider: MemoryProvider) -> bool:
+        """Return whether sync_turn accepts a trace keyword."""
+        try:
+            signature = inspect.signature(provider.sync_turn)
+        except (TypeError, ValueError):
+            return True
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        return "trace" in signature.parameters
+
+    def sync_all(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        trace: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Sync a completed turn to all providers."""
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                if trace is not None and self._provider_sync_accepts_trace(provider):
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        session_id=session_id,
+                        trace=trace,
+                    )
+                else:
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        session_id=session_id,
+                    )
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",

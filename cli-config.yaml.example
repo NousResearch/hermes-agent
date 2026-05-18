@@ -359,6 +359,16 @@ compression:
   # Range: 0.10 - 0.80
   target_ratio: 0.20
 
+  # Optional post-turn compression pressure check (default: disabled).
+  # When enabled, Hermes estimates current context usage after a reply is delivered,
+  # reserves this fraction of the model's total context for likely next-turn growth,
+  # and schedules idle compression if projected usage crosses threshold.
+  # With threshold 0.75 and next_turn_reserve_ratio 0.20, proactive compression
+  # can run around 55% context usage, leaving the normal preflight check as fallback.
+  proactive:
+    enabled: false
+    next_turn_reserve_ratio: 0.20
+
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.

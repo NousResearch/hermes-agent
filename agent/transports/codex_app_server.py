@@ -49,6 +49,96 @@ class _Pending:
     sent_at: float = field(default_factory=time.time)
 
 
+# ---------------------------------------------------------------------------
+# Kanban writable-roots resolution (issue #27941)
+# ---------------------------------------------------------------------------
+
+# Env vars the Kanban dispatcher (``hermes_cli/kanban_db.py::_default_spawn``)
+# exports into every worker child.  Each one, when set to a non-empty value,
+# names a path the worker is legitimately expected to write to and therefore
+# must be included in the Codex sandbox's writable-roots list.
+#
+# Order matters for de-dup readability only -- the resulting list is
+# de-duplicated while preserving first occurrence, so a path that's both
+# the DB dir and the workspaces root only appears once.
+_KANBAN_ROOT_ENV_VARS: tuple[str, ...] = (
+    # Dispatcher-pinned roots first (broadest scope, most likely to be
+    # the cross-mount path that triggered #27941).
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+    # Per-task workspace -- only this task's scratch dir, narrower.
+    "HERMES_KANBAN_WORKSPACE",
+    # Legacy explicit override.
+    "HERMES_KANBAN_ROOT",
+)
+
+
+def _build_kanban_writable_roots(spawn_env: dict[str, str]) -> list[str]:
+    """Return the deduplicated list of writable roots for a Kanban worker.
+
+    Always includes ``dirname(HERMES_KANBAN_DB)`` (or a sensible fallback
+    under ``HERMES_HOME``) so the worker can write back board state.  When
+    the dispatcher pinned a separate workspaces mount or a per-task
+    workspace, those are added too (issue #27941).
+
+    Order is preserved (DB dir first, then dispatcher-pinned roots) and
+    duplicates are removed so a typical setup -- where DB dir and
+    workspaces root happen to coincide -- still yields a single entry.
+    Empty / whitespace-only env values are ignored.
+    """
+    roots: list[str] = []
+
+    def _append(path: Optional[str]) -> None:
+        if not path:
+            return
+        norm = path.strip()
+        if not norm:
+            return
+        if norm in roots:
+            return
+        roots.append(norm)
+
+    kanban_db = spawn_env.get("HERMES_KANBAN_DB")
+    if kanban_db:
+        _append(os.path.dirname(kanban_db))
+    else:
+        # Legacy fallback for installs that don't export HERMES_KANBAN_DB.
+        _append(
+            spawn_env.get(
+                "HERMES_KANBAN_ROOT",
+                os.path.join(
+                    spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+                    "kanban",
+                ),
+            )
+        )
+
+    for env_name in _KANBAN_ROOT_ENV_VARS:
+        _append(spawn_env.get(env_name))
+
+    return roots
+
+
+def _format_toml_path_array(paths: list[str]) -> str:
+    """Render a Python list of paths as a TOML inline array of basic strings.
+
+    Codex CLI parses ``-c`` overrides as TOML.  We can't naively f-string
+    the paths inside ``"..."`` because backslashes (Windows) and embedded
+    quotes would produce invalid TOML.  Escape the small subset of
+    characters the TOML basic-string grammar requires.
+    """
+    parts = []
+    for p in paths:
+        escaped = (
+            p.replace("\\", "\\\\")
+             .replace('"', '\\"')
+             .replace("\n", "\\n")
+             .replace("\r", "\\r")
+             .replace("\t", "\\t")
+        )
+        parts.append(f'"{escaped}"')
+    return "[" + ",".join(parts) + "]"
+
+
 class CodexAppServerClient:
     """Minimal JSON-RPC 2.0 client for `codex app-server` over stdio.
 
@@ -83,28 +173,25 @@ class CodexAppServerClient:
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to
         # the board DB, which lives outside the per-task workspace. Keep the
-        # Codex sandbox on, but add the Kanban root as the only extra writable
-        # root. Without this, codex-runtime workers finish their actual work
+        # Codex sandbox on, but add the Kanban root(s) as extra writable
+        # roots. Without this, codex-runtime workers finish their actual work
         # but crash/block when kanban_complete/kanban_block writes SQLite.
+        #
+        # Issue #27941: when ``HERMES_KANBAN_WORKSPACES_ROOT`` (pinned to a
+        # different mount, e.g. ``/media/.../kanban-workspaces/``) or the
+        # per-task ``HERMES_KANBAN_WORKSPACE`` lives outside the DB
+        # directory, artifact writes were silently blocked by the Codex
+        # sandbox with a misleading ``Errno 30 Read-only file system``.
+        # We now include every Kanban-provided root the dispatcher exports
+        # so the sandbox matches what the worker is actually told to use.
         if spawn_env.get("HERMES_KANBAN_TASK"):
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            kanban_root = (
-                os.path.dirname(kanban_db)
-                if kanban_db
-                else spawn_env.get(
-                    "HERMES_KANBAN_ROOT",
-                    os.path.join(
-                        spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
-                        "kanban",
-                    ),
-                )
-            )
+            roots = _build_kanban_writable_roots(spawn_env)
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    f"sandbox_workspace_write.writable_roots={_format_toml_path_array(roots)}",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]

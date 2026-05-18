@@ -58,13 +58,35 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
+        from agent.skill_utils import get_external_skills_dirs
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
+            normalized = None
+            trusted_roots = [SKILLS_DIR]
             try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                trusted_roots.extend(get_external_skills_dirs())
             except Exception:
-                normalized = raw_identifier
+                pass
+
+            # Prefer the lexical path under a trusted skill root before
+            # resolving symlinks.  Slash-command discovery can legitimately
+            # find a skill via ~/.hermes/skills/<name> where <name> is a
+            # symlink to a checked-out skill elsewhere.  Resolving first turns
+            # that trusted visible path into an arbitrary absolute path that
+            # skill_view() refuses to load.
+            for root in trusted_roots:
+                try:
+                    normalized = str(identifier_path.relative_to(root))
+                    break
+                except ValueError:
+                    continue
+
+            if normalized is None:
+                try:
+                    normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                except Exception:
+                    normalized = raw_identifier
         else:
             normalized = raw_identifier.lstrip("/")
 

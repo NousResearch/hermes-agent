@@ -26,6 +26,22 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban import run_slash
 
 
+def _expire_retry_after(conn, task_id: str) -> None:
+    """Make a below-threshold retry immediately eligible for legacy dispatch tests.
+
+    The production dispatcher now stamps spawn/workspace failures with a
+    ``retry_after`` backoff window. Older circuit-breaker tests still exercise
+    consecutive failure accounting by running multiple dispatch ticks in a tight
+    loop, so they must explicitly advance the per-task retry gate instead of
+    relying on real time.
+    """
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (kb._stamp_retry_after("test retry window elapsed", int(time.time()) - 1), task_id),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -98,6 +114,7 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         assert task.status == "ready"
         assert task.consecutive_failures == 1
 
+        _expire_retry_after(conn, tid)
         # Second default-limit failure trips the guard.
         res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid in res2.auto_blocked
@@ -129,9 +146,11 @@ def test_successful_spawn_does_not_reset_failure_counter(kanban_home, all_assign
         tid = kb.create_task(conn, title="x", assignee="worker")
         # Two failures + one success.
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
+        _expire_retry_after(conn, tid)
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
         task = kb.get_task(conn, tid)
         assert task.consecutive_failures == 2
+        _expire_retry_after(conn, tid)
         kb.dispatch_once(conn, spawn_fn=_flaky_spawn, failure_limit=5)
         task = kb.get_task(conn, tid)
         # Counter STAYS at 2 — spawn succeeded but run isn't complete yet.
@@ -342,7 +361,9 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         assert task.status == "ready"
         assert task.last_failure_error and "workspace" in task.last_failure_error
         # Run twice more → auto-blocked.
+        _expire_retry_after(conn, tid)
         kb.dispatch_once(conn, failure_limit=3)
+        _expire_retry_after(conn, tid)
         res = kb.dispatch_once(conn, failure_limit=3)
         assert tid in res.auto_blocked
         task = kb.get_task(conn, tid)
@@ -1134,8 +1155,10 @@ def test_spawn_failure_circuit_breaker_emits_gave_up(kanban_home, all_assignees_
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        for _ in range(5):
+        for _ in range(4):
             kb.dispatch_once(conn, spawn_fn=_bad, failure_limit=5)
+            _expire_retry_after(conn, tid)
+        kb.dispatch_once(conn, spawn_fn=_bad, failure_limit=5)
         events = kb.list_events(conn, tid)
         kinds = [e.kind for e in events]
         assert "gave_up" in kinds
@@ -1650,8 +1673,10 @@ def test_run_on_spawn_failure_records_failed_runs(kanban_home, all_assignees_spa
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        for _ in range(5):
+        for _ in range(4):
             kb.dispatch_once(conn, spawn_fn=_bad, failure_limit=5)
+            _expire_retry_after(conn, tid)
+        kb.dispatch_once(conn, spawn_fn=_bad, failure_limit=5)
 
         runs = kb.list_runs(conn, tid)
         # 5 claim attempts → 5 runs. Final one is gave_up, earlier ones

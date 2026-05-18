@@ -3526,6 +3526,7 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
+    _terminalize_legacy_reviewer_children_for_finalization(conn, task_id, metadata)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     return True
@@ -4568,6 +4569,9 @@ _AUTO_REVIEWER_CHILD_SUPPRESSED_EVENT = "dispatch_auto_reviewer_child_suppressed
 _AUTO_REVIEWER_COMMENT_AUTHOR = "kanban-dispatcher"
 _AUTO_REVIEWER_MAX_RUNTIME_SECONDS = 12 * 60
 _AUTO_REVIEWER_MAX_RETRIES = 1
+_SUPERSEDED_NOOP_OUTCOME = "superseded_noop"
+_SUPERSEDED_NOOP_EVENT = "superseded_noop_terminalized"
+_COORDINATOR_FINALIZATION_REASON = "coordinator_finalization_existing_approved_reviewer"
 
 
 def _is_iteration_budget_guard_reason(summary: Optional[str]) -> bool:
@@ -4645,6 +4649,171 @@ def _legacy_parent_gated_reviewer_children(conn: sqlite3.Connection, task_id: st
         (task_id,),
     ).fetchall()
     return [str(r["id"]) for r in rows]
+
+
+def _completion_metadata_suppresses_auto_review(
+    metadata: Optional[dict],
+) -> tuple[bool, Optional[str], Optional[str]]:
+    """Return whether structured Coordinator/Admin metadata suppresses Reviewer-B.
+
+    Suppression is intentionally metadata-only. Prose in summaries/results is
+    ignored so a worker cannot accidentally suppress required review by wording
+    its handoff like an approval.
+    """
+    if not isinstance(metadata, dict):
+        return False, None, None
+    approved_reviewer = str(metadata.get("approved_reviewer_task") or "").strip()
+    if not approved_reviewer:
+        return False, None, None
+    required_markers = (
+        metadata.get("review_finalized_by_coordinator") is True,
+        metadata.get("suppress_auto_reviewer_b") is True,
+        metadata.get("reviewer_redispatch_forbidden") is True,
+        str(metadata.get("lifecycle_finalization") or "").strip()
+        == "coordinator_admin_finalization",
+    )
+    if not all(required_markers):
+        return False, None, approved_reviewer
+    return True, _COORDINATOR_FINALIZATION_REASON, approved_reviewer
+
+
+def _is_superseded_noop_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    run = latest_run(conn, task_id)
+    return bool(
+        run
+        and run.outcome == "completed"
+        and isinstance(run.metadata, dict)
+        and run.metadata.get("lifecycle_outcome") == _SUPERSEDED_NOOP_OUTCOME
+    )
+
+
+def terminalize_superseded_noop(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    superseded_by: Optional[str] = None,
+    expected_assignee: Optional[str] = "reviewer",
+) -> dict[str, Any]:
+    """Mark an inert artifact as terminal ``done`` with superseded/noop metadata.
+
+    This is deliberately narrower than a new task status: it only terminalizes
+    non-running artifact rows and records the semantic outcome in run metadata.
+    """
+    safe_reason = str(reason or "superseded noop").strip() or "superseded noop"
+    superseding_task = str(superseded_by).strip() if superseded_by else None
+    if _is_superseded_noop_task(conn, task_id):
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "idempotent": True,
+            "lifecycle_outcome": _SUPERSEDED_NOOP_OUTCOME,
+            "superseded_by": superseding_task,
+        }
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "task_id": task_id, "error": "task_not_found"}
+        previous_status = str(row["status"] or "")
+        assignee = str(row["assignee"] or "").strip().lower()
+        if expected_assignee is not None and assignee != expected_assignee.lower():
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error": "unexpected_assignee",
+                "assignee": assignee,
+            }
+        if previous_status not in {"triage", "todo", "ready", "blocked"}:
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error": "unsupported_status",
+                "previous_status": previous_status,
+            }
+
+        now = int(time.time())
+        result = f"superseded/noop: {safe_reason}"
+        metadata = {
+            "lifecycle_outcome": _SUPERSEDED_NOOP_OUTCOME,
+            "noop_reason": safe_reason,
+        }
+        if superseding_task:
+            metadata["superseded_by"] = superseding_task
+        conn.execute(
+            """
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL
+             WHERE id = ?
+               AND status IN ('triage', 'todo', 'ready', 'blocked')
+            """,
+            (result, now, task_id),
+        )
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="completed",
+            status="done",
+            summary=result,
+            metadata=metadata,
+        )
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="completed",
+                summary=result,
+                metadata=metadata,
+            )
+        _append_event(
+            conn,
+            task_id,
+            _SUPERSEDED_NOOP_EVENT,
+            {
+                "reason": safe_reason,
+                "superseded_by": superseding_task,
+                "previous_status": previous_status,
+                "lifecycle_outcome": _SUPERSEDED_NOOP_OUTCOME,
+            },
+            run_id=run_id,
+        )
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "idempotent": False,
+        "lifecycle_outcome": _SUPERSEDED_NOOP_OUTCOME,
+        "superseded_by": superseding_task,
+    }
+
+
+def _terminalize_legacy_reviewer_children_for_finalization(
+    conn: sqlite3.Connection,
+    source_task_id: str,
+    metadata: Optional[dict],
+) -> list[str]:
+    suppresses, reason, approved_reviewer = _completion_metadata_suppresses_auto_review(metadata)
+    if not suppresses:
+        return []
+    terminalized: list[str] = []
+    for child_id in _legacy_parent_gated_reviewer_children(conn, source_task_id):
+        result = terminalize_superseded_noop(
+            conn,
+            child_id,
+            reason=reason or _COORDINATOR_FINALIZATION_REASON,
+            superseded_by=approved_reviewer,
+            expected_assignee="reviewer",
+        )
+        if result.get("ok"):
+            terminalized.append(child_id)
+    return terminalized
 
 
 def _review_required_reviewer_body(
@@ -4874,6 +5043,31 @@ def _dispatch_standard_review_children(conn: sqlite3.Connection) -> list[str]:
         if _has_task_event_for_run(conn, source_task.id, _AUTO_REVIEWER_CHILD_EVENT, run.id):
             continue
         if _has_task_event_for_run(conn, source_task.id, _AUTO_REVIEWER_CHILD_SUPPRESSED_EVENT, run.id):
+            continue
+
+        suppresses_review, suppression_reason, approved_reviewer_task = (
+            _completion_metadata_suppresses_auto_review(run.metadata)
+        )
+        if suppresses_review:
+            with write_txn(conn):
+                if _has_task_event_for_run(conn, source_task.id, _AUTO_REVIEWER_CHILD_EVENT, run.id):
+                    continue
+                if _has_task_event_for_run(conn, source_task.id, _AUTO_REVIEWER_CHILD_SUPPRESSED_EVENT, run.id):
+                    continue
+                _append_event(
+                    conn,
+                    source_task.id,
+                    _AUTO_REVIEWER_CHILD_SUPPRESSED_EVENT,
+                    {
+                        "source_task": source_task.id,
+                        "source_run_id": run.id,
+                        "reason": suppression_reason,
+                        "approved_reviewer_task": approved_reviewer_task,
+                        "review_lane": "STANDARD_REVIEW",
+                        "review_stage": "reviewer_b",
+                    },
+                    run_id=run.id,
+                )
             continue
 
         changed_paths: list[str] = []

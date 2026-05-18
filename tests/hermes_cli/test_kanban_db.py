@@ -77,6 +77,94 @@ def test_create_task_unknown_parent_errors(kanban_home):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
 
 
+def test_terminalize_superseded_noop_marks_reviewer_done_and_records_metadata(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="Obsolete reviewer", assignee="reviewer")
+
+        result = kb.terminalize_superseded_noop(
+            conn,
+            tid,
+            reason="coordinator finalization",
+            superseded_by="t_approved1",
+        )
+
+        assert result["ok"] is True
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+        assert task.current_run_id is None
+        assert task.result == "superseded/noop: coordinator finalization"
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.outcome == "completed"
+        assert run.metadata == {
+            "lifecycle_outcome": "superseded_noop",
+            "noop_reason": "coordinator finalization",
+            "superseded_by": "t_approved1",
+        }
+        events = [
+            event
+            for event in kb.list_events(conn, tid)
+            if event.kind == "superseded_noop_terminalized"
+        ]
+        assert len(events) == 1
+        assert events[0].payload is not None
+        assert events[0].payload["previous_status"] == "ready"
+
+
+def test_terminalize_superseded_noop_is_idempotent(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="Obsolete reviewer", assignee="reviewer")
+
+        first = kb.terminalize_superseded_noop(
+            conn,
+            tid,
+            reason="coordinator finalization",
+            superseded_by="t_approved1",
+        )
+        second = kb.terminalize_superseded_noop(
+            conn,
+            tid,
+            reason="coordinator finalization",
+            superseded_by="t_approved1",
+        )
+
+        assert first["ok"] is True
+        assert second["ok"] is True
+        assert second["idempotent"] is True
+        events = [
+            event
+            for event in kb.list_events(conn, tid)
+            if event.kind == "superseded_noop_terminalized"
+        ]
+        assert len(events) == 1
+
+
+def test_terminalize_superseded_noop_refuses_running_reviewer(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="Running reviewer", assignee="reviewer")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+
+        result = kb.terminalize_superseded_noop(
+            conn,
+            tid,
+            reason="coordinator finalization",
+            superseded_by="t_approved1",
+        )
+
+        assert result == {
+            "ok": False,
+            "task_id": tid,
+            "error": "unsupported_status",
+            "previous_status": "running",
+        }
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "running"
+        assert kb.active_run(conn, tid) is not None
+
+
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")

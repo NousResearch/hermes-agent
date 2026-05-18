@@ -181,6 +181,156 @@ auto_reviewer_b: false
         assert suppression_payload["manual_reviewer_children"] == []
 
 
+def test_coordinator_finalization_metadata_suppresses_duplicate_auto_reviewer_b(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Implement reviewed lifecycle fix",
+            assignee="coder",
+            body="review_lane: STANDARD_REVIEW\n",
+        )
+        reviewer = kb.create_task(
+            conn,
+            title="Independent approved reviewer",
+            assignee="reviewer",
+        )
+        kb.claim_task(conn, source)
+        run = kb.active_run(conn, source)
+        assert run is not None
+
+        assert kb.complete_task(
+            conn,
+            source,
+            summary="Coordinator/Admin finalization after independent Reviewer APPROVED",
+            metadata={
+                "changed_files": ["hermes_cli/kanban_db.py"],
+                "review_finalized_by_coordinator": True,
+                "approved_reviewer_task": reviewer,
+                "suppress_auto_reviewer_b": True,
+                "reviewer_redispatch_forbidden": True,
+                "lifecycle_finalization": "coordinator_admin_finalization",
+            },
+            expected_run_id=run.id,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+
+        spawned_ids = [item[0] if isinstance(item, tuple) else item for item in res.spawned]
+        assert spawned_ids == [reviewer]
+        assert _reviewer_children_for_source(conn, source) == []
+        suppression_events = [
+            event
+            for event in kb.list_events(conn, source)
+            if event.kind == "dispatch_auto_reviewer_child_suppressed"
+        ]
+        assert len(suppression_events) == 1
+        assert suppression_events[0].run_id == run.id
+        payload = suppression_events[0].payload or {}
+        assert payload["reason"] == "coordinator_finalization_existing_approved_reviewer"
+        assert payload["approved_reviewer_task"] == reviewer
+
+
+def test_coordinator_finalization_terminalizes_legacy_parent_gated_reviewer_before_ready(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Finalize reviewed blocked source",
+            assignee="coder",
+            body="review_lane: STANDARD_REVIEW\n",
+        )
+        legacy_reviewer = kb.create_task(
+            conn,
+            title="Legacy parent-gated reviewer",
+            assignee="reviewer",
+            parents=[source],
+        )
+        approved_reviewer = kb.create_task(
+            conn,
+            title="Independent approved reviewer",
+            assignee="reviewer",
+        )
+        initial_legacy_task = kb.get_task(conn, legacy_reviewer)
+        assert initial_legacy_task is not None
+        assert initial_legacy_task.status == "todo"
+
+        kb.claim_task(conn, source)
+        run = kb.active_run(conn, source)
+        assert run is not None
+        assert kb.complete_task(
+            conn,
+            source,
+            summary="Coordinator/Admin finalization after independent Reviewer APPROVED",
+            metadata={
+                "changed_files": ["hermes_cli/kanban_db.py"],
+                "review_finalized_by_coordinator": True,
+                "approved_reviewer_task": approved_reviewer,
+                "suppress_auto_reviewer_b": True,
+                "reviewer_redispatch_forbidden": True,
+                "lifecycle_finalization": "coordinator_admin_finalization",
+            },
+            expected_run_id=run.id,
+        )
+
+        legacy_task = kb.get_task(conn, legacy_reviewer)
+        assert legacy_task is not None
+        assert legacy_task.status == "done"
+        assert legacy_task.result is not None
+        assert legacy_task.result.startswith("superseded/noop:")
+        latest_legacy_run = kb.latest_run(conn, legacy_reviewer)
+        assert latest_legacy_run is not None
+        assert latest_legacy_run.outcome == "completed"
+        assert latest_legacy_run.metadata is not None
+        assert latest_legacy_run.metadata["lifecycle_outcome"] == "superseded_noop"
+        assert latest_legacy_run.metadata["superseded_by"] == approved_reviewer
+        noop_events = [
+            event
+            for event in kb.list_events(conn, legacy_reviewer)
+            if event.kind == "superseded_noop_terminalized"
+        ]
+        assert len(noop_events) == 1
+        assert noop_events[0].payload["previous_status"] == "todo"
+
+
+def test_coordinator_finalization_prose_only_does_not_suppress_auto_reviewer_b(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    monkeypatch.setattr(kb, "_validate_task_extra_skills", lambda _skills: [])
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Implement prose-only reviewed lifecycle fix",
+            assignee="coder",
+            body="review_lane: STANDARD_REVIEW\n",
+        )
+        kb.claim_task(conn, source)
+        run = kb.active_run(conn, source)
+        assert run is not None
+        assert kb.complete_task(
+            conn,
+            source,
+            summary=(
+                "Coordinator finalized after approved reviewer t_12345678; "
+                "do not redispatch reviewer"
+            ),
+            metadata={"changed_files": ["hermes_cli/kanban_db.py"]},
+            expected_run_id=run.id,
+        )
+
+        kb.dispatch_once(conn, spawn_fn=lambda *_args: 0)
+
+        reviewer_children = _reviewer_children_for_source(conn, source)
+        assert len(reviewer_children) == 1
+        assert [
+            event
+            for event in kb.list_events(conn, source)
+            if event.kind == "dispatch_auto_reviewer_child_suppressed"
+        ] == []
+
+
 def test_fastlane_coder_completion_no_reviewer_spawn(
     kanban_home, all_assignees_spawnable
 ):

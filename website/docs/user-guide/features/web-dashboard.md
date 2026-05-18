@@ -341,6 +341,7 @@ Built-in themes:
 | **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
 | **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
+| **Midnight Modern** (`midnight-modern`) | Midnight colors, original Midnight sizing/spacing, Geist + Geist Mono, no background image |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black, Share Tech Mono |

@@ -3633,13 +3633,14 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "default",           "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large",     "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "midnight",          "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
+    {"name": "midnight-modern",   "label": "Midnight Modern",     "description": "Midnight colors with original sizing, Geist typography, and no background image"},
+    {"name": "ember",             "label": "Ember",               "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",              "label": "Mono",                "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk",         "label": "Cyberpunk",           "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",              "label": "Rosé",                "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
 
 

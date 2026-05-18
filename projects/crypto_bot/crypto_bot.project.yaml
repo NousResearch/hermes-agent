@@ -1,0 +1,156 @@
+schema: hermes.managed_project.v1
+project_id: crypto_bot
+repo_path: /Users/preston/robinhood/crypto_bot
+gitea_remote: http://127.0.0.1:3005/preston/crypto_bot.git
+strategic_plan_path: docs/planning/autoresearch_runpod_to_live_trade/plan.json
+default_branch: main
+autonomy_profile: branch_local_development
+remote_lifecycle_profile: read_only_discovery_and_pr_evidence
+controlled_remote_branch_push_enabled: false
+one_pr_creation_pilot_enabled: false
+pr_updates_comments_status_mutation_enabled: false
+merge_authority_enabled: false
+tenacity_native_control_plane:
+  native_goal_enabled: proposed
+  native_kanban_board: crypto_bot
+  kanban_source_of_truth: planned
+  worker_lanes:
+    - crypto-pm-orchestrator
+    - crypto-implementer
+    - crypto-reviewer
+    - crypto-ci-triage
+    - crypto-codex-audit
+  hook_policy: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_hooks_policy.md
+  hook_source: /Users/preston/.hermes/hermes-agent/hooks/crypto_bot_policy_guard
+  profile_strategy: /Users/preston/.hermes/hermes-agent/projects/crypto_bot/tenacity_profiles.yaml
+  kanban_import_plan: /Users/preston/.hermes/hermes-agent/projects/crypto_bot/kanban_import_plan.yaml
+  codex_runtime_strategy: bounded_sidecar_required_until_native_equivalent_proven
+readiness_gates:
+  source_runtime_ready: false
+  local_evidence_ready: false
+  native_kanban_ready: false
+  pr_lifecycle_ready: false
+  ci_evidence_ready: false
+  merge_ready: false
+task_source:
+  - strategic_plan
+  - Hermes native Kanban
+  - Gitea issues when write/read tools mature
+allowed_autonomous_actions:
+  - inspect repo
+  - select next plan task
+  - create local branch
+  - modify allowlisted non-secret files
+  - run allowlisted tests/validators
+  - commit local branch
+  - run Codex sidecar audit
+  - update Hermes Kanban/state
+  - read Gitea remote/PR/check metadata
+  - generate PR evidence packets
+blocked_without_escalation:
+  - live trading
+  - broker/account/financial APIs
+  - secrets/keychain/env
+  - runtime service starts
+  - deploy/GitOps promotion
+  - Gitea writes if not explicitly enabled by policy
+  - protected branches
+  - runners/workflows until policy permits
+  - controlled remote branch push until explicitly enabled by policy
+  - one PR creation pilot until explicitly enabled by policy
+  - gh pr create against Gitea unless a future Hermes tool verifies support
+  - PR updates/comments/status mutation
+  - merge-to-main/protected branch mutation
+validation_profile:
+  - git status
+  - git diff --check
+  - relevant targeted tests
+  - tests/hermes_pm if relevant
+  - selected operator tests if relevant
+  - ruff check on changed files
+  - validate-secrets-discipline
+  - validate-governance-baseline
+  - task-scoped validate-security-evidence-wrapper only when selected task requires it
+  - Codex sidecar audit
+  - Hermes completion gate
+  - remote readiness dry-run when remote lifecycle is requested
+  - PR evidence packet dry-run when remote lifecycle is requested
+  - Gitea PR pilot adapter self-check, dry-run, and create-pr-only preflight under the same Hermes runtime before any partial-state PR retry
+global_validators:
+  - path: scripts/validation/validate-secrets-discipline.sh
+    missing_classification: required_global_validator_blocker
+  - path: scripts/validation/validate-governance-baseline.sh
+    missing_classification: required_global_validator_blocker
+task_scoped_validators:
+  - path: scripts/validation/validate-security-evidence-wrapper.py
+    missing_classification: task_scoped_validator_missing_warning
+    required_task_ids:
+      - dev13-002
+    required_when: selected task explicitly changes non-runtime security-evidence validation scripts
+historical_baseline_artifacts:
+  - path: docs/development/hermes_coding_work_packet_template.md
+    missing_classification: historical_evidence_missing_warning
+    current_global_safety_prerequisite: false
+    current_source_of_truth: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_target_loop_v2.md
+  - path: docs/implementation/hermes_pm_checkpoint_13b_plan.md
+    missing_classification: historical_evidence_missing_warning
+    current_global_safety_prerequisite: false
+    current_source_of_truth: historical dev13 checkpoint evidence
+tenacity_board_import_requirements:
+  board_slug: crypto_bot
+  source_plan: /Users/preston/robinhood/crypto_bot/docs/planning/autoresearch_runpod_to_live_trade/plan.json
+  preview_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_kanban_import_preview.py
+  live_import_requires_explicit_operator_approval: true
+  worker_dispatch_during_import: false
+  product_file_writes_during_import: false
+  gitea_mutation_during_import: false
+task_evidence_requirements:
+  - selected task must cite a strategic-plan item or durable Hermes Kanban card
+  - selected task must cite the allowlisted path source before writes
+  - commissioning tasks outside the strategic plan require a Kanban card/export path
+  - completion requires a clean post-commit Codex sidecar audit matching HEAD
+  - completion requires a PASS report from /Users/preston/.hermes/hermes-agent/tools/crypto_bot_completion_gate.py
+  - remote integration requires a PR evidence packet before any PR authority
+  - controlled Gitea PR creation requires the Hermes-owned PR pilot adapter
+  - merge completion requires a separate merge gate and explicit merge authority
+evidence_contract:
+  schema: hermes.autonomy.crypto_bot_completion_gate.v1
+  contract_path: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_completion_evidence_contract.md
+  completion_gate_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_completion_gate.py
+  sidecar_prompt_generator: /Users/preston/.hermes/hermes-agent/tools/render_crypto_bot_sidecar_audit_prompt.py
+  unsupported_claim_scanner: /Users/preston/.hermes/hermes-agent/tools/scan_crypto_bot_completion_claims.py
+  evidence_issue_registry: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_evidence_issue_registry.py
+  report_dir: /Users/preston/.local/state/hermes-operator/completion-gates
+  issue_dir: /Users/preston/.local/state/hermes-operator/evidence-issues
+  fail_closed: true
+completion_gate_docs_allowlist:
+  S006:
+    paths:
+      - .gitea/workflows/validate.yml
+      - app/services/autoresearch_provider_guarantee_service.py
+      - app/services/observability_service.py
+      - docs/contracts/daemon-trust-contract.md
+      - _codex_discovery/phase6t_design_bridge_authorization_gates/research_worker_integration_report.md
+      - _codex_discovery/phase6u_design_bridge_adoption_readiness/research_worker_integration_report.md
+    patterns: []
+remote_lifecycle_contract:
+  contract_path: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_remote_lifecycle_contract.md
+  target_loop_path: /Users/preston/.hermes/hermes-agent/docs/autonomy/crypto_bot_gitea_ci_pr_target_loop.md
+  remote_readiness_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_remote_readiness.py
+  pr_evidence_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_pr_evidence_contract.py
+  gitea_pr_pilot_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_gitea_pr_pilot.py
+  merge_readiness_tool: /Users/preston/.hermes/hermes-agent/tools/crypto_bot_merge_readiness.py
+  read_only_discovery_allowed: true
+  pr_evidence_packet_generation_allowed: true
+  controlled_remote_branch_push_enabled: false
+  one_pr_creation_pilot_enabled: false
+  gh_pr_create_allowed_for_gitea: false
+  partial_pilot_retry_requires_fresh_operator_approval: true
+  adapter_runtime_failure_is_tool_bug_not_product_failure: true
+  partial_pilot_retry_requires_same_runtime_self_check_pass: true
+  partial_pilot_retry_requires_same_runtime_dry_run_pass: true
+  partial_pilot_retry_requires_same_runtime_create_pr_only_preflight_pass: true
+  exact_remote_sha_retry_push_allowed: false
+  pr_updates_comments_status_mutation_enabled: false
+  workflow_runner_starts_enabled: false
+  merge_authority_enabled: false

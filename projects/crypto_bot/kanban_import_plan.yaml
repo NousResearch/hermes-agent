@@ -1,0 +1,182 @@
+schema: hermes.autonomy.crypto_bot.kanban_import_plan.v1
+project_id: crypto_bot
+board: crypto_bot
+mode: dry_run_first
+source_plan: /Users/preston/robinhood/crypto_bot/docs/planning/autoresearch_runpod_to_live_trade/plan.json
+expected_session_count: 90
+task_ids:
+  - S001
+  - S002
+  - S003
+  - S004
+  - S004A
+  - S005
+  - S005A
+  - S006
+  - S006A
+  - S007
+  - S007A
+  - S008
+  - S009
+  - S010
+  - S011
+  - S012
+  - S013
+  - S014
+  - S015
+  - S016
+  - S017
+  - S017A
+  - S017B
+  - S017C
+  - S017D
+  - S017E
+  - S017F
+  - S017G
+  - S017H
+  - S018
+  - S019
+  - S020
+  - S021
+  - S022
+  - S023
+  - S024
+  - S025
+  - S026
+  - S027
+  - S028
+  - S029
+  - S030
+  - S031
+  - S032
+  - S033
+  - S034
+  - S035
+  - S036
+  - S037
+  - S038
+  - S039
+  - S040
+  - S041
+  - S042
+  - S043
+  - S044
+  - S045
+  - S046
+  - S047
+  - S048
+  - S049
+  - S050
+  - S051
+  - S052
+  - S053
+  - S054
+  - S055
+  - S056
+  - S057
+  - S058
+  - S059
+  - S060
+  - S061
+  - S062
+  - S063
+  - S064
+  - S065
+  - S066
+  - S067
+  - S068
+  - S069
+  - S070
+  - S071
+  - S072
+  - S073
+  - S074
+  - S075
+  - S076
+  - S077
+  - S078
+dependency_mapping:
+  source_field: depends_on
+  native_link: parent_dependency
+  rule: create a dependency edge from each depends_on entry to the session_id card
+  missing_parent_policy: block import preview and report the missing parent id
+initial_columns:
+  completed_current_evidence_backed: done only when current Hermes completion-gate PASS exists
+  completed_without_current_gate: blocked
+  completed_with_local_gate_but_no_pr_or_ci: review_required
+  not_required_current_evidence_backed: blocked unless explicit archival evidence exists
+  planned_next: todo
+  planned: triage
+  unknown: blocked
+evidence_backed_statuses:
+  completed_current_evidence_backed:
+    - S001
+    - S002
+    - S004
+    - S004A
+    - S005
+    - S005A
+    - S006
+    - S006A
+    - S007
+    - S017
+  not_required_current_evidence_backed:
+    - S003
+  planned_next:
+    - S007A
+assignee_mapping:
+  codex-design: crypto-implementer
+  codex-security: crypto-reviewer
+  codex-oms: crypto-implementer
+  codex-observability: crypto-ci-triage
+  default: crypto-pm-orchestrator
+workspace_strategy:
+  root: /Users/preston/.local/state/hermes-operator/kanban-workspaces/crypto_bot
+  per_card: isolated native Kanban worker workspace
+  product_repo: /Users/preston/robinhood/crypto_bot
+  branch_prefix: hermes/
+  no_live_dispatch_this_session: true
+metadata_fields:
+  - session_id
+  - sequence
+  - phase_id
+  - title
+  - session_type
+  - risk_level
+  - allowed_write_scope
+  - forbidden_in_session
+  - validation_expectations
+  - operator_approval_required
+  - operator_approval_ids
+  - status
+  - completion_commit
+  - completion_evidence_path
+  - expected_evidence_packet_path
+kanban_comment_contract:
+  on_import: record source plan path, source session_id, status, dependencies, allowed paths, and forbidden surfaces
+  on_review_required: record reviewer lane, branch, full HEAD, changed files, validator commands, and sidecar requirement
+  on_completion_gate_pass: record completion gate JSON path, conclusion PASS, branch, full HEAD, changed files, and sidecar result path
+  on_pr_evidence_ready: record PR title/body paths, packet path if written, target branch, source branch, source HEAD, and CI evidence status
+  on_blocked: record readiness blockers, missing validators, missing evidence, policy block, or required authority
+claimed_complete_without_gate_evidence:
+  rule: do not import as done unless a matching completion gate PASS exists
+  action: import to blocked with kanban_comment explaining missing gate evidence
+  current_known_case: invalidated Telegram-only dev13-006 claim remains invalidated and must not override S006 machine evidence
+remote_lifecycle_import_notes:
+  S006: import as review_required or blocked_remote_pr_missing, not done, while no PR exists and CI evidence is absent
+  S007: plan-completed claim lacks current Hermes completion-gate evidence and must not import as done
+  S017: plan-completed claim lacks current Hermes completion-gate evidence and must not import as done
+approval_boundary:
+  board_import_requires_explicit_operator_approval: true
+  live_import_allowed_by_preview_tool: false
+  worker_dispatch_allowed_during_import: false
+  product_file_writes_allowed_during_import: false
+  gitea_mutation_allowed_during_import: false
+  pr_creation_allowed_during_import: false
+  merge_allowed_during_import: false
+import_steps:
+  - run readiness and stop if crypto_bot worktree is dirty
+  - run a dry-run/import-preview command if Hermes exposes one
+  - create board only after Operator authorizes live board mutation
+  - import cards with dependency links but do not dispatch workers
+  - verify counts, statuses, comments, and assignees before enabling dispatch

@@ -1,0 +1,67 @@
+schema: hermes.autonomy.crypto_bot.tenacity_profiles.v1
+project_id: crypto_bot
+board: crypto_bot
+profile_strategy: proposed
+default_workspace_root: /Users/preston/.local/state/hermes-operator/kanban-workspaces/crypto_bot
+profiles:
+  crypto-pm-orchestrator:
+    role: native goal and Kanban orchestrator
+    skills:
+      - crypto-bot-pm
+      - kanban-orchestrator
+    may_write_product_repo: false
+    may_dispatch_workers: true
+    may_mutate_gitea: false
+    may_start_services: false
+    authority: route cards, record comments, run readiness, stop on blockers
+  crypto-implementer:
+    role: bounded branch-local implementer
+    skills:
+      - crypto-bot-pm
+      - kanban-worker
+    may_write_product_repo: true
+    write_scope_source: card allowlist and strategic plan
+    may_push: false
+    may_mutate_gitea: false
+    may_start_services: false
+    authority: safe local branch edits after readiness is green
+  crypto-reviewer:
+    role: independent reviewer
+    skills:
+      - crypto-bot-pm
+      - kanban-worker
+    may_write_product_repo: false
+    may_mutate_gitea: false
+    may_start_services: false
+    authority: review changed files, validators, and blocked surfaces
+  crypto-ci-triage:
+    role: read-only CI and remote lifecycle triage
+    skills:
+      - crypto-bot-pm
+      - kanban-worker
+    may_write_product_repo: false
+    may_mutate_gitea: false
+    may_start_workflows: false
+    authority: read Gitea, PR, status, and runner visibility only
+  crypto-codex-audit:
+    role: bounded Codex audit sidecar
+    skills:
+      - codex-sidecar
+      - kanban-worker
+    may_write_product_repo: false
+    may_mutate_gitea: false
+    may_start_services: false
+    authority: run audit-readonly sidecar and report evidence path
+review_required:
+  code_changing_tasks: true
+  runtime_config_tasks: true
+  validator_or_policy_tasks: true
+  docs_only_discovery_tasks: conditional
+blocked_surfaces:
+  trading_api: blocked
+  broker_api: blocked
+  secrets: blocked
+  gitea_writes: blocked
+  workflows_runners: blocked
+  deployment: blocked
+  merge: blocked

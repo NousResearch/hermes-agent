@@ -919,6 +919,7 @@ class TeamsAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
@@ -933,14 +934,22 @@ class TeamsAdapter(BasePlatformAdapter):
             "desc": description,
         }
 
+        _body_blocks = [
+            TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
+        ]
+        if contextual_reason:
+            _body_blocks.append(
+                TextBlock(text=contextual_reason, wrap=True),
+            )
+        _body_blocks.extend([
+            TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
+            TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
+        ])
+
         card = (
             AdaptiveCard()
             .with_version("1.4")
-            .with_body([
-                TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
-                TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
-                TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
-            ])
+            .with_body(_body_blocks)
             .with_actions([
                 ExecuteAction(
                     title="Allow Once",

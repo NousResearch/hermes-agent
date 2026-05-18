@@ -1849,6 +1849,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
@@ -1872,6 +1873,9 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
+            _rationale_md = (
+                f"{contextual_reason}\n\n" if contextual_reason else ""
+            )
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -1881,7 +1885,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"{_rationale_md}```\n{cmd_preview}\n```\n**Reason:** {description}",
                     },
                     {
                         "tag": "action",

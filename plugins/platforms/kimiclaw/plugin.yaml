@@ -1,0 +1,40 @@
+name: kimiclaw
+label: KimiClaw
+kind: platform
+version: 1.0.0
+description: >
+  KimiClaw (Moonshot AI's agentic bot platform on kimi.com) adapter for Hermes
+  Agent.  KimiClaw bridges direct messages and group rooms under one bot
+  identity: DM via Zed ACP over WebSocket (sentinel session ``im:kimi:main``),
+  group rooms via Connect RPC server-stream over HTTP/1.1 long-poll
+  (chat_id ``room:<uuid>``).
+  Distinct from Kimi-the-LLM-provider (see
+  ``plugins/model-providers/kimi-coding/`` for the ``kimi-for-coding`` profile;
+  aliases register through ``hermes_cli/providers.py``).
+  Registers via upstream's ``ctx.register_platform()`` API.
+author: linxule
+# ``requires_env`` / ``optional_env`` entries appear in the ``hermes config``
+# UI via the platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: KIMI_BOT_TOKEN
+    description: "Kimi bot token (km_b_prod_*) — generate via kimi.com 'Link existing OpenClaw' flow"
+    prompt: "Kimi bot token"
+    url: "https://www.kimi.com/"
+    password: true
+optional_env:
+  - name: KIMI_ALLOWED_USERS
+    description: "Comma-separated Kimi user UUIDs (km_u_*) allowed to talk to the bot"
+    prompt: "Allowed user UUIDs (comma-separated)"
+    password: false
+  - name: KIMI_ALLOW_ALL_USERS
+    description: "Allow any user to talk to the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: KIMI_HOME_CHANNEL
+    description: "Default ``room:<uuid>`` for cron / notification delivery (standalone DM cron is not supported — see kimiclaw.md Known limitations)"
+    prompt: "Home channel room ID (room:<uuid>, or empty)"
+    password: false
+  - name: KIMI_HOME_CHANNEL_NAME
+    description: "Display name for the home channel (default ``Home``); used by ``hermes gateway status`` and cron delivery"
+    prompt: "Home channel display name (blank for 'Home')"
+    password: false

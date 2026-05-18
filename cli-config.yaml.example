@@ -762,6 +762,17 @@ platform_toolsets:
 #         priority:
 #           - my_plugin_command
 #
+# KimiClaw-specific settings (Moonshot AI's bot platform on kimi.com — distinct
+# from the kimi LLM provider). Top-level block, mapped to KIMI_* env vars by the
+# bundled plugin:
+#
+# kimiclaw:
+#   bot_token: ${KIMI_BOT_TOKEN}        # or km_b_prod_<your_token>
+#   home_channel: room:<uuid>           # optional cron / notification target
+#   allowed_users:
+#     - km_u_<uuid>                     # optional user allowlist
+#   allow_all_users: false              # dev only; bypasses allowlist when true
+
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

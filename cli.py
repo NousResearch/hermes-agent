@@ -6772,7 +6772,15 @@ class HermesCLI:
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        persist_global: bool = False,
+    ) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
@@ -6784,6 +6792,7 @@ class HermesCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "persist_global": persist_global,
         }
         self._invalidate(min_interval=0.0)
 
@@ -6908,6 +6917,7 @@ class HermesCLI:
         state = self._model_picker_state
         if not state:
             return
+        persist_global = bool(state.get("persist_global", persist_global))
         selected = state.get("selected", 0)
         stage = state.get("stage")
         if stage == "provider":
@@ -7032,6 +7042,7 @@ class HermesCLI:
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                persist_global=persist_global,
             )
             return
 

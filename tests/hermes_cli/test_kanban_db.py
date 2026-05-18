@@ -786,6 +786,32 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
     assert str(ws) == target
 
 
+def test_worktree_workspace_without_path_uses_global_board_root(
+    kanban_home, tmp_path, monkeypatch
+):
+    root = tmp_path / "global-worktrees"
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_ROOT", str(root))
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task, board="repo-board")
+    assert ws == root / "repo-board" / t
+    assert not ws.exists()
+
+
+def test_worktree_workspace_without_path_rejects_relative_global_root(
+    kanban_home, monkeypatch
+):
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_ROOT", "relative-worktrees")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        with pytest.raises(ValueError, match="HERMES_KANBAN_WORKTREE_ROOT"):
+            kb.resolve_workspace(task, board="repo-board")
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------

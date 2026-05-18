@@ -2993,6 +2993,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     - ``worktree``: a git worktree at ``workspace_path``.  Not created
       automatically in v1 -- the kanban-worker skill documents
       ``git worktree add`` as a worker-side step.  Returns the intended path.
+      When no explicit path is set, resolve under the global task worktree
+      root (``HERMES_KANBAN_WORKTREE_ROOT`` or ``~/worktrees``) plus the board
+      slug instead of the dispatcher's cwd. This keeps spawned repo work out of
+      whichever main checkout happened to run the dispatcher.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -3029,8 +3033,16 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
+            worktree_root = Path(
+                os.environ.get("HERMES_KANBAN_WORKTREE_ROOT") or "~/worktrees"
+            ).expanduser()
+            if not worktree_root.is_absolute():
+                raise ValueError(
+                    "HERMES_KANBAN_WORKTREE_ROOT must be an absolute path "
+                    f"when set, got {str(worktree_root)!r}"
+                )
+            board_slug = board or get_current_board()
+            return worktree_root / board_slug / task.id
         p = Path(task.workspace_path).expanduser()
         if not p.is_absolute():
             raise ValueError(

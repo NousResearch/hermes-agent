@@ -21,7 +21,9 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | It MUST be a real registered git worktree before implementation. Verify with `git -C <repo-root> worktree list --porcelain`, then cd and work normally. Commit work here. |
+
+**Zehrei repo invariant:** never edit or checkout feature branches in the main repo root (`/root/<repo>`). The main worktree must stay clean and on `main`. For repo task hierarchies, use one real registered worktree under `/root/worktrees/<repo-name>/<branch>/` for the whole parent/child tree. If `$HERMES_KANBAN_WORKSPACE` is missing, unregistered, or points at the main repo root, STOP and block/comment instead of coding.
 
 ## Tenant isolation
 

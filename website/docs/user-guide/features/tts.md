@@ -25,6 +25,7 @@ Convert text to speech with ten providers:
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **Yandex SpeechKit** | Excellent | Paid | `YANDEX_API_KEY` or `YANDEX_IAM_TOKEN` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "yandex" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -76,6 +77,14 @@ tts:
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
+  yandex:
+    folder_id: "${YANDEX_FOLDER_ID}"
+    api_key: "${YANDEX_API_KEY}"         # or iam_token: "${YANDEX_IAM_TOKEN}"
+    voice: "kirill"
+    role: "neutral"
+    speed: 1.5
+    audio_format: "PCM16(24000)"
+    stream_timeout: 600
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -140,6 +149,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | MiniMax | 10000 |
 | Mistral | 4000 |
 | Google Gemini | 32000 |
+| Yandex SpeechKit | 5000 |
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
@@ -174,6 +184,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
+- **Yandex SpeechKit** outputs PCM/WAV by default and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
@@ -207,6 +218,30 @@ tts:
 ```
 
 See the [xAI Custom Voices docs](https://docs.x.ai/developers/model-capabilities/audio/custom-voices) for details on recording, supported formats, and limits.
+
+### Yandex SpeechKit
+
+Yandex SpeechKit uses `yandex-ai-studio-sdk` and is installed lazily when `tts.provider: yandex` is selected, or explicitly with:
+
+```bash
+python -m pip install 'hermes-agent[tts-yandex]'
+```
+
+Set `YANDEX_FOLDER_ID` plus either `YANDEX_API_KEY` or `YANDEX_IAM_TOKEN`, or put the same values under `tts.yandex` in `config.yaml`:
+
+```yaml
+tts:
+  provider: yandex
+  yandex:
+    folder_id: "${YANDEX_FOLDER_ID}"
+    api_key: "${YANDEX_API_KEY}"
+    voice: "kirill"
+    role: "neutral"
+    speed: 1.5
+    audio_format: "PCM16(24000)"
+```
+
+Use `stream_timeout` for long CLI voice-mode playback; file-mode TTS uses `timeout`.
 
 ### Piper (local, 44 languages)
 

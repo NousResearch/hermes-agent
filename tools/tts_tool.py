@@ -46,8 +46,10 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import threading
 import uuid
+import wave
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
@@ -144,6 +146,23 @@ def _import_sounddevice():
     return sd
 
 
+def _import_yandex_ai_studio():
+    """Lazy import Yandex AI Studio SDK. Returns AIStudio or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the SDK gets installed on
+    demand if the user enabled Yandex TTS directly in config.yaml.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("tts.yandex", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
+    from yandex_ai_studio_sdk import AIStudio
+    return AIStudio
+
+
 def _import_kittentts():
     """Lazy import KittenTTS. Returns the class or raises ImportError."""
     from kittentts import KittenTTS
@@ -192,6 +211,12 @@ DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
+DEFAULT_YANDEX_TTS_VOICE = "kirill"
+DEFAULT_YANDEX_TTS_ROLE = "neutral"
+DEFAULT_YANDEX_TTS_SPEED = 1.7
+DEFAULT_YANDEX_TTS_AUDIO_FORMAT = "PCM16(24000)"
+DEFAULT_YANDEX_TTS_TIMEOUT = 60
+DEFAULT_YANDEX_TTS_STREAM_TIMEOUT = 600
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -217,6 +242,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 32000,      # Gemini TTS has a 32k-token context window; char cap is conservative
+    "yandex": 5000,       # SpeechKit API v3 can stream chunks; keep per request modest
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -342,6 +368,106 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
+def _clean_config_value(value: Any) -> str:
+    """Return a stripped config/env value, ignoring unresolved ${ENV} placeholders."""
+    text = str(value or "").strip()
+    if text.startswith("${") and text.endswith("}"):
+        return ""
+    return text
+
+
+def _config_or_env(config_value: Any, env_name: str) -> str:
+    """Resolve a config value, falling back to env when config is empty/placeholder."""
+    return _clean_config_value(config_value) or _clean_config_value(os.getenv(env_name))
+
+
+def _resolve_yandex_tts_config(tts_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve Yandex SpeechKit TTS settings and credentials."""
+    yandex_config = tts_config.get("yandex", {})
+    if not isinstance(yandex_config, dict):
+        yandex_config = {}
+
+    folder_id = _config_or_env(yandex_config.get("folder_id"), "YANDEX_FOLDER_ID")
+    api_key = _config_or_env(yandex_config.get("api_key"), "YANDEX_API_KEY")
+    iam_token = _config_or_env(yandex_config.get("iam_token"), "YANDEX_IAM_TOKEN")
+
+    if not folder_id:
+        raise ValueError("Yandex SpeechKit folder_id is not set (tts.yandex.folder_id or YANDEX_FOLDER_ID).")
+    if not api_key and not iam_token:
+        raise ValueError(
+            "Yandex SpeechKit credentials are not set "
+            "(tts.yandex.api_key / YANDEX_API_KEY or tts.yandex.iam_token / YANDEX_IAM_TOKEN)."
+        )
+
+    auth = api_key or iam_token
+    auth_type = "api_key" if api_key else "iam_token"
+    speed = yandex_config.get("speed", tts_config.get("speed", DEFAULT_YANDEX_TTS_SPEED))
+
+    return {
+        "folder_id": folder_id,
+        "auth": auth,
+        "auth_type": auth_type,
+        "voice": _clean_config_value(yandex_config.get("voice")) or DEFAULT_YANDEX_TTS_VOICE,
+        "role": _clean_config_value(yandex_config.get("role")) or DEFAULT_YANDEX_TTS_ROLE,
+        "speed": float(speed),
+        "audio_format": _clean_config_value(yandex_config.get("audio_format")) or DEFAULT_YANDEX_TTS_AUDIO_FORMAT,
+        "timeout": float(yandex_config.get("timeout", DEFAULT_YANDEX_TTS_TIMEOUT)),
+        "stream_timeout": float(yandex_config.get("stream_timeout", DEFAULT_YANDEX_TTS_STREAM_TIMEOUT)),
+        "volume": yandex_config.get("volume"),
+        "pitch_shift": yandex_config.get("pitch_shift"),
+    }
+
+
+def _create_yandex_tts_client(tts_config: Dict[str, Any]):
+    """Create and configure a Yandex SpeechKit TTS object via yandex-ai-studio-sdk."""
+    resolved = _resolve_yandex_tts_config(tts_config)
+    AIStudio = _import_yandex_ai_studio()
+    sdk = AIStudio(folder_id=resolved["folder_id"], auth=resolved["auth"])
+    speechkit = sdk.speechkit
+    tts_factory = getattr(speechkit, "tts", None) or getattr(speechkit, "text_to_speech")
+
+    kwargs: Dict[str, Any] = {
+        "voice": resolved["voice"],
+        "role": resolved["role"],
+        "speed": resolved["speed"],
+        "audio_format": resolved["audio_format"],
+    }
+    if resolved["volume"] is not None:
+        kwargs["volume"] = float(resolved["volume"])
+    if resolved["pitch_shift"] is not None:
+        kwargs["pitch_shift"] = float(resolved["pitch_shift"])
+
+    return tts_factory(**kwargs), resolved
+
+
+def _yandex_pcm_sample_rate(audio_format: str) -> int:
+    """Extract sample rate from PCM16(N) audio_format; default to 24000 Hz."""
+    match = re.search(r"PCM16\((\d+)\)", str(audio_format or ""), flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return 24000
+
+
+def _yandex_output_extension(tts_config: Dict[str, Any]) -> str:
+    """Return the preferred file extension for the configured Yandex audio format."""
+    yandex_config = tts_config.get("yandex", {})
+    audio_format = str((yandex_config or {}).get("audio_format") or DEFAULT_YANDEX_TTS_AUDIO_FORMAT).lower()
+    if "mp3" in audio_format:
+        return "mp3"
+    if "ogg" in audio_format:
+        return "ogg"
+    return "wav"
+
+
+def _write_pcm16_wav(pcm_data: bytes, output_path: str, sample_rate: int) -> None:
+    """Wrap raw mono PCM16 bytes in a WAV container."""
+    with wave.open(output_path, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+
+
 # ===========================================================================
 # Custom command providers (type: command under tts.providers.<name>)
 # ===========================================================================
@@ -381,6 +507,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "yandex",
     "neutts",
     "kittentts",
     "piper",
@@ -1703,6 +1830,26 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: Yandex SpeechKit TTS
+# ===========================================================================
+def _generate_yandex_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Yandex SpeechKit via yandex-ai-studio-sdk."""
+    tts, resolved = _create_yandex_tts_client(tts_config)
+    result = tts.run(text, timeout=resolved["timeout"])
+    audio_bytes = getattr(result, "data", b"")
+    if not audio_bytes:
+        raise RuntimeError("Yandex SpeechKit returned empty audio data")
+
+    audio_format = str(resolved["audio_format"]).lower()
+    if audio_format.startswith("pcm16"):
+        _write_pcm16_wav(audio_bytes, output_path, _yandex_pcm_sample_rate(resolved["audio_format"]))
+    else:
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -2105,6 +2252,8 @@ def text_to_speech_tool(
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
+        elif provider == "yandex":
+            file_path = out_dir / f"tts_{timestamp}.{_yandex_output_extension(tts_config)}"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
 
@@ -2182,6 +2331,18 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "yandex":
+            try:
+                _import_yandex_ai_studio()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Yandex SpeechKit provider selected but 'yandex-ai-studio-sdk' is not installed. "
+                             "Run: pip install 'hermes-agent[tts-yandex]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Yandex SpeechKit TTS...")
+            _generate_yandex_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -2284,7 +2445,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "yandex"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -2330,6 +2491,36 @@ def text_to_speech_tool(
 # ===========================================================================
 # Requirements check
 # ===========================================================================
+def _check_yandex_available(tts_config: Dict[str, Any]) -> bool:
+    """Return True when the Yandex SDK and credentials are available."""
+    try:
+        _import_yandex_ai_studio()
+        _resolve_yandex_tts_config(tts_config)
+        return True
+    except (ImportError, ValueError):
+        return False
+
+
+def check_streaming_tts_available(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when the selected TTS provider can stream to the CLI speaker."""
+    config = tts_config if tts_config is not None else _load_tts_config()
+    provider = _get_provider(config)
+
+    try:
+        if provider == "elevenlabs":
+            _import_elevenlabs()
+            _import_sounddevice()
+            return True
+        if provider == "yandex":
+            _import_yandex_ai_studio()
+            _import_sounddevice()
+            _resolve_yandex_tts_config(config)
+            return True
+    except (ImportError, OSError, ValueError):
+        return False
+    return False
+
+
 def check_tts_requirements() -> bool:
     """
     Check if at least one TTS provider is available.
@@ -2341,9 +2532,14 @@ def check_tts_requirements() -> bool:
     Returns:
         bool: True if at least one provider can work.
     """
+    tts_config = _load_tts_config()
+
     # Any configured command provider counts as available.
-    if _has_any_command_tts_provider():
+    if _has_any_command_tts_provider(tts_config):
         return True
+
+    if _get_provider(tts_config) == "yandex":
+        return _check_yandex_available(tts_config)
     try:
         _import_edge_tts()
         return True
@@ -2453,6 +2649,202 @@ def _strip_markdown_for_tts(text: str) -> str:
     return text.strip()
 
 
+def _stream_yandex_tts_to_speaker(
+    text_queue: queue.Queue,
+    stop_event: threading.Event,
+    tts_done_event: threading.Event,
+    display_callback: Optional[Callable[[str], None]] = None,
+    tts_config: Optional[Dict[str, Any]] = None,
+):
+    """Consume text deltas and stream them through Yandex SpeechKit gRPC TTS."""
+    tts_done_event.clear()
+    output_stream = None
+
+    try:
+        config = tts_config if tts_config is not None else _load_tts_config()
+        tts = None
+        resolved: Optional[Dict[str, Any]] = None
+        sample_rate = _yandex_pcm_sample_rate(DEFAULT_YANDEX_TTS_AUDIO_FORMAT)
+        reader_join_timeout = 120.0
+        sd = None
+        audio_stream_had_audio = False
+        sentence_silence_tail_seconds = 0.08
+        final_silence_tail_seconds = 0.32
+        final_stream_drain_seconds = 0.08
+
+        def _ensure_runtime() -> None:
+            nonlocal tts, resolved, sample_rate, reader_join_timeout, sd
+            if tts is not None and resolved is not None and sd is not None:
+                return
+            tts, resolved = _create_yandex_tts_client(config)
+            sample_rate = _yandex_pcm_sample_rate(resolved["audio_format"])
+            try:
+                reader_join_timeout = min(max(float(resolved["stream_timeout"]), 30.0), 120.0)
+            except (TypeError, ValueError):
+                reader_join_timeout = 120.0
+            sd = _import_sounddevice()
+
+        def _ensure_output_stream():
+            nonlocal output_stream
+            _ensure_runtime()
+            if sd is None:
+                return None
+            if output_stream is None:
+                output_stream = sd.RawOutputStream(
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="int16",
+                )
+                output_stream.start()
+            return output_stream
+
+        def _write_silence_tail(seconds: float) -> None:
+            if output_stream is None or stop_event.is_set():
+                return
+            silence_samples = max(1, int(sample_rate * seconds))
+            output_stream.write(b"\x00\x00" * silence_samples)
+
+        def _write_sentence_silence_tail() -> None:
+            _write_silence_tail(sentence_silence_tail_seconds)
+
+        def _write_final_silence_tail() -> None:
+            if not audio_stream_had_audio or output_stream is None or stop_event.is_set():
+                return
+            _write_silence_tail(final_silence_tail_seconds)
+            time.sleep(final_stream_drain_seconds)
+
+        def _play_sentence_audio(cleaned: str) -> None:
+            nonlocal audio_stream_had_audio
+            _ensure_runtime()
+            if tts is None or resolved is None or sd is None:
+                return
+
+            yandex_stream = None
+            reader_thread = None
+            done_writing_sent = False
+            reader_errors: list[Exception] = []
+            audio_written = False
+
+            try:
+                playback_stream = _ensure_output_stream()
+                if playback_stream is None:
+                    return
+
+                yandex_stream = tts.create_bistream(timeout=resolved["stream_timeout"])
+
+                def _read_audio() -> None:
+                    nonlocal audio_written, audio_stream_had_audio
+                    try:
+                        for chunk in yandex_stream:
+                            if stop_event.is_set():
+                                break
+                            audio = getattr(chunk, "data", b"") or b""
+                            if audio:
+                                playback_stream.write(audio)
+                                audio_written = True
+                                audio_stream_had_audio = True
+                    except Exception as exc:
+                        reader_errors.append(exc)
+                        logger.warning("Yandex streaming TTS reader failed: %s", exc)
+
+                reader_thread = threading.Thread(target=_read_audio, daemon=True)
+                reader_thread.start()
+
+                yandex_stream.write(cleaned)
+                yandex_stream.flush()
+                yandex_stream.done_writing()
+                done_writing_sent = True
+
+                reader_thread.join(timeout=reader_join_timeout)
+                if reader_thread.is_alive():
+                    logger.warning(
+                        "Yandex streaming TTS reader still active after %.0fs; skipping inter-sentence silence tail",
+                        reader_join_timeout,
+                    )
+                elif audio_written:
+                    _write_sentence_silence_tail()
+                if reader_errors:
+                    logger.debug("Yandex streaming TTS completed with reader errors: %s", reader_errors)
+            finally:
+                if yandex_stream is not None and not done_writing_sent:
+                    try:
+                        yandex_stream.done_writing()
+                    except Exception:
+                        pass
+
+        sentence_buf = ""
+        min_sentence_len = 20
+        long_flush_len = 100
+        queue_timeout = 0.5
+        spoken_sentences: list[str] = []
+        think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
+
+        def _send_sentence(sentence: str) -> None:
+            if stop_event.is_set():
+                return
+            cleaned = _strip_markdown_for_tts(sentence).strip()
+            if not cleaned:
+                return
+            cleaned_lower = cleaned.lower().rstrip(".!,")
+            for prev in spoken_sentences:
+                if prev.lower().rstrip(".!,") == cleaned_lower:
+                    return
+            spoken_sentences.append(cleaned)
+            if display_callback is not None:
+                display_callback(sentence)
+            _play_sentence_audio(cleaned)
+
+        while not stop_event.is_set():
+            try:
+                delta = text_queue.get(timeout=queue_timeout)
+            except queue.Empty:
+                if len(sentence_buf) > long_flush_len:
+                    _send_sentence(sentence_buf)
+                    sentence_buf = ""
+                continue
+
+            if delta is None:
+                sentence_buf = think_block_re.sub('', sentence_buf)
+                if sentence_buf.strip():
+                    _send_sentence(sentence_buf)
+                break
+
+            sentence_buf += delta
+            sentence_buf = think_block_re.sub('', sentence_buf)
+            if '<think' in sentence_buf and '</think>' not in sentence_buf:
+                continue
+
+            while True:
+                match = _SENTENCE_BOUNDARY_RE.search(sentence_buf)
+                if match is None:
+                    break
+                end_pos = match.end()
+                sentence = sentence_buf[:end_pos]
+                sentence_buf = sentence_buf[end_pos:]
+                if len(sentence.strip()) < min_sentence_len:
+                    sentence_buf = sentence + sentence_buf
+                    break
+                _send_sentence(sentence)
+
+    except Exception as exc:
+        logger.warning("Yandex streaming TTS pipeline error: %s", exc)
+    finally:
+        if output_stream is not None:
+            try:
+                _write_final_silence_tail()
+            except Exception:
+                logger.debug("Yandex streaming TTS failed to write final silence tail", exc_info=True)
+            try:
+                output_stream.stop()
+            except Exception:
+                pass
+            try:
+                output_stream.close()
+            except Exception:
+                pass
+        tts_done_event.set()
+
+
 def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
@@ -2471,6 +2863,16 @@ def stream_tts_to_speaker(
           waiting on it (continuous voice mode) know playback is finished.
     """
     tts_done_event.clear()
+    tts_config = _load_tts_config()
+    if _get_provider(tts_config) == "yandex":
+        _stream_yandex_tts_to_speaker(
+            text_queue,
+            stop_event,
+            tts_done_event,
+            display_callback=display_callback,
+            tts_config=tts_config,
+        )
+        return
 
     try:
         # --- TTS client setup (optional -- display_callback works without it) ---
@@ -2479,7 +2881,6 @@ def stream_tts_to_speaker(
         voice_id = DEFAULT_ELEVENLABS_VOICE_ID
         model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
 
-        tts_config = _load_tts_config()
         el_config = tts_config.get("elevenlabs", {})
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",

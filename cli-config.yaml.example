@@ -849,14 +849,33 @@ platform_toolsets:
 # Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
 # can use a hidden auxiliary rewrite pass to insert expressive square-bracket
 # audio tags into the TTS script without showing tags in chat.
+# Providers: edge (free) | openai | elevenlabs | mistral | xai | minimax |
+# gemini | yandex | neutts | kittentts | piper
 #
 # tts:
-#   provider: "gemini"
+#   provider: "edge"
+#   edge:
+#     voice: "en-US-AriaNeural"
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#   # Yandex SpeechKit gRPC streaming TTS for CLI voice mode.
+#   # Install: python -m pip install 'hermes-agent[voice,tts-yandex]'
+#   # Credentials: set YANDEX_FOLDER_ID and YANDEX_API_KEY,
+#   #              or set YANDEX_IAM_TOKEN.
+#   # Yandex lists all SpeechKit voices as Realtime-compatible; kirill is a ru-RU male v3 voice.
+#   yandex:
+#     folder_id: "${YANDEX_FOLDER_ID}"
+#     api_key: "${YANDEX_API_KEY}"
+#     iam_token: "${YANDEX_IAM_TOKEN}"
+#     voice: "kirill"
+#     role: "neutral"
+#     speed: 1.5
+#     audio_format: "PCM16(24000)"
+#     timeout: 60
+#     stream_timeout: 600
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

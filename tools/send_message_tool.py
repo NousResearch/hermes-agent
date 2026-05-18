@@ -773,7 +773,6 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
         from telegram.constants import ParseMode
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
@@ -794,7 +793,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        # Use fallback-aware Bot so one-shot sends survive networks where
+        # api.telegram.org's system-DNS IP is blocked (issue #20915).
+        try:
+            from gateway.platforms.telegram_network import create_bot_with_fallback
+            bot = await create_bot_with_fallback(token)
+        except Exception:
+            from telegram import Bot
+            bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

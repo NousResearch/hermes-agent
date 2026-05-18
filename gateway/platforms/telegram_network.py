@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Iterable, Optional
 
@@ -145,6 +146,62 @@ def parse_fallback_ip_env(value: str | None) -> list[str]:
         return []
     parts = [part.strip() for part in value.split(",")]
     return _normalize_fallback_ips(parts)
+
+
+async def create_bot_with_fallback(token: str):
+    """Build a ``telegram.Bot`` with the same fallback transport semantics as the gateway.
+
+    Mirrors :class:`gateway.platforms.telegram.TelegramAdapter`'s network
+    setup so that one-shot Telegram send paths (``send_message`` tool,
+    cron jobs) survive networks where the system resolver returns a
+    blocked IP for ``api.telegram.org``.
+
+    Honors:
+
+    - ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS``: when truthy, skips fallback
+      probing entirely and returns a plain ``Bot``.
+    - ``HERMES_TELEGRAM_FALLBACK_IPS``: comma-separated explicit IPs.
+      When unset, IPs are auto-discovered via DNS-over-HTTPS.
+    - ``TELEGRAM_PROXY`` (and standard ``HTTPS_PROXY`` / ``HTTP_PROXY``):
+      a configured proxy takes precedence over the fallback transport.
+
+    See issue #20915.
+    """
+    from telegram import Bot
+    from telegram.request import HTTPXRequest
+
+    disable = os.getenv(
+        "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    fallback_ips: list[str] = []
+    if not disable:
+        fallback_ips = parse_fallback_ip_env(
+            os.getenv("HERMES_TELEGRAM_FALLBACK_IPS")
+        )
+        if not fallback_ips:
+            try:
+                fallback_ips = await discover_fallback_ips()
+            except Exception:
+                fallback_ips = []
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url
+        proxy_targets = ["api.telegram.org", *fallback_ips]
+        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
+    except Exception:
+        proxy_url = None
+
+    if proxy_url:
+        return Bot(token=token, request=HTTPXRequest(proxy=proxy_url))
+    if fallback_ips:
+        return Bot(
+            token=token,
+            request=HTTPXRequest(
+                httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)}
+            ),
+        )
+    return Bot(token=token)
 
 
 def _resolve_system_dns() -> set[str]:

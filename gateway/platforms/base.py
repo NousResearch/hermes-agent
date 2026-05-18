@@ -2157,12 +2157,20 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
-        Detect bare local file paths in response text for native media delivery.
+        Detect bare local file paths in response text for native delivery.
 
         Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
-        ``os.path.isfile()`` to avoid false positives from URLs or
-        non-existent paths.
+        image, video, audio, or document extensions.  Validates each
+        candidate with ``os.path.isfile()`` to avoid false positives from
+        URLs or non-existent paths.
+
+        The extension list is broader than just images/video so the agent
+        can produce arbitrary artifacts (charts, PDFs, spreadsheets, code
+        archives, CSVs) and have them ship to the user as native uploads
+        without needing an explicit ``MEDIA:`` tag.  Image / video
+        extensions still embed inline where the platform supports it;
+        document extensions route through ``send_document``.  The dispatch
+        partition lives in ``gateway/run.py``.
 
         Paths inside fenced code blocks (``` ... ```) and inline code
         (`...`) are ignored so that code samples are never mutilated.
@@ -2172,8 +2180,22 @@ class BasePlatformAdapter(ABC):
             raw path strings removed).
         """
         _LOCAL_MEDIA_EXTS = (
-            '.png', '.jpg', '.jpeg', '.gif', '.webp',
+            # Images (embed inline)
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.svg',
+            # Video (embed inline where supported)
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            # Audio (delivered as voice/audio where supported)
+            '.mp3', '.wav', '.ogg', '.m4a', '.flac',
+            # Documents (uploaded as file attachments)
+            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
+            # Spreadsheets / data
+            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
+            # Presentations
+            '.pptx', '.ppt', '.odp', '.key',
+            # Archives
+            '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
+            # Web / rendered output
+            '.html', '.htm',
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 

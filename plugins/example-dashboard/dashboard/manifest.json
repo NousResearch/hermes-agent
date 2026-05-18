@@ -1,6 +1,7 @@
 {
   "name": "example",
   "label": "Example",
+  "kind": "standalone",
   "description": "Example dashboard plugin — used by test suite for auth coverage",
   "icon": "Sparkles",
   "version": "1.0.0",

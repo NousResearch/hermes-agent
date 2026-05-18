@@ -1,6 +1,7 @@
 {
   "name": "kanban",
   "label": "Kanban",
+  "kind": "standalone",
   "description": "Multi-agent collaboration board — drag-drop cards across columns, read comment threads, see which profile is running what",
   "icon": "Package",
   "version": "1.0.0",

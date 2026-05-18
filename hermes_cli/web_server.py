@@ -3929,6 +3929,32 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _get_dashboard_enabled() -> Optional[set]:
+    """Read the dashboard plugins enabled set from config.
+
+    Mirrors the agent-side `_get_enabled_plugins()` logic so dashboard and
+    agent plugin systems share the same opt-in semantics:
+    - Returns None → nothing enabled yet (use grandfather set)
+    - Returns set()  → explicitly empty, nothing loads
+    - Returns set(N) → only N loads
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        plugins_cfg = config.get("plugins", {})
+        if not isinstance(plugins_cfg, dict):
+            return None
+        enabled = plugins_cfg.get("enabled")
+        if enabled is None:
+            return None
+        if not isinstance(enabled, list):
+            return None
+        return set(enabled)
+    except Exception:
+        return None
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3936,11 +3962,16 @@ def _discover_dashboard_plugins() -> list:
     1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
     2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
     3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
+
+    Bundled ``backend`` and ``platform`` plugins auto-load (matching the
+    agent loader). ``standalone`` plugins require explicit opt-in via
+    ``plugins.enabled`` in config.yaml, consistent with the agent system.
     """
     plugins = []
     seen_names: set = set()
 
     from hermes_cli.plugins import get_bundled_plugins_dir
+
     bundled_root = get_bundled_plugins_dir()
     search_dirs = [
         (get_hermes_home() / "plugins", "user"),
@@ -3949,6 +3980,8 @@ def _discover_dashboard_plugins() -> list:
     ]
     if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
+
+    enabled = _get_dashboard_enabled()
 
     for plugins_root, source in search_dirs:
         if not plugins_root.is_dir():
@@ -3965,6 +3998,19 @@ def _discover_dashboard_plugins() -> list:
                 if name in seen_names:
                     continue
                 seen_names.add(name)
+
+                # Plugin kind: "backend" and "platform" auto-load (bundled only);
+                # "standalone" (default) requires opt-in via plugins.enabled.
+                kind = data.get("kind", "standalone")
+                is_backend_or_platform = (
+                    source == "bundled" and kind in {"backend", "platform"}
+                )
+
+                if not is_backend_or_platform and enabled is not None:
+                    lookup_key = data.get("name", child.name)
+                    if lookup_key not in enabled and name not in enabled:
+                        continue  # not in the allow-list
+
                 # Tab options: ``path`` + ``position`` for a new tab, optional
                 # ``override`` to replace a built-in route, and ``hidden`` to
                 # register the plugin component/slots without adding a tab

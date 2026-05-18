@@ -22,7 +22,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Union
 
-from tools import registry
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 

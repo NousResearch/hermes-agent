@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools import registry
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 

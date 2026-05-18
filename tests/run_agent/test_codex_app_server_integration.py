@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import agent.codex_runtime as codex_runtime
 import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
@@ -62,6 +63,25 @@ def _make_codex_agent():
         skip_context_files=True,
         skip_memory=True,
     )
+
+
+def _capture_codex_session_kwargs(monkeypatch):
+    captured = {}
+
+    def fake_init(self, **kwargs):
+        captured.update(kwargs)
+
+    def fake_run_turn(self, user_input: str, **kwargs):
+        return TurnResult(
+            final_text=f"echo: {user_input}",
+            projected_messages=[{"role": "assistant", "content": f"echo: {user_input}"}],
+            turn_id="turn-stub-1",
+            thread_id="thread-stub-1",
+        )
+
+    monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+    monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+    return captured
 
 
 class TestApiModeAccepted:
@@ -326,6 +346,52 @@ class TestRunConversationCodexPath:
 
         assert captured["cwd"] == str(tmp_path)
 
+    def test_soul_md_is_forwarded_as_base_instructions_when_context_files_load(
+        self, monkeypatch
+    ):
+        captured = _capture_codex_session_kwargs(monkeypatch)
+        monkeypatch.setattr(codex_runtime, "load_soul_md", lambda: "SOUL IDENTITY")
+        agent = _make_codex_agent()
+        agent.skip_context_files = False
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["base_instructions"] == "SOUL IDENTITY"
+
+    def test_soul_md_is_forwarded_when_load_soul_identity_overrides_skip(
+        self, monkeypatch
+    ):
+        captured = _capture_codex_session_kwargs(monkeypatch)
+        monkeypatch.setattr(codex_runtime, "load_soul_md", lambda: "SOUL IDENTITY")
+        agent = _make_codex_agent()
+        agent.load_soul_identity = True
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["base_instructions"] == "SOUL IDENTITY"
+
+    def test_soul_md_is_not_forwarded_when_skipped_or_absent(self, monkeypatch):
+        captured = _capture_codex_session_kwargs(monkeypatch)
+        monkeypatch.setattr(codex_runtime, "load_soul_md", lambda: "SOUL IDENTITY")
+        agent = _make_codex_agent()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert "base_instructions" not in captured
+
+        captured.clear()
+        monkeypatch.setattr(codex_runtime, "load_soul_md", lambda: None)
+        agent = _make_codex_agent()
+        agent.skip_context_files = False
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert "base_instructions" not in captured
+
 
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background
@@ -588,4 +654,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

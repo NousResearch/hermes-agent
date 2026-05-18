@@ -213,9 +213,15 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: ./.github/actions/nix-setup
+      # Use pinned third-party actions directly here instead of the local
+      # ./.github/actions/nix-setup action. This job checks out PR-controlled
+      # code with write credentials so local actions would be attacker-controlled.
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: hermes-agent
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        continue-on-error: true
 
       - name: Apply lockfile hashes
         id: apply

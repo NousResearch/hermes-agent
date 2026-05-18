@@ -20,31 +20,38 @@ _LINUX_ONLY = pytest.mark.skipif(
 )
 
 
+def _prctl_or_skip():
+    """Resolve libc.prctl via the same path production uses, or skip the test.
+
+    Production routes through `ctypes.util.find_library("c")` with a
+    `CDLL(None)` fallback so musl-based distros (Alpine) work; mirroring that
+    here keeps the test from spuriously failing on hosts where `libc.so.6`
+    doesn't exist.
+    """
+    from tools.environments.local import _resolve_prctl
+    prctl = _resolve_prctl()
+    if prctl is None:
+        pytest.skip("libc.prctl unavailable on this host")
+    return prctl
+
+
+_PR_GET_DUMPABLE = 3
+_PR_SET_DUMPABLE = 4
+
+
 def _get_dumpable() -> int:
-    import ctypes
-    libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    PR_GET_DUMPABLE = 3
-    return libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0)
+    return _prctl_or_skip()(_PR_GET_DUMPABLE, 0, 0, 0, 0)
 
 
 def _set_dumpable(value: int) -> None:
-    import ctypes
-    libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    PR_SET_DUMPABLE = 4
-    libc.prctl(PR_SET_DUMPABLE, value, 0, 0, 0)
+    _prctl_or_skip()(_PR_SET_DUMPABLE, value, 0, 0, 0)
 
 
 @pytest.fixture
 def restore_dumpable():
-    import tools.environments.local as _local
     original = _get_dumpable()
-    original_flag = getattr(_local, "_PROC_ENVIRON_HARDENED", None)
-    if original_flag is not None:
-        _local._PROC_ENVIRON_HARDENED = False
     _set_dumpable(1)
     yield
-    if original_flag is not None:
-        _local._PROC_ENVIRON_HARDENED = original_flag
     _set_dumpable(original)
 
 

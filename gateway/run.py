@@ -11104,8 +11104,10 @@ class GatewayRunner:
 
             _cfg_path = _hermes_home / "config.yaml"
             if _cfg_path.exists():
-                with open(_cfg_path, encoding="utf-8") as _f:
-                    _data = _y.safe_load(_f) or {}
+                def _read_and_parse():
+                    with open(_cfg_path, encoding="utf-8") as _f:
+                        return _y.safe_load(_f) or {}
+                _data = await asyncio.to_thread(_read_and_parse)
                 cp_cfg = _data.get("checkpoints", {})
                 if isinstance(cp_cfg, bool):
                     cp_cfg = {"enabled": cp_cfg}

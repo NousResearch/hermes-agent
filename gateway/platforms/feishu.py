@@ -2043,8 +2043,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             import io as _io
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
+
+            def _read_file():
+                with open(image_path, "rb") as f:
+                    return f.read()
+
+            image_bytes = await asyncio.to_thread(_read_file)
             # Wrap in BytesIO so lark SDK's MultipartEncoder can read .name and .tell()
             image_file = _io.BytesIO(image_bytes)
             image_file.name = os.path.basename(image_path)

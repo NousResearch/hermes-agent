@@ -1953,6 +1953,7 @@ name = "hermes-agent"
 version = "0.13.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiofiles" },
     { name = "croniter" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
@@ -2147,6 +2148,7 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.13.3" },

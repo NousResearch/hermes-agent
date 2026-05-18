@@ -548,7 +548,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # messages are preserved for troubleshooting.
             whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
-            bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
+            bridge_log_fh = await asyncio.to_thread(open, self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
 
             # Build bridge subprocess environment.

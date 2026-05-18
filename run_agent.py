@@ -3609,7 +3609,10 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
-            or "kimi" in (self.model or "").lower()
+            or (
+                self.provider not in {"openrouter", "gemini", "openai", "anthropic"}
+                and "kimi" in (self.model or "").lower()
+            )
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:

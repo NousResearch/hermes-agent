@@ -2740,7 +2740,7 @@ class _FakeAiohttpSession:
 
 def _install_fake_aiohttp(monkeypatch, session):
     fake_aiohttp = types.SimpleNamespace(
-        ClientSession=lambda timeout=None: session,
+        ClientSession=lambda *args, **kwargs: session,
         ClientTimeout=lambda total=None: None,
     )
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
@@ -2771,6 +2771,8 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
+        # Ensure google deps are loaded before accessing service_account
+        _gc_mod._load_google_modules()
         original = _gc_mod.service_account.Credentials.from_service_account_info
         _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
             return_value=fake_creds
@@ -2826,6 +2828,8 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
+        # Ensure google deps are loaded before accessing service_account
+        _gc_mod._load_google_modules()
         original = _gc_mod.service_account.Credentials.from_service_account_info
         _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
             return_value=fake_creds

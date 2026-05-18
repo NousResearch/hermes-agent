@@ -109,6 +109,10 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     with all models collected, not N duplicate rows."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    # Prevent live model discovery from overriding custom models
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models", lambda *a, **k: []
+    )
 
     providers = list_authenticated_providers(
         current_provider="openrouter",

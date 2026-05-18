@@ -1047,6 +1047,37 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
     assert config["browser"]["use_gateway"] is False
 
 
+# Mock provider dicts for plugin browser providers that are not in
+# TOOL_CATEGORIES (they are registered via ctx.register_browser_provider).
+_BROWSER_PLUGIN_PROVIDERS = {
+    "Browserbase": {
+        "name": "Browserbase",
+        "browser_provider": "browserbase",
+        "env_vars": [
+            {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API Key"},
+            {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase Project ID"},
+        ],
+        "post_setup": "agent_browser",
+    },
+    "Browser Use": {
+        "name": "Browser Use",
+        "browser_provider": "browser-use",
+        "env_vars": [
+            {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API Key"},
+        ],
+        "post_setup": "agent_browser",
+    },
+    "Firecrawl": {
+        "name": "Firecrawl",
+        "browser_provider": "firecrawl",
+        "env_vars": [
+            {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API Key"},
+        ],
+        "post_setup": "agent_browser",
+    },
+}
+
+
 @pytest.mark.parametrize("provider_name,post_setup_key", [
     ("Browserbase", "agent_browser"),
     ("Browser Use", "agent_browser"),
@@ -1064,11 +1095,16 @@ def test_reconfigure_provider_runs_post_setup_for_env_var_providers(
     monkeypatch.setattr("hermes_cli.tools_config._prompt", lambda *a, **kw: "")
     monkeypatch.setattr("hermes_cli.tools_config.save_env_value", lambda k, v: None)
 
-    provider = next(
-        p
-        for p in TOOL_CATEGORIES["browser"]["providers"]
-        if p["name"] == provider_name
-    )
+    # Plugin browser providers live in _BROWSER_PLUGIN_PROVIDERS; built-in
+    # ones (Camofox) are still in TOOL_CATEGORIES.
+    if provider_name in _BROWSER_PLUGIN_PROVIDERS:
+        provider = _BROWSER_PLUGIN_PROVIDERS[provider_name]
+    else:
+        provider = next(
+            p
+            for p in TOOL_CATEGORIES["browser"]["providers"]
+            if p["name"] == provider_name
+        )
     _reconfigure_provider(provider, {})
 
     assert called == [post_setup_key]

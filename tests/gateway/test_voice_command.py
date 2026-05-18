@@ -462,6 +462,7 @@ class TestSendVoiceReply:
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
             "telegram_reply_to_message_id": "462",
+            "direct_messages_topic_id": "20197",
         }
 
     @pytest.mark.asyncio

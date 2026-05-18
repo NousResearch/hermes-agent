@@ -191,6 +191,23 @@ from gateway.platforms.base import (
 )
 
 
+_REQUIRED_BRIDGE_MODULES = (
+    "@whiskeysockets/baileys",
+    "@sentry/node",
+    "express",
+    "pino",
+    "qrcode-terminal",
+)
+
+
+def _bridge_dependencies_installed(bridge_dir: Path) -> bool:
+    """Return True when all Node bridge dependencies are installed."""
+    node_modules = bridge_dir / "node_modules"
+    if not node_modules.exists():
+        return False
+    return all((node_modules / module).exists() for module in _REQUIRED_BRIDGE_MODULES)
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -544,9 +561,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies if node_modules doesn't exist
+            # Auto-install npm dependencies if required modules are missing.
+            # Checking only node_modules/ is not enough after Hermes updates add
+            # a new bridge dependency to an existing installation.
             bridge_dir = bridge_path.parent
-            if not (bridge_dir / "node_modules").exists():
+            if not _bridge_dependencies_installed(bridge_dir):
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 # Resolve npm path so Windows can execute the .cmd shim.
                 # shutil.which honours PATHEXT; on POSIX it returns the

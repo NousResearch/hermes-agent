@@ -214,6 +214,21 @@ class TestFileHandleClosedOnError:
 class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 
+    def test_bridge_dependencies_require_sentry_module_when_node_modules_exists(self, tmp_path):
+        from gateway.platforms.whatsapp import _bridge_dependencies_installed
+
+        bridge_dir = tmp_path / "bridge"
+        (bridge_dir / "node_modules" / "@whiskeysockets" / "baileys").mkdir(parents=True)
+        (bridge_dir / "node_modules" / "express").mkdir()
+        (bridge_dir / "node_modules" / "pino").mkdir()
+        (bridge_dir / "node_modules" / "qrcode-terminal").mkdir()
+
+        assert _bridge_dependencies_installed(bridge_dir) is False
+
+        (bridge_dir / "node_modules" / "@sentry" / "node").mkdir(parents=True)
+
+        assert _bridge_dependencies_installed(bridge_dir) is True
+
     @pytest.mark.asyncio
     async def test_releases_lock_when_npm_install_fails(self):
         adapter = _make_adapter()

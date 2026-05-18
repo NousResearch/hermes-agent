@@ -289,6 +289,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `SENTRY_DSN` / `HERMES_SENTRY_DSN` | Optional Sentry DSN for WhatsApp bridge error tracking. The bridge tags events with `platform=whatsapp` and `component=whatsapp-bridge` and redacts message IDs, chat IDs, sender IDs, message text, and file paths from event context. |
+| `SENTRY_ENVIRONMENT` | Optional Sentry environment for WhatsApp bridge events (falls back to `HERMES_ENV`, `NODE_ENV`, then `production`) |
+| `SENTRY_RELEASE` | Optional Sentry release string for WhatsApp bridge events |
+| `SENTRY_TRACES_SAMPLE_RATE` | Optional Sentry traces sample rate for the WhatsApp bridge |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |

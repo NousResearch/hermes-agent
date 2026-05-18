@@ -29,6 +29,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { captureBridgeException, initSentryForBridge } from './sentry.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -62,6 +63,19 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+
+await initSentryForBridge();
+
+process.on('unhandledRejection', (reason) => {
+  captureBridgeException(reason instanceof Error ? reason : new Error(String(reason)), {
+    operation: 'unhandledRejection',
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  captureBridgeException(err, { operation: 'uncaughtException' });
+  throw err;
+});
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -214,6 +228,11 @@ async function startSocket() {
       connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
+        captureBridgeException(lastDisconnect?.error || new Error('WhatsApp logged out'), {
+          operation: 'connection.update',
+          reason,
+          connection,
+        });
         console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         process.exit(1);
       } else {
@@ -346,6 +365,7 @@ async function startSocket() {
           writeFileSync(filePath, buf);
           mediaUrls.push(filePath);
         } catch (err) {
+          captureBridgeException(err, { operation: 'download_media', mediaType: 'image', chatId, senderId });
           console.error('[bridge] Failed to download image:', err.message);
         }
       } else if (messageContent.videoMessage) {
@@ -361,6 +381,7 @@ async function startSocket() {
           writeFileSync(filePath, buf);
           mediaUrls.push(filePath);
         } catch (err) {
+          captureBridgeException(err, { operation: 'download_media', mediaType: 'video', chatId, senderId });
           console.error('[bridge] Failed to download video:', err.message);
         }
       } else if (messageContent.audioMessage || messageContent.pttMessage) {
@@ -376,6 +397,7 @@ async function startSocket() {
           writeFileSync(filePath, buf);
           mediaUrls.push(filePath);
         } catch (err) {
+          captureBridgeException(err, { operation: 'download_media', mediaType, chatId, senderId });
           console.error('[bridge] Failed to download audio:', err.message);
         }
       } else if (messageContent.documentMessage) {
@@ -391,6 +413,7 @@ async function startSocket() {
           writeFileSync(filePath, buf);
           mediaUrls.push(filePath);
         } catch (err) {
+          captureBridgeException(err, { operation: 'download_media', mediaType: 'document', chatId, senderId, fileName });
           console.error('[bridge] Failed to download document:', err.message);
         }
       }
@@ -518,6 +541,7 @@ app.post('/send', async (req, res) => {
       messageIds,
     });
   } catch (err) {
+    captureBridgeException(err, { operation: 'send', endpoint: '/send', chatId });
     res.status(500).json({ error: err.message });
   }
 });
@@ -552,6 +576,7 @@ app.post('/edit', async (req, res) => {
 
     res.json({ success: true, messageIds });
   } catch (err) {
+    captureBridgeException(err, { operation: 'edit', endpoint: '/edit', chatId, messageId });
     res.status(500).json({ error: err.message });
   }
 });
@@ -622,6 +647,7 @@ app.post('/send-media', async (req, res) => {
             audioExt = 'ogg';
           } catch (convErr) {
             // ffmpeg not available or conversion failed — fall back to original format
+            captureBridgeException(convErr, { operation: 'convert_audio', endpoint: '/send-media', mediaType: type, filePath });
             console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
           } finally {
             try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
@@ -648,6 +674,7 @@ app.post('/send-media', async (req, res) => {
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
+    captureBridgeException(err, { operation: 'send_media', endpoint: '/send-media', chatId, filePath, mediaType });
     res.status(500).json({ error: err.message });
   }
 });
@@ -665,6 +692,7 @@ app.post('/typing', async (req, res) => {
     await sock.sendPresenceUpdate('composing', chatId);
     res.json({ success: true });
   } catch (err) {
+    captureBridgeException(err, { operation: 'typing', endpoint: '/typing', chatId });
     res.json({ success: false });
   }
 });
@@ -682,7 +710,8 @@ app.get('/chat/:id', async (req, res) => {
         isGroup: true,
         participants: metadata.participants.map(p => p.id),
       });
-    } catch {
+    } catch (err) {
+      captureBridgeException(err, { operation: 'chat_info', endpoint: '/chat/:id', chatId });
       // Fall through to default
     }
   }

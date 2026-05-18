@@ -99,6 +99,9 @@ WHATSAPP_MODE=bot                          # "bot" or "self-chat"
 WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
 # WHATSAPP_ALLOWED_USERS=*                 # OR use * to allow everyone
 # WHATSAPP_ALLOW_ALL_USERS=true            # OR set this flag instead (same effect as *)
+
+# Optional bridge error tracking
+# SENTRY_DSN=https://public@o0.ingest.sentry.io/0
 ```
 
 :::tip Allow-all shorthand
@@ -129,6 +132,23 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
+
+### Optional: Sentry error tracking for the bridge
+
+The WhatsApp bridge is a separate Node.js process. To send bridge crashes and
+runtime failures to Sentry, set `SENTRY_DSN` (or `HERMES_SENTRY_DSN`) in
+`~/.hermes/.env` and restart the gateway. Events are tagged with
+`platform=whatsapp` and `component=whatsapp-bridge`; message identifiers,
+message text, sender IDs, chat IDs, and file paths are redacted before being
+attached as context.
+
+Optional Sentry metadata:
+
+```bash
+SENTRY_ENVIRONMENT=production
+SENTRY_RELEASE=hermes@<version>
+SENTRY_TRACES_SAMPLE_RATE=0
+```
 
 ---
 

@@ -86,7 +86,10 @@ def _usage_file_lock():
         yield
     finally:
         if fcntl:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
         elif msvcrt:
             try:
                 fd.seek(0)

@@ -1106,7 +1106,7 @@ class TestToolUseEnforcementConfig:
     def test_auto_injects_for_qwen(self):
         """Qwen models default to chatty/hallucinatory tool use without enforcement."""
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
-        agent = self._make_agent(model="qwen/qwen3.6-plus", tool_use_enforcement="auto")
+        agent = self._make_agent(model="qwen/qwen-plus", tool_use_enforcement="auto")
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 

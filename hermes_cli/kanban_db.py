@@ -2798,6 +2798,7 @@ def decompose_triage_task(
     root_assignee: Optional[str],
     children: list[dict],
     author: Optional[str] = None,
+    auto_promote: bool = True,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -2983,8 +2984,11 @@ def decompose_triage_task(
 
     # Outside the write_txn: promote parent-free children to 'ready'
     # so the dispatcher picks them up on its next tick. Same pattern
-    # specify_triage_task uses.
-    recompute_ready(conn)
+    # specify_triage_task uses.  When auto_promote is False children
+    # stay in 'todo' until the user manually promotes them — useful
+    # for manual-review-first workflows.
+    if auto_promote:
+        recompute_ready(conn)
     return child_ids
 
 

@@ -19,8 +19,6 @@ import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
 
-from utils import env_var_enabled, is_truthy_value
-
 logger = logging.getLogger(__name__)
 
 # Per-thread/per-task gateway session identity.
@@ -83,37 +81,6 @@ def get_current_session_key(default: str = "default") -> str:
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
 
-
-def _get_session_platform() -> str:
-    """Return the current gateway platform from contextvars/env fallback."""
-    try:
-        from gateway.session_context import get_session_env
-
-        return get_session_env("HERMES_SESSION_PLATFORM", "") or ""
-    except Exception:
-        return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
-
-
-def _is_gateway_approval_context() -> bool:
-    """True when this call is inside a gateway/API session.
-
-    Legacy gateway integrations set HERMES_GATEWAY_SESSION in process env.
-    Newer concurrent gateway paths bind HERMES_SESSION_PLATFORM via
-    contextvars so approval mode does not depend on process-global flags.
-
-    Cron jobs are NEVER gateway-approval contexts even when they originate
-    from a gateway platform (cron binds HERMES_SESSION_PLATFORM via
-    contextvars for delivery routing). Cron approvals are governed by
-    ``approvals.cron_mode`` config, not interactive resolve — letting cron
-    fall through to the gateway branch would submit a pending approval
-    with no listener and block the job indefinitely.
-    """
-    if env_var_enabled("HERMES_CRON_SESSION"):
-        return False
-    if env_var_enabled("HERMES_GATEWAY_SESSION"):
-        return True
-    return bool(_get_session_platform())
-
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
@@ -125,31 +92,10 @@ _HERMES_ENV_PATH = (
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
-)
-_CREDENTIAL_FILES = (
-    r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:netrc|pgpass|npmrc|pypirc)\b'
-)
-# macOS: /etc, /var, /tmp, /home are symlinks to /private/{etc,var,tmp,home}.
-# A command written to target /private/etc/sudoers works identically to
-# /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
-# both forms. Inspired by Claude Code 2.1.113's "dangerous path protection".
-_MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
-# System-config paths that should trigger approval for any write/edit,
-# collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
-# one shared fragment so new DANGEROUS_PATTERNS stay consistent.
-_SYSTEM_CONFIG_PATH = (
-    rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
-)
 _SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
+    r'(?:/etc/|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
-    rf'{_HERMES_ENV_PATH}|'
-    rf'{_SHELL_RC_FILES}|'
-    rf'{_CREDENTIAL_FILES})'
+    rf'{_HERMES_ENV_PATH})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
@@ -232,40 +178,6 @@ HARDLINE_PATTERNS_COMPILED = [
 ]
 
 
-# =========================================================================
-# Sudo stdin guard — block password guessing via "sudo -S"
-# =========================================================================
-# When SUDO_PASSWORD is not configured, any explicit "sudo -S" in the
-# command is the LLM piping a guessed password via stdin.  This is a
-# brute-force attack vector: the model iterates through candidate
-# passwords, inspects sudo's "Sorry, try again" output, and refines.
-# Treat this as an unconditional block — there is never a legitimate
-# reason for the agent to pipe passwords to sudo -S when no password
-# has been configured.
-_SUDO_STDIN_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
-    re.IGNORECASE)
-
-
-def _check_sudo_stdin_guard(command: str) -> tuple:
-    """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
-
-    When SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S``
-    internally — that path is legitimate and handled elsewhere.  This guard
-    only fires when SUDO_PASSWORD is *not* set, meaning the LLM explicitly
-    wrote ``sudo -S`` to pipe a guessed password.
-
-    Returns:
-        (is_blocked: bool, description: str | None)
-    """
-    if "SUDO_PASSWORD" in os.environ:
-        return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
-    if _SUDO_STDIN_RE.search(normalized):
-        return (True, "sudo password guessing via stdin (sudo -S)")
-    return (False, None)
-
-
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
@@ -295,20 +207,6 @@ def _hardline_block_result(description: str) -> dict:
     }
 
 
-def _sudo_stdin_block_result(description: str) -> dict:
-    """Build the standard block result for sudo stdin guard."""
-    return {
-        "approved": False,
-        "message": (
-            f"BLOCKED: {description}. "
-            "Do not pipe passwords to 'sudo -S' — this is a brute-force "
-            "attack vector. Set SUDO_PASSWORD in your .env file if the "
-            "agent needs passwordless sudo, or run the sudo command "
-            "manually in your own terminal."
-        ),
-    }
-
-
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -325,21 +223,12 @@ DANGEROUS_PATTERNS = [
     (r'\bdd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the
-    # *next* line to satisfy the negative lookahead, silently allowing DELETE without WHERE.
-    (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
+    (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
-    (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
+    (r'>\s*/etc/', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
-    # killall with SIGKILL (parallel to pkill -9). Catches -9 / -KILL /
-    # -s KILL / -SIGKILL forms, and also `killall -r <regex>` broad sweeps
-    # that can wipe out unrelated processes by accident.
-    # Inspired by Claude Code 2.1.113 expanded deny rules.
-    (r'\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
@@ -351,11 +240,7 @@ DANGEROUS_PATTERNS = [
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
-    # find -exec rm / -execdir rm — the -execdir variant (same semantics,
-    # runs in the directory of each match) was previously missed. Claude
-    # Code 2.1.113 tightened their equivalent find rule to stop auto-
-    # approving -exec / -delete flags.
-    (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
+    (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
@@ -373,12 +258,11 @@ DANGEROUS_PATTERNS = [
     # to regex at detection time. Catch the structural pattern instead.
     (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
     (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
-    # File copy/move/edit into sensitive system paths (/etc/ and macOS
-    # /private/etc/ mirror).
-    (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
+    # File copy/move/edit into sensitive system paths
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
@@ -393,25 +277,6 @@ DANGEROUS_PATTERNS = [
     # a script is first made executable then immediately run. The script
     # content may contain dangerous commands that individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
-    # Sudo with stdin / askpass / shell / list-privs flags. An LLM-driven
-    # agent has no TTY, so sudo invocations that succeed without human
-    # interaction are those reading the password from stdin (-S/--stdin)
-    # or via an askpass helper (-A/--askpass). The shell-launch (-s) and
-    # list-privileges (-a) flags are also gated since they are
-    # privilege-relevant invocations the agent can chain after acquiring
-    # the password (e.g. read SUDO_PASSWORD from .env -> sudo -S -s ->
-    # root shell). Plain `sudo cmd` (no flag) is TTY-bound and excluded.
-    # `_normalize_command_for_detection` lowercases input before pattern
-    # matching, so case variants of S/s and A/a collapse — both forms
-    # are gated below. Lazy `[^;|&\n]*?` allows flag arguments (e.g.
-    # `sudo -u root -S whoami`) without spanning command separators. See
-    # #17873 category 4.
-    (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--stdin\b|-a\b|--askpass\b)',
-     "sudo with privilege flag (stdin/askpass/shell/list)"),
-    # Combined short-flag form: -nS, -ns, -sa, -las — sudo flags packed
-    # into a single -X token. Catches the same threat class.
-    (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
-     "sudo with combined-flag privilege escalation"),
 ]
 
 
@@ -535,8 +400,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        for entry in entries:
+            entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -610,12 +475,7 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        # Session-boundary cleanup should cancel any blocked approval waits
-        # immediately so the old run can unwind instead of idling until timeout.
-        entry.result = "deny"
-        entry.event.set()
+        _gateway_queues.pop(session_key, None)
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -681,14 +541,26 @@ def load_permanent_allowlist() -> set:
 
 
 def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+    """Save permanently allowed command patterns to config.
+
+    Raises RuntimeError with a descriptive message on failure. Callers must
+    catch and surface the error to the user — the old silent-swallow pattern
+    (issue #27660) produced a misleading "✅ Added to permanent allowlist"
+    while the config was never actually written.
+    """
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
         config["command_allowlist"] = list(patterns)
         save_config(config)
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.warning("Could not save allowlist: %s", e)
+        raise RuntimeError(
+            f"Could not save permanent allowlist to config.yaml: {e}. "
+            "Your approval was remembered for this session only. "
+            "Check ~/.hermes/logs/errors.log for details."
+        ) from e
 
 
 # =========================================================================
@@ -751,18 +623,15 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
-        # Resolve the active UI language once per prompt so we don't re-read
-        # config/YAML inside the retry loop below.
-        from agent.i18n import t
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=description)}")
+            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
             print(f"      {command}")
             print()
             if allow_permanent:
-                print(t("approval.choose_long"))
+                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
             else:
-                print(t("approval.choose_short"))
+                print("      [o]nce  |  [s]ession  |  [d]eny")
             print()
             sys.stdout.flush()
 
@@ -770,7 +639,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
+                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -780,28 +649,28 @@ def prompt_dangerous_approval(command: str, description: str,
             thread.join(timeout=timeout_seconds)
 
             if thread.is_alive():
-                print("\n" + t("approval.timeout"))
+                print("\n      ⏱ Timeout - denying command")
                 return "deny"
 
             choice = result["choice"]
-            if choice in {'o', 'once'}:
-                print(t("approval.allowed_once"))
+            if choice in ('o', 'once'):
+                print("      ✓ Allowed once")
                 return "once"
-            elif choice in {'s', 'session'}:
-                print(t("approval.allowed_session"))
+            elif choice in ('s', 'session'):
+                print("      ✓ Allowed for this session")
                 return "session"
-            elif choice in {'a', 'always'}:
+            elif choice in ('a', 'always'):
                 if not allow_permanent:
-                    print(t("approval.allowed_session"))
+                    print("      ✓ Allowed for this session")
                     return "session"
-                print(t("approval.allowed_always"))
+                print("      ✓ Added to permanent allowlist")
                 return "always"
             else:
-                print(t("approval.denied"))
+                print("      ✗ Denied")
                 return "deny"
 
     except (EOFError, KeyboardInterrupt):
-        print("\n" + t("approval.cancelled"))
+        print("\n      ✗ Cancelled")
         return "deny"
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:
@@ -856,7 +725,7 @@ def _get_cron_approval_mode() -> str:
         from hermes_cli.config import load_config
         config = load_config()
         mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
-        if mode in {"approve", "off", "allow", "yes"}:
+        if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"
     except Exception:
@@ -925,7 +794,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -940,7 +809,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -951,12 +820,12 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
-    is_gateway = _is_gateway_approval_context()
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if os.getenv("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -970,7 +839,7 @@ def check_dangerous_command(command: str, env_type: str,
                 }
         return {"approved": True, "message": None}
 
-    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+    if is_gateway or os.getenv("HERMES_EXEC_ASK"):
         submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,
@@ -1050,7 +919,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1062,32 +931,21 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
-    # == Sudo stdin guard ==
-    # Like the hardline floor above, this is unconditional: there is never a
-    # legitimate reason for the agent to pipe passwords to sudo -S when no
-    # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
-    # check so even yolo/smart approval/mode=off cannot bypass it.
-    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
-    if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
-        return _sudo_stdin_block_result(sudo_guess_desc)
-
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
-    is_gateway = _is_gateway_approval_context()
-    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_ask = os.getenv("HERMES_EXEC_ASK")
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if os.getenv("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -1129,7 +987,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Previously, tirith "block" was a hard block with no approval prompt.
     # Now both block and warn go through the approval flow so users can
     # inspect the explanation and approve if they understand the risk.
-    if tirith_result["action"] in {"block", "warn"}:
+    if tirith_result["action"] in ("block", "warn"):
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"

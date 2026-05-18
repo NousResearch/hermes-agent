@@ -129,6 +129,9 @@ class PooledCredential:
     def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
+        # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
+        if "last_status_at" in data and isinstance(data["last_status_at"], str):
+            data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
         extra = {k: payload[k] for k in _EXTRA_KEYS if k in payload and payload[k] is not None}
         data["extra"] = extra
         data.setdefault("id", uuid.uuid4().hex[:6])
@@ -163,6 +166,8 @@ class PooledCredential:
     @property
     def runtime_api_key(self) -> str:
         if self.provider == "nous":
+            # Nous stores the runtime inference credential in agent_key for
+            # compatibility. It may be a NAS invoke JWT or legacy opaque key.
             return str(self.agent_key or self.access_token or "")
         return str(self.access_token or "")
 
@@ -618,18 +623,35 @@ class CredentialPool:
                 return entry
             store_refresh = state.get("refresh_token", "")
             store_access = state.get("access_token", "")
-            if store_refresh and store_refresh != entry.refresh_token:
+            comparable_updates = {
+                "access_token": store_access,
+                "refresh_token": store_refresh,
+                "expires_at": state.get("expires_at"),
+                "agent_key": state.get("agent_key"),
+                "agent_key_expires_at": state.get("agent_key_expires_at"),
+                "inference_base_url": state.get("inference_base_url"),
+            }
+            should_sync = any(
+                value not in (None, "") and getattr(entry, key, None) != value
+                for key, value in comparable_updates.items()
+            )
+            if should_sync:
                 logger.debug(
-                    "Pool entry %s: syncing tokens from auth.json (Nous refresh token changed)",
+                    "Pool entry %s: syncing Nous state from auth.json",
                     entry.id,
                 )
                 field_updates: Dict[str, Any] = {
-                    "access_token": store_access,
-                    "refresh_token": store_refresh,
                     "last_status": None,
                     "last_status_at": None,
                     "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
                 }
+                if store_access:
+                    field_updates["access_token"] = store_access
+                if store_refresh:
+                    field_updates["refresh_token"] = store_refresh
                 if state.get("expires_at"):
                     field_updates["expires_at"] = state["expires_at"]
                 if state.get("agent_key"):
@@ -808,36 +830,15 @@ class CredentialPool:
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
-                nous_state = {
-                    "access_token": entry.access_token,
-                    "refresh_token": entry.refresh_token,
-                    "client_id": entry.client_id,
-                    "portal_base_url": entry.portal_base_url,
-                    "inference_base_url": entry.inference_base_url,
-                    "token_type": entry.token_type,
-                    "scope": entry.scope,
-                    "obtained_at": entry.obtained_at,
-                    "expires_at": entry.expires_at,
-                    "agent_key": entry.agent_key,
-                    "agent_key_expires_at": entry.agent_key_expires_at,
-                    "tls": entry.tls,
-                }
-                refreshed = auth_mod.refresh_nous_oauth_from_state(
-                    nous_state,
+                auth_mod.resolve_nous_runtime_credentials(
                     min_key_ttl_seconds=DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-                    force_refresh=force,
-                    force_mint=force,
+                    inference_auth_mode=(
+                        auth_mod.NOUS_INFERENCE_AUTH_MODE_LEGACY
+                        if force
+                        else auth_mod.NOUS_INFERENCE_AUTH_MODE_AUTO
+                    ),
                 )
-                # Apply returned fields: dataclass fields via replace, extras via dict update
-                field_updates = {}
-                extra_updates = dict(entry.extra)
-                _field_names = {f.name for f in fields(entry)}
-                for k, v in refreshed.items():
-                    if k in _field_names:
-                        field_updates[k] = v
-                    elif k in _EXTRA_KEYS:
-                        extra_updates[k] = v
-                updated = replace(entry, extra=extra_updates, **field_updates)
+                updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry
         except Exception as exc:
@@ -926,6 +927,49 @@ class CredentialPool:
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
                     return updated
+                if auth_mod._is_terminal_nous_refresh_error(exc):
+                    logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                    try:
+                        with _auth_store_lock():
+                            auth_store = _load_auth_store()
+                            state = _load_provider_state(auth_store, "nous") or {
+                                "client_id": entry.client_id,
+                                "portal_base_url": entry.portal_base_url,
+                                "inference_base_url": entry.inference_base_url,
+                                "token_type": entry.token_type,
+                                "scope": entry.scope,
+                                "tls": entry.tls,
+                            }
+                            store_refresh = str(state.get("refresh_token") or "").strip()
+                            entry_refresh = str(entry.refresh_token or "").strip()
+                            if not store_refresh or store_refresh == entry_refresh:
+                                auth_mod._quarantine_nous_oauth_state(
+                                    state,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
+                                auth_mod._quarantine_nous_pool_entries(
+                                    auth_store,
+                                    exc,
+                                    reason="credential_pool_refresh_failure",
+                                )
+                                _save_provider_state(auth_store, "nous", state)
+                                _save_auth_store(auth_store)
+                    except Exception as clear_exc:
+                        logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
+
+                    singleton_sources = {
+                        auth_mod.NOUS_DEVICE_CODE_SOURCE,
+                        f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
+                    }
+                    self._entries = [
+                        item for item in self._entries
+                        if item.source not in singleton_sources
+                    ]
+                    if self._current_id == entry.id:
+                        self._current_id = None
+                    self._persist()
+                    return None
             self._mark_exhausted(entry, None)
             return None
 
@@ -1362,7 +1406,22 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
     elif provider == "nous":
         state = _load_provider_state(auth_store, "nous")
-        if state and not _is_suppressed(provider, "device_code"):
+        has_runtime_material = bool(
+            isinstance(state, dict)
+            and (
+                str(state.get("access_token") or "").strip()
+                or str(state.get("agent_key") or "").strip()
+            )
+        )
+        if state and not has_runtime_material:
+            retained = [
+                entry for entry in entries
+                if entry.source not in {"device_code", "manual:device_code"}
+            ]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+        if state and has_runtime_material and not _is_suppressed(provider, "device_code"):
             active_sources.add("device_code")
             # Prefer a user-supplied label embedded in the singleton state
             # (set by persist_nous_credentials(label=...) when the user ran

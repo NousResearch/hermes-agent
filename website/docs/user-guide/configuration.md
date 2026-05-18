@@ -780,11 +780,12 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
-[ ] session_search       currently: openrouter / google/gemini-2.5-flash
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
+[ ] kanban_decomposer    currently: auto / main model
+[ ] profile_describer    currently: auto / main model
 ```
 
 Select a task, pick a provider (OAuth flows open a browser; API-key providers prompt), pick a model. The change persists to `auxiliary.<task>.*` in `config.yaml`. Same machinery as the main-model picker — no extra syntax to learn.
@@ -860,16 +861,6 @@ auxiliary:
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
 
-  # Session search — summarizes past session matches
-  session_search:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-    max_concurrency: 3       # Limit parallel summaries to reduce request-burst 429s
-    extra_body: {}           # Provider-specific OpenAI-compatible request fields
-
   # Skills hub — skill matching and search
   skills_hub:
     provider: "auto"
@@ -905,34 +896,6 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
-:::
-
-### Session Search Tuning
-
-If you use a reasoning-heavy model for `auxiliary.session_search`, Hermes now gives you two built-in controls:
-
-- `auxiliary.session_search.max_concurrency`: limits how many matched sessions Hermes summarizes at once
-- `auxiliary.session_search.extra_body`: forwards provider-specific OpenAI-compatible request fields on the summarization calls
-
-Example:
-
-```yaml
-auxiliary:
-  session_search:
-    provider: "main"
-    model: "glm-4.5-air"
-    timeout: 60
-    max_concurrency: 2
-    extra_body:
-      enable_thinking: false
-```
-
-Use `max_concurrency` when your provider rate-limits request bursts and you want `session_search` to trade some parallelism for stability.
-
-Use `extra_body` only when your provider documents OpenAI-compatible request-body fields you want Hermes to pass through for that task. Hermes forwards the object as-is.
-
-:::warning
-`extra_body` is only effective when your provider actually supports the field you send. If the provider does not expose a native OpenAI-compatible reasoning-off flag, Hermes cannot synthesize one on its behalf.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
@@ -1683,6 +1646,7 @@ delegation:
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
+  # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
@@ -1691,6 +1655,8 @@ delegation:
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
+
+**Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 

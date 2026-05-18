@@ -91,6 +91,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -490,6 +491,72 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     return f"MEDIA:{image_path}"
+
+
+# ---------------------------------------------------------------------------
+# Remote MCP URL validation
+# ---------------------------------------------------------------------------
+
+
+class InvalidMcpUrlError(ValueError):
+    """Raised when a remote MCP server's ``url`` cannot be parsed as http(s)://.
+
+    Validated once at startup so we fail fast with a clear message instead of
+    burning through the reconnect-backoff loop on every attempt.  (Ported from
+    anomalyco/opencode#25019.)
+    """
+
+
+def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
+    """Return the URL as a string if it's a valid http(s) remote MCP URL.
+
+    Raises :class:`InvalidMcpUrlError` otherwise with a message naming the
+    offending server, so users can spot the bad entry in their config.
+
+    Accepts:
+    - ``http://host`` / ``https://host`` with optional port, path, query
+    - IPv4, IPv6 (bracketed), DNS hostnames
+
+    Rejects:
+    - Non-string values (``None``, dicts, ints)
+    - Missing scheme (``example.com/mcp``)
+    - Non-http(s) schemes (``file://``, ``ws://``, ``stdio:`` — stdio servers
+      use the ``command`` key, not ``url``)
+    - Empty host (``http://``, ``https:///path``)
+    """
+    if not isinstance(url, str):
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': expected a string, got "
+            f"{type(url).__name__}"
+        )
+    stripped = url.strip()
+    if not stripped:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': empty url"
+        )
+    try:
+        parsed = urlparse(stripped)
+    except Exception as exc:  # urlparse is very permissive — belt and braces
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': {stripped!r} ({exc})"
+        ) from exc
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': scheme must be http or "
+            f"https, got {parsed.scheme!r} ({stripped!r})"
+        )
+    if not parsed.netloc:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': missing host ({stripped!r})"
+        )
+    # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port).
+    # Reject that — we need a real host.
+    if not parsed.hostname:
+        raise InvalidMcpUrlError(
+            f"Invalid MCP URL for '{server_name}': missing hostname "
+            f"({stripped!r})"
+        )
+    return stripped
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -1094,6 +1161,7 @@ class MCPServerTask:
             }
             for tool_name in stale_tool_names:
                 registry.deregister(tool_name)
+                _forget_mcp_tool_server(tool_name)
 
             # 3. Re-register with fresh tool list
             self._tools = new_mcp_tools
@@ -1458,6 +1526,21 @@ class MCPServerTask:
                 "this warning.",
                 self.name,
             )
+
+        # Validate remote URL once, up front.  Raising here (rather than
+        # letting it blow up inside the SDK's httpx layer on every retry)
+        # means a typo in config.yaml fails fast with a clear error — and
+        # critically, no reconnect-backoff burn.  (Ported from
+        # anomalyco/opencode#25019.)
+        if self._is_http():
+            try:
+                _validate_remote_mcp_url(self.name, config.get("url"))
+            except InvalidMcpUrlError as exc:
+                logger.warning("%s", exc)
+                self._error = exc
+                self._ready.set()
+                return
+
         retries = 0
         initial_retries = 0
         backoff = 1.0
@@ -1614,6 +1697,7 @@ class MCPServerTask:
             self._pending_refresh_tasks.clear()
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
         self._registered_tool_names = []
         self.session = None
 
@@ -1984,11 +2068,20 @@ def _handle_session_expired_and_retry(
 # ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
 _parallel_safe_servers: set = set()
 
+# Exact MCP tool-name provenance. MCP tool names are formatted as
+# ``mcp_{sanitized_server}_{sanitized_tool}``, which is ambiguous when server
+# names contain underscores (``mcp_a_b_tool`` could be server ``a`` + tool
+# ``b_tool`` or server ``a_b`` + tool ``tool``). Keep the server component
+# captured at registration time so parallel safety never relies on prefix
+# guessing.
+_mcp_tool_server_names: Dict[str, str] = {}
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
-# Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers, and _stdio_pids.
+# Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers,
+# _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -2871,6 +2964,19 @@ _UTILITY_CAPABILITY_ATTRS = {
 }
 
 
+def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
+    """Remember the exact MCP server that registered *tool_name*."""
+    safe_server_name = sanitize_mcp_name_component(server_name)
+    with _lock:
+        _mcp_tool_server_names[tool_name] = safe_server_name
+
+
+def _forget_mcp_tool_server(tool_name: str) -> None:
+    """Forget MCP server provenance for a deregistered tool."""
+    with _lock:
+        _mcp_tool_server_names.pop(tool_name, None)
+
+
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
     """Select utility schemas based on config and server capabilities."""
     tools_filter = config.get("tools") or {}
@@ -3005,6 +3111,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
+        _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
@@ -3041,6 +3148,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
+        _track_mcp_tool_server(util_name, name)
         registered_names.append(util_name)
 
     if registered_names:
@@ -3225,24 +3333,19 @@ def discover_mcp_tools() -> List[str]:
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool belongs to a server that supports parallel tool calls.
 
-    MCP tool names follow the pattern ``mcp_{server}_{tool}``.  This extracts
-    the server component and checks it against the set of servers whose config
-    includes ``supports_parallel_tool_calls: true``.
+    MCP tool names follow the pattern ``mcp_{server}_{tool}``, but that string
+    shape is ambiguous when server names contain underscores. Use the exact
+    server provenance captured at registration time rather than prefix
+    matching, then check whether that server's config includes
+    ``supports_parallel_tool_calls: true``.
 
     Returns False for non-MCP tools or tools from servers without the flag.
     """
     if not tool_name.startswith("mcp_"):
         return False
-    # Strip the "mcp_" prefix and extract the server name.
-    # Tool names are: mcp_{sanitized_server}_{sanitized_tool}
-    # We need to check all possible server prefixes because the server name
-    # itself may contain underscores after sanitization.
-    rest = tool_name[4:]  # strip "mcp_"
     with _lock:
-        for server_name in _parallel_safe_servers:
-            if rest.startswith(server_name + "_") and len(rest) > len(server_name) + 1:
-                return True
-    return False
+        server_name = _mcp_tool_server_names.get(tool_name)
+        return bool(server_name and server_name in _parallel_safe_servers)
 
 
 def get_mcp_status() -> List[dict]:
@@ -3415,7 +3518,6 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     sessions can still be in flight.
     """
     import signal as _signal
-    import time as _time
 
     with _lock:
         pids: Dict[int, str] = {}
@@ -3440,7 +3542,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             pass
 
     # Phase 2: Wait for graceful exit
-    _time.sleep(2)
+    time.sleep(2)
 
     # Phase 3: SIGKILL any survivors
     _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)

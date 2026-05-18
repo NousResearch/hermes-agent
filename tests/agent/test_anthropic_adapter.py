@@ -155,6 +155,27 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):
+        """Azure AI Foundry's /anthropic endpoint requires Authorization: Bearer.
+
+        Regression test for #26970: without this, builds set api_key (x-api-key)
+        and the endpoint returns HTTP 401. Also verifies that Azure retains the
+        1M-context beta even though it now matches `_requires_bearer_auth`.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "azure-foundry-secret-123",
+                base_url="https://my-resource.openai.azure.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "azure-foundry-secret-123"
+            assert "api_key" not in kwargs
+            # Azure endpoints still get the api-version query param plumbing.
+            assert kwargs.get("default_query") == {"api-version": "2025-04-15"}
+            # Azure keeps the 1M-context beta (it's not MiniMax).
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
 
 class TestReadClaudeCodeCredentials:
     @pytest.fixture(autouse=True)

@@ -493,6 +493,21 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     return "azure.com" in normalized
 
 
+def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for MiniMax's Anthropic-compatible endpoints.
+
+    MiniMax rejects the fine-grained-tool-streaming and context-1m betas;
+    those need to be stripped even though MiniMax also uses Bearer auth.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    normalized = normalized.rstrip("/").lower()
+    return normalized.startswith(
+        ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
+    )
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -502,7 +517,9 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.
+    tool-use message triggers a connection error. They also reject the
+    1M-context beta. Azure AI Foundry's Anthropic endpoint also uses
+    Bearer auth but keeps both betas (it needs the 1M beta for 1M context).
 
     The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
     default because some subscriptions reject it. Add it only for endpoint
@@ -515,7 +532,7 @@ def _common_betas_for_base_url(
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
         betas.append(_CONTEXT_1M_BETA)
-    if _requires_bearer_auth(base_url):
+    if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:

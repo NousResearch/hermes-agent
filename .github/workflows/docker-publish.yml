@@ -36,18 +36,53 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: badMade/hermes-agent
+  IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
+
+  # Release publishes are allowed only when the release tag resolves to a
+  # commit already reachable from main. This prevents release/tag creation
+  # privileges from bypassing main branch review for official Docker images.
+  authorize-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release_allowed: ${{ steps.validate_release.outputs.release_allowed || 'false' }}
+    steps:
+      - name: Checkout release tag
+        if: github.event_name == 'release' && github.repository == 'NousResearch/hermes-agent'
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Validate release tag is on main
+        id: validate_release
+        if: github.event_name == 'release' && github.repository == 'NousResearch/hermes-agent'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          release_commit=$(git rev-parse "${GITHUB_REF}^{commit}")
+
+          if git merge-base --is-ancestor "${release_commit}" origin/main; then
+            echo "Release commit ${release_commit} is reachable from main."
+            echo "release_allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release commit ${release_commit} is not reachable from main; refusing Docker publish." >&2
+            echo "release_allowed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
   # ---------------------------------------------------------------------------
   # Build amd64 natively.  This job also runs the smoke tests (basic --help
   # and the dashboard subcommand regression guard from #9153), because amd64
   # is the only arch we can `load` into the local daemon on an amd64 runner.
   # ---------------------------------------------------------------------------
   build-amd64:
+    needs: authorize-publish
     # Build + smoke-test runs on all repos so PR validation works on forks.
     # The push/login/upload steps below are individually gated to upstream
-    # main pushes and releases.
+    # main pushes and authorized releases.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -81,7 +116,7 @@ jobs:
           image: ${{ env.IMAGE_NAME }}:test
 
       - name: Log in to Docker Hub
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -98,7 +133,7 @@ jobs:
       # image config labels.
       - name: Push amd64 by digest
         id: push
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -113,14 +148,14 @@ jobs:
       # Write the digest to a file and upload it as an artifact so the
       # merge job can stitch both per-arch digests into a manifest list.
       - name: Export digest
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: digest-amd64
@@ -135,6 +170,7 @@ jobs:
   # smoke test, then on push/release push by digest.
   # ---------------------------------------------------------------------------
   build-arm64:
+    needs: authorize-publish
     # See build-amd64 for the fork-friendly guard scheme.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
@@ -169,7 +205,7 @@ jobs:
           image: ${{ env.IMAGE_NAME }}:test
 
       - name: Log in to Docker Hub
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -177,7 +213,7 @@ jobs:
 
       - name: Push arm64 by digest
         id: push
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
@@ -190,14 +226,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-arm64
 
       - name: Export digest
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+        if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: digest-arm64
@@ -212,9 +248,9 @@ jobs:
   # On releases it produces :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'badMade/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release' && needs.authorize-publish.outputs.release_allowed == 'true')
     runs-on: ubuntu-latest
-    needs: [build-amd64, build-arm64]
+    needs: [authorize-publish, build-amd64, build-arm64]
     timeout-minutes: 10
     outputs:
       pushed_sha_tag: ${{ steps.mark_pushed.outputs.pushed }}
@@ -239,15 +275,11 @@ jobs:
       # commit gets its own immutable tag); releases use the release tag name.
       - name: Compute tag
         id: tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          GITHUB_SHA_VALUE: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "release" ]; then
-            printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           else
-            printf 'tag=sha-%s\n' "$GITHUB_SHA_VALUE" >> "$GITHUB_OUTPUT"
+            echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create manifest list and push
@@ -304,7 +336,7 @@ jobs:
   # ---------------------------------------------------------------------------
   move-latest:
     if: |
-      github.repository == 'badMade/hermes-agent'
+      github.repository == 'NousResearch/hermes-agent'
       && github.event_name == 'push'
       && github.ref == 'refs/heads/main'
       && needs.merge.outputs.pushed_sha_tag == 'true'

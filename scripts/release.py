@@ -42,6 +42,7 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "geoffplymale@gmail.com": "badMade",
+    "geoffplymale@users.noreply.github.com": "badMade",
     "0x.badfriend@gmail.com": "discodirector",
     "geoffplymale@gmail.com": "badMade",
     "altriatree@gmail.com": "TruaShamu",

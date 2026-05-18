@@ -20,13 +20,11 @@ export function PageHeaderProvider({
 
   // Clear any per-page title / toolbar slots when the path changes. Child routes
   // re-fill these on mount via usePageHeader.
-  /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
     setTitleOverride(null);
     setAfterTitle(null);
     setEnd(null);
   }, [pathname]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const defaultTitle = useMemo(
     () => resolvePageTitle(pathname, t, pluginTabs),

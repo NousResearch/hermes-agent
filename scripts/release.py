@@ -1330,6 +1330,45 @@ def build_release_artifacts(semver: str) -> list[Path]:
     return matching
 
 
+def build_tarball_artifacts(semver: str) -> list[Path]:
+    """Build pre-built tarball artifacts for the current release.
+
+    Returns the tarball artifact paths when the build script exists and succeeds.
+    If the build fails, returns an empty list.
+    """
+    build_script = REPO_ROOT / "scripts" / "build-tarball.sh"
+    if not build_script.exists():
+        print("  ⚠ build-tarball.sh not found, skipping tarball build.")
+        return []
+
+    dist_dir = REPO_ROOT / "dist"
+    
+    # Build for current platform (linux-x64, macos-x64, macos-arm64, etc.)
+    result = subprocess.run(
+        ["bash", str(build_script), "--version", semver, "--output", str(dist_dir)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("  ⚠ Could not build tarball artifacts.")
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        if stderr:
+            print(f"    {stderr.splitlines()[-1]}")
+        elif stdout:
+            print(f"    {stdout.splitlines()[-1]}")
+        return []
+
+    # Find the built tarballs
+    artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file() and p.name.endswith('.tar.gz'))
+    matching = [p for p in artifacts if semver in p.name]
+    if not matching:
+        print("  ⚠ Built tarballs did not match the expected release version.")
+        return []
+    return matching
+
+
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
     # Try email lookup first
@@ -1706,9 +1745,19 @@ def main():
         # (e.g. Homebrew) can target them without relying on CalVer tag names.
         artifacts = build_release_artifacts(new_version)
         if artifacts:
-            print("  ✓ Built release artifacts:")
+            print("  ✓ Built Python release artifacts:")
             for artifact in artifacts:
                 print(f"    - {artifact.relative_to(REPO_ROOT)}")
+        
+        # Build pre-built tarballs for distribution
+        tarball_artifacts = build_tarball_artifacts(new_version)
+        if tarball_artifacts:
+            print("  ✓ Built tarball artifacts:")
+            for artifact in tarball_artifacts:
+                print(f"    - {artifact.relative_to(REPO_ROOT)}")
+        
+        # Combine all artifacts
+        all_artifacts = artifacts + tarball_artifacts
 
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
@@ -1719,7 +1768,7 @@ def main():
             "--title", f"Hermes Agent v{new_version} ({calver_date})",
             "--notes-file", str(changelog_file),
         ]
-        gh_cmd.extend(str(path) for path in artifacts)
+        gh_cmd.extend(str(path) for path in all_artifacts)
 
         gh_bin = shutil.which("gh")
         if gh_bin:
@@ -1744,7 +1793,7 @@ def main():
             print(f"    Tag was created locally. Create the release manually:")
             print(
                 f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
-                f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
+                f"--notes-file .release_notes.md {' '.join(str(path) for path in all_artifacts)}"
             )
             print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")
     else:

@@ -1,0 +1,22 @@
+{
+    "schema_version": 1,
+    "description": "Hermes Agent build metadata",
+    "fields": {
+        "version": "Semantic version from pyproject.toml (e.g. 0.12.0)",
+        "platform": "Target platform (linux-x64, linux-arm64, macos-x64, macos-arm64)",
+        "build_date": "ISO 8601 build timestamp",
+        "python_version": "Python version used for build",
+        "include_node": "Whether Node.js dependencies are included",
+        "include_playwright": "Whether Playwright browser is included",
+        "install_method": "Installation method: tarball, git, pip"
+    },
+    "example": {
+        "version": "0.12.0",
+        "platform": "macos-arm64",
+        "build_date": "2026-05-03T10:30:00Z",
+        "python_version": "3.11.9",
+        "include_node": true,
+        "include_playwright": true,
+        "install_method": "tarball"
+    }
+}

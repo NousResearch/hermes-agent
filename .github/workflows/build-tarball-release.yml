@@ -1,0 +1,91 @@
+# =============================================================================
+# Build Minimal Tarball on Release
+# =============================================================================
+# Triggered when a new release is published on this fork.
+# Builds platform-specific minimal tarballs and uploads them as release assets.
+#
+# To sync with upstream:
+#   git fetch upstream
+#   git tag -f v<version> upstream/main
+#   git push origin v<version> --force
+#   Then create a GitHub Release from that tag.
+# =============================================================================
+
+name: Build Minimal Tarball
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 2026.5.5)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x86_64
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve version and tag
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build minimal tarball
+        run: |
+          bash scripts/build-minimal-tarball.sh \
+            --version "${{ steps.version.outputs.value }}" \
+            --target "${{ matrix.target }}" \
+            --output ./dist
+
+      - name: Ensure release exists (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if ! gh release view "$TAG" 2>/dev/null; then
+            echo "Creating release $TAG..."
+            gh release create "$TAG" \
+              --title "Hermes Agent v${{ steps.version.outputs.value }}" \
+              --notes "Minimal tarball build v${{ steps.version.outputs.value }}" \
+              --target main
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release upload "$TAG" ./dist/hermes-venv-*.tar.gz ./dist/hermes-venv-*.sha256 --clobber

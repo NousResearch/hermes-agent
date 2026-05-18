@@ -1309,6 +1309,12 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
+                try:
+                    from agent.account_usage import maybe_observe_xai_rate_limit_headers as _maybe_observe_xai_headers
+                    _maybe_observe_xai_headers(agent.provider, agent.model, response)
+                except Exception:
+                    pass
+
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)

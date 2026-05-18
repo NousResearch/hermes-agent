@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from agent.governor_state import (
+    get_provider_state,
+    get_xai_bucket_rows,
+    record_xai_rate_limit_headers,
+)
 
 
 def _utc_now() -> datetime:
@@ -305,11 +311,96 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_xai_account_usage(*, governor_db_path: Optional[Path | str] = None) -> Optional[AccountUsageSnapshot]:
+    try:
+        provider_state = get_provider_state("xai", db_path=governor_db_path) or {}
+        buckets = get_xai_bucket_rows(db_path=governor_db_path)
+    except FileNotFoundError:
+        return AccountUsageSnapshot(
+            provider="xai",
+            source="observed_headers",
+            fetched_at=_utc_now(),
+            unavailable_reason="governor.db has not been created by ADR-0010 G1.",
+        )
+    if not buckets:
+        return AccountUsageSnapshot(
+            provider="xai",
+            source="observed_headers",
+            fetched_at=_utc_now(),
+            unavailable_reason="No xAI rate-limit headers have been observed yet.",
+        )
+    windows: list[AccountUsageWindow] = []
+    for bucket in buckets:
+        raw_scope = str(bucket.get("bucket_scope") or "bucket").replace("_", " ")
+        scope = "request" if raw_scope == "requests" else ("token" if raw_scope == "tokens" else raw_scope)
+        reset_at = _parse_dt(bucket.get("reset_at"))
+        used_pct = bucket.get("used_pct")
+        remaining = bucket.get("remaining_value")
+        limit = bucket.get("limit_value")
+        detail = None
+        if isinstance(remaining, (int, float)) and isinstance(limit, (int, float)):
+            remaining_text = f"{remaining:g}"
+            limit_text = f"{limit:g}"
+            detail = f"{remaining_text} of {limit_text} {raw_scope} remaining"
+        windows.append(
+            AccountUsageWindow(
+                label=f"xAI {scope} bucket",
+                used_percent=float(used_pct) if isinstance(used_pct, (int, float)) else None,
+                reset_at=reset_at,
+                detail=detail,
+            )
+        )
+    details = []
+    band = provider_state.get("band")
+    if band:
+        details.append(f"Governor band: {band}")
+    details.append("Source: observed x-ratelimit-* response headers")
+    return AccountUsageSnapshot(
+        provider="xai",
+        source="observed_headers",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
+def observe_xai_rate_limit_headers(
+    headers: Mapping[str, Any], *, db_path: Optional[Path | str] = None
+) -> bool:
+    return record_xai_rate_limit_headers(headers, db_path=db_path)
+
+
+def maybe_observe_xai_rate_limit_headers(
+    provider: Optional[str], model: Optional[str], response: Any, *, db_path: Optional[Path | str] = None
+) -> bool:
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_model = str(model or "").strip().lower()
+    if normalized_provider not in {"xai", "xai-oauth", "grok", "x-ai", "x.ai"} and "grok" not in normalized_model:
+        return False
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        # Some SDK response wrappers keep the raw HTTP response under a private
+        # or provider-specific attribute. These accesses are intentionally best
+        # effort and no-op if absent.
+        for attr in ("http_response", "response", "_response"):
+            candidate = getattr(response, attr, None)
+            headers = getattr(candidate, "headers", None)
+            if headers is not None:
+                break
+    if not headers:
+        return False
+    try:
+        return observe_xai_rate_limit_headers(headers, db_path=db_path)
+    except Exception:
+        return False
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    governor_db_path: Optional[Path | str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
     if normalized in {"", "auto", "custom"}:
@@ -321,6 +412,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized in {"xai", "xai-oauth", "grok", "x-ai", "x.ai"}:
+            return _fetch_xai_account_usage(governor_db_path=governor_db_path)
     except Exception:
         return None
     return None

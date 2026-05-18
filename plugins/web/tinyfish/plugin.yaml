@@ -1,0 +1,7 @@
+name: web-tinyfish
+version: 1.0.0
+description: "TinyFish web search + content extraction provider. Requires TINYFISH_API_KEY; optional TINYFISH_LOCATION and TINYFISH_LANGUAGE."
+author: Hermes Agent
+kind: backend
+provides_web_providers:
+  - tinyfish

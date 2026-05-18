@@ -2943,3 +2943,137 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
+
+# =========================================================================
+# Schema reconciliation — declarative ADD COLUMN drift handling
+# =========================================================================
+
+
+class TestSchemaReconciliation:
+    """Older DBs missing later-added columns must self-heal on open.
+
+    The declarative reconciliation (_reconcile_columns) is the contract.
+    Without it, a SessionDB opened against a legacy file would either
+    UPDATE-fail on the missing column or silently SELECT it as NULL —
+    both manifest as bug reports like "sessions schema drift". Lock the
+    behaviour in so future column additions don't regress.
+    """
+
+    def test_legacy_sessions_table_missing_columns_is_reconciled(self, tmp_path):
+        """Open a hand-rolled legacy DB; reconciler adds every declared column."""
+        import sqlite3
+        from hermes_state import SCHEMA_SQL
+
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(str(db_path))
+        # Minimal legacy schema: only the columns that existed in early hermes.
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (1);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                started_at REAL NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Open via SessionDB — reconciliation must add the missing columns.
+        session_db = SessionDB(db_path=db_path)
+        try:
+            rows = session_db._conn.execute("PRAGMA table_info(sessions)").fetchall()
+            live = {row[1] if isinstance(row, tuple) else row["name"] for row in rows}
+            # A representative sampling of columns added across the history.
+            for required in (
+                "user_id", "model", "system_prompt", "parent_session_id",
+                "ended_at", "end_reason",
+                "message_count", "tool_call_count",
+                "input_tokens", "output_tokens",
+                "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+                "billing_provider", "billing_base_url", "billing_mode",
+                "estimated_cost_usd", "actual_cost_usd",
+                "cost_status", "cost_source", "pricing_version",
+                "title", "api_call_count",
+                "handoff_state", "handoff_platform", "handoff_error",
+            ):
+                assert required in live, (
+                    f"reconcile_columns must ADD missing sessions.{required}"
+                )
+
+            # Same check for messages.
+            rows = session_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+            live_msg = {row[1] if isinstance(row, tuple) else row["name"] for row in rows}
+            for required in (
+                "tool_call_id", "tool_calls", "tool_name",
+                "token_count", "finish_reason",
+                "reasoning", "reasoning_content", "reasoning_details",
+                "codex_reasoning_items", "codex_message_items",
+            ):
+                assert required in live_msg, (
+                    f"reconcile_columns must ADD missing messages.{required}"
+                )
+        finally:
+            session_db.close()
+
+    def test_reconcile_is_idempotent_on_current_schema(self, db):
+        """A second open with no schema gap is a no-op (no error, no churn)."""
+        # `db` fixture already opened once.  Open again on the same file.
+        from hermes_state import SessionDB
+        path = db.db_path
+        db.close()
+        for _ in range(3):
+            again = SessionDB(db_path=path)
+            try:
+                # Should be quietly fine; PRAGMA still returns the full column set.
+                rows = again._conn.execute("PRAGMA table_info(sessions)").fetchall()
+                assert len(rows) > 20  # full sessions schema
+            finally:
+                again.close()
+
+    def test_sessions_writes_use_all_columns_after_reconcile(self, tmp_path):
+        """End-to-end: a legacy DB → SessionDB.create_session uses every column."""
+        import sqlite3
+        db_path = tmp_path / "legacy_e2e.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (1);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                started_at REAL NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id),
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        session_db = SessionDB(db_path=db_path)
+        try:
+            sid = "sess-legacy-e2e"
+            session_db.create_session(session_id=sid, source="cli", model="claude-opus-4-7")
+            row = session_db.get_session(sid)
+            # Field that didn't exist in legacy schema but is now writable.
+            assert row["model"] == "claude-opus-4-7"
+            session_db.update_token_counts(
+                sid, input_tokens=10, output_tokens=20, api_call_count=1,
+            )
+            row = session_db.get_session(sid)
+            assert row["input_tokens"] == 10
+            assert row["output_tokens"] == 20
+        finally:
+            session_db.close()

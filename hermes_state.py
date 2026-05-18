@@ -182,7 +182,7 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         exc,
     )
 
-SCHEMA_SQL = """
+SCHEMA_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
@@ -243,12 +243,24 @@ CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+"""
 
+# Indexes are split from tables so column reconciliation can run between them.
+# A legacy DB missing a column referenced by an index (e.g. parent_session_id)
+# would otherwise fail in executescript before _reconcile_columns had a chance
+# to ADD it.  See TestSchemaReconciliation in tests/test_hermes_state.py.
+SCHEMA_INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 """
+
+# Back-compat alias: anything that imports SCHEMA_SQL (tests, downstream tools,
+# the schema-parsing reconciler) sees both halves concatenated, which is the
+# original behaviour.  Do NOT executescript() this; use the two halves with
+# _reconcile_columns() between them, as _init_schema does.
+SCHEMA_SQL = SCHEMA_TABLES_SQL + SCHEMA_INDEXES_SQL
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -562,14 +574,16 @@ class SessionDB:
         """
         cursor = self._conn.cursor()
 
-        cursor.executescript(SCHEMA_SQL)
+        # 1. Create tables (no-op if they already exist).
+        cursor.executescript(SCHEMA_TABLES_SQL)
 
-        # ── Declarative column reconciliation ──────────────────────────
-        # Diff live tables against SCHEMA_SQL and ADD any missing columns.
-        # This is idempotent and self-healing: even if a version-gated
-        # migration was skipped (e.g. due to version renumbering), the
-        # column gets created here.
+        # 2. Reconcile columns BEFORE indexes — a legacy DB missing a column
+        #    that an index references (e.g. parent_session_id) would otherwise
+        #    fail the CREATE INDEX statement.
         self._reconcile_columns(cursor)
+
+        # 3. Now safe to create indexes against the reconciled tables.
+        cursor.executescript(SCHEMA_INDEXES_SQL)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on

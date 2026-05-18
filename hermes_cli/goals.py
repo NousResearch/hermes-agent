@@ -67,6 +67,32 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
+# Reason prefix produced by ``judge_goal`` on an auxiliary API/transport
+# error. Used by ``evaluate_after_turn`` to distinguish a real ``"continue"``
+# verdict from a fail-open continue caused by an unreachable judge.
+_JUDGE_ERROR_REASON_PREFIX = "judge error:"
+
+# When the judge fails-open to ``continue`` AND the assistant's latest
+# response matches one of these phrases, pause the loop instead of queueing
+# another continuation prompt. Without this guard, a transient judge outage
+# causes /goal to spam the gateway channel with the same terminal message
+# every few seconds until the turn budget exhausts (#27585).
+_TERMINAL_RESPONSE_RE = re.compile(
+    r"\b(?:"
+    r"goal\s+is\s+(?:already\s+|now\s+)?(?:complete|done|achieved|finished|satisfied)"
+    r"|requested\s+goal\s+is\s+complete"
+    r"|i(?:'m|\s+am)\s+stopping(?:\s+here)?"
+    r"|nothing\s+(?:left|more)\s+to\s+do"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _response_looks_terminal(last_response: str) -> bool:
+    """True when the assistant's message indicates it has stopped/completed."""
+    return bool(last_response and last_response.strip()
+                and _TERMINAL_RESPONSE_RE.search(last_response))
+
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
@@ -450,7 +476,7 @@ def judge_goal(
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False
+        return "continue", f"{_JUDGE_ERROR_REASON_PREFIX} {type(exc).__name__}", False
 
     try:
         raw = resp.choices[0].message.content or ""
@@ -665,6 +691,37 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        # Safe-stop fallback: judge failed-open to "continue" because of an
+        # API/transport error AND the assistant's response indicates it has
+        # finished or is explicitly stopping. Pause instead of queueing
+        # another continuation prompt — otherwise /goal spams the gateway
+        # channel with repeated terminal messages until the turn budget runs
+        # out (#27585). Parse-failure auto-pause already guards the
+        # bad-judge-output case; this guards the unreachable-judge case.
+        if (
+            verdict == "continue"
+            and reason.startswith(_JUDGE_ERROR_REASON_PREFIX)
+            and _response_looks_terminal(last_response)
+        ):
+            state.status = "paused"
+            state.paused_reason = (
+                "goal judge unreachable; assistant response appears terminal — "
+                "pausing to avoid spam"
+            )
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "continue",
+                "reason": reason,
+                "message": (
+                    "⏸ Goal paused — judge couldn't be reached and the "
+                    "assistant appears to have stopped. Use /goal resume "
+                    "to keep going, or /goal clear to stop."
+                ),
+            }
 
         if verdict == "done":
             state.status = "done"

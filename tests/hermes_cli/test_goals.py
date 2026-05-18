@@ -720,6 +720,145 @@ class TestJudgeGoalWithSubgoals:
         assert "ship it" in user_msg
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Safe-stop when judge unreachable + assistant response is terminal (#27585)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestResponseLooksTerminal:
+    """Unit tests for the terminal-phrase detector used by the
+    judge-error safe-stop fallback."""
+
+    @pytest.mark.parametrize("response", [
+        "Goal is complete.\n\nI'm stopping here because the requested goal is complete.",
+        "The goal is now done — the artifact is at /tmp/out.md.",
+        "I am stopping here. Nothing more to do.",
+        "Goal is already complete from the previous run.",
+        "Goal is achieved.",
+    ])
+    def test_terminal_phrases_match(self, response):
+        from hermes_cli.goals import _response_looks_terminal
+        assert _response_looks_terminal(response) is True
+
+    @pytest.mark.parametrize("response", [
+        "Working on the next step now.",
+        "I tried but ran into an error retrieving the file.",
+        "Let me continue the analysis.",
+        "",
+        "   ",
+        "Progress: 30% complete with this subtask.",
+    ])
+    def test_non_terminal_phrases_do_not_match(self, response):
+        from hermes_cli.goals import _response_looks_terminal
+        assert _response_looks_terminal(response) is False
+
+
+class TestJudgeErrorSafeStop:
+    """Regression: when the goal judge fails open to ``continue`` because of
+    an API/transport error AND the assistant's response is terminal, the
+    loop must pause instead of queueing another continuation prompt.
+
+    Without this guard, /goal spams the gateway channel with repeated
+    terminal messages (#27585)."""
+
+    def test_judge_api_error_with_terminal_response_auto_pauses(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-err-term-1", default_max_turns=20)
+        mgr.set("generate the artifact")
+
+        # Mimic the fail-open return that ``judge_goal`` produces on a
+        # transient API error (e.g. BadRequestError, ConnectionError).
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: BadRequestError", False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "Goal is complete.\n\nThe requested artifact is already done "
+                "and saved at /tmp/out.md.\n\nI'm stopping here because the "
+                "requested goal is complete."
+            )
+
+        assert decision["should_continue"] is False
+        assert decision["status"] == "paused"
+        assert decision["continuation_prompt"] is None
+        assert mgr.state.status == "paused"
+        assert "unreachable" in (mgr.state.paused_reason or "").lower()
+        assert mgr.state.turns_used == 1
+
+    def test_judge_api_error_with_non_terminal_response_still_continues(self, hermes_home):
+        """Fail-open behavior is preserved when the response is non-terminal —
+        a flaky judge must not wedge progress on an in-flight goal."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-err-cont-1", default_max_turns=20)
+        mgr.set("write the report")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "judge error: ConnectionError", False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "Drafting section 2 now — about halfway through the data review."
+            )
+
+        assert decision["should_continue"] is True
+        assert decision["status"] == "active"
+        assert decision["continuation_prompt"] is not None
+        assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 1
+
+    def test_judge_ok_continue_with_terminal_phrasing_still_continues(self, hermes_home):
+        """The safe-stop only fires when the judge call itself errored — a
+        successful judge that returns ``continue`` retains authority over
+        the loop even if the assistant happens to use a terminal phrase."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-ok-term-1", default_max_turns=20)
+        mgr.set("complete the migration")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "step 1 of 3 done", False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "Goal is complete for step 1. Moving on."
+            )
+
+        assert decision["should_continue"] is True
+        assert decision["status"] == "active"
+        assert mgr.state.status == "active"
+
+    def test_judge_done_overrides_safe_stop(self, hermes_home):
+        """If the judge does return ``done`` (successful judge call), the
+        safe-stop branch must not fire — status should be ``done`` not
+        ``paused``."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-done-term-1", default_max_turns=20)
+        mgr.set("ship the change")
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("done", "all acceptance criteria met", False),
+        ):
+            decision = mgr.evaluate_after_turn(
+                "Goal is complete. I'm stopping here."
+            )
+
+        assert decision["status"] == "done"
+        assert decision["should_continue"] is False
+        assert mgr.state.status == "done"
+
+
 class TestStatusLineSubgoalCount:
     def test_status_line_no_subgoals(self, hermes_home):
         from hermes_cli.goals import GoalManager

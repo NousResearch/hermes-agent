@@ -1984,21 +1984,6 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
-        # Auth gate must run before any busy/drain handling so unauthorized
-        # users cannot queue, steer, interrupt, or receive busy acknowledgments
-        # on someone else's active session in shared-thread modes.
-        source = event.source
-        if source.user_id is None:
-            return True
-        if not self._is_user_authorized(source):
-            logger.warning(
-                "Unauthorized user in busy path: %s (%s) on %s",
-                source.user_id,
-                source.user_name,
-                source.platform.value if source.platform else "unknown",
-            )
-            return True
-
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
             adapter = self.adapters.get(event.source.platform)

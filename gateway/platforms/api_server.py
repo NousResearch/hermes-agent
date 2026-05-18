@@ -2957,6 +2957,29 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
                 break
 
+    def push_process_event(self, process_event: dict) -> bool:
+        """Push a background process event to the SSE queue for the owning run.
+
+        Called by the gateway's _run_process_watcher when platform is api_server.
+        Uses the session_key from the watcher to look up the active run's SSE queue.
+
+        Returns True if the event was pushed, False if no active run found.
+        """
+        session_key = process_event.get("session_key", "")
+        run_id = self._session_to_run.get(session_key)
+        if not run_id:
+            return False
+        q = self._run_streams.get(run_id)
+        if q is None:
+            # Run may have finished; clean up stale mapping
+            self._session_to_run.pop(session_key, None)
+            return False
+        try:
+            q.put_nowait(process_event)
+            return True
+        except Exception:
+            return False
+
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
@@ -3291,7 +3314,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
-                self._run_approval_sessions.pop(run_id, None)
+                _ak = self._run_approval_sessions.pop(run_id, None)
+                if _ak:
+                    self._session_to_run.pop(_ak, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -3528,7 +3553,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams_created.pop(run_id, None)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
-                self._run_approval_sessions.pop(run_id, None)
+                _ak = self._run_approval_sessions.pop(run_id, None)
+                if _ak:
+                    self._session_to_run.pop(_ak, None)
 
             stale_statuses = [
                 run_id

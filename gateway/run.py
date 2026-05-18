@@ -15086,17 +15086,15 @@ class GatewayRunner:
                         _push_fn = getattr(_api_adapter, "push_process_event", None)
                         if _push_fn is not None:
                             try:
-                                delivered = _push_fn(
-                                    session_key,
-                                    {
-                                        "event": "process.completed",
-                                        "timestamp": time.time(),
-                                        "session_id": session_id,
-                                        "command": session.command,
-                                        "exit_code": session.exit_code,
-                                        "output": _out,
-                                    },
-                                )
+                                delivered = _push_fn({
+                                    "event": "process.completed",
+                                    "session_key": session_key,
+                                    "timestamp": time.time(),
+                                    "session_id": session_id,
+                                    "command": session.command,
+                                    "exit_code": session.exit_code,
+                                    "output": _out,
+                                })
                                 if delivered:
                                     logger.info(
                                         "Process %s finished — pushed api_server SSE notification for session %s",

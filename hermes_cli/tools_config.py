@@ -311,6 +311,16 @@ TOOL_CATEGORIES = {
     "image_gen": {
         "name": "Image Generation",
         "icon": "🎨",
+        # Per-provider rows for FAL.ai (`plugins/image_gen/fal`), OpenAI,
+        # OpenAI Codex, and xAI are injected at runtime from each
+        # ``plugins.image_gen.<vendor>`` package via
+        # ``_plugin_image_gen_providers()`` in ``_visible_providers``.
+        # Only non-provider UX setup-flow rows remain here:
+        #   - "Nous Subscription" — managed FAL billed via the Nous
+        #     subscription (requires_nous_auth + override_env_vars).
+        #     Uses the fal plugin as the underlying backend but has a
+        #     distinct setup UX.
+        # Mirrors the shape browser/video_gen ship today.
         "providers": [
             {
                 "name": "Nous Subscription",
@@ -320,15 +330,6 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
-                "imagegen_backend": "fal",
-            },
-            {
-                "name": "FAL.ai",
-                "badge": "paid",
-                "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
-                "env_vars": [
-                    {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
-                ],
                 "imagegen_backend": "fal",
             },
         ],
@@ -1506,12 +1507,9 @@ def _plugin_image_gen_providers() -> list[dict]:
     Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
     row but carries an ``image_gen_plugin_name`` marker so downstream
     code (config writing, model picker) knows to route through the
-    plugin registry instead of the in-tree FAL backend.
-
-    FAL is skipped — it's already exposed by the hardcoded
-    ``TOOL_CATEGORIES["image_gen"]`` entries. When FAL gets ported to
-    a plugin in a follow-up PR, the hardcoded entries go away and this
-    function surfaces it alongside OpenAI automatically.
+    plugin registry. Every image-gen backend is a plugin now — there
+    are no hardcoded rows left in ``TOOL_CATEGORIES["image_gen"]`` for
+    this function to dedupe against (see issue #26241).
     """
     try:
         from agent.image_gen_registry import list_providers
@@ -1524,9 +1522,6 @@ def _plugin_image_gen_providers() -> list[dict]:
 
     rows: list[dict] = []
     for provider in providers:
-        if getattr(provider, "name", None) == "fal":
-            # FAL has its own hardcoded rows today.
-            continue
         try:
             schema = provider.get_setup_schema()
         except Exception:

@@ -36,6 +36,14 @@ class TestIsUnsupportedParameterError:
         ("temperature", "HTTP 400: Unsupported parameter: temperature"),
         ("temperature", "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}"),
         ("temperature", "this model does not support temperature"),
+        # AWS Bedrock Converse phrasing for newer Anthropic models
+        # (Opus 4.7, Sonnet 4.5+ reject ``temperature`` with this exact wording).
+        # Without the "is deprecated" marker the reactive-retry branch in
+        # ``call_llm`` never fires and the boto3 ValidationException is
+        # swallowed by downstream wrappers, surfacing as an empty
+        # ChatCompletion with all-None fields and breaking aux vision.
+        ("temperature", "An error occurred (ValidationException) when calling the Converse operation: The model returned the following errors: `temperature` is deprecated for this model."),
+        ("temperature", "`temperature` is deprecated for this model."),
         # max_tokens phrasings
         ("max_tokens", "HTTP 400: Unsupported parameter: max_tokens"),
         ("max_tokens", "Unknown parameter: max_tokens — use max_completion_tokens"),

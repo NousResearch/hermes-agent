@@ -27,6 +27,7 @@ the same Converse API integration in TypeScript via ``@aws-sdk/client-bedrock``.
 Requires: ``boto3`` (optional dependency — only needed when using the Bedrock provider).
 """
 
+import base64
 import json
 import logging
 import os
@@ -528,10 +529,21 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         mime_part = header[5:].split(";")[0]
                         if mime_part:
                             media_type = mime_part
+                    # Bedrock Converse's ``image.source.bytes`` is a blob shape —
+                    # boto3 expects raw ``bytes`` and handles wire-level base64
+                    # encoding itself.  Passing the base64 *string* in here
+                    # double-encodes the payload and the model returns
+                    # ``ValidationException: Could not process image``.
+                    try:
+                        image_bytes = base64.b64decode(data, validate=False)
+                    except Exception:
+                        # Malformed data URL — skip the image rather than
+                        # blowing up the whole request.
+                        continue
                     blocks.append({
                         "image": {
                             "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
-                            "source": {"bytes": data},
+                            "source": {"bytes": image_bytes},
                         }
                     })
                 else:

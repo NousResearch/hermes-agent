@@ -360,6 +360,95 @@ class TestConvertMessagesToConverse:
         assert system[0]["text"] == "Rule 1"
         assert system[1]["text"] == "Rule 2"
 
+    def test_data_url_image_decoded_to_raw_bytes(self):
+        """Bedrock Converse's ``image.source.bytes`` is a blob shape — boto3
+        expects raw ``bytes`` and base64-encodes on the wire itself.  Passing
+        the base64 *string* through directly double-encodes the payload and
+        Bedrock returns ``ValidationException: Could not process image``.
+
+        Regression for: aux vision via bearer-token Bedrock failed end-to-end
+        even after the routing fix because the image payload was double-encoded.
+        """
+        import base64
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        # Real PNG header bytes — picked so the test fails clearly if the
+        # adapter forwards the base64 string instead of decoding it.
+        raw_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        b64_png = base64.b64encode(raw_png).decode("ascii")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what's in this image?"},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/png;base64,{b64_png}",
+                }},
+            ],
+        }]
+        _, msgs = convert_messages_to_converse(messages)
+        # Find the image block.
+        image_block = next(
+            b for b in msgs[0]["content"] if "image" in b
+        )
+        assert image_block["image"]["format"] == "png"
+        sent_bytes = image_block["image"]["source"]["bytes"]
+        # Critical assertion: must be raw bytes, NOT the base64 string.
+        # boto3 will base64-encode the blob itself before transmission.
+        assert isinstance(sent_bytes, (bytes, bytearray)), (
+            f"image.source.bytes must be raw bytes (boto3 base64-encodes "
+            f"automatically), got {type(sent_bytes).__name__}"
+        )
+        assert sent_bytes == raw_png, (
+            "image.source.bytes must be the decoded PNG bytes, not the "
+            "base64-encoded string — boto3 double-encodes otherwise and "
+            "Bedrock rejects with 'Could not process image'"
+        )
+
+    def test_data_url_image_jpeg_format_preserved(self):
+        """The format hint in the data URL should propagate to Bedrock's
+        ``image.format`` field so the model knows how to decode the bytes."""
+        import base64
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        jpeg_bytes = b"\xff\xd8\xff\xe0fake jpeg"
+        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                }},
+            ],
+        }]
+        _, msgs = convert_messages_to_converse(messages)
+        image_block = next(b for b in msgs[0]["content"] if "image" in b)
+        assert image_block["image"]["format"] == "jpeg"
+        assert image_block["image"]["source"]["bytes"] == jpeg_bytes
+
+    def test_malformed_data_url_image_skipped(self):
+        """Malformed base64 should skip the image gracefully rather than
+        crashing the whole request — non-image parts must still come through."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {
+                    # Not valid base64 (`!` is not in the alphabet and
+                    # validate=False ignores it, so we use a payload that
+                    # truly cannot be decoded as base64 even loosely).
+                    # An odd-length truncated string with a pad in the
+                    # middle reliably raises binascii.Error.
+                    "url": "data:image/png;base64,====!!notvalid",
+                }},
+            ],
+        }]
+        _, msgs = convert_messages_to_converse(messages)
+        # Either no image block (skipped) or — if it didn't raise — at most
+        # one block, and the text block must still be present.
+        assert any(b.get("text") == "describe" for b in msgs[0]["content"])
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

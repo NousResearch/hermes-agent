@@ -4044,6 +4044,23 @@ def _is_terminal_nous_refresh_error(exc: Exception) -> bool:
     )
 
 
+def _is_terminal_xai_oauth_refresh_error(exc: Exception) -> bool:
+    """True when retrying the same xAI OAuth refresh token cannot succeed.
+
+    ``xai_refresh_failed`` covers HTTP 400/401/403 from the token endpoint
+    (invalid_grant, token revoked, refresh_token_reused).
+    ``xai_auth_missing_refresh_token`` means the pool entry has no refresh
+    token at all — retrying will never work.
+    Both carry ``relogin_required=True``; transient failures (429, 5xx) do not.
+    """
+    return (
+        isinstance(exc, AuthError)
+        and exc.provider == "xai-oauth"
+        and exc.code in {"xai_refresh_failed", "xai_auth_missing_refresh_token"}
+        and bool(exc.relogin_required)
+    )
+
+
 def _quarantine_nous_oauth_state(
     state: Dict[str, Any],
     error: AuthError,

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import ssl
+import stat
 import tempfile
 import time
 from email.utils import formatdate
@@ -109,7 +110,11 @@ def _matrix_media_allowed_roots() -> list[Path]:
 
 
 def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | None]:
-    """Validate a Matrix send_message media path before handing it to the adapter."""
+    """Validate Matrix media paths against allowed roots before adapter upload.
+
+    This containment check is a security boundary that prevents traversal or
+    arbitrary local-file exfiltration through send_message attachments.
+    """
     try:
         resolved = Path(media_path).expanduser().resolve(strict=True)
         stat_result = resolved.stat()
@@ -118,7 +123,7 @@ def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | Non
     except OSError:
         return None, "Media file is not accessible"
 
-    if not resolved.is_file():
+    if not stat.S_ISREG(stat_result.st_mode):
         return None, "Media path must be a regular file"
 
     if stat_result.st_size > _MATRIX_MEDIA_MAX_BYTES:

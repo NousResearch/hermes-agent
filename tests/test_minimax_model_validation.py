@@ -59,16 +59,17 @@ class TestMiniMaxModelValidation:
     # Test 2: A near-match model on minimax-cn triggers a suggestion (not auto-correct)
     # -------------------------------------------------------------------------
     def test_near_match_minimax_cn_suggests_similar(self):
-        # "MiniMax-M2.7-highspeed" is somewhat similar to "MiniMax-M2.7" (ratio ~0.71)
+        # "MiniMax-M2.7-highspeed" is now an exact match (added to catalog).
+        # Test with "MiniMax-M2.7-fastest" which is ~0.71 similar to "MiniMax-M2.7"
         # but below the 0.9 auto-correct cutoff. It should be accepted with a
         # recognized=False and a similar-models suggestion (ratio > 0.5).
-        result = validate_requested_model("MiniMax-M2.7-highspeed", "minimax-cn")
+        result = validate_requested_model("MiniMax-M2.7-fastest", "minimax-cn")
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is False
-        # Should NOT auto-correct (ratio 0.71 < 0.9)
+        # Should NOT auto-correct (ratio ~0.67 < 0.9)
         assert "corrected_model" not in result
-        # But should suggest similar models (ratio 0.71 > 0.5)
+        # But should suggest similar models (ratio ~0.67 > 0.5)
         assert "MiniMax-M2.7" in result["message"]
 
     # -------------------------------------------------------------------------

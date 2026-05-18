@@ -6820,6 +6820,28 @@ class HermesCLI:
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
 
+    @staticmethod
+    def _wrap_model_picker_choice(choice: str, prefix: str, width: int) -> list[str]:
+        """Wrap a model-picker row without losing its selection/indent prefix.
+
+        ``textwrap.wrap()`` drops leading whitespace by default.  Passing the
+        model row as ``"  " + model_id`` therefore strips the two-space indent
+        whenever a long slash-delimited model ID reaches the wrap boundary,
+        making the row render as ``│ model`` instead of ``│   model``.  Wrap the
+        raw model ID first and add the prefix afterwards so both selected and
+        unselected rows keep stable alignment.
+        """
+        import textwrap
+
+        text_width = max(8, width - len(prefix))
+        wrapped = textwrap.wrap(
+            choice,
+            width=text_width,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [""]
+        return [(prefix if i == 0 else "  ") + line for i, line in enumerate(wrapped)]
+
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
@@ -6921,7 +6943,14 @@ class HermesCLI:
             # Only fall back to the live provider catalog when the curated
             # list is empty (e.g. user-defined endpoints with no curated list).
             model_list = provider_data.get("models", [])
-            if not model_list:
+            total_models = provider_data.get("total_models", len(model_list))
+            # build_models_payload(..., max_models=50) intentionally truncates
+            # per-provider model lists so the provider picker stays cheap.  Once
+            # the user enters a provider, hydrate the full live list whenever the
+            # row advertises more models than it carried.  Without this, LiteLLM
+            # can correctly show "134 models" at the provider level but only let
+            # the user select the first 50 in the second-stage picker.
+            if not model_list or total_models > len(model_list):
                 try:
                     from hermes_cli.models import provider_model_ids
                     live = provider_model_ids(provider_data["slug"])
@@ -13268,7 +13297,7 @@ class HermesCLI:
                 choice = choices[idx]
                 style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
                 prefix = '❯ ' if idx == selected else '  '
-                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                for wrapped in HermesCLI._wrap_model_picker_choice(choice, prefix, inner_text_width):
                     _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))

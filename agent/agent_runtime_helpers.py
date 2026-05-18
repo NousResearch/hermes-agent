@@ -41,6 +41,7 @@ from agent.message_sanitization import (
 )
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
+from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import classify_api_error, FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
@@ -582,6 +583,29 @@ def recover_with_credential_pool(
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:
+        # If current credential is already marked exhausted, skip retry and
+        # rotate immediately. This prevents the "cancel-between-429s" trap
+        # where has_retried_429 (a local var) gets reset on each new prompt,
+        # causing the pool to retry the same exhausted credential forever.
+        current_entry = pool.current()
+        current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
+        if current_last_status == STATUS_EXHAUSTED:
+            _ra().logger.info(
+                "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
+                current_last_status,
+            )
+            rotate_status = status_code if status_code is not None else 429
+            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            if next_entry is not None:
+                _ra().logger.info(
+                    "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
+                    rotate_status,
+                    getattr(next_entry, "id", "?"),
+                )
+                agent._swap_credential(next_entry)
+                return True, False
+            return False, True
+
         usage_limit_reached = False
         if error_context:
             context_reason = str(error_context.get("reason") or "").lower()

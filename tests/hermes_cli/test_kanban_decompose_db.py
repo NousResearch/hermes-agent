@@ -21,13 +21,23 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=None):
+def _create_triage(
+    conn,
+    title="rough idea",
+    body=None,
+    assignee=None,
+    tenant=None,
+    workspace_kind="scratch",
+    workspace_path=None,
+):
     return kb.create_task(
         conn,
         title=title,
         body=body,
         assignee=assignee,
         tenant=tenant,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
         triage=True,
     )
 
@@ -150,3 +160,59 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_derives_workstream_tenant_from_root_title(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(
+            conn,
+            title="Costing Enhancements — ClickUp 86d30zeaz",
+            workspace_kind="worktree",
+            workspace_path="/root/worktrees/watertyt-monorepo/feat/costing-enhancements-86d30zeaz",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[{"title": "write spec", "assignee": "tech-lead"}],
+            author="alice",
+        )
+
+    assert child_ids is not None
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        child = kb.get_task(conn, child_ids[0])
+        events = kb.list_events(conn, tid)
+
+    assert root is not None
+    assert child is not None
+    assert root.tenant == "Costing Enhancements — ClickUp 86d30zeaz"
+    assert child.tenant == root.tenant
+    assert child.workspace_kind == "worktree"
+    assert child.workspace_path == root.workspace_path
+    decompose_event = next(ev for ev in events if ev.kind == "decomposed")
+    assert decompose_event.payload is not None
+    assert decompose_event.payload["tenant"] == root.tenant
+    assert decompose_event.payload["workspace_path"] == root.workspace_path
+
+
+def test_create_task_child_inherits_parent_workstream_and_worktree(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(
+            conn,
+            title="Xero Integrations Framework",
+            workspace_kind="worktree",
+            workspace_path="/root/worktrees/the-knight-monorepo/feat/xero-integrations-framework",
+        )
+        child = kb.create_task(conn, title="implement connection UI", parents=[parent])
+
+    with kb.connect() as conn:
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+
+    assert parent_task is not None
+    assert child_task is not None
+    assert parent_task.tenant == "Xero Integrations Framework"
+    assert child_task.tenant == "Xero Integrations Framework"
+    assert child_task.workspace_kind == "worktree"
+    assert child_task.workspace_path == parent_task.workspace_path

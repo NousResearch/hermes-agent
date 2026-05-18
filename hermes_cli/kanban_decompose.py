@@ -59,6 +59,7 @@ You will be given:
   - The original task title and body
   - The list of available profiles (each with name + description)
   - The fallback "default_assignee" used when no profile fits
+  - The current workstream tenant (the intended soon-to-be PR label)
 
 Output a single JSON object with this exact shape:
 
@@ -89,6 +90,9 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Child tasks must stay inside the provided workstream tenant. Treat that
+    tenant as the intended PR/change-set for the whole hierarchy; do not invent
+    extra tenants or split unrelated PRs inside one decomposition.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -115,6 +119,7 @@ Available profiles (assignees you may pick from):
 {roster}
 
 Default assignee (used when no profile fits a task): {default_assignee}
+Workstream tenant (intended PR/change-set label): {tenant}
 """
 
 
@@ -297,6 +302,11 @@ def decompose_task(
         body=_truncate(task.body or "(no body)", 4000),
         roster=_format_roster(roster),
         default_assignee=default_assignee,
+        tenant=(
+            task.tenant
+            or kb._derive_hierarchy_tenant(task.title)
+            or "(derived from root title on write)"
+        ),
     )
 
     try:

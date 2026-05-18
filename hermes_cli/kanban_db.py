@@ -1372,6 +1372,35 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # Hierarchy defaults: child tasks inherit the parent workstream
+                # tenant and registered worktree unless the creator explicitly
+                # supplied a tenant/workspace. If a one-parent hierarchy starts
+                # from an untagged root, derive a readable tenant from that
+                # root's title (the intended soon-to-be PR label) and tag the
+                # root in the same transaction.
+                parent_tenant = parent_ws_kind = parent_ws_path = None
+                parent_ids_to_tag: list[str] = []
+                if parents:
+                    (
+                        parent_tenant,
+                        parent_ws_kind,
+                        parent_ws_path,
+                        parent_ids_to_tag,
+                    ) = _parent_hierarchy_defaults(conn, parents)
+                effective_tenant = tenant or parent_tenant
+                effective_workspace_kind = workspace_kind
+                effective_workspace_path = workspace_path
+                if workspace_path is None and parent_ws_path:
+                    effective_workspace_kind = parent_ws_kind or workspace_kind
+                    effective_workspace_path = parent_ws_path
+                if effective_tenant and parent_ids_to_tag:
+                    placeholders = ",".join("?" * len(parent_ids_to_tag))
+                    conn.execute(
+                        f"UPDATE tasks SET tenant = ? WHERE id IN ({placeholders}) "
+                        "AND tenant IS NULL",
+                        (effective_tenant, *parent_ids_to_tag),
+                    )
+
                 conn.execute(
                     """
                     INSERT INTO tasks (
@@ -1390,9 +1419,9 @@ def create_task(
                         priority,
                         created_by,
                         now,
-                        workspace_kind,
-                        workspace_path,
-                        tenant,
+                        effective_workspace_kind,
+                        effective_workspace_path,
+                        effective_tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
@@ -1412,7 +1441,7 @@ def create_task(
                         "assignee": assignee,
                         "status": initial_status,
                         "parents": list(parents),
-                        "tenant": tenant,
+                        "tenant": effective_tenant,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -1436,6 +1465,66 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _derive_hierarchy_tenant(title: Optional[str]) -> Optional[str]:
+    """Return a human workstream label for a task hierarchy.
+
+    Kanban ``tenant`` is used as the hierarchy namespace. For repo work this
+    maps to the intended change-set / soon-to-be PR, so the value should be
+    readable in the dashboard instead of an opaque task id. Keep punctuation
+    and spaces because this is a display/filter label, not a branch slug.
+    """
+    text = " ".join((title or "").strip().split())
+    if not text:
+        return None
+    return text[:160]
+
+
+def _parent_hierarchy_defaults(
+    conn: sqlite3.Connection,
+    parents: Iterable[str],
+) -> tuple[Optional[str], Optional[str], Optional[str], list[str]]:
+    """Infer tenant/workspace defaults from parent tasks.
+
+    Returns ``(tenant, workspace_kind, workspace_path, parent_ids_to_tag)``.
+    The final list contains parent ids that should receive a derived tenant in
+    the same transaction when a one-parent hierarchy starts from an untagged
+    root. This keeps the whole hierarchy filterable under the future-PR label.
+    """
+    parent_ids = [p for p in parents if p]
+    if not parent_ids:
+        return None, None, None, []
+    placeholders = ",".join("?" * len(parent_ids))
+    rows = conn.execute(
+        "SELECT id, title, tenant, workspace_kind, workspace_path FROM tasks "
+        f"WHERE id IN ({placeholders})",
+        tuple(parent_ids),
+    ).fetchall()
+    by_id = {r["id"]: r for r in rows}
+    ordered = [by_id[p] for p in parent_ids if p in by_id]
+
+    tenants = [r["tenant"] for r in ordered if r["tenant"]]
+    unique_tenants = list(dict.fromkeys(tenants))
+    tenant = unique_tenants[0] if len(unique_tenants) == 1 else None
+    tag_parents: list[str] = []
+    if tenant is None and len(ordered) == 1:
+        tenant = _derive_hierarchy_tenant(ordered[0]["title"])
+        if tenant:
+            tag_parents.append(ordered[0]["id"])
+
+    workspaces = [
+        (r["workspace_kind"], r["workspace_path"])
+        for r in ordered
+        if r["workspace_path"]
+    ]
+    unique_workspaces = list(dict.fromkeys(workspaces))
+    if len(unique_workspaces) == 1:
+        workspace_kind, workspace_path = unique_workspaces[0]
+    else:
+        workspace_kind = workspace_path = None
+
+    return tenant, workspace_kind, workspace_path, tag_parents
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
@@ -2860,13 +2949,22 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, title, status, tenant, workspace_kind, workspace_path "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
-        tenant = root_row["tenant"]
+        tenant = root_row["tenant"] or _derive_hierarchy_tenant(root_row["title"])
+        workspace_kind = root_row["workspace_kind"] or "scratch"
+        workspace_path = root_row["workspace_path"]
+        if tenant and not root_row["tenant"]:
+            conn.execute(
+                "UPDATE tasks SET tenant = ? WHERE id = ? AND tenant IS NULL",
+                (tenant, task_id),
+            )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -2880,13 +2978,15 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    workspace_kind,
+                    workspace_path,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -2894,7 +2994,7 @@ def decompose_triage_task(
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {"by": author or "decomposer", "from_decompose_of": task_id, "tenant": tenant},
             )
             child_ids.append(new_id)
 
@@ -2955,6 +3055,9 @@ def decompose_triage_task(
             {
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
+                "tenant": tenant,
+                "workspace_kind": workspace_kind,
+                "workspace_path": workspace_path,
             },
         )
 

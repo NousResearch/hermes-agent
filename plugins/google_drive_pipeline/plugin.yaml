@@ -1,0 +1,5 @@
+name: google_drive_pipeline
+version: 0.1.0
+description: "CLI-backed Google Drive artifact pipeline for resolving folders, publishing files, sharing access, and returning canonical links."
+author: NousResearch
+kind: standalone

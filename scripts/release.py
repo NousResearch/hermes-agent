@@ -411,6 +411,7 @@ AUTHOR_MAP = {
     "yukipukikedy@gmail.com": "Yukipukii1",
     "alireza78.crypto@gmail.com": "alireza78a",
     "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
+    "eloklam2002@gmail.com": "eloklam",
     "withapurpose37@gmail.com": "StefanIsMe",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
     "ifkellx@users.noreply.github.com": "Ifkellx",

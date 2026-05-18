@@ -61,3 +61,11 @@ def test_codex_session_tool_handler_returns_json_evidence(monkeypatch, tmp_path)
     assert payload["changed_files"] == ["a.py"]
     assert payload["user_facing_final"] is False
     assert payload["requires_hermes_verification"] is True
+
+
+def test_codex_session_tool_schema_documents_hermes_worktree_write_profile():
+    import tools.codex_session_tool as tool
+
+    profile_description = tool.CODEX_SESSION_SCHEMA["parameters"]["properties"]["permission_profile"]["description"]
+
+    assert "hermes-worktree-write" in profile_description

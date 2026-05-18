@@ -95,11 +95,11 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 - [x] **T8.1** — Local nats-server + hermes smoke config (already documented in §14 of design doc; confirm it still applies)
 - [x] **T8.2** — `examples/01-discover.py` lists `agents.hermes.<owner>.<name>`
 - [x] **T8.3** — `examples/02-prompt-text.py` — simple prompt streams a response
-- [x] **T8.4** — `examples/03-prompt-attachment.py` — image attachment round-trips (see Phase 4 gap below; actually sent a PNG rather than a PDF — same adapter path)
+- [x] **T8.4** — `examples/03-prompt-attachment.py` — both a PDF (lualatex-generated with marker phrases) and a PNG round-tripped end-to-end; see the "attachment-handling refactor" Decision log entry below for the canonical-gateway alignment
 - [x] **T8.5** — `examples/04-query-reply.py` — tool call that requires approval; Query chunk; reply "once"; stream resumes
 - [x] **T8.6** — `examples/05-liveness.py` in background; kill hermes; `is_online()` flips False after 3× interval
 - [x] **T8.7** — `nats` CLI interop — `nats req '$SRV.INFO.SynadiaAgents'` and `nats sub 'agents.hermes.*.*.heartbeat'` per protocol Appendix C
-- [x] **T8.8** — `scripts/run_tests.sh` — full suite: 19 failures, all pre-existing / environmental, zero in the NATS subtree (NATS subtree 201/201 green after the Phase 8 attachment-drop fix added 6 regression tests)
+- [x] **T8.8** — `scripts/run_tests.sh` — full suite: 19 failures, all pre-existing / environmental, zero in the NATS subtree (NATS subtree 203/203 green after the Phase 8 attachment refactor; `TestEnrichEventWithMedia` (8 tests) replaces the earlier note-injection coverage)
 
 ### Phase 9 — Polish & docs
 
@@ -576,6 +576,24 @@ Regression coverage: `TestAnnotateMediaAttachments` in `tests/gateway/test_nats_
 5. Agent thread unblocked from `entry.event.wait()`, `rm` executed (on a non-existent dir — no-op but enough to close the turn), and the agent streamed `"Done."` back.
 
 The `entry_id` contextvar capture introduced in Phase 6 for parallel subagents worked transparently for this single-subagent case (`captured_entry_id` was populated synchronously before the notify scheduled the coroutine; `resolve_gateway_approval` matched by id not FIFO). Confirmed via gateway log absence of any "falling back to FIFO" warnings.
+
+### 2026-04-22 — Phase 8 — Attachment handling refactored to match canonical gateway path
+
+User review of the first-pass Phase 8 fix flagged two caveats: (1) the task-list wording said "ingest a PDF" but the live smoke actually used a PNG, and (2) the note-injection approach (one adapter-inlined note per attachment, agent calls vision_analyze itself) diverged from `GatewayRunner._enrich_message_with_vision`'s inline pre-analysis pattern used by every other messaging platform. Both addressed in this refactor:
+
+**Behavior change.** `_annotate_media_attachments` (sync, note-only) replaced with `_enrich_event_with_media` (async, matches canonical). For images it now awaits `vision_analyze` inline and prepends the description using the same `[The user sent an image~ Here's what I can see:\n<description>]` template the gateway uses verbatim — Telegram / Discord / Slack / NATS all produce the identical user_message shape for the agent now. Failures degrade to the same "couldn't see it this time, you can retry with vision_analyze" fallback wording as the canonical path.
+
+Documents / audio / video still get a bracketed path-note. Confirmed during refactor: `GatewayRunner._handle_message`'s document block (run.py:3866–3900) also only emits a context-note, not the file's bytes — its "Its content has been included below" wording is misleading historical text; no content injection actually happens. So the document path here matches reality, not the stale comment.
+
+**Helper split.** `_analyze_image_attachments` extracted as a separate async method so tests can mock the per-image vision call independently of the routing (one monkeypatch target, not an adapter-global one). Local import of `vision_analyze_tool` inside the method mirrors the gateway's lazy-import pattern — keeps the module importable in test harnesses that don't install the vision extras.
+
+**Live verification (both types, fresh gateway):**
+- **PDF.** `lualatex` generated `/tmp/p8-pdf-src.pdf` (one-page document with three deterministic markers: magic word `ZUCCHINI`, year `1984`, author `Ada Lovelace`). `examples/03-prompt-attachment.py` with the PDF. Agent used `execute_code` + `pymupdf` to extract the PDF, returned `"This is a test document verifying PDF attachment handling with three marker phrases: the magic word \"ZUCCHINI,\" the year \"1984,\" and the author \"Ada Lovelace.\""` — all three markers surfaced verbatim.
+- **PNG.** `website/static/img/hermes-agent-banner.png` with prompt `"Describe this image in one short sentence, no preamble. Quote any word you can read verbatim."`. Agent responded `"The text \"HERMES-AGENT\" in pixelated, retro video game font with a yellow-to-orange gradient and layered shadow effect on black background."` — no tool-call narration in the response (confirming inline vision pre-analysis ran before the primary prompt; without it the response would have begun with "Let me analyze this image" or equivalent as tool use surfaced).
+
+**Test coverage.** `TestAnnotateMediaAttachments` (6 sync tests) replaced by `TestEnrichEventWithMedia` (8 async tests). Covers: no-media identity, successful vision analysis with description injection, exception from the vision tool → fallback, non-success result payload → fallback, document path DOES NOT invoke vision, audio path DOES NOT invoke vision, empty-user-text handling, and multi-attachment ordering (image + document together). NATS subtree 201 → 203 tests.
+
+**Why this matters beyond the refactor itself.** The original note-injection design was a shortcut that *would* have worked for the MVP §8.1 contract but diverged from every other platform's behavior. Keeping every adapter's user-message construction identical is load-bearing for any downstream work that assumes a consistent shape — skill prompts, conversation-history replay, session migration across platforms. Matching byte-for-byte removes an entire class of future "works on Telegram, broken on NATS" bugs.
 
 ### 2026-04-22 — Phase 8 — Phase 8 closed
 

@@ -290,66 +290,163 @@ class TestUnpackEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# _annotate_media_attachments — Phase 8 fix
+# _enrich_event_with_media — Phase 8 fix (aligned with canonical gateway path)
 # ---------------------------------------------------------------------------
 
 
-class TestAnnotateMediaAttachments:
-    """Regression: NATS adapter must fold ``media_urls`` into ``event.text``.
+class TestEnrichEventWithMedia:
+    """Regression: NATS adapter folds ``media_urls`` into ``event.text``.
 
     Phase 4 cached attachments into ``media_urls`` but ``_run_text_prompt``
     only passed ``event.text`` to ``run_conversation``, so the agent never
-    saw them. Phase 8's live T8.4 smoke surfaced this — 03-prompt-attachment
-    got "I don't see an image" responses. Fixed by having
-    ``_run_text_prompt`` call ``_annotate_media_attachments`` which prepends
-    a per-attachment pointer to the cached path so the agent can dispatch
-    the right tool (``vision_analyze`` for images, file reads for docs).
+    saw them. Phase 8's live T8.4 smoke caught this when
+    03-prompt-attachment returned "I don't see an image". The fix mirrors
+    :meth:`GatewayRunner._enrich_message_with_vision` (inline vision
+    pre-analysis of images with the same output template) plus
+    :meth:`GatewayRunner._handle_message`'s document path-note block —
+    so the NATS adapter's user-facing contract matches Telegram / Discord
+    / Slack byte-for-byte.
     """
 
-    def test_no_media_returns_event_unchanged(self):
+    @staticmethod
+    def _success_vision_result(description: str) -> str:
+        import json as _json
+        return _json.dumps({"success": True, "analysis": description})
+
+    @pytest.mark.asyncio
+    async def test_no_media_returns_event_unchanged(self):
         adapter = _build_adapter()
         src = MagicMock()
         event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=src)
-        result = adapter._annotate_media_attachments(event)
+        result = await adapter._enrich_event_with_media(event)
         assert result is event
 
-    def test_image_injects_vision_analyze_hint(self):
+    @pytest.mark.asyncio
+    async def test_image_pre_analyzed_via_vision_tool(self, monkeypatch):
         adapter = _build_adapter()
         src = MagicMock()
+        calls: List[dict] = []
+
+        async def _fake_vision(image_url, user_prompt):
+            calls.append({"image_url": image_url, "user_prompt": user_prompt})
+            return self._success_vision_result("a blue banner with the word HERMES")
+
+        monkeypatch.setattr(
+            "tools.vision_tools.vision_analyze_tool",
+            _fake_vision,
+        )
+
         event = MessageEvent(
-            text="describe this",
+            text="what is this?",
             message_type=MessageType.PHOTO,
             source=src,
             media_urls=["/cache/img.png"],
             media_types=[MessageType.PHOTO.value],
         )
-        result = adapter._annotate_media_attachments(event)
+        result = await adapter._enrich_event_with_media(event)
+
+        assert len(calls) == 1
+        assert calls[0]["image_url"] == "/cache/img.png"
+        # Output matches the canonical gateway template (same keywords).
+        assert "Here's what I can see" in result.text
+        assert "a blue banner with the word HERMES" in result.text
         assert "/cache/img.png" in result.text
-        assert "vision_analyze" in result.text
-        # Original user text must be preserved after the note.
-        assert "describe this" in result.text
-        # Media urls/types pass through unchanged for downstream code.
+        # User's text preserved after the analysis.
+        assert "what is this?" in result.text
+        assert result.text.rstrip().endswith("what is this?")
+        # Metadata passes through.
         assert result.media_urls == ["/cache/img.png"]
         assert result.media_types == [MessageType.PHOTO.value]
         assert result.message_type is MessageType.PHOTO
         assert result.source is src
 
-    def test_document_injects_read_file_hint(self):
+    @pytest.mark.asyncio
+    async def test_image_vision_failure_degrades_to_self_retry_note(self, monkeypatch):
         adapter = _build_adapter()
+
+        async def _boom(image_url, user_prompt):
+            raise RuntimeError("model quota exceeded")
+
+        monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", _boom)
+
+        event = MessageEvent(
+            text="what's in the photo?",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            media_urls=["/cache/img.png"],
+            media_types=[MessageType.PHOTO.value],
+        )
+        result = await adapter._enrich_event_with_media(event)
+        # Graceful degradation: the caller gets a fallback note pointing
+        # the agent at vision_analyze for a retry, exactly like the
+        # gateway's canonical path does.
+        assert "vision_analyze" in result.text
+        assert "/cache/img.png" in result.text
+        assert "what's in the photo?" in result.text
+
+    @pytest.mark.asyncio
+    async def test_image_non_success_result_falls_back_to_retry_note(self, monkeypatch):
+        adapter = _build_adapter()
+        import json as _json
+
+        async def _fail_analyze(image_url, user_prompt):
+            return _json.dumps({"success": False, "error": "bad image"})
+
+        monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", _fail_analyze)
+
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            media_urls=["/cache/img.png"],
+            media_types=[MessageType.PHOTO.value],
+        )
+        result = await adapter._enrich_event_with_media(event)
+        assert "vision_analyze" in result.text
+        assert "/cache/img.png" in result.text
+
+    @pytest.mark.asyncio
+    async def test_document_gets_context_note_no_vision_call(self, monkeypatch):
+        adapter = _build_adapter()
+        calls: List[str] = []
+
+        async def _should_not_run(image_url, user_prompt):
+            calls.append(image_url)
+            return ""
+
+        monkeypatch.setattr(
+            "tools.vision_tools.vision_analyze_tool",
+            _should_not_run,
+        )
+
         event = MessageEvent(
             text="summarize",
             message_type=MessageType.DOCUMENT,
             source=MagicMock(),
-            media_urls=["/cache/report.pdf"],
+            media_urls=["/cache/deadbeef_report.pdf"],
             media_types=[MessageType.DOCUMENT.value],
         )
-        result = adapter._annotate_media_attachments(event)
-        assert "/cache/report.pdf" in result.text
+        result = await adapter._enrich_event_with_media(event)
+        # Document path MUST NOT trigger vision analysis — matches the
+        # gateway's canonical behavior, which only pre-analyzes images.
+        assert calls == []
+        assert "/cache/deadbeef_report.pdf" in result.text
+        assert "document" in result.text.lower()
         assert "read_file" in result.text
         assert "summarize" in result.text
 
-    def test_audio_injects_transcription_hint(self):
+    @pytest.mark.asyncio
+    async def test_audio_gets_transcription_hint_no_vision_call(self, monkeypatch):
         adapter = _build_adapter()
+
+        async def _should_not_run(image_url, user_prompt):
+            raise AssertionError("vision_analyze must not be called for audio")
+
+        monkeypatch.setattr(
+            "tools.vision_tools.vision_analyze_tool",
+            _should_not_run,
+        )
+
         event = MessageEvent(
             text="",
             message_type=MessageType.AUDIO,
@@ -357,12 +454,19 @@ class TestAnnotateMediaAttachments:
             media_urls=["/cache/note.mp3"],
             media_types=[MessageType.AUDIO.value],
         )
-        result = adapter._annotate_media_attachments(event)
+        result = await adapter._enrich_event_with_media(event)
         assert "/cache/note.mp3" in result.text
         assert "transcription" in result.text.lower()
 
-    def test_empty_user_text_keeps_notes_only(self):
+    @pytest.mark.asyncio
+    async def test_empty_user_text_keeps_notes_only(self, monkeypatch):
         adapter = _build_adapter()
+
+        async def _fake_vision(image_url, user_prompt):
+            return self._success_vision_result("a PNG with text")
+
+        monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", _fake_vision)
+
         event = MessageEvent(
             text="",
             message_type=MessageType.PHOTO,
@@ -370,12 +474,21 @@ class TestAnnotateMediaAttachments:
             media_urls=["/cache/img.png"],
             media_types=[MessageType.PHOTO.value],
         )
-        result = adapter._annotate_media_attachments(event)
-        # No trailing blank lines from an absent user message.
+        result = await adapter._enrich_event_with_media(event)
         assert not result.text.endswith("\n\n")
+        assert result.text.strip() != ""
 
-    def test_multiple_attachments_each_get_their_own_note(self):
+    @pytest.mark.asyncio
+    async def test_multiple_attachments_image_then_doc(self, monkeypatch):
         adapter = _build_adapter()
+        image_calls: List[str] = []
+
+        async def _fake_vision(image_url, user_prompt):
+            image_calls.append(image_url)
+            return self._success_vision_result(f"description of {image_url}")
+
+        monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", _fake_vision)
+
         event = MessageEvent(
             text="look",
             message_type=MessageType.PHOTO,
@@ -383,11 +496,15 @@ class TestAnnotateMediaAttachments:
             media_urls=["/cache/a.png", "/cache/b.pdf"],
             media_types=[MessageType.PHOTO.value, MessageType.DOCUMENT.value],
         )
-        result = adapter._annotate_media_attachments(event)
+        result = await adapter._enrich_event_with_media(event)
+        # Only the image triggers vision.
+        assert image_calls == ["/cache/a.png"]
+        # Both paths appear in the enriched text; user text trails.
         assert "/cache/a.png" in result.text
         assert "/cache/b.pdf" in result.text
-        assert "vision_analyze" in result.text  # for the png
-        assert "read_file" in result.text        # for the pdf
+        assert "description of /cache/a.png" in result.text
+        assert "read_file" in result.text
+        assert result.text.rstrip().endswith("look")
 
 
 # ---------------------------------------------------------------------------

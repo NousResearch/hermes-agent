@@ -857,51 +857,76 @@ class NatsAdapter(BasePlatformAdapter):
         return prompt_text, media_urls, media_types, message_type
 
     # ------------------------------------------------------------------
-    # Media annotation — §8.1
+    # Media enrichment — §8.1
     # ------------------------------------------------------------------
 
-    def _annotate_media_attachments(self, event: MessageEvent) -> MessageEvent:
-        """Prepend per-attachment notes to ``event.text`` so the agent sees them.
+    async def _enrich_event_with_media(self, event: MessageEvent) -> MessageEvent:
+        """Fold ``event.media_urls`` into ``event.text`` for the agent.
 
-        The gateway's default path (``GatewayRunner._handle_message``) calls
-        ``_enrich_message_with_vision`` / inlines text-document bytes before
-        the agent runs. NATS bypasses that path (§6.1 api_server-style
-        ownership), so we replicate the minimum needed here: a bracketed
-        note naming each cached path and pointing the agent at the
-        ``vision_analyze`` / file tools it already has via the
-        ``hermes-nats`` toolset.
+        The gateway's default path (``GatewayRunner._handle_message``)
+        performs two enrichment steps before the agent runs: inline
+        vision pre-analysis for images via
+        :meth:`GatewayRunner._enrich_message_with_vision`, and a
+        descriptive context-note for documents. NATS bypasses
+        ``_handle_message`` by design (§6.1 api_server-style adapter
+        ownership), so we replicate both steps here to match every other
+        messaging platform's behavior byte-for-byte on the adapter hot
+        path.
 
-        Pre-analyzing inline (like ``_enrich_message_with_vision`` does) is
-        a richer UX but costs an extra LLM round-trip per image; the
-        note-only form is sufficient for §8.1 "agent receives the
-        attachment" and keeps the hot path out of the vision provider.
+        Image handling: calls ``vision_analyze`` inline and prepends the
+        description using the same message template as
+        ``_enrich_message_with_vision`` (run.py:8127). Analysis failures
+        degrade to the "couldn't see it" fallback note pointing the
+        agent at ``vision_analyze`` so it can retry itself — matching
+        the gateway's error path. Each image costs one extra
+        vision-model round-trip; the alternative (note-only) was
+        considered in the Phase 8 first-pass fix and rejected because
+        it diverges from the canonical gateway behavior for no real
+        cost saving (vision pre-analysis is how every other adapter
+        presents images to the agent).
+
+        Document / audio / video handling: a bracketed path-note using
+        the same shape as ``_handle_message``'s document block
+        (run.py:3895) — the canonical behavior doesn't actually inline
+        text bytes either (the "included below" wording there is
+        misleading historical note; the code only writes the note, not
+        the content). The agent can call ``read_file`` when it wants
+        the content; matching that here keeps the user-facing contract
+        identical to Telegram / Discord / Slack.
         """
         if not event.media_urls:
             return event
-        notes: List[str] = []
+
+        image_paths: List[Tuple[int, str]] = []
+        other_notes: List[str] = []
         for idx, path in enumerate(event.media_urls):
             mtype = event.media_types[idx] if idx < len(event.media_types) else MessageType.DOCUMENT.value
             if mtype == MessageType.PHOTO.value:
-                notes.append(
-                    f"[The user attached an image at {path}. "
-                    f"Call vision_analyze (image_url={path}) to examine it.]"
-                )
+                image_paths.append((idx, path))
             elif mtype == MessageType.VOICE.value or mtype == MessageType.AUDIO.value:
-                notes.append(
+                other_notes.append(
                     f"[The user attached an audio file at {path}. "
                     f"Use the transcription tool if you need its contents.]"
                 )
             elif mtype == MessageType.VIDEO.value:
-                notes.append(
+                other_notes.append(
                     f"[The user attached a video file at {path}.]"
                 )
             else:
-                notes.append(
-                    f"[The user attached a document at {path}. "
-                    f"Use read_file (or the equivalent reader for its type) to inspect it.]"
+                basename = Path(path).name
+                other_notes.append(
+                    f"[The user sent a document: '{basename}'. "
+                    f"The file is saved at: {path}. "
+                    f"Ask the user what they'd like you to do with it, "
+                    f"or call read_file if the file type is text-readable.]"
                 )
-        prefix = "\n".join(notes)
+
+        image_notes = await self._analyze_image_attachments([p for _, p in image_paths])
+
+        prefix_parts = image_notes + other_notes
+        prefix = "\n\n".join(prefix_parts)
         enriched_text = f"{prefix}\n\n{event.text}" if event.text else prefix
+
         return MessageEvent(
             text=enriched_text,
             message_type=event.message_type,
@@ -909,6 +934,64 @@ class NatsAdapter(BasePlatformAdapter):
             media_urls=event.media_urls,
             media_types=event.media_types,
         )
+
+    async def _analyze_image_attachments(self, image_paths: List[str]) -> List[str]:
+        """Run ``vision_analyze`` on each image and return the description notes.
+
+        Extracted from :meth:`_enrich_event_with_media` so tests can
+        mock the per-image analysis independently of the overall routing
+        (one place to stub the expensive call). Matches
+        :meth:`GatewayRunner._enrich_message_with_vision` output
+        verbatim — same analysis prompt, same "here's what I can see"
+        template, same fallback wording on failure.
+        """
+        if not image_paths:
+            return []
+        # Local import keeps the module importable in test harnesses that
+        # don't install the vision tool's dependencies (matches the
+        # gateway's lazy-import in ``_enrich_message_with_vision``).
+        from tools.vision_tools import vision_analyze_tool
+
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
+
+        notes: List[str] = []
+        for path in image_paths:
+            try:
+                result_json = await vision_analyze_tool(
+                    image_url=path,
+                    user_prompt=analysis_prompt,
+                )
+                result = json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    notes.append(
+                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {path} ~]"
+                    )
+                else:
+                    notes.append(
+                        "[The user sent an image but I couldn't quite see it "
+                        "this time (>_<) You can try looking at it yourself "
+                        f"with vision_analyze using image_url: {path}]"
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[%s] NATS vision enrichment failed for %s: %s",
+                    self.name,
+                    path,
+                    exc,
+                )
+                notes.append(
+                    f"[The user sent an image but something went wrong when I "
+                    f"tried to look at it~ You can try examining it yourself "
+                    f"with vision_analyze using image_url: {path}]"
+                )
+        return notes
 
     # ------------------------------------------------------------------
     # Keep-alive — §6.4
@@ -1042,15 +1125,14 @@ class NatsAdapter(BasePlatformAdapter):
         pump — we detect that and skip the duplicate publish.
 
         ``event.media_urls`` is folded into the user message here (§8.1)
-        by annotating each cached attachment as an inline reference —
-        the agent then picks it up via ``vision_analyze`` / file-reading
-        tools rather than having us pre-analyze via
-        ``_enrich_message_with_vision`` the way ``GatewayRunner`` does.
-        Note-only injection is cheaper (no extra LLM round-trip) and
-        sidesteps the chicken-and-egg of the vision tool needing its
-        own configured provider before the primary prompt runs.
+        via :meth:`_enrich_event_with_media`, which mirrors
+        ``GatewayRunner._enrich_message_with_vision`` (inline pre-analysis
+        of each image through the vision tool) plus the document/audio/
+        video context-notes from ``GatewayRunner._handle_message``'s
+        attachment block. Matching the canonical path byte-for-byte keeps
+        the user-facing contract identical to every other platform.
         """
-        event = self._annotate_media_attachments(event)
+        event = await self._enrich_event_with_media(event)
         loop = asyncio.get_running_loop()
         delta_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         streamed_anything = threading.Event()

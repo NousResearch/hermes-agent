@@ -1388,8 +1388,13 @@ class _IncomingHandler(
             if isinstance(data, str):
                 data = json.loads(data)
 
-            # Parse dict into ChatbotMessage using SDK's from_dict
-            chatbot_msg = ChatbotMessage.from_dict(data)
+            # Parse dict into ChatbotMessage using SDK's from_dict if available
+            if hasattr(ChatbotMessage, 'from_dict'):
+                chatbot_msg = ChatbotMessage.from_dict(data)
+            else:
+                # Mock or SDK mock during tests where ChatbotMessage may be a dummy
+                import dingtalk_stream.chatbot
+                chatbot_msg = dingtalk_stream.chatbot.ChatbotMessage.from_dict(data)
 
             # Ensure session_webhook is populated even if the SDK's
             # from_dict() did not map it (field name mismatch across

@@ -442,6 +442,11 @@ class YCBenchEvalEnv(HermesAgentBaseEnv):
             )
             await self._streaming_file.flush()
 
+    async def _save_result(self, result: Dict[str, Any]):
+        """Offload the synchronous file write to a thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._save_result_sync, result)
+
     # =========================================================================
     # Training pipeline stubs (eval-only -- not used)
     # =========================================================================

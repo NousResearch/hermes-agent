@@ -1811,8 +1811,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
-            with open(audio_path, "rb") as f:
-                file_data = f.read()
+            def _read_audio() -> bytes:
+                with open(audio_path, "rb") as f:
+                    return f.read()
+
+            file_data = await asyncio.to_thread(_read_audio)
 
             # Forum channels (type 15) reject direct POST /messages — the
             # native voice flag path also targets /messages so it would fail

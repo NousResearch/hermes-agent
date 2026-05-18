@@ -2042,9 +2042,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
 
         try:
+            import aiofiles
             import io as _io
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
+            async with aiofiles.open(image_path, "rb") as f:
+                image_bytes = await f.read()
             # Wrap in BytesIO so lark SDK's MultipartEncoder can read .name and .tell()
             image_file = _io.BytesIO(image_bytes)
             image_file.name = os.path.basename(image_path)

@@ -4795,25 +4795,28 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding.
-        # In private chats, only preserve thread ids for real topic messages
-        # (is_topic_message=True).  Telegram puts message_thread_id on every
-        # DM that is a reply, even when the user is just replying to a
-        # previous message in the same DM — that bogus id then routes to a
-        # nonexistent thread and Telegram returns 'Message thread not found'
-        # on send (#3206).
+        # Resolve Telegram topic name and skill binding.
+        # Only preserve message_thread_id when Telegram marks the message as
+        # a real topic/forum message. Telegram can also populate
+        # message_thread_id for ordinary reply UI anchors; treating those as
+        # durable session threads fragments workflows such as CAPTCHA/login
+        # handoffs where the user later replies "done" in the same group.
+        # Private chats have the same pitfall: only real DM topic messages
+        # (is_topic_message=True) should keep the thread id, otherwise sends
+        # can hit Telegram's 'Message thread not found' error (#3206).
         thread_id_raw = message.message_thread_id
         is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True
         thread_id_str = None
         if thread_id_raw is not None:
-            if chat_type == "group":
+            if chat_type == "group" and (is_topic_message or is_forum_group):
                 thread_id_str = str(thread_id_raw)
             elif chat_type == "dm" and is_topic_message:
                 thread_id_str = str(thread_id_raw)
         # For forum groups without an explicit topic, default to the
         # General-topic id so the gateway routes back to the General topic
         # rather than dropping into the bot's main channel (#22423).
-        if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
+        if chat_type == "group" and thread_id_str is None and is_forum_group:
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None

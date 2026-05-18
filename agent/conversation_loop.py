@@ -1045,7 +1045,10 @@ def run_conversation(
                     # Log response with provider info if available
                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                
+
+                if agent._has_stream_consumers():
+                    agent._flush_stream_delivery_tails()
+
                 # Validate response shape before proceeding
                 response_invalid = False
                 error_details = []
@@ -3338,6 +3341,9 @@ def run_conversation(
                     assistant_message.content = "\n".join(parts)
                 else:
                     assistant_message.content = str(raw)
+
+            if not getattr(assistant_message, "tool_calls", None):
+                agent._emit_missing_stream_suffix(assistant_message.content or "")
 
             try:
                 from hermes_cli.plugins import (

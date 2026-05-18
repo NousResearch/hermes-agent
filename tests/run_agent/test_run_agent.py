@@ -5795,6 +5795,29 @@ class TestStreamingApiCall:
         callback.assert_any_call("lo ")
         callback.assert_any_call("World")
 
+    def test_reset_flushes_scrubber_tail_before_clearing_stream_tracking(self, agent):
+        callback = MagicMock()
+        agent.stream_delta_callback = callback
+
+        agent._fire_stream_delta("Answer ends with <")
+        agent._reset_stream_delivery_tracking()
+
+        assert [args[0][0] for args in callback.call_args_list] == [
+            "Answer ends with ",
+            "<",
+        ]
+        assert agent._current_streamed_assistant_text == ""
+
+    def test_emit_missing_stream_suffix_only_delivers_final_text_tail(self, agent):
+        callback = MagicMock()
+        agent.stream_delta_callback = callback
+        agent._current_streamed_assistant_text = "The answer"
+
+        agent._emit_missing_stream_suffix("The answer is complete.")
+
+        callback.assert_called_once_with(" is complete.")
+        assert agent._current_streamed_assistant_text == "The answer is complete."
+
     def test_tool_call_accumulation(self, agent):
         # Per OpenAI streaming spec, function names are delivered atomically
         # in the first chunk; only `arguments` is fragmented across chunks.

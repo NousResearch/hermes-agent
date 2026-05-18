@@ -4016,8 +4016,8 @@ class AIAgent:
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
-    def _reset_stream_delivery_tracking(self) -> None:
-        """Reset tracking for text delivered during the current model response."""
+    def _flush_stream_delivery_tails(self) -> None:
+        """Flush scrubber-held stream tails at a known response boundary."""
         # Flush any benign partial-tag tail held by the think scrubber
         # first (#17924): an innocent '<' at the end of the stream that
         # turned out not to be a tag prefix should reach the UI.  Then
@@ -4055,7 +4055,26 @@ class AIAgent:
                     except Exception:
                         pass
                 self._record_streamed_assistant_text(tail)
+
+    def _reset_stream_delivery_tracking(self) -> None:
+        """Reset tracking for text delivered during the current model response."""
+        self._flush_stream_delivery_tails()
         self._current_streamed_assistant_text = ""
+
+    def _emit_missing_stream_suffix(self, final_text: str) -> None:
+        """Deliver a final-response suffix that was not present in stream deltas."""
+        if not isinstance(final_text, str) or not final_text:
+            return
+        if not self._has_stream_consumers():
+            return
+        streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+        if not streamed or len(final_text) <= len(streamed):
+            return
+        if not final_text.startswith(streamed):
+            return
+        suffix = final_text[len(streamed):]
+        if suffix.strip():
+            self._fire_stream_delta(suffix)
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""

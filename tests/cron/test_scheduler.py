@@ -1774,6 +1774,59 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
 
 
+class TestTickSilentAuditableDocHardening:
+    """Regression: a SILENT job with a non-empty audit doc must still be
+    saved (never an empty .md in cron/output) while delivery stays suppressed
+    and the job run is still recorded.  Consolidates the four invariants the
+    historical empty-file bug violated.
+    """
+
+    def _make_job(self):
+        return {
+            "id": "silent-audit-job",
+            "name": "silent audit",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def test_tick_saves_non_empty_doc_and_suppresses_delivery(self):
+        # Mirrors the real silent_doc shape returned by run_job() when the
+        # pre-run script produces no output (cron/scheduler.py:1203).
+        silent_doc = (
+            "# Cron Job: silent audit\n\n"
+            "**Job ID:** silent-audit-job\n"
+            "**Status:** silent (pre-run script produced no output — agent skipped)\n"
+        )
+        run_job_ret = (True, silent_doc, SILENT_MARKER, None)
+
+        # Invariant 1: run_job reports success, SILENT_MARKER, non-empty doc.
+        success, doc, final_response, error = run_job_ret
+        assert success is True
+        assert final_response == SILENT_MARKER
+        assert doc.strip() != ""
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=run_job_ret), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as save_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        # Invariant 2: save_job_output got the non-empty audit doc verbatim.
+        save_mock.assert_called_once_with("silent-audit-job", silent_doc)
+        saved_doc = save_mock.call_args.args[1]
+        assert saved_doc.strip() != "", "audit doc must never be empty"
+
+        # Invariant 3: delivery suppressed.
+        deliver_mock.assert_not_called()
+
+        # Invariant 4: the run is still recorded.
+        mark_mock.assert_called_once()
+        assert mark_mock.call_args.args[0] == "silent-audit-job"
+        assert mark_mock.call_args.args[1] is True  # success preserved
+
+
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
 
@@ -2005,6 +2058,33 @@ class TestRunJobWakeGate:
 
         script_fn.assert_not_called()
         agent_cls.assert_called_once()
+
+    def test_empty_script_output_returns_auditable_silent_doc(self):
+        """Regression: a pre-run script that succeeds with no output makes
+        _build_job_prompt return None. The agent must be skipped, delivery
+        suppressed (SILENT_MARKER), but the returned doc must be a non-empty
+        auditable markdown — mirroring the no_agent empty-stdout contract,
+        not the old empty-string return that produced blank output files."""
+        from cron.scheduler import SILENT_MARKER
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, "")), \
+             patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            success, doc, final, err = scheduler.run_job(self._make_job())
+
+        agent_cls.assert_not_called()
+        assert success is True
+        assert final == SILENT_MARKER
+        assert err is None
+        assert doc.strip()
+        assert "# Cron Job:" in doc
+        assert "no output" in doc.lower()
+        assert "agent skipped" in doc.lower()
 
 
 class TestBuildJobPromptMissingSkill:

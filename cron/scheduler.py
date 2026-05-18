@@ -1200,7 +1200,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        silent_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** silent (pre-run script produced no output — agent skipped)\n"
+        )
+        return True, silent_doc, SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 

@@ -39,7 +39,14 @@ def _clean_state():
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    env_keys = (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_ONESHOT_MODE",
+    )
+    for k in env_keys:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -48,7 +55,7 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in env_keys:
         os.environ.pop(k, None)
 
 
@@ -236,6 +243,32 @@ class TestAlwaysVisibility:
         assert result["approved"] is True
         cb.assert_called_once()
         assert cb.call_args[1]["allow_permanent"] is True
+
+
+class TestOneshotMode:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_oneshot_blocks_dangerous_command_without_prompt(self, mock_tirith):
+        os.environ["HERMES_ONESHOT_MODE"] = "1"
+        cb = MagicMock(return_value="once")
+
+        result = check_all_command_guards(
+            "rm -rf /tmp/hermes-oneshot-victim", "local", approval_callback=cb
+        )
+
+        assert result["approved"] is False
+        assert "oneshot mode has no interactive user" in result["message"]
+        assert "--yolo" in result["message"]
+        cb.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_explicit_yolo_still_allows_oneshot_command(self, mock_tirith):
+        os.environ["HERMES_ONESHOT_MODE"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
+        result = check_all_command_guards("rm -rf /tmp/hermes-oneshot-victim", "local")
+
+        assert result["approved"] is True
+        mock_tirith.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

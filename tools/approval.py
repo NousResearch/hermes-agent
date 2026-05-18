@@ -115,12 +115,22 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 # Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $HERMES_HOME.
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+# via shell expansions like $HOME or $HERMES_HOME. Shell quoting can split a
+# path across tokens (for example, "$HOME"/.ssh), so permit a closing quote
+# between a home variable and the following slash.
+_SHELL_QUOTE = r'["\']?'
+_HOME_PATH_PREFIX = (
+    r'(?:~|\$home|\$\{home\})'
+    rf'{_SHELL_QUOTE}'
+    r'|/home/[^/\s"\'`]+'
+    r'|/users/[^/\s"\'`]+'
+    r'|/root'
+)
+_HERMES_HOME_PREFIX = r'(?:\$hermes_home|\$\{hermes_home\})' rf'{_SHELL_QUOTE}'
+_SSH_SENSITIVE_PATH = rf'(?:{_HOME_PATH_PREFIX})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
-    r'(?:~\/\.hermes/|'
-    r'(?:\$home|\$\{home\})/\.hermes/|'
-    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    rf'(?:(?:{_HOME_PATH_PREFIX})/\.hermes/|'
+    rf'(?:{_HERMES_HOME_PREFIX})/)'
     r'\.env\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
@@ -184,11 +194,16 @@ _CMDPOS = (
     r'\s*'
 )
 
+_RM_PATH_QUOTE = r'["\']?'
+_RM_TARGET_END = r'["\']?(?=\s|$|[;&|)])'
+_RM_PROTECTED_DIRS = r'(?:home|root|etc|usr|var|bin|sbin|boot|lib)'
+
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    (rf'\brm\s+(-[^\s]*\s+)*{_RM_PATH_QUOTE}(?:/|/\*|/ \*){_RM_TARGET_END}', "recursive delete of root filesystem"),
+    (rf'\brm\s+(-[^\s]*\s+)*{_RM_PATH_QUOTE}/(?:{_RM_PROTECTED_DIRS})(?:/+|/\*)?{_RM_TARGET_END}', "recursive delete of system directory"),
+    (rf'\brm\s+(-[^\s]*\s+)*{_RM_PATH_QUOTE}/\{{[^}}\s]*(?:{_RM_PROTECTED_DIRS})[^}}\s]*\}}(?:/+|/\*)?{_RM_TARGET_END}', "recursive delete of system directory"),
+    (rf'\brm\s+(-[^\s]*\s+)*{_RM_PATH_QUOTE}(?:~|\$HOME|\$\{{HOME\}})(?:/+|/\*)?{_RM_TARGET_END}', "recursive delete of home directory"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -1051,16 +1066,21 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+    if (
+        is_truthy_value(os.getenv("HERMES_YOLO_MODE"))
+        or is_current_session_yolo_enabled()
+        or approval_mode == "off"
+    ):
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
     is_ask = os.getenv("HERMES_EXEC_ASK")
+    is_oneshot = is_truthy_value(os.getenv("HERMES_ONESHOT_MODE"))
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
-    if not is_cli and not is_gateway and not is_ask:
+    if not is_cli and not is_gateway and not is_ask and not is_oneshot:
         # Cron sessions: respect cron_mode config
         if os.getenv("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
@@ -1119,6 +1139,19 @@ def check_all_command_guards(command: str, env_type: str,
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    if is_oneshot:
+        combined_desc = "; ".join(desc for _, desc, _ in warnings)
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command requires approval ({combined_desc}) "
+                "but oneshot mode has no interactive user. Re-run with "
+                "--yolo only if you trust the prompt and project context."
+            ),
+            "pattern_key": warnings[0][0],
+            "description": combined_desc,
+        }
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.

@@ -91,7 +91,7 @@ _KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cm
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 
@@ -216,8 +216,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": "missing `action`"})
 
     # Safety: validate actions before approval prompt.
-    if action == "type":
-        text = args.get("text", "")
+    if action in {"type", "set_value"}:
+        field = "text" if action == "type" else "value"
+        value = args.get(field, "")
+        text = "" if value is None else str(value)
         pat = _is_blocked_type(text)
         if pat:
             return json.dumps({

@@ -85,9 +85,22 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str) -> bool:
+def _is_write_denied(path: str, base_dir: str = None) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
+    return _shared_is_write_denied(path, base_dir=base_dir)
+
+
+def _v4a_write_denial_error(operations: List[Any]) -> Optional[str]:
+    """Return an error if a V4A operation targets a write-denied path."""
+    for op in operations:
+        paths = [getattr(op, "file_path", None)]
+        new_path = getattr(op, "new_path", None)
+        if new_path:
+            paths.append(new_path)
+        for path in paths:
+            if path and _is_write_denied(path):
+                return f"Patch denied: {path} is a protected path"
+    return None
 
 
 # =============================================================================
@@ -506,15 +519,16 @@ class ShellFileOperations(FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
 
-        # Resolve cwd from the live env so `cd` commands are picked up.
-        # Fall through to init-time self.cwd only if the env doesn't track cwd.
-        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
-        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        result = self.env.execute(command, cwd=self._effective_cwd(cwd), **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
         )
     
+    def _effective_cwd(self, cwd: str = None) -> str:
+        """Return the cwd that _exec() will use for relative paths."""
+        return cwd or getattr(self.env, 'cwd', None) or self.cwd
+
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
@@ -1024,9 +1038,16 @@ class ShellFileOperations(FileOperations):
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        
+
+        denial_error = _v4a_write_denial_error(operations)
+        if denial_error:
+            return PatchResult(error=denial_error)
+
         # Apply operations
         result = apply_v4a_operations(operations, self)
+        if result.error:
+            from agent.redact import redact_sensitive_text
+            result.error = redact_sensitive_text(result.error)
         return result
     
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:

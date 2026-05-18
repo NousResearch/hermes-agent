@@ -520,8 +520,8 @@ TOOLSETS = {
     },
 
     "hermes-webhook": {
-        "description": "Webhook toolset - receive and process external webhook events",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "Webhook toolset - receive and process external webhook events (no tools by default; opt in per platform)",
+        "tools": [],
         "includes": []
     },
 

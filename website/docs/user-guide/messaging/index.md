@@ -432,7 +432,7 @@ Each platform has its own toolset:
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
-| Webhooks | `hermes-webhook` | Full tools including terminal |
+| Webhooks | `hermes-webhook` | No tools by default; explicitly opt in to required toolsets |
 
 ## Next Steps
 

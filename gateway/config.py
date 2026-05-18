@@ -674,6 +674,13 @@ def load_gateway_config() -> GatewayConfig:
         try:
             with open(gateway_json_path, "r", encoding="utf-8") as f:
                 gw_data = json.load(f) or {}
+            legacy_slack = gw_data.get("platforms", {}).get(Platform.SLACK.value)
+            if isinstance(legacy_slack, dict) and "enabled" in legacy_slack:
+                legacy_extra = legacy_slack.setdefault("extra", {})
+                if not isinstance(legacy_extra, dict):
+                    legacy_extra = {}
+                    legacy_slack["extra"] = legacy_extra
+                legacy_extra["_enabled_explicit"] = True
             logger.info(
                 "Loaded legacy %s — consider moving settings to config.yaml",
                 gateway_json_path,

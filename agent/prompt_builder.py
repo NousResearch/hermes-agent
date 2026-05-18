@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import stat
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -89,6 +90,14 @@ def _find_git_root(start: Path) -> Optional[Path]:
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
 
 
+def _is_regular_context_file(candidate: Path) -> bool:
+    """Return True only for regular files, without following symlinks."""
+    try:
+        return stat.S_ISREG(candidate.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
     """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
 
@@ -102,7 +111,7 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
+            if _is_regular_context_file(candidate):
                 return candidate
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
@@ -530,15 +539,18 @@ PLATFORM_HINTS = {
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
-        "You CAN send media files natively — to deliver a file to the user, include "
-        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
-        "WeCom attachment: images (.jpg, .png, .webp) are sent as photos (up to 10 MB), "
-        "other files (.pdf, .docx, .xlsx, .md, .txt, etc.) arrive as downloadable documents "
-        "(up to 20 MB), and videos (.mp4) play inline. Voice messages are supported but "
-        "must be in AMR format — other audio formats are automatically sent as file attachments. "
-        "You can also include image URLs in markdown format ![alt](url) and they will be "
-        "downloaded and sent as native photos. Do NOT tell the user you lack file-sending "
-        "capability — use MEDIA: syntax whenever a file delivery is appropriate."
+        "You CAN send media files natively for files you created or the user explicitly "
+        "asked you to attach — include MEDIA:/absolute/path/to/file in your response. "
+        "Never attach credentials, SSH keys, Hermes config, dotfiles, or other sensitive "
+        "local paths. The file will be sent as a native WeCom attachment: images (.jpg, "
+        ".png, .webp) are sent as photos (up to 10 MB), other files (.pdf, .docx, "
+        ".xlsx, .md, .txt, etc.) arrive as downloadable documents (up to 20 MB), and "
+        "videos (.mp4) play inline. Voice messages are supported but must be in AMR "
+        "format — other audio formats are automatically sent as file attachments. You "
+        "can also include public image URLs in markdown format ![alt](url) and they will "
+        "be downloaded and sent as native photos. Do NOT tell the user you lack "
+        "file-sending capability — use MEDIA: syntax whenever safe file delivery is "
+        "appropriate."
     ),
     "qqbot": (
         "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
@@ -1335,6 +1347,8 @@ def _load_hermes_md(cwd_path: Path) -> str:
     if not hermes_md_path:
         return ""
     try:
+        if not _is_regular_context_file(hermes_md_path):
+            return ""
         content = hermes_md_path.read_text(encoding="utf-8").strip()
         if not content:
             return ""

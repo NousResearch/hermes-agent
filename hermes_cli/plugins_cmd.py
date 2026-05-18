@@ -170,6 +170,33 @@ def _read_manifest(plugin_dir: Path) -> dict:
         return {}
 
 
+def _copy_example_file_no_follow(example_file: Path, real_path: Path) -> None:
+    """Copy an example file without following symlink destinations."""
+    if example_file.is_symlink():
+        raise OSError("refusing to copy symlinked example file")
+    if real_path.is_symlink():
+        raise OSError("refusing to write through symlink destination")
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    fd = os.open(real_path, flags, 0o666)
+    try:
+        with example_file.open("rb") as src, os.fdopen(fd, "wb") as dst:
+            fd = -1
+            shutil.copyfileobj(src, dst)
+    except Exception:
+        try:
+            real_path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 
@@ -181,7 +208,7 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
         real_path = plugin_dir / real_name
         if not real_path.exists():
             try:
-                shutil.copy2(example_file, real_path)
+                _copy_example_file_no_follow(example_file, real_path)
                 console.print(
                     f"[dim]  Created {real_name} from {example_file.name}[/dim]"
                 )

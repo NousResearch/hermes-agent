@@ -32,10 +32,16 @@ from tools.approval import (
 _HARDLINE_BLOCK = [
     # rm -rf targeting root / system dirs / home
     "rm -rf /",
+    "rm -rf \"/\"",
+    "rm -rf '/'",
     "rm -rf /*",
     "rm -rf /home",
+    "rm -rf /home/",
     "rm -rf /home/*",
     "rm -rf /etc",
+    "rm -rf /etc/",
+    "rm -rf \"/etc/\"",
+    "rm -rf /{etc,usr}",
     "rm -rf /usr",
     "rm -rf /var",
     "rm -rf /boot",
@@ -47,6 +53,9 @@ _HARDLINE_BLOCK = [
     "rm -rf ~/",
     "rm -rf ~/*",
     "rm -rf $HOME",
+    "rm -rf ${HOME}",
+    "rm -rf \"$HOME\"",
+    "rm -rf \"${HOME}\"",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",

@@ -173,7 +173,7 @@ After every site create/update, the script writes to `.herenow/state.json` in th
 ```
 
 Before creating or updating sites, you may check this file to find prior slugs.
-Treat `.herenow/state.json` as internal cache only.
+Treat `.herenow/state.json` as internal cache only. The publish script excludes `.herenow/` from directory uploads and refuses direct uploads of files inside that directory.
 Never present this local file path as a URL, and never use it as source of truth for auth mode, expiry, or claim URL.
 
 ## What to tell the user

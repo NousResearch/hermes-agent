@@ -324,6 +324,48 @@ async def test_command_hook_fires_for_plugin_registered_command(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_command_hook_blocks_telegram_plugin_underscore_alias(monkeypatch):
+    """Telegram /deploy_prod must hit the /deploy-prod policy hook before dispatch."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command leaked to the agent")
+    )
+    runner.hooks.emit_collect = AsyncMock(
+        return_value=[{"decision": "deny", "message": "blocked"}]
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"deploy-prod": {"description": "Deploy production", "args_hint": ""}},
+    )
+    plugin_handler = MagicMock(return_value="EXECUTED")
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: plugin_handler if name == "deploy-prod" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/deploy_prod v1"))
+
+    assert result == "blocked"
+    plugin_handler.assert_not_called()
+    call_args = runner.hooks.emit_collect.await_args
+    assert call_args.args[0] == "command:deploy-prod"
+    ctx = call_args.args[1]
+    assert ctx["command"] == "deploy-prod"
+    assert ctx["raw_command"] == "deploy_prod"
+    assert ctx["raw_args"] == "v1"
+
+
+@pytest.mark.asyncio
 async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     """A rewrite decision should re-resolve the command and route to the new one."""
     import gateway.run as gateway_run

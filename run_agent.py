@@ -53,13 +53,9 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
-# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
-# that imports the SDK on first call/isinstance check. This preserves:
-#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
-#       _create_openai_client, and
-#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-#
+# OpenAI is imported during module initialization so later model-controlled
+# file writes cannot plant a shadow ``openai`` module before first use.
+# Keep the module-level ``OpenAI`` name for existing patch("run_agent.OpenAI", ...) tests.
 # NOTE: `fire` is ONLY used in the `__main__` block below (for running
 # run_agent.py directly as a CLI) — it is NOT needed for library usage.
 # It is imported there, not here, so that importing run_agent from a
@@ -69,39 +65,17 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-
-
-_OPENAI_CLS_CACHE: Optional[type] = None
+from openai import OpenAI
 
 
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
-    global _OPENAI_CLS_CACHE
-    if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
-    return _OPENAI_CLS_CACHE
+    """Return the eagerly imported ``openai.OpenAI`` class."""
+    return OpenAI
 
-
-class _OpenAIProxy:
-    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
-
-    __slots__ = ()
-
-    def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
-
-    def __instancecheck__(self, obj):
-        return isinstance(obj, _load_openai_cls())
-
-    def __repr__(self):
-        return "<lazy openai.OpenAI proxy>"
-
-
-OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
@@ -116,6 +90,10 @@ if _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)
 else:
     logger.info("No .env file found. Using system environment variables.")
+
+# Keep terminal/code-execution backends aligned with config.yaml for non-CLI
+# entry points without importing the classic interactive CLI.
+apply_terminal_config_env_bridge()
 
 
 # Import our tool system
@@ -9112,14 +9090,18 @@ class AIAgent:
 
         # Non-vision Anthropic model (rare today, but keep the fallback for
         # compat): replace each image part with a vision_analyze text note.
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
-            msg["content"] = self._preprocess_anthropic_content(
+
+            new_msg = msg.copy()
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
@@ -9140,18 +9122,23 @@ class AIAgent:
         if self._model_supports_vision():
             return api_messages
 
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
+        transformed = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                transformed.append(msg)
                 continue
+
+            # Shallow copy the message to avoid mutating the original
+            new_msg = msg.copy()
             # Reuse the Anthropic text-fallback preprocessor — the behaviour is
             # identical (walk content parts, replace images with cached
             # descriptions, merge back into a single text or structured
             # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
+            new_msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
             )
+            transformed.append(new_msg)
         return transformed
 
     def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
@@ -9305,33 +9292,37 @@ class AIAgent:
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
-        prepared = copy.deepcopy(api_messages)
-        if not prepared:
-            return prepared
+        if not api_messages:
+            return []
 
-        for msg in prepared:
+        prepared = []
+        for msg in api_messages:
             if not isinstance(msg, dict):
+                prepared.append(msg)
                 continue
-            content = msg.get("content")
+
+            new_msg = msg.copy()
+            content = new_msg.get("content")
             if isinstance(content, str):
-                msg["content"] = [{"type": "text", "text": content}]
+                new_msg["content"] = [{"type": "text", "text": content}]
             elif isinstance(content, list):
                 # Normalize: convert bare strings to text dicts, keep dicts as-is.
-                # deepcopy already created independent copies, no need for dict().
                 normalized_parts = []
                 for part in content:
                     if isinstance(part, str):
                         normalized_parts.append({"type": "text", "text": part})
                     elif isinstance(part, dict):
-                        normalized_parts.append(part)
+                        normalized_parts.append(part.copy())
                 if normalized_parts:
-                    msg["content"] = normalized_parts
+                    new_msg["content"] = normalized_parts
+            prepared.append(new_msg)
 
         # Inject cache_control on the last part of the system message.
         for msg in prepared:
             if isinstance(msg, dict) and msg.get("role") == "system":
                 content = msg.get("content")
                 if isinstance(content, list) and content and isinstance(content[-1], dict):
+                    # content[-1] is already a copy from above loop
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
@@ -11668,8 +11659,9 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
-        # Generate unique task_id if not provided to isolate VMs between concurrent tasks
-        effective_task_id = task_id or str(uuid.uuid4())
+        # Use an explicit caller task_id for session-scoped tool isolation.
+        # CLI callers that do not pass one share the default sandbox across turns.
+        effective_task_id = task_id or "default"
         # Expose the active task_id so tools running mid-turn (e.g. delegate_task
         # in delegate_tool.py) can identify this agent for the cross-agent file
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at

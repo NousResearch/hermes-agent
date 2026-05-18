@@ -333,6 +333,50 @@ class TestSlackMultiImage:
         sizes = [len(c.kwargs["file_uploads"]) for c in client.files_upload_v2.await_args_list]
         assert sizes == [10, 2]
 
+    def test_redirect_to_internal_url_is_blocked(self, adapter, monkeypatch):
+        import httpx
+        from tools import url_safety
+
+        requested_urls = []
+        original_async_client = httpx.AsyncClient
+
+        def fake_getaddrinfo(hostname, *args, **kwargs):
+            if hostname == "example.com":
+                return [(None, None, None, None, ("93.184.216.34", 0))]
+            if hostname == "169.254.169.254":
+                return [(None, None, None, None, ("169.254.169.254", 0))]
+            raise OSError("unexpected host")
+
+        def handler(request):
+            requested_urls.append(str(request.url))
+            if str(request.url) == "https://example.com/image.png":
+                return httpx.Response(
+                    302,
+                    headers={"location": "http://169.254.169.254/latest/meta-data/"},
+                )
+            return httpx.Response(
+                200,
+                content=b"internal secret",
+                headers={"content-type": "image/png"},
+            )
+
+        def guarded_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return original_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo", fake_getaddrinfo)
+        with patch("httpx.AsyncClient", guarded_client):
+            _run(
+                adapter.send_multiple_images(
+                    "C12345",
+                    [("https://example.com/image.png", "")],
+                )
+            )
+
+        assert requested_urls == ["https://example.com/image.png"]
+        client = adapter._get_client("C12345")
+        client.files_upload_v2.assert_not_called()
+
     def test_empty_noop(self, adapter):
         _run(adapter.send_multiple_images("C12345", []))
         client = adapter._get_client("C12345")

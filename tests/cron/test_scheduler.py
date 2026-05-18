@@ -12,6 +12,15 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+def _cached_media_path(tmp_path, monkeypatch, relative_path: str, data: bytes = b"media") -> str:
+    """Create a Hermes-cache media file and return its absolute path."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return str(path)
+
+
 class TestResolveOrigin:
     def test_full_origin(self):
         job = {
@@ -517,7 +526,7 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
-    def test_delivery_extracts_media_tags_before_send(self):
+    def test_delivery_extracts_media_tags_before_send(self, tmp_path, monkeypatch):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform
 
@@ -525,6 +534,8 @@ class TestDeliverResultWrapping:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        media_path = _cached_media_path(tmp_path, monkeypatch, "cache/audio/test-voice.ogg")
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
@@ -534,7 +545,7 @@ class TestDeliverResultWrapping:
                 "deliver": "origin",
                 "origin": {"platform": "telegram", "chat_id": "123"},
             }
-            _deliver_result(job, "Title\nMEDIA:/tmp/test-voice.ogg")
+            _deliver_result(job, f"Title\nMEDIA:{media_path}")
 
         send_mock.assert_called_once()
         args, kwargs = send_mock.call_args
@@ -542,9 +553,9 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in args[3]
         assert "Title" in args[3]
         # Media files should be forwarded separately
-        assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
+        assert kwargs["media_files"] == [(media_path, False)]
 
-    def test_live_adapter_sends_media_as_attachments(self):
+    def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than
         as literal 'MEDIA:/path' text."""
@@ -576,12 +587,14 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "discord", "chat_id": "9876"},
         }
 
+        media_path = _cached_media_path(tmp_path, monkeypatch, "cache/audio/cron-voice.mp3")
+
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "Here is TTS\nMEDIA:/tmp/cron-voice.mp3",
+                f"Here is TTS\nMEDIA:{media_path}",
                 adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
@@ -595,9 +608,56 @@ class TestDeliverResultWrapping:
         # Audio file should be sent as a voice attachment
         adapter.send_voice.assert_called_once()
         voice_call = adapter.send_voice.call_args
-        assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
+        assert voice_call[1]["audio_path"] == media_path
 
-    def test_live_adapter_routes_image_to_send_image_file(self):
+    def test_live_adapter_rejects_arbitrary_media_path(self, tmp_path, monkeypatch, caplog):
+        """Cron must not upload model-supplied MEDIA paths outside Hermes caches."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+        secret_path = tmp_path / "operator.env"
+        secret_path.write_text("TOKEN=do-not-upload")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_document.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "exfil-job",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "9876"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            _deliver_result(
+                job,
+                f"Do not attach this\nMEDIA:{secret_path}",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.send_document.assert_not_called()
+        assert any("skipping unsafe MEDIA attachment path" in r.message for r in caplog.records)
+
+    def test_live_adapter_routes_image_to_send_image_file(self, tmp_path, monkeypatch):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
         from gateway.config import Platform
         from concurrent.futures import Future
@@ -626,21 +686,23 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "discord", "chat_id": "1234"},
         }
 
+        media_path = _cached_media_path(tmp_path, monkeypatch, "cache/images/chart.png")
+
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "Chart attached\nMEDIA:/tmp/chart.png",
+                f"Chart attached\nMEDIA:{media_path}",
                 adapters={Platform.DISCORD: adapter},
                 loop=loop,
             )
 
         adapter.send_image_file.assert_called_once()
-        assert adapter.send_image_file.call_args[1]["image_path"] == "/tmp/chart.png"
+        assert adapter.send_image_file.call_args[1]["image_path"] == media_path
         adapter.send_voice.assert_not_called()
 
-    def test_live_adapter_media_only_no_text(self):
+    def test_live_adapter_media_only_no_text(self, tmp_path, monkeypatch):
         """When content is ONLY a MEDIA tag with no text, media should still be sent."""
         from gateway.config import Platform
         from concurrent.futures import Future
@@ -668,12 +730,14 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "telegram", "chat_id": "999"},
         }
 
+        media_path = _cached_media_path(tmp_path, monkeypatch, "cache/audio/voice.ogg")
+
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg",
+                f"[[audio_as_voice]]\nMEDIA:{media_path}",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
             )
@@ -683,7 +747,7 @@ class TestDeliverResultWrapping:
         # Audio should still be delivered as a voice bubble
         adapter.send_voice.assert_called_once()
 
-    def test_live_adapter_sends_cleaned_text_not_raw(self):
+    def test_live_adapter_sends_cleaned_text_not_raw(self, tmp_path, monkeypatch):
         """The live adapter path must send cleaned text (MEDIA tags stripped),
         not the raw delivery_content with embedded MEDIA: tags."""
         from gateway.config import Platform
@@ -712,12 +776,14 @@ class TestDeliverResultWrapping:
             "origin": {"platform": "telegram", "chat_id": "555"},
         }
 
+        media_path = _cached_media_path(tmp_path, monkeypatch, "cache/images/chart.png")
+
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "Report\nMEDIA:/tmp/chart.png",
+                f"Report\nMEDIA:{media_path}",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
             )
@@ -1494,7 +1560,7 @@ class TestRunJobConfigEnvVarExpansion:
 
 
 class TestRunJobSkillBacked:
-    def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
+    def test_run_job_does_not_preserve_managed_skill_secret_passthrough(self, tmp_path):
         job = {
             "id": "skill-env-job",
             "name": "skill env test",
@@ -1514,7 +1580,7 @@ class TestRunJobSkillBacked:
         def _run_conversation(prompt):
             from tools.env_passthrough import get_all_passthrough
 
-            assert "NOTION_API_KEY" in get_all_passthrough()
+            assert "NOTION_API_KEY" not in get_all_passthrough()
             return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \

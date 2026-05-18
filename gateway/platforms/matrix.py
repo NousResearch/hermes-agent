@@ -39,6 +39,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+MATRIX_LOCAL_FILE_MAX_BYTES = 50 * 1024 * 1024
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -129,6 +131,49 @@ from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
+_RECOVERY_KEY_PATH = _STORE_DIR / "recovery_key.txt"
+
+
+def _save_generated_recovery_key(recovery_key: str, path: Path = _RECOVERY_KEY_PATH) -> Path:
+    """Persist a generated Matrix recovery key without sending it to logs."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(recovery_key)
+            handle.write("\n")
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Some filesystems (notably mounted or non-POSIX test volumes) do not
+        # support chmod. The os.open mode above is still the best effort.
+        pass
+    return path
+
+
+def _record_generated_recovery_key(mxid: str, recovery_key: str) -> Path:
+    """Save a generated Matrix recovery key and log only its storage location."""
+
+    recovery_key_path = _save_generated_recovery_key(recovery_key)
+    logger.warning(
+        "Matrix: bootstrapped cross-signing for %s. "
+        "Generated recovery key was written to %s with owner-only "
+        "permissions. Move it into MATRIX_RECOVERY_KEY in your secret "
+        "store for future restarts, then delete the file.",
+        mxid,
+        recovery_key_path,
+    )
+    return recovery_key_path
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -772,14 +817,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     if own_xsign is None:
                         try:
                             new_recovery_key = await olm.generate_recovery_key()
-                            logger.warning(
-                                "Matrix: bootstrapped cross-signing for %s. "
-                                "SAVE THIS RECOVERY KEY — set "
-                                "MATRIX_RECOVERY_KEY for future restarts so "
-                                "the bot can re-sign its device after key "
-                                "rotation: %s",
-                                client.mxid,
-                                new_recovery_key,
+                            _record_generated_recovery_key(
+                                client.mxid, new_recovery_key
                             )
                         except Exception as exc:
                             logger.warning(
@@ -1326,6 +1365,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
             )
+        if not p.is_file():
+            return SendResult(success=False, error="Matrix media path must be a regular file")
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            return SendResult(success=False, error=f"Matrix media file is not accessible: {exc}")
+        if size > MATRIX_LOCAL_FILE_MAX_BYTES:
+            return SendResult(success=False, error="Matrix media file exceeds the 50 MiB upload limit")
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

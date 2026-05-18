@@ -857,6 +857,67 @@ _NOX_PROJECT_ALIASES: Dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Soft, project-specific vocabulary used only when Башня receives a substantial
+# follow-up without an explicit project name.  This keeps long project work out
+# of the control tower while avoiding broad aliases like "приложение" that would
+# steal unrelated tasks.
+_NOX_PROJECT_CONTEXT_ALIASES: Dict[str, tuple[str, ...]] = {
+    "ryadom": (
+        "лендинг",
+        "лендинга",
+        "лендингу",
+        "лендингом",
+        "лендинги",
+        "landing",
+        "hero",
+        "хуки",
+        "хуков",
+        "hook",
+        "воронка",
+        "воронки",
+        "воронкам",
+        "воронок",
+        "ценник",
+        "отзывы",
+        "макет",
+        "макеты",
+        "макетов",
+        "анимации",
+        "урок",
+        "уроки",
+        "озвучка",
+        "озвучку",
+        "tts",
+        "кнопки",
+        "checkout",
+        "pwa",
+    ),
+    "metaauto": (
+        "facebook",
+        "fb",
+        "ads",
+        "adspower",
+        "реклама",
+        "рекламный",
+        "кабинет",
+        "кампания",
+        "кампании",
+        "creative lab",
+        "exzypo",
+        "токен",
+        "токены",
+        "railway",
+    ),
+    "creative-lab": ("creative lab", "exzypo", "креативы", "варианты", "winner", "source"),
+}
+
+_NOX_ACTIVE_PHASE_STATUSES = {
+    "planning",
+    "running_phase",
+    "awaiting_approval",
+    "awaiting_nox_pm_approval",
+}
+
 _NOX_PROJECT_RUN_MARKERS: tuple[str, ...] = (
     "запусти",
     "прогони",
@@ -884,6 +945,8 @@ _NOX_PROJECT_HEAVY_MARKERS: tuple[str, ...] = (
     "диагност",
     "добавь",
     "создай",
+    "собери",
+    "собрать",
     "настрой",
     "обнови",
     "patch",
@@ -2245,12 +2308,115 @@ class GatewayRunner:
             profile = "default"
         return str(profile or "default") == _NOX_BASHNYA_PROFILE
 
-    def _nox_bashnya_classify_task(self, message_text: str) -> Dict[str, Any]:
-        """Classify obvious FAST vs project-heavy Nox Bashnya messages.
+    def _nox_active_phase_states_for_bashnya(
+        self,
+        source: Optional[SessionSource],
+    ) -> List[tuple[str, Dict[str, Any]]]:
+        """Return active project runs that originated from this Башня topic."""
+        if source is None:
+            return []
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        if not chat_id or not thread_id:
+            return []
+        states: List[tuple[str, Dict[str, Any]]] = []
+        for run_id, state in self._load_nox_phase_runs().items():
+            status = str(state.get("status") or "")
+            if status not in _NOX_ACTIVE_PHASE_STATUSES:
+                continue
+            if str(state.get("bashnya_chat_id") or "") != chat_id:
+                continue
+            if str(state.get("bashnya_thread_id") or "") != thread_id:
+                continue
+            project = str(state.get("project") or "").strip().lower()
+            if not project:
+                continue
+            states.append((str(run_id), state))
+        states.sort(
+            key=lambda item: str(item[1].get("updated_at") or item[1].get("created_at") or ""),
+            reverse=True,
+        )
+        return states
 
-        This is intentionally deterministic and conservative: unknown project
-        or ambiguous/light messages stay on the normal direct path; only a
-        known project plus explicit heavy/run markers is routed away.
+    def _nox_infer_project_from_active_context(
+        self,
+        normalized_text: str,
+        source: Optional[SessionSource],
+    ) -> tuple[Optional[Dict[str, Any]], List[tuple[str, Dict[str, Any]]]]:
+        """Infer project for a substantial unqualified Башня follow-up.
+
+        Used only as a guardrail after explicit project aliases fail.  If it
+        cannot infer one project confidently, the caller blocks and asks for a
+        project instead of letting the main control-tower session continue.
+        """
+        active = self._nox_active_phase_states_for_bashnya(source)
+        if not active:
+            return None, []
+
+        scored: list[tuple[int, str, str, list[str], Dict[str, Any]]] = []
+        for run_id, state in active:
+            project_key = str(state.get("project") or "").strip().lower()
+            hits = [
+                alias
+                for alias in _NOX_PROJECT_CONTEXT_ALIASES.get(project_key, ())
+                if self._nox_bashnya_has_phrase(normalized_text, alias)
+            ]
+            if hits:
+                scored.append((len(hits), project_key, run_id, hits, state))
+
+        if scored:
+            scored.sort(
+                key=lambda item: (
+                    item[0],
+                    str(item[4].get("updated_at") or item[4].get("created_at") or ""),
+                ),
+                reverse=True,
+            )
+            if len(scored) == 1 or scored[0][0] > scored[1][0]:
+                score, project_key, run_id, hits, _state = scored[0]
+                return (
+                    {
+                        "project": project_key,
+                        "reason": "active_context_alias",
+                        "run_id": run_id,
+                        "score": score,
+                        "hits": hits,
+                    },
+                    active,
+                )
+            return None, active
+
+        unique_projects = list(
+            dict.fromkeys(
+                str(state.get("project") or "").strip().lower()
+                for _run_id, state in active
+                if str(state.get("project") or "").strip()
+            )
+        )
+        if len(unique_projects) == 1:
+            return (
+                {
+                    "project": unique_projects[0],
+                    "reason": "single_active_context",
+                    "run_id": active[0][0],
+                    "score": 1,
+                    "hits": [],
+                },
+                active,
+            )
+        return None, active
+
+    def _nox_bashnya_classify_task(
+        self,
+        message_text: str,
+        source: Optional[SessionSource] = None,
+    ) -> Dict[str, Any]:
+        """Classify FAST vs project-heavy Nox Bashnya messages.
+
+        Conservative rule: substantial project-like messages must not fall
+        through into the main Башня session.  They need an explicit project, a
+        confident active-context inference, or a BLOCKER asking Danya to name
+        the project.
         """
         raw_text = message_text or ""
         normalized = self._nox_bashnya_normalize_text(raw_text)
@@ -2271,21 +2437,10 @@ class GatewayRunner:
                 "reason": "multiple_projects",
             }
 
-        project_key = unique_matches[0] if unique_matches else None
-        if not project_key:
-            return {"weight": "FAST", "project": None, "reason": "no_known_project"}
-
         has_blocker = any(
             self._nox_bashnya_has_phrase(normalized, marker)
             for marker in _NOX_PROJECT_BLOCKER_MARKERS
         )
-        if has_blocker:
-            return {
-                "weight": "BLOCKER",
-                "project": project_key,
-                "reason": "approval_required",
-            }
-
         has_run = any(
             self._nox_bashnya_has_phrase(normalized, marker)
             for marker in _NOX_PROJECT_RUN_MARKERS
@@ -2295,10 +2450,52 @@ class GatewayRunner:
             for marker in _NOX_PROJECT_HEAVY_MARKERS
         )
         looks_like_brief = len(raw_text.strip()) <= 220 and "\n" not in raw_text
+        substantial = (
+            has_run
+            or has_heavy_marker
+            or has_blocker
+            or not looks_like_brief
+            or "the user sent a voice message" in normalized
+        )
+
+        project_key = unique_matches[0] if unique_matches else None
+        inference: Optional[Dict[str, Any]] = None
+        active_projects: list[str] = []
+        if not project_key and substantial:
+            inference, active_runs = self._nox_infer_project_from_active_context(normalized, source)
+            active_projects = list(
+                dict.fromkeys(
+                    str(state.get("project") or "").strip().lower()
+                    for _run_id, state in active_runs
+                    if str(state.get("project") or "").strip()
+                )
+            )
+            if inference:
+                project_key = str(inference.get("project") or "").strip().lower()
+            else:
+                return {
+                    "weight": "BLOCKER",
+                    "project": None,
+                    "projects": active_projects,
+                    "reason": "missing_project_for_substantial_task",
+                }
+
+        if not project_key:
+            return {"weight": "FAST", "project": None, "reason": "no_known_project"}
+
+        if has_blocker:
+            return {
+                "weight": "BLOCKER",
+                "project": project_key,
+                "reason": "approval_required",
+            }
+
+        reason = str(inference.get("reason")) if inference else ""
+        extra: Dict[str, Any] = {"inferred_from": inference} if inference else {}
         if has_run:
-            return {"weight": "RUN", "project": project_key, "reason": "run_marker"}
-        if has_heavy_marker or not looks_like_brief:
-            return {"weight": "PROJECT", "project": project_key, "reason": "heavy_marker"}
+            return {"weight": "RUN", "project": project_key, "reason": reason or "run_marker", **extra}
+        if inference or has_heavy_marker or not looks_like_brief:
+            return {"weight": "PROJECT", "project": project_key, "reason": reason or "heavy_marker", **extra}
         return {"weight": "FAST", "project": project_key, "reason": "brief_project_question"}
 
     def _load_nox_project_employee_routes(self) -> Dict[str, Dict[str, Any]]:
@@ -3201,12 +3398,22 @@ class GatewayRunner:
         if event.get_command():
             return None
 
-        classification = self._nox_bashnya_classify_task(message_text)
+        classification = self._nox_bashnya_classify_task(message_text, source=source)
         weight = str(classification.get("weight") or "FAST").upper()
         if weight == "FAST":
             return None
         if weight == "BLOCKER":
             projects = classification.get("projects") or []
+            reason = str(classification.get("reason") or "")
+            if reason == "missing_project_for_substantial_task":
+                active = f" Активные проекты сейчас: {', '.join(projects)}." if projects else ""
+                return (
+                    "Нужен Даня: это похоже на проектную задачу/длинный бриф, "
+                    "но проект не указан."
+                    f"{active} Напиши проект одним словом (например `Ryadom`) "
+                    "или отправь задачу прямо в `<Project> · Сотрудник`. "
+                    "Main run в Башне не запускаю."
+                )
             if projects:
                 return (
                     "Нужен Даня: вижу несколько проектов "
@@ -3327,7 +3534,7 @@ class GatewayRunner:
         """Apply a small turn cap for direct FAST answers in Башня when safe."""
         if not self._is_nox_bashnya_source(source):
             return max_iterations
-        classification = self._nox_bashnya_classify_task(message_text)
+        classification = self._nox_bashnya_classify_task(message_text, source=source)
         if str(classification.get("weight") or "").upper() != "FAST":
             return max_iterations
         try:

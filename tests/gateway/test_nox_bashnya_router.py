@@ -224,6 +224,117 @@ async def test_bashnya_project_task_routes_to_employee_lane_before_agent(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_bashnya_unqualified_landing_followup_infers_ryadom_active_context(bashnya_routes_path):
+    """Long landing follow-up in Башня must route to Ryadom, not continue main control chat."""
+    event = _make_bashnya_event(
+        "[The user sent a voice message~ Here's what they said: "
+        "\"Что не хватает нашему лендингу, чтобы он был максимально продающим? "
+        "Нужны хуки, вау hero, отзывы, ценник и макеты до кода.\"]"
+    )
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+    runner._save_nox_phase_runs(
+        {
+            "meta-run": {
+                "run_id": "meta-run",
+                "status": "awaiting_approval",
+                "project": "metaauto",
+                "display": "MetaAuto",
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+                "updated_at": "2026-05-18T19:43:31",
+            },
+            "ryadom-run": {
+                "run_id": "ryadom-run",
+                "status": "awaiting_approval",
+                "project": "ryadom",
+                "display": "Ryadom",
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "32",
+                "topic_name": "Ryadom · Сотрудник",
+                "updated_at": "2026-05-18T23:37:03",
+            },
+        }
+    )
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("unqualified project follow-up must not run in Башня")
+
+    runner._run_agent = fail_if_agent_runs
+
+    ack = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "Статус: взял в работу" in ack
+    assert "Куда ушло: Ryadom · Сотрудник" in ack
+    assert adapter.sent[0]["metadata"] == {"thread_id": "32"}
+    assert "Project: Ryadom" in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_bashnya_substantial_unqualified_task_blocks_instead_of_main_agent(bashnya_routes_path):
+    """If project cannot be inferred, Башня asks for project and does not run the main agent."""
+    event = _make_bashnya_event(
+        "Собери максимально сильный рабочий план: сначала аудит, потом варианты, "
+        "потом список рисков. Ничего не коммить и не пушить, "
+        "просто разложи по фазам и покажи мне proof в правильном месте."
+    )
+    adapter = CaptureAdapter()
+    runner = _make_runner(event.source, adapter)
+    runner._save_nox_phase_runs(
+        {
+            "meta-run": {
+                "run_id": "meta-run",
+                "status": "awaiting_approval",
+                "project": "metaauto",
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "31",
+                "topic_name": "MetaAuto · Сотрудник",
+                "updated_at": "2026-05-18T19:43:31",
+            },
+            "ryadom-run": {
+                "run_id": "ryadom-run",
+                "status": "awaiting_approval",
+                "project": "ryadom",
+                "bashnya_chat_id": BASHNYA_CHAT_ID,
+                "bashnya_thread_id": BASHNYA_THREAD_ID,
+                "employee_chat_id": BASHNYA_CHAT_ID,
+                "employee_thread_id": "32",
+                "topic_name": "Ryadom · Сотрудник",
+                "updated_at": "2026-05-18T23:37:03",
+            },
+        }
+    )
+
+    async def fail_if_agent_runs(**_kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("ambiguous project task must block before _run_agent")
+
+    runner._run_agent = fail_if_agent_runs
+
+    reply = await runner._handle_message_with_agent(
+        event,
+        event.source,
+        build_session_key(event.source),
+        run_generation=1,
+    )
+
+    assert "проект не указан" in reply
+    assert "Main run в Башне не запускаю" in reply
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_bashnya_fast_question_stays_direct_and_can_be_capped(bashnya_routes_path):
     """Brief/non-project Башня messages are not packeted away and use the light turn cap."""
     event = _make_bashnya_event("почему так долго?")

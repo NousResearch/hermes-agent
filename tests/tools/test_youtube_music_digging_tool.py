@@ -137,6 +137,28 @@ def test_retryable_download_failure_is_queued(tmp_path, monkeypatch):
     assert row["last_stage"] == "download"
 
 
+def test_premium_member_error_tries_remote_fallback(monkeypatch, tmp_path):
+    local_mp3 = tmp_path / "remote.mp3"
+    local_mp3.write_bytes(b"ID3")
+    monkeypatch.setattr(tool, "_remote_host", lambda: "chriss-macbook-pro")
+
+    def fail_local(url, workdir):
+        raise RuntimeError("This video is only available to Music Premium members")
+
+    monkeypatch.setattr(tool, "_download_mp3_local", fail_local)
+    monkeypatch.setattr(tool, "_download_mp3_remote", lambda url, workdir: (local_mp3, {"title": "Artist - Premium Song"}))
+
+    mp3, info = tool._download_mp3("https://youtu.be/abc123", tmp_path)
+
+    assert mp3 == local_mp3
+    assert info["title"] == "Artist - Premium Song"
+
+
+def test_premium_member_error_is_not_auto_queued():
+    assert tool._is_retryable_download_error("This video is only available to Music Premium members") is False
+    assert tool._is_retryable_download_error("local yt-dlp failed with premium-only error; remote fallback also failed: HTTP Error 403") is False
+
+
 def test_queue_upsert_deduplicates_active_url(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     monkeypatch.setattr(tool, "get_hermes_home", lambda: str(hermes_home))
@@ -150,6 +172,34 @@ def test_queue_upsert_deduplicates_active_url(tmp_path, monkeypatch):
     con = tool._queue_connect()
     count = con.execute("SELECT count(*) AS c FROM pending_music_dig").fetchone()["c"]
     assert count == 1
+
+
+def test_remote_auth_args_default_to_chrome_browser(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setattr(tool, "get_hermes_home", lambda: str(hermes_home))
+
+    assert tool._remote_ytdlp_auth_args() == "--cookies-from-browser chrome"
+
+
+def test_remote_auth_args_uses_configured_browser_profile(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    integrations = hermes_home / "integrations"
+    integrations.mkdir(parents=True)
+    (integrations / "youtube-dig-remote-browser.txt").write_text("chrome:Profile 2", encoding="utf-8")
+    monkeypatch.setattr(tool, "get_hermes_home", lambda: str(hermes_home))
+
+    assert tool._remote_ytdlp_auth_args() == "--cookies-from-browser 'chrome:Profile 2'"
+
+
+def test_remote_auth_args_prefers_configured_cookie_file(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    integrations = hermes_home / "integrations"
+    integrations.mkdir(parents=True)
+    (integrations / "youtube-dig-remote-browser.txt").write_text("chrome:Profile 2", encoding="utf-8")
+    (integrations / "youtube-dig-remote-cookie-file.txt").write_text("$HOME/.hermes/youtube-worker/youtube-cookies.txt", encoding="utf-8")
+    monkeypatch.setattr(tool, "get_hermes_home", lambda: str(hermes_home))
+
+    assert tool._remote_ytdlp_auth_args() == "--cookies '$HOME/.hermes/youtube-worker/youtube-cookies.txt'"
 
 
 def test_retry_pending_marks_success_done(tmp_path, monkeypatch):

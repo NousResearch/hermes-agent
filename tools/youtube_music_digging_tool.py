@@ -31,6 +31,8 @@ TOOL_NAME = "youtube_music_dig"
 FOLDER_CONFIG = "integrations/youtube-audio-google-drive-folder.txt"
 COOKIE_FILE = "secrets/youtube-cookies.txt"
 REMOTE_HOST_CONFIG = "integrations/youtube-dig-remote-host.txt"
+REMOTE_COOKIE_FILE_CONFIG = "integrations/youtube-dig-remote-cookie-file.txt"
+REMOTE_BROWSER_CONFIG = "integrations/youtube-dig-remote-browser.txt"
 CACHE_DIR = "media_cache/youtube-audio"
 QUEUE_DB = "music-digging/pending.db"
 MAX_QUEUE_ATTEMPTS = 10
@@ -234,6 +236,8 @@ def _queue_upsert(url: str, *, stage: str, error: str, detail: str) -> dict[str,
 
 def _is_retryable_download_error(detail: str) -> bool:
     lowered = (detail or "").lower()
+    if "music premium" in lowered or "premium members" in lowered or "premium-only" in lowered:
+        return False
     retry_markers = [
         "not a bot",
         "sign in to confirm",
@@ -431,6 +435,29 @@ def _remote_host() -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _read_optional_config(relative_path: str) -> str:
+    path = _home_path(relative_path)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _remote_ytdlp_auth_args() -> str:
+    """Return shell-quoted remote yt-dlp authentication args.
+
+    The remote fallback runs on a trusted residential/browser host. Prefer an
+    explicitly exported Netscape cookies file on that host when configured;
+    otherwise use a configured browser profile, defaulting to Chrome's default
+    profile for Chris's current Mac worker.
+    """
+    remote_cookie_file = _read_optional_config(REMOTE_COOKIE_FILE_CONFIG)
+    if remote_cookie_file:
+        return f"--cookies {shlex_quote(remote_cookie_file)}"
+
+    remote_browser = _read_optional_config(REMOTE_BROWSER_CONFIG) or "chrome"
+    return f"--cookies-from-browser {shlex_quote(remote_browser)}"
+
+
 def _run(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
 
@@ -442,6 +469,11 @@ def _yt_error_text(exc: Exception) -> str:
 def _looks_like_youtube_bot_challenge(text: str) -> bool:
     lowered = (text or "").lower()
     return "not a bot" in lowered or "sign in to confirm" in lowered or "login_required" in lowered
+
+
+def _looks_like_youtube_auth_required(text: str) -> bool:
+    lowered = (text or "").lower()
+    return _looks_like_youtube_bot_challenge(text) or "music premium" in lowered or "premium members" in lowered
 
 
 def _is_supported_youtube_url(url: str) -> bool:
@@ -559,11 +591,12 @@ def _download_mp3(url: str, workdir: Path) -> tuple[Path, dict[str, Any]]:
         return _download_mp3_local(url, workdir)
     except Exception as exc:
         detail = _yt_error_text(exc)
-        if _looks_like_youtube_bot_challenge(detail) and _remote_host():
+        if _looks_like_youtube_auth_required(detail) and _remote_host():
             try:
                 return _download_mp3_remote(url, workdir)
             except Exception as remote_exc:
-                raise RuntimeError(f"local yt-dlp failed with bot challenge; remote fallback also failed: {remote_exc}") from remote_exc
+                prefix = "premium-only" if "premium" in detail.lower() else "auth-required"
+                raise RuntimeError(f"local yt-dlp failed with {prefix} error; remote fallback also failed: {remote_exc}") from remote_exc
         raise
 
 
@@ -617,10 +650,11 @@ def _download_mp3_remote(url: str, workdir: Path) -> tuple[Path, dict[str, Any]]
     remote_ytdlp = "$HOME/.hermes/youtube-worker/venv/bin/yt-dlp"
     ssh_base = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host]
     extractor_args = "youtube:player_client=android"
+    auth_args = _remote_ytdlp_auth_args()
 
     info_cmd = (
         f"{remote_ytdlp} --quiet --no-warnings --skip-download --dump-single-json "
-        f"--no-playlist --extractor-args {shlex_quote(extractor_args)} {shlex_quote(url)}"
+        f"--no-playlist {auth_args} --extractor-args {shlex_quote(extractor_args)} {shlex_quote(url)}"
     )
     info_proc = _run([*ssh_base, info_cmd], timeout=120)
     if info_proc.returncode != 0:
@@ -630,7 +664,7 @@ def _download_mp3_remote(url: str, workdir: Path) -> tuple[Path, dict[str, Any]]
     download_cmd = (
         f"set -e; mkdir -p {remote_dir}; "
         f"{remote_ytdlp} --quiet --no-warnings --no-playlist "
-        f"--extractor-args {shlex_quote(extractor_args)} -f {shlex_quote('bestaudio/best')} "
+        f"{auth_args} --extractor-args {shlex_quote(extractor_args)} -f {shlex_quote('bestaudio/best')} "
         f"-o {shlex_quote(remote_dir + '/download.%(ext)s')} {shlex_quote(url)}; "
         f"{remote_python} - <<'PY'\n"
         "from pathlib import Path\n"

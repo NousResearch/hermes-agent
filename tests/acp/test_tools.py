@@ -12,7 +12,7 @@ from acp_adapter.tools import (
     get_tool_kind,
     make_tool_call_id,
 )
-from acp.schema import (
+from acp_adapter.acp_compat import (
     FileEditToolCallContent,
     ContentToolCallContent,
     ToolCallLocation,

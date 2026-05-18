@@ -5,7 +5,7 @@ import inspect
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from acp.schema import (
+from acp_adapter.acp_compat import (
     AllowedOutcome,
     DeniedOutcome,
     RequestPermissionResponse,

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import acp
-from acp.schema import (
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_compat import (
     EnvVariable,
     HttpHeader,
     McpServerHttp,

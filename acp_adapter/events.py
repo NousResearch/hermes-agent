@@ -13,8 +13,8 @@ import logging
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
-import acp
-from acp.schema import AgentPlanUpdate, PlanEntry
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_compat import AgentPlanUpdate, PlanEntry
 
 from .tools import (
     build_tool_complete,

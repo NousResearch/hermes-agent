@@ -1,7 +1,7 @@
 import base64
 
 import pytest
-from acp.schema import (
+from acp_adapter.acp_compat import (
     BlobResourceContents,
     EmbeddedResourceContentBlock,
     ImageContentBlock,

@@ -48,7 +48,7 @@ def build_auth_methods() -> list[Any]:
     it also advertises the resolved provider as the default agent-managed
     runtime credential method.
     """
-    from acp.schema import AuthMethodAgent, TerminalAuthMethod
+    from acp_adapter.acp_compat import AuthMethodAgent, TerminalAuthMethod
 
     methods: list[Any] = []
     provider = detect_provider()

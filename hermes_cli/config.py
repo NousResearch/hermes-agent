@@ -3099,7 +3099,7 @@ def _normalize_custom_provider_entry(
         normalized["discover_models"] = discover_models
 
     # Preserve custom_headers for providers that need extra HTTP headers
-    # (e.g. API gateway auth like Ocp-Apim-Subscription-Key).
+    # (e.g. API-management subscription-key headers for API gateways).
     custom_headers = entry.get("custom_headers")
     if isinstance(custom_headers, dict) and custom_headers:
         normalized["custom_headers"] = dict(custom_headers)

@@ -2951,8 +2951,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
         # APIM-style gateway reroute: when the live runtime carries an
-        # explicit base_url AND non-empty default_headers (typically an
-        # Ocp-Apim-Subscription-Key on a third-party Anthropic/OpenAI gateway),
+        # explicit base_url AND non-empty default_headers (typically a
+        # subscription-key header on a third-party Anthropic/OpenAI gateway),
         # the user has manually overridden BOTH the URL and the auth headers.
         # Bypass the native provider branches (which would route to the
         # provider's canonical hostname with provider-only auth and lose the

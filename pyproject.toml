@@ -206,6 +206,7 @@ all = [
   "hermes-agent[acp]",
   "hermes-agent[google]",
   "hermes-agent[web]",
+  "hermes-agent[nats]",
   "hermes-agent[youtube]",
 ]
 

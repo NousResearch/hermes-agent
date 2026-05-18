@@ -20,8 +20,8 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 5 — Outbound attachments & formatting (T5.0 through T5.5)
-- **Next phase:** Phase 6 — Mid-stream queries (NATS-local), T6.1 through T6.4
+- **Last completed phase:** Phase 6 — Mid-stream queries / approval round-trip (T6.1 through T6.4)
+- **Next phase:** Phase 7 — Slash commands (T7.1 through T7.2)
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
 - **Known blockers:** none
 - **Open design questions pending user input:** 4 items listed in §16 of `docs/nats-gateway-design.md`. Default answers are noted there; proceed with defaults unless the user redirects.
@@ -80,10 +80,10 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 
 ### Phase 6 — Mid-stream queries (NATS-local)
 
-- [ ] **T6.1** — Survey `_pending_approvals` usage in `gateway/run.py` + read `hermes_cli/callbacks.py` (research spike; notes into Decision log)
-- [ ] **T6.2** — Add `async def request_interaction(self, chat_id, prompt, *, kind, timeout) -> str | None` on `BasePlatformAdapter` (default raises NotImplementedError); NATS implementation calls `stream.ask(prompt, timeout=timeout)`
-- [ ] **T6.3** — In `gateway/run.py`, route approval callback through `adapter.request_interaction` when adapter overrides the base default (capability check via `type(adapter).request_interaction is not BasePlatformAdapter.request_interaction`). Preserve existing behavior for non-NATS adapters.
-- [ ] **T6.4** — `tests/gateway/test_nats_query.py` — approval callback triggers Query chunk; simulate caller reply; agent resumes
+- [x] **T6.1** — Survey `_pending_approvals` usage in `gateway/run.py` + read `hermes_cli/callbacks.py` (research spike; notes into Decision log)
+- [x] **T6.2** — Add `async def request_interaction(self, chat_id, prompt, *, kind, timeout) -> str | None` on `BasePlatformAdapter` (default raises NotImplementedError); NATS implementation calls `stream.ask(prompt, timeout=timeout)`
+- [x] **T6.3** — In `gateway/run.py`, route approval callback through `adapter.request_interaction` when adapter overrides the base default (capability check via `type(adapter).request_interaction is not BasePlatformAdapter.request_interaction`). Preserve existing behavior for non-NATS adapters. **AND** register a NATS-scoped gateway notify callback inside `_run_agent_sync` so approvals over NATS actually reach the adapter (the adapter-owned agent path bypasses the gateway's default `_approval_notify_sync` registration).
+- [x] **T6.4** — `tests/gateway/test_nats_query.py` — approval callback triggers Query chunk; simulate caller reply; agent resumes
 
 ### Phase 7 — Slash commands
 
@@ -281,6 +281,43 @@ Each of these is a deliberate MVP trade-off that should either land in a later p
 5. **Session interrupt / busy-session merging is gone.** `BasePlatformAdapter.handle_message` has useful logic for "photo burst merging", "busy-session handoff", and "pending-message queue drain". NATS `_on_prompt` bypasses all of that. For a request/reply wire protocol that's fine (the caller controls concurrency), but anything downstream that assumes `_pending_messages`/`_active_sessions` population won't work over NATS. Document as a limitation.
 
 6. **Private `stream._request.data` access for x-session peek.** Design doc §3 option (b), pre-approved. If the SDK renames `_request` or `data`, we blow up loud at handler entry (AttributeError via `getattr(..., None)` returning None → falls back to session default). Acceptable for MVP; upstream a public raw-bytes handle to `nats-ai-pysdk` when convenient.
+
+### 2026-04-22 — Phase 6 — Approval wiring needed TWO sites, not one
+
+Design doc §7.3 says "inside `_approval_notify_sync()` (or its async sibling), check whether the adapter defines `request_interaction`." That covers the *default* gateway path (`handle_message()` → `register_gateway_notify()` at run.py:9993). But for NATS the design at §6.1 already decided the adapter bypasses `handle_message` for text prompts (api_server-style adapter-owned `AIAgent`). Net effect: the default path's `register_gateway_notify` is never called for NATS text prompts, so just patching `_approval_notify_sync` wouldn't actually flow NATS approvals through `request_interaction`.
+
+Phase 6 therefore landed TWO wiring sites:
+
+1. **`gateway/run.py:_approval_notify_sync`** — class-level capability check at the TOP of the notify callback, before the button-based / plain-text fallbacks. Non-NATS adapters inherit the base default and fall through unchanged; this is infrastructure for future adapters that might opt in (and keeps the semantics consistent with the design doc).
+2. **`gateway/platforms/nats.py:_run_agent_sync`** — registers its own `register_gateway_notify(session_key, _nats_approval_notify)` that directly invokes the shared `dispatch_approval_via_request_interaction` helper. Unregistered in the `finally` block alongside a `reset_current_session_key` call.
+
+Both call sites share one helper: `dispatch_approval_via_request_interaction` in `gateway/platforms/base.py`. It handles prompt formatting, reply parsing, coroutine scheduling on the adapter's loop, and the `resolve_gateway_approval` callback. Sharing the helper guarantees the canonical approval choices (`once`/`session`/`always`/`deny`) and the "unknown/timeout ⇒ deny" fail-safe stay in lockstep across both sites.
+
+### 2026-04-22 — Phase 6 — Approval session-key contextvar must be set on the worker thread
+
+The default gateway path calls `set_current_session_key(session_key)` on the async side before `register_gateway_notify` (run.py:9992), and `run_conversation` subsequently inherits that contextvar via `_run_in_executor_with_context` (which uses `copy_context()`). NATS doesn't use that helper — it calls `loop.run_in_executor(None, self._run_agent_sync, ...)` directly, so the contextvar is NOT copied into the worker thread.
+
+Without explicit propagation, `tools/approval.py::get_current_session_key()` in the agent thread would return the default (empty) session key → `check_all_command_guards` would create an approval entry under the wrong key → `_gateway_queues[session_key]` lookup in `resolve_gateway_approval` would miss → approval would hang until the gateway_timeout (300 s). Fix: `_run_agent_sync` now calls `set_current_session_key(session_key)` on entry and `reset_current_session_key(approval_token)` in its `finally`. This sets the contextvar on the worker thread's local copy, which is where the agent's tool dispatch runs.
+
+### 2026-04-22 — Phase 6 — Approval timeout reads `approvals.gateway_timeout` from config
+
+The NATS-specific notify callback calls `dispatch_approval_via_request_interaction(..., timeout=_approval_timeout_from_config())` so `stream.ask`'s deadline matches the gateway's `ApprovalEntry.event.wait()` deadline. A shorter adapter timeout (say 30 s) would make `request_interaction` return `None` → resolve as "deny" well before the user could reply; a longer adapter timeout would keep the stream alive past the agent's own timeout, wasting a socket. Reads lazily at dispatch time (not at registration) so live config changes apply to subsequent approvals without a restart. Falls back to 300 s on any read failure — never hangs forever.
+
+### 2026-04-22 — Phase 6 — `BasePlatformAdapter.request_interaction` default is `NotImplementedError`, not a no-op
+
+The design doc was ambiguous on this. `NotImplementedError` means the capability-detection helper (`type(adapter).request_interaction is not BasePlatformAdapter.request_interaction`) is the gate, not runtime inspection. A no-op default would have made "adapter doesn't support it" indistinguishable from "adapter returned nothing" — breaking the distinction between "caller timeout" (None, fall back to legacy) and "programmer error" (raise). The explicit `NotImplementedError` also matches Python's `abc` conventions for optional mixin methods, which is what this is in spirit.
+
+### 2026-04-22 — Phase 6 — Unknown replies fail-safe to "deny", first-token-wins parsing
+
+`_parse_approval_reply` accepts "yes please" → "once", "approve this one" → "once", "deny immediately" → "deny". But anything not in the canonical allow-lists — "maybe", "hmm", "whatever" — maps to "deny". This is aligned with `tools/approval.py`'s existing "choice is None or choice == 'deny' ⇒ BLOCKED" semantic: the gateway's existing safety net is "uncertain ⇒ blocked", so the adapter's parser does the same. A reply of `"approve"` counts as "once" (no persistence) — if the caller wants session or always scope they have to say the word. Avoids the "I typed 'yes' and it silently got permanently whitelisted" footgun.
+
+### 2026-04-22 — Phase 6 — Concurrent-test polling uses a bounded `asyncio.sleep(0)` loop, not `wait_for`
+
+`dispatch_approval_via_request_interaction` uses `asyncio.run_coroutine_threadsafe` which wraps the coroutine in a task on the target loop. The scheduled task doesn't complete synchronously — the test has to yield to the loop until the task runs. Using `asyncio.wait_for(future, timeout=…)` on the returned future would work but adds a real wall-clock wait if the task is already done. The chosen pattern is a 10-iteration `for _ in range(10): await asyncio.sleep(0); if resolved: break` which yields the loop up to 10 times; every test resolves in 1–2 iterations in practice. Same idiom used in the existing `test_nats_inbound.py` inbound tests.
+
+### 2026-04-22 — Phase 6 — Pre-existing test failures re-confirmed
+
+`scripts/run_tests.sh tests/gateway/` shows the same two Phase 1 failures plus a third pre-existing flake (`tests/tools/test_approval_heartbeat.py::TestApprovalHeartbeat::test_heartbeat_import_failure_does_not_break_wait`). All three fail identically with Phase 6 changes stashed, so not regressions introduced by this phase. Flagged here so a future Claude doesn't waste cycles blaming them on NATS.
 
 ---
 

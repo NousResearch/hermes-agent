@@ -479,6 +479,157 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Approval routing through :meth:`BasePlatformAdapter.request_interaction`
+# ---------------------------------------------------------------------------
+# Adapters that implement ``request_interaction`` (currently NATS — see
+# ``gateway/platforms/nats.py``) can round-trip a dangerous-command approval
+# in-band with the active prompt stream, without relying on the legacy
+# ``/approve`` text-reply dance. The helpers below are shared between the
+# default gateway approval notify bridge (``run.py:_approval_notify_sync``)
+# and adapter-local wirings that bypass ``handle_message`` (NATS
+# ``_run_agent_sync``). Keeping the reply-parsing + scheduling logic in one
+# place means both call sites stay in lockstep — a change to how "once" vs
+# "session" vs "deny" is detected never drifts between them.
+
+_APPROVAL_REPLY_ONCE = frozenset(
+    {"once", "o", "yes", "y", "ok", "okay", "approve", "approved", "allow", "1"}
+)
+_APPROVAL_REPLY_SESSION = frozenset({"session", "s"})
+_APPROVAL_REPLY_ALWAYS = frozenset(
+    {"always", "a", "permanent", "perm", "persist"}
+)
+_APPROVAL_REPLY_DENY = frozenset(
+    {"deny", "d", "no", "n", "nope", "reject", "cancel", "stop", "block", "0"}
+)
+
+
+def _format_approval_prompt(approval_data: Dict[str, Any]) -> str:
+    """Render an approval request as a short prompt for ``request_interaction``.
+
+    Shape is intentionally transport-agnostic: plain text, no markdown
+    fences that would be miscounted by callers counting code-block state.
+    Long commands are truncated to 500 chars because §5.4 recommends
+    keeping query bodies small — a full multi-KB one-liner belongs in
+    logs, not in the prompt the user has to read mid-stream.
+    """
+    cmd = str(approval_data.get("command") or "")
+    desc = str(approval_data.get("description") or "dangerous command")
+    if len(cmd) > 500:
+        cmd_preview = cmd[:500] + "…"
+    else:
+        cmd_preview = cmd
+    return (
+        f"⚠️ Dangerous command requires approval: {desc}\n\n"
+        f"Command:\n{cmd_preview}\n\n"
+        f"Reply with: once | session | always | deny"
+    )
+
+
+def _parse_approval_reply(reply: Optional[str]) -> str:
+    """Map a free-form user reply to the canonical approval choice.
+
+    Returns one of ``"once"`` / ``"session"`` / ``"always"`` / ``"deny"``.
+    Unknown / empty / ``None`` replies fall to ``"deny"`` — fail-safe
+    matches ``tools/approval.py``'s existing "no answer ⇒ blocked"
+    semantic (``check_all_command_guards``: ``if choice is None or
+    choice == "deny": ... BLOCKED``).
+    """
+    if not isinstance(reply, str):
+        return "deny"
+    normalized = reply.strip().lower()
+    if not normalized:
+        return "deny"
+    # First whitespace-separated token wins so casual replies like
+    # "yes please" or "approve this one" still parse cleanly.
+    token = normalized.split()[0]
+    if token in _APPROVAL_REPLY_ALWAYS:
+        return "always"
+    if token in _APPROVAL_REPLY_SESSION:
+        return "session"
+    if token in _APPROVAL_REPLY_ONCE:
+        return "once"
+    if token in _APPROVAL_REPLY_DENY:
+        return "deny"
+    return "deny"
+
+
+def adapter_supports_request_interaction(adapter: "BasePlatformAdapter") -> bool:
+    """True iff the adapter's concrete class overrides ``request_interaction``.
+
+    Class-level comparison (not ``hasattr`` or instance-level ``getattr``)
+    so ``MagicMock`` adapters in tests don't produce false positives —
+    every attribute access on a mock returns a new mock, which would
+    spuriously claim capability.
+    """
+    return (
+        type(adapter).request_interaction
+        is not BasePlatformAdapter.request_interaction
+    )
+
+
+def dispatch_approval_via_request_interaction(
+    adapter: "BasePlatformAdapter",
+    chat_id: str,
+    session_key: str,
+    approval_data: Dict[str, Any],
+    loop: "asyncio.AbstractEventLoop",
+    *,
+    timeout: float = 300.0,
+) -> bool:
+    """Route a dangerous-command approval through ``adapter.request_interaction``.
+
+    Returns ``True`` iff the adapter supports the hook and the coroutine was
+    scheduled on ``loop``; the agent thread that called the notify bridge
+    will then block on its ``_ApprovalEntry.event`` until the scheduled
+    task resolves the approval via :func:`tools.approval.resolve_gateway_approval`.
+    Returns ``False`` when the adapter inherits the base default — the
+    caller should then fall back to the legacy flow (button-based
+    ``send_exec_approval`` or plain-text ``/approve``).
+
+    The scheduled task swallows exceptions from ``request_interaction``
+    itself (logged + treated as "deny") so a transport error can never
+    leave the agent thread blocked forever — the ``resolve_gateway_approval``
+    call in the ``finally`` sibling unblocks it on every path.
+    """
+    if not adapter_supports_request_interaction(adapter):
+        return False
+
+    prompt_text = _format_approval_prompt(approval_data)
+
+    async def _run() -> None:
+        reply: Optional[str] = None
+        try:
+            reply = await adapter.request_interaction(
+                chat_id, prompt_text, kind="approval", timeout=timeout,
+            )
+        except Exception as exc:
+            logger.warning(
+                "request_interaction raised for approval (chat_id=%s): %s",
+                chat_id,
+                exc,
+            )
+        choice = _parse_approval_reply(reply)
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolve_gateway_approval(session_key, choice)
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval for session %s: %s",
+                session_key,
+                exc,
+            )
+
+    try:
+        asyncio.run_coroutine_threadsafe(_run(), loop)
+    except Exception as exc:
+        logger.error(
+            "Failed to schedule request_interaction approval: %s", exc,
+        )
+        return False
+    return True
+
+
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     if max_len <= 0:
@@ -1827,6 +1978,38 @@ class BasePlatformAdapter(ABC):
             content=content,
             reply_to=reply_to,
             metadata=metadata,
+        )
+
+    async def request_interaction(
+        self,
+        chat_id: str,
+        prompt: str,
+        *,
+        kind: str,
+        timeout: float,
+    ) -> Optional[str]:
+        """Ask the user a mid-conversation question and await their reply.
+
+        Capability-gated: the default implementation raises
+        ``NotImplementedError`` so callers can cheaply detect adapter
+        support via ``type(adapter).request_interaction is not
+        BasePlatformAdapter.request_interaction``. When an adapter
+        overrides this, the gateway routes dangerous-command approval
+        requests through it instead of the fallback `/approve` / `/deny`
+        text dance.
+
+        ``kind`` is an advisory tag (``"approval"``, ``"clarification"``,
+        future kinds) the adapter may use to format the query; it is not
+        part of any wire protocol. ``timeout`` is the maximum wait in
+        seconds; adapters should return ``None`` on timeout rather than
+        raising so the caller can distinguish "no answer" from "delivery
+        failed".
+
+        Returns the user's raw reply string, or ``None`` when no reply
+        arrived within ``timeout`` / the adapter could not deliver.
+        """
+        raise NotImplementedError(
+            "request_interaction not supported on this adapter"
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

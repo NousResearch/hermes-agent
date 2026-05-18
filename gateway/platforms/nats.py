@@ -977,6 +977,7 @@ class NatsAdapter(BasePlatformAdapter):
                 event,
                 chat_id,
                 _delta_callback,
+                loop,
             )
         finally:
             # Signal end-of-stream and wait for the pump to drain so no
@@ -1030,6 +1031,7 @@ class NatsAdapter(BasePlatformAdapter):
         event: MessageEvent,
         chat_id: str,
         stream_delta_callback: Any,
+        loop: "asyncio.AbstractEventLoop",
     ) -> Any:
         """Build an :class:`AIAgent` and run one conversation turn synchronously.
 
@@ -1037,11 +1039,24 @@ class NatsAdapter(BasePlatformAdapter):
         long-running sync method) doesn't block the event loop. The
         returned ``result`` dict is consumed by ``_run_text_prompt`` to
         fall back to non-streamed delivery when the pump saw no deltas.
+
+        ``loop`` is the adapter's event loop, captured in ``_run_text_prompt``
+        and threaded through here so the approval notify callback can
+        schedule ``request_interaction`` coroutines back onto it from this
+        worker thread. ``asyncio.get_running_loop()`` inside the executor
+        would raise (no loop on this thread).
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
         from gateway.session import build_session_key
+        from gateway.platforms.base import dispatch_approval_via_request_interaction
+        from tools.approval import (
+            register_gateway_notify,
+            unregister_gateway_notify,
+            set_current_session_key,
+            reset_current_session_key,
+        )
 
         user_config = _load_gateway_config()
         runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -1097,11 +1112,46 @@ class NatsAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("[%s] loading history for %s failed: %s", self.name, session_key, exc)
 
-        return agent.run_conversation(
-            user_message=event.text,
-            conversation_history=conversation_history,
-            task_id=chat_id,
-        )
+        # Register an approval notify callback scoped to this session.
+        # ``check_all_command_guards`` (tools/approval.py) fires it from the
+        # agent's worker thread when a dangerous command hits; we schedule
+        # ``request_interaction`` on ``loop`` and let the helper call
+        # ``resolve_gateway_approval`` when the caller replies — unblocking
+        # the agent thread waiting on the ApprovalEntry event.
+        def _nats_approval_notify(approval_data: dict) -> None:
+            try:
+                dispatch_approval_via_request_interaction(
+                    self,
+                    chat_id,
+                    session_key,
+                    approval_data,
+                    loop,
+                    timeout=_approval_timeout_from_config(),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] NATS approval notify failed (session=%s): %s",
+                    self.name,
+                    session_key,
+                    exc,
+                )
+
+        # Bind the approval session key on this worker thread's contextvar
+        # so ``get_current_session_key`` inside ``check_all_command_guards``
+        # finds the right session key — contextvars set on the main thread
+        # don't propagate into ``run_in_executor`` (we don't go through
+        # ``_run_in_executor_with_context``). Reset in the finally below.
+        approval_token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, _nats_approval_notify)
+        try:
+            return agent.run_conversation(
+                user_message=event.text,
+                conversation_history=conversation_history,
+                task_id=chat_id,
+            )
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(approval_token)
 
     # ------------------------------------------------------------------
     # Outbound — publish a ResponseChunk on the stream for a given chat_id
@@ -1331,6 +1381,80 @@ class NatsAdapter(BasePlatformAdapter):
             return
         await stream.send(chunk_factory(text=content))
 
+    async def request_interaction(
+        self,
+        chat_id: str,
+        prompt: str,
+        *,
+        kind: str,
+        timeout: float,
+    ) -> Optional[str]:
+        """Ask the caller mid-stream and await their reply via ``stream.ask``.
+
+        Protocol §7 round-trip: publishes a ``query`` chunk into the active
+        prompt stream, allocates a fresh reply inbox, and blocks here until
+        the caller publishes exactly one reply (or the timeout elapses).
+        The underlying response stream stays open across the round-trip —
+        the caller keeps iterating the prompt's async iterator while this
+        handler awaits, so no keep-alive disruption is needed.
+
+        Returns ``None`` on :class:`natsagent.QueryTimeout` or when no
+        active stream can be resolved for ``chat_id``; the base-class
+        contract (§7.2 of the design doc) asks adapters to distinguish
+        "no answer" from "delivery failed" by raising only on programmer
+        error. ``kind`` is accepted for the :class:`BasePlatformAdapter`
+        signature but not wired into the query — v0.1 has no per-kind
+        field on the wire, so the adapter just forwards the prompt text.
+        """
+        stream = self._resolve_stream(chat_id)
+        if stream is None:
+            logger.warning(
+                "[%s] request_interaction: no active stream for chat_id=%s "
+                "(kind=%s) — returning None so caller can fail safe",
+                self.name,
+                chat_id,
+                kind,
+            )
+            return None
+
+        query_timeout_cls = getattr(natsagent, "QueryTimeout", None)
+        try:
+            reply = await stream.ask(prompt, timeout=timeout)
+        except Exception as exc:
+            # Distinguish QueryTimeout ("caller stayed silent") from any
+            # other ask() failure ("stream/socket problem"). The former is
+            # a clean "no answer" per §7.3; the latter is a transport
+            # error that the caller should fail safe on — both map to
+            # None here, but we log at different levels so ops can tell
+            # them apart.
+            if query_timeout_cls is not None and isinstance(exc, query_timeout_cls):
+                logger.info(
+                    "[%s] request_interaction: caller did not reply within %ss "
+                    "(chat_id=%s, kind=%s)",
+                    self.name,
+                    timeout,
+                    chat_id,
+                    kind,
+                )
+            else:
+                logger.warning(
+                    "[%s] request_interaction: stream.ask failed "
+                    "(chat_id=%s, kind=%s): %s",
+                    self.name,
+                    chat_id,
+                    kind,
+                    exc,
+                )
+            return None
+
+        reply_text = getattr(reply, "prompt", None)
+        if isinstance(reply_text, str):
+            return reply_text
+        # Real SDK always returns an Envelope whose ``prompt`` is a string;
+        # this branch only trips on mock substitutes. Return the str() so
+        # downstream parsers have something to work with rather than None.
+        return str(reply_text) if reply_text is not None else None
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal DM-style chat info for session-key construction.
 
@@ -1357,6 +1481,23 @@ class NatsAdapter(BasePlatformAdapter):
 # Module-level helpers (private; kept out of the class so tests can
 # exercise them without constructing a full adapter).
 # ----------------------------------------------------------------------
+
+
+def _approval_timeout_from_config() -> float:
+    """Return the gateway approval timeout in seconds from config.yaml.
+
+    Mirrors the value used by ``tools/approval.py::check_all_command_guards``
+    so the adapter's :meth:`request_interaction` round-trip and the agent
+    thread's ``entry.event.wait()`` share the same deadline — avoids a
+    stream.ask() that keeps waiting after the agent already timed out.
+    Defaults to 300 s on any read failure so callers never hang forever.
+    """
+    try:
+        from tools.approval import _get_approval_config  # noqa: WPS437 (private, but adapter-local)
+        timeout = _get_approval_config().get("gateway_timeout", 300)
+        return float(int(timeout))
+    except Exception:
+        return 300.0
 
 
 def _extract_x_session(raw: bytes) -> Optional[str]:

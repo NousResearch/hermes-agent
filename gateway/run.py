@@ -15823,6 +15823,33 @@ class GatewayRunner:
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 
+                # Prefer the in-band request_interaction round-trip when the
+                # adapter supports it (NATS publishes a Query chunk on the
+                # active reply subject — no out-of-band /approve dance).
+                # Capability check is class-level so existing adapters, which
+                # inherit BasePlatformAdapter's NotImplementedError default,
+                # fall through to the established flows below. The helper
+                # schedules the query on _loop_for_step and arranges for
+                # resolve_gateway_approval() to fire when the caller replies.
+                try:
+                    from gateway.platforms.base import (
+                        dispatch_approval_via_request_interaction,
+                    )
+                    if dispatch_approval_via_request_interaction(
+                        _status_adapter,
+                        _status_chat_id,
+                        _approval_session_key,
+                        approval_data,
+                        _loop_for_step,
+                    ):
+                        return
+                except Exception as _e:
+                    logger.warning(
+                        "request_interaction approval routing failed, "
+                        "falling back to legacy flow: %s",
+                        _e,
+                    )
+
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.

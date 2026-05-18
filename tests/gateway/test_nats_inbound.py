@@ -797,7 +797,7 @@ class TestRunTextPromptFallback:
         adapter = _build_adapter()
         stream = _fake_stream()
 
-        def _fake_run_agent_sync(event, chat_id, cb):
+        def _fake_run_agent_sync(event, chat_id, cb, loop):
             # Don't call ``cb`` — simulate a non-streaming run.
             return {"final_response": "final answer"}
 
@@ -824,7 +824,7 @@ class TestRunTextPromptFallback:
         adapter = _build_adapter()
         stream = _fake_stream()
 
-        def _fake_run_agent_sync(event, chat_id, cb):
+        def _fake_run_agent_sync(event, chat_id, cb, loop):
             # Simulate one streamed delta.
             cb("streamed ")
             cb("answer")

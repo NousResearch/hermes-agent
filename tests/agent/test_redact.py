@@ -537,3 +537,43 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestAwsStsAccessKey:
+    # AWS documents ASIA as the prefix for temporary (STS) access key IDs,
+    # parallel to AKIA for long-term IAM user keys (same 4-letter prefix
+    # + 16 base32 chars shape). Anything running on EC2/ECS/Lambda with
+    # an IAM role receives ASIA-prefixed credentials, so the leak surface
+    # is identical to AKIA which has been redacted since the initial
+    # _PREFIX_PATTERNS landed.
+    # Ref: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html
+    KEY = "ASIAIOSFODNN7EXAMPLE"  # AWS-docs-shaped: 4-letter prefix + 16 base32
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"using key {self.KEY} from STS", force=True)
+        assert self.KEY not in result
+        assert "ASIAIO" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(
+            f"AWS_ACCESS_KEY_ID={self.KEY}", force=True
+        )
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        # ASIA followed by < 16 chars is not a valid access key ID and
+        # must not match — partial IDs aren't credentials.
+        short = "ASIAIOSFODNN"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_word_starting_with_asia_not_masked(self):
+        # Plain prose like "Asia Pacific" must not trigger redaction —
+        # the pattern requires uppercase ASIA followed by exactly 16
+        # uppercase alphanumerics with no intervening character.
+        result = redact_sensitive_text("Servers in Asia Pacific region", force=True)
+        assert result == "Servers in Asia Pacific region"
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("ASIAIO")

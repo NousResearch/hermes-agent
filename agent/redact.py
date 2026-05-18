@@ -83,6 +83,7 @@ _PREFIX_PATTERNS = [
     r"bb_live_[A-Za-z0-9_-]{10,}",      # BrowserBase
     r"gAAAA[A-Za-z0-9_=-]{20,}",        # Codex encrypted tokens
     r"AKIA[A-Z0-9]{16}",                # AWS Access Key ID
+    r"ASIA[A-Z0-9]{16}",                # AWS STS temporary access key ID (EC2/ECS/Lambda role creds)
     r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
     r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
     r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key

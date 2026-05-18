@@ -158,6 +158,15 @@ def test_exec_approval_view_role_default_is_empty_set():
     assert view._check_auth(_interaction(99999)) is False
 
 
+def test_exec_approval_view_timeout_matches_backend_lifetime():
+    view = ExecApprovalView(
+        session_key="sess-1",
+        allowed_user_ids={"11111"},
+        timeout_seconds=900,
+    )
+    assert view.timeout == 900
+
+
 def test_slash_confirm_view_accepts_role_allowlist():
     view = SlashConfirmView(
         session_key="sess-1",

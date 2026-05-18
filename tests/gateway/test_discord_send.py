@@ -160,6 +160,25 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_send_resolves_hash_channel_name_targets():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=4242)
+    inbox = SimpleNamespace(name="inbox", send=AsyncMock(return_value=sent_msg))
+    other = SimpleNamespace(name="general", send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_all_channels=lambda: [other, inbox],
+    )
+
+    result = await adapter.send("#inbox", "checkpoint ready")
+
+    assert result.success is True
+    assert result.message_id == "4242"
+    inbox.send.assert_awaited_once()
+    other.send.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

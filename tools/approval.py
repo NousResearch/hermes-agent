@@ -1233,7 +1233,10 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min).
+            # Block until the user responds or timeout.  Use the public
+            # approvals.timeout knob unless a legacy gateway_timeout override
+            # is explicitly present, so the Discord button lifetime and the
+            # backend queue lifetime stay aligned.
             # Poll in short slices so we can fire activity heartbeats every
             # ~10s to the agent's inactivity tracker.  Without this, the
             # blocking event.wait() never touches activity, and the
@@ -1241,11 +1244,14 @@ def check_all_command_guards(command: str, env_type: str,
             # 1800s) kills the agent while the user is still responding to
             # the approval prompt.  Mirrors the _wait_for_process() cadence
             # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
+            approval_cfg = _get_approval_config()
+            timeout = approval_cfg.get(
+                "gateway_timeout", approval_cfg.get("timeout", 60)
+            )
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
-                timeout = 300
+                timeout = 60
 
             try:
                 from tools.environments.base import touch_activity_if_due
@@ -1300,11 +1306,23 @@ def check_all_command_guards(command: str, env_type: str,
 
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
+                if not resolved:
+                    guidance = (
+                        "The approval expired before the user responded. The command did not run. "
+                        "If this blocked action is important to completing the task well, stop and ask the user "
+                        "to request/approve it again instead of silently continuing with a degraded path. "
+                        "Only continue if the action is genuinely optional, and explicitly tell the user it was skipped."
+                    )
+                else:
+                    guidance = (
+                        "The user denied this command. Do not retry it or route around the denial."
+                    )
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command. {guidance}",
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "approval_outcome": "timeout" if not resolved else "deny",
                 }
 
             # User approved — persist based on scope (same logic as CLI)

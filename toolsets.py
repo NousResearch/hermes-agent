@@ -241,13 +241,15 @@ TOOLSETS = {
 
     "kanban": {
         "description": (
-            "Kanban multi-agent coordination — only active when the agent "
-            "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
-            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, block for human input, "
-            "heartbeat during long ops, comment on threads, and (for "
-            "orchestrators) list, unblock, and fan out tasks."
+
+            "Kanban multi-agent coordination — default-off for normal chat "
+            "sessions, active for dispatcher workers (HERMES_KANBAN_TASK), "
+            "or when the operator enables the kanban toolset for a platform. "
+            "The dispatcher runs inside the gateway by default; see "
+            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers and "
+            "explicit orchestrators mark tasks done with structured handoffs, "
+            "block for human input, heartbeat during long ops, comment on "
+            "threads, and fan out into child tasks."
         ),
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",

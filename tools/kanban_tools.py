@@ -42,8 +42,29 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
-
 def _profile_has_kanban_toolset() -> bool:
+    """Return true when this process should expose the Kanban toolset.
+
+    The lifecycle tools are available when:
+
+    1. HERMES_KANBAN_TASK is set for a dispatcher-spawned worker, OR
+    2. HERMES_KANBAN_TOOLS is truthy as an explicit process override, OR
+    3. kanban is enabled in config for at least one platform/profile.
+
+    The kanban toolset is default-off in the user-facing tools picker so
+    normal chat sessions keep zero kanban schema footprint unless the
+    operator explicitly opts in. Dispatcher workers bypass that picker via
+    HERMES_KANBAN_TASK so they always get the tools they need.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+
+    if str(os.environ.get("HERMES_KANBAN_TOOLS", "")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return True
+
+    # Check top-level legacy config and per-platform tool configuration.
     # Uses load_config() which has mtime-based caching, so this adds
     # negligible overhead. The check_fn results are further TTL-cached
     # (~30s) by the tool registry.
@@ -51,7 +72,15 @@ def _profile_has_kanban_toolset() -> bool:
         from hermes_cli.config import load_config
         cfg = load_config()
         toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        if isinstance(toolsets, list) and "kanban" in {str(t) for t in toolsets}:
+            return True
+
+        platform_toolsets = cfg.get("platform_toolsets") or {}
+        if isinstance(platform_toolsets, dict):
+            for entries in platform_toolsets.values():
+                if isinstance(entries, list) and "kanban" in {str(t) for t in entries}:
+                    return True
+        return False
     except Exception:
         return False
 

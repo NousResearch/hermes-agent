@@ -1,8 +1,10 @@
 """Tests for the Kanban tool surface (tools/kanban_tools.py).
 
 Verifies:
-  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
-    zero kanban tools in its schema; a worker session sees the kanban set.
+
+  - Tools are gated on HERMES_KANBAN_TASK or explicit platform/tool config:
+    a normal chat session sees zero kanban tools in its schema unless the
+    operator opts in; a worker session sees all seven.
   - Each handler's happy path.
   - Error paths (missing required args, bad metadata type, etc).
 """
@@ -39,6 +41,13 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     )
 
 
+def _expected_kanban_tools():
+    return {
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+        "kanban_comment", "kanban_create", "kanban_link",
+    }
+
+
 def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     """Worker sessions get task lifecycle tools, not board-routing tools."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
@@ -54,11 +63,9 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
-    expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
-    }
+    expected = _expected_kanban_tools()
     assert kanban == expected, f"expected {expected}, got {kanban}"
+
 
 
 def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
@@ -104,16 +111,38 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
-    expected = {
-        "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
-        "kanban_unblock",
-    }
-    assert kanban == expected, f"expected {expected}, got {kanban}"
+    expected = _expected_kanban_tools() | {"kanban_list", "kanban_unblock"}
+    assert kanban == expected
+
+
+def test_kanban_tools_visible_when_platform_toolset_enabled(monkeypatch, tmp_path):
+    """Operator-enabled orchestrator sessions should get kanban_* tools
+    without pretending to be dispatcher workers."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n"
+        "  discord:\n"
+        "  - kanban\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    kanban = {n for n in names if n and n.startswith("kanban_")}
+    expected = _expected_kanban_tools() | {"kanban_list", "kanban_unblock"}
+    assert kanban == expected
 
 
 # ---------------------------------------------------------------------------

@@ -232,6 +232,348 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _get_guarded_workflow_config() -> Dict[str, Any]:
+    """Return browser guarded-workflow config with safe defaults."""
+    defaults = {
+        "enabled": True,
+        "allowlisted_domains": [],
+        "action_log_dir": "",
+        "dry_run": False,
+        "approval_required": True,
+        "sensitive_action_keywords": [
+            "submit", "purchase", "buy", "delete", "remove", "destroy",
+            "confirm", "checkout", "pay", "payment", "place order", "book",
+            "send", "save", "archive", "cancel subscription",
+        ],
+    }
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = cfg_get(cfg, "browser", "guarded_workflows", default={})
+        if isinstance(raw, dict):
+            merged = dict(defaults)
+            merged.update(raw)
+            if not isinstance(merged.get("allowlisted_domains"), list):
+                merged["allowlisted_domains"] = []
+            if not isinstance(merged.get("sensitive_action_keywords"), list):
+                merged["sensitive_action_keywords"] = defaults["sensitive_action_keywords"]
+            return merged
+    except Exception as exc:
+        logger.debug("Could not read browser.guarded_workflows config: %s", exc)
+    return defaults
+
+
+def _normalize_domain_pattern(pattern: str) -> str:
+    pattern = (pattern or "").strip().lower()
+    if not pattern:
+        return ""
+    if "://" in pattern:
+        try:
+            import urllib.parse
+            pattern = urllib.parse.urlparse(pattern).hostname or pattern
+        except Exception:
+            pass
+    return pattern.strip().strip("/")
+
+
+def _url_matches_browser_allowlist(url: str, allowlist: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """Check a URL against strict browser guarded-workflow host allowlist."""
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False, "only http(s) URLs are supported"
+    host = (parsed.hostname or "").lower().strip(".")
+    if not host:
+        return False, "URL has no hostname"
+    patterns = allowlist
+    if patterns is None:
+        patterns = _get_guarded_workflow_config().get("allowlisted_domains", [])
+    normalized = [_normalize_domain_pattern(p) for p in patterns or []]
+    normalized = [p for p in normalized if p]
+    if not normalized:
+        return False, "browser.guarded_workflows.allowlisted_domains is empty"
+    for pattern in normalized:
+        if pattern == "*":
+            return True, pattern
+        if pattern.startswith("*."):
+            suffix = pattern[1:]  # .example.com
+            if host.endswith(suffix) and host != suffix.lstrip("."):
+                return True, pattern
+        elif host == pattern or host.endswith("." + pattern):
+            return True, pattern
+    return False, f"host {host!r} is not in browser.guarded_workflows.allowlisted_domains"
+
+
+def _guarded_workflow_base_dir() -> Path:
+    cfg = _get_guarded_workflow_config()
+    configured = str(cfg.get("action_log_dir") or "").strip()
+    if configured:
+        return Path(os.path.expanduser(configured))
+    return get_hermes_home() / "browser_workflows"
+
+
+def _safe_workflow_slug(value: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "browser")
+    return value.strip("._")[:80] or "browser"
+
+
+def _new_guarded_workflow_paths(task_id: str, url: str) -> Dict[str, Path]:
+    import urllib.parse
+    import uuid
+    host = urllib.parse.urlparse(url).hostname or "page"
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    run_id = f"{stamp}_{_safe_workflow_slug(task_id)}_{_safe_workflow_slug(host)}_{uuid.uuid4().hex[:8]}"
+    run_dir = _guarded_workflow_base_dir() / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "run_dir": run_dir,
+        "action_log": run_dir / "actions.jsonl",
+        "screenshot": run_dir / "screenshot.png",
+    }
+
+
+def _append_guarded_action(log_path: Path, action: str, **fields: Any) -> None:
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"ts": time.time(), "action": action, **fields}
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:
+        logger.debug("Failed to append guarded browser action log: %s", exc)
+
+
+_SENSITIVE_BROWSER_ACTION_DEFAULTS = {
+    "submit", "purchase", "buy", "delete", "remove", "destroy", "confirm",
+    "checkout", "pay", "payment", "place order", "book", "send", "save",
+    "archive", "cancel subscription",
+}
+
+
+def _snapshot_line_for_ref(snapshot_text: str, ref: str) -> str:
+    token = ref if ref.startswith("@") else f"@{ref}"
+    bare_ref = token[1:]
+    candidates = (f"[{token}]", f"[ref={bare_ref}]", f"[ref={token}]", token)
+    for line in snapshot_text.splitlines():
+        if any(candidate in line for candidate in candidates):
+            return line.strip()
+    return ""
+
+
+def _sensitive_browser_action_reason(action: str, label: str = "") -> Optional[str]:
+    cfg = _get_guarded_workflow_config()
+    keywords = cfg.get("sensitive_action_keywords") or list(_SENSITIVE_BROWSER_ACTION_DEFAULTS)
+    haystack = f"{action} {label}".lower()
+    for keyword in keywords:
+        kw = str(keyword).strip().lower()
+        if kw and kw in haystack:
+            return f"browser action may trigger sensitive/destructive flow ({kw})"
+    return None
+
+
+def _request_live_browser_approval(action: str, description: str) -> Dict[str, Any]:
+    """Require a live user approval for browser actions that may submit/delete/buy."""
+    cfg = _get_guarded_workflow_config()
+    if not cfg.get("approval_required", True):
+        return {"approved": True}
+
+    # Gateway/ask sessions cannot synchronously prompt here. Store a pending
+    # approval request so the platform can surface it, and fail closed until the
+    # human explicitly asks the agent to retry after approval.
+    if os.getenv("HERMES_GATEWAY_SESSION") or os.getenv("HERMES_EXEC_ASK"):
+        try:
+            from tools.approval import get_current_session_key, submit_pending
+            session_key = get_current_session_key()
+            submit_pending(session_key, {
+                "command": action,
+                "pattern_key": "browser_sensitive_action",
+                "description": description,
+            })
+        except Exception as exc:
+            logger.debug("Could not submit browser approval request: %s", exc)
+        return {
+            "approved": False,
+            "status": "approval_required",
+            "error": f"Approval required before browser action: {description}",
+            "action": action,
+            "description": description,
+        }
+
+    if os.getenv("HERMES_INTERACTIVE"):
+        try:
+            from tools.approval import prompt_dangerous_approval
+            from tools.terminal_tool import _get_approval_callback  # type: ignore[attr-defined]
+            choice = prompt_dangerous_approval(
+                action,
+                description,
+                allow_permanent=False,
+                approval_callback=_get_approval_callback(),
+            )
+            if choice in {"once", "session", "always"}:
+                return {"approved": True}
+            return {"approved": False, "error": f"User denied browser action: {description}"}
+        except Exception as exc:
+            logger.warning("Browser approval prompt failed: %s", exc)
+            return {"approved": False, "error": f"Approval prompt failed: {exc}"}
+
+    return {
+        "approved": False,
+        "error": f"Blocked: browser action requires explicit live approval: {description}",
+    }
+
+
+def _guard_sensitive_browser_action(action: str, task_id: str, ref: str = "", label: str = "") -> Optional[Dict[str, Any]]:
+    """Return a blocking response when a browser action requires approval."""
+    resolved_label = label
+    if ref and not resolved_label:
+        try:
+            snap = _run_browser_command(task_id, "snapshot", ["-c"])
+            if snap.get("success"):
+                resolved_label = _snapshot_line_for_ref(snap.get("data", {}).get("snapshot", ""), ref)
+        except Exception as exc:
+            logger.debug("Could not inspect browser action label for approval: %s", exc)
+    # Pressing Enter is a common implicit submit even when the focused element
+    # label is unknown, so it is gated unconditionally.
+    reason = None
+    if action.lower().startswith("press enter"):
+        reason = "browser Enter key may submit a form"
+    else:
+        reason = _sensitive_browser_action_reason(action, resolved_label)
+    if not reason:
+        return None
+    approval = _request_live_browser_approval(action, f"{reason}: {resolved_label or ref or action}")
+    if approval.get("approved"):
+        return None
+    return {
+        "success": False,
+        "approval_required": approval.get("status") == "approval_required" or "Approval required" in approval.get("error", ""),
+        "error": approval.get("error", "Browser action blocked pending approval"),
+        "action": action,
+        "element": ref or None,
+        "element_label": resolved_label or None,
+    }
+
+
+def _extract_actionable_items(snapshot_text: str, limit: int = 30) -> List[str]:
+    items: List[str] = []
+    for line in snapshot_text.splitlines():
+        lower = line.lower()
+        if "[ref=" in lower or any(token in lower for token in ("button", "link", "textbox", "checkbox", "combobox", "menuitem")):
+            clean = line.strip()
+            if clean and clean not in items:
+                items.append(clean[:500])
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _extract_requested_fields(snapshot_text: str, fields: Optional[List[str]]) -> Dict[str, str]:
+    extracted: Dict[str, str] = {}
+    if not fields:
+        return extracted
+    lines = [line.strip() for line in snapshot_text.splitlines() if line.strip()]
+    lower_lines = [(line.lower(), line) for line in lines]
+    for field in fields:
+        name = str(field).strip()
+        if not name:
+            continue
+        needle = name.lower()
+        match = ""
+        for lower, original in lower_lines:
+            if needle in lower:
+                match = original[:1000]
+                break
+        extracted[name] = match
+    return extracted
+
+
+def browser_inspect_page(
+    url: str,
+    question: Optional[str] = None,
+    extract_fields: Optional[List[str]] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Guarded browser workflow: allowlisted navigate → snapshot → screenshot → summary."""
+    effective_task_id = task_id or "default"
+    cfg = _get_guarded_workflow_config()
+    if not cfg.get("enabled", True):
+        return json.dumps({"success": False, "error": "browser.guarded_workflows.enabled is false"}, ensure_ascii=False)
+
+    allowed, allow_reason = _url_matches_browser_allowlist(url, cfg.get("allowlisted_domains"))
+    if not allowed:
+        return json.dumps({
+            "success": False,
+            "error": f"Blocked by guarded browser allowlist: {allow_reason}",
+            "allowlisted_domains": cfg.get("allowlisted_domains", []),
+        }, ensure_ascii=False)
+
+    paths = _new_guarded_workflow_paths(effective_task_id, url)
+    workflow_task_id = f"{effective_task_id}::guarded::{paths['run_dir'].name}"
+    _append_guarded_action(paths["action_log"], "start", url=url, allowlist_match=allow_reason, dry_run=bool(cfg.get("dry_run")))
+
+    if cfg.get("dry_run"):
+        _append_guarded_action(paths["action_log"], "dry_run_block", url=url)
+        return json.dumps({
+            "success": True,
+            "dry_run": True,
+            "url": url,
+            "allowlist_match": allow_reason,
+            "action_log_path": str(paths["action_log"]),
+            "run_dir": str(paths["run_dir"]),
+            "summary": "Dry run: URL passed allowlist; browser was not launched.",
+        }, ensure_ascii=False)
+
+    nav = json.loads(browser_navigate(url, task_id=workflow_task_id))
+    _append_guarded_action(paths["action_log"], "navigate", success=nav.get("success"), url=nav.get("url", url), title=nav.get("title"), error=nav.get("error"))
+    if not nav.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": nav.get("error", "Navigation failed"),
+            "action_log_path": str(paths["action_log"]),
+            "run_dir": str(paths["run_dir"]),
+        }, ensure_ascii=False)
+
+    snap = json.loads(browser_snapshot(full=False, task_id=workflow_task_id, user_task=question or "inspect page and summarize actionable changes"))
+    _append_guarded_action(paths["action_log"], "snapshot", success=snap.get("success"), element_count=snap.get("element_count"), error=snap.get("error"))
+    snapshot_text = snap.get("snapshot", "") if snap.get("success") else ""
+
+    screenshot_result = _run_browser_command(
+        _last_session_key(workflow_task_id),
+        "screenshot",
+        ["--full", str(paths["screenshot"])],
+        timeout=max(_get_command_timeout(), 60),
+    )
+    actual_screenshot = screenshot_result.get("data", {}).get("path") or str(paths["screenshot"])
+    _append_guarded_action(paths["action_log"], "screenshot", success=screenshot_result.get("success"), path=actual_screenshot, error=screenshot_result.get("error"))
+
+    actionable_items = _extract_actionable_items(snapshot_text)
+    extracted = _extract_requested_fields(snapshot_text, extract_fields)
+    if question:
+        summary = _extract_relevant_content(snapshot_text, question) if snapshot_text else "No snapshot content was available to summarize."
+    else:
+        title = nav.get("title") or "Untitled page"
+        summary = (
+            f"{title}: found {snap.get('element_count', 0)} interactive elements. "
+            f"Top actionable items: " + ("; ".join(actionable_items[:8]) if actionable_items else "none visible")
+        )
+
+    response = {
+        "success": True,
+        "url": nav.get("url", url),
+        "title": nav.get("title", ""),
+        "summary": summary,
+        "actionable_items": actionable_items,
+        "extracted_fields": extracted,
+        "screenshot_path": actual_screenshot if screenshot_result.get("success") else None,
+        "screenshot_success": bool(screenshot_result.get("success")),
+        "action_log_path": str(paths["action_log"]),
+        "run_dir": str(paths["run_dir"]),
+        "allowlist_match": allow_reason,
+    }
+    _copy_fallback_warning(response, screenshot_result)
+    _append_guarded_action(paths["action_log"], "complete", success=True, response={k: v for k, v in response.items() if k != "actionable_items"})
+    return json.dumps(response, ensure_ascii=False)
+
+
 def _resolve_cdp_override(cdp_url: str) -> str:
     """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
 
@@ -1613,6 +1955,29 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_inspect_page",
+        "description": "Guarded Playwright browser workflow for low-risk page inspection. Only navigates to domains in browser.guarded_workflows.allowlisted_domains, saves a screenshot plus compact JSONL action log, summarizes page state/actionable changes, and can extract requested fields from the page snapshot. This workflow never submits forms or clicks destructive controls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Allowlisted http(s) URL to inspect. Host must match browser.guarded_workflows.allowlisted_domains."
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Optional inspection goal, e.g. 'summarize actionable changes since last visit'."
+                },
+                "extract_fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional field names to pull from the page snapshot, best-effort."
+                }
+            },
+            "required": ["url"]
+        }
+    },
 ]
 
 
@@ -2575,6 +2940,10 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
+    blocked = _guard_sensitive_browser_action(f"click {ref}", effective_task_id, ref=ref)
+    if blocked:
+        return json.dumps(blocked, ensure_ascii=False)
+
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
@@ -2728,6 +3097,10 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return camofox_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _guard_sensitive_browser_action(f"press {key}", effective_task_id)
+    if blocked:
+        return json.dumps(blocked, ensure_ascii=False)
+
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
@@ -3793,4 +4166,17 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_inspect_page",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_inspect_page"],
+    handler=lambda args, **kw: browser_inspect_page(
+        url=args.get("url", ""),
+        question=args.get("question"),
+        extract_fields=args.get("extract_fields"),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🛡️",
 )

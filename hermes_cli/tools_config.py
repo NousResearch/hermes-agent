@@ -70,6 +70,7 @@ CONFIGURABLE_TOOLSETS = [
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
+    ("kanban",          "🗂️  Kanban Coordination",      "kanban_show, create, comment, block, complete"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
@@ -84,17 +85,20 @@ CONFIGURABLE_TOOLSETS = [
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
 #
-# Video gen is off by default — it's a niche, paid, slow feature. Users
-# who want it opt in via `hermes tools` → Video Generation, which walks
+# Video gen is off by default - it is a niche, paid, slow feature. Users
+# who want it opt in via `hermes tools` -> Video Generation, which walks
 # them through provider + model selection.
 #
 # X search is off by default for users without xAI credentials, but
 # auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
-# `hermes tools` → X (Twitter) Search setup walks users through credential
-# setup. The tool's check_fn means the schema still won't appear to the
+# set, mirroring the HASS_TOKEN -> homeassistant auto-enable below. The
+# `hermes tools` -> X (Twitter) Search setup walks users through credential
+# setup. The tool check_fn means the schema still will not appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+#
+# Kanban stays default-off for normal chats; dispatcher workers enable it
+# via HERMES_KANBAN_TASK and orchestrator profiles opt in explicitly.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "kanban"}
 
 
 def _xai_credentials_present() -> bool:
@@ -102,8 +106,8 @@ def _xai_credentials_present() -> bool:
 
     Used to auto-enable the ``x_search`` toolset when the user has either
     completed xAI Grok OAuth (SuperGrok subscription) or set
-    ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
-    auth store and environment. The tool's runtime ``check_fn`` still
+    ``XAI_API_KEY``. Does NOT hit the network, only inspects the local
+    auth store and environment. The tool runtime ``check_fn`` still
     gates schema registration if creds later expire or get revoked.
     """
     try:

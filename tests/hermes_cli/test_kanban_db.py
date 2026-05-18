@@ -12,12 +12,35 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+@pytest.fixture(autouse=True)
+def _clear_live_kanban_worker_env(monkeypatch):
+    """Unit tests must not inherit dispatcher-pinned live board paths."""
+    for key in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Kanban workers carry HERMES_KANBAN_* env vars that pin the live board DB;
+    clear them so DB-layer tests never read or mutate the operator board.
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    for key in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -45,6 +68,78 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+    assert "kanban_checkpoint_cursors" in names
+
+
+def test_pytest_refuses_live_kanban_db(monkeypatch):
+    live_db = Path.home() / ".hermes" / "kanban" / "boards" / "hermes-mission-control" / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(live_db))
+    with pytest.raises(RuntimeError, match="Refusing to open live Hermes Kanban DB"):
+        kb.connect()
+
+
+def test_checkpoint_cursor_tracks_board_wide_blocked_events(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Decision: Gabriel approve Phase 1 visual direction",
+            body="Review: /tmp/preview.png\nSafety: local-only/no-send",
+            assignee="reviewer",
+        )
+        assert kb.block_task(conn, tid, reason="checkpoint reached: approve the preview")
+
+        target = kb.checkpoint_cursor_key(platform="discord", chat_id="123", thread_id="456")
+        cursor, items = kb.unseen_checkpoint_events(conn, target=target, kinds=("blocked",))
+
+        assert cursor > 0
+        assert len(items) == 1
+        event, task = items[0]
+        assert event.kind == "blocked"
+        assert event.task_id == tid
+        assert task is not None
+        assert task.title.startswith("Decision:")
+
+        kb.advance_checkpoint_cursor(conn, target=target, new_cursor=cursor)
+        cursor2, items2 = kb.unseen_checkpoint_events(conn, target=target, kinds=("blocked",))
+        assert cursor2 == cursor
+        assert items2 == []
+
+
+def test_checkpoint_cursor_tracks_promoted_events_and_survives_restart(kanban_home):
+    """Ready checkpoint pings use the same durable cursor as blocked pings."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        checkpoint = kb.create_task(
+            conn,
+            title="Gabriel checkpoint: approve GHL Manager UI",
+            body="Review: /tmp/preview.png\nSafety: local-only/no-send",
+            assignee="gabriel",
+            parents=[parent],
+        )
+        kb.complete_task(conn, parent, result="ready for checkpoint")
+
+        target = kb.checkpoint_cursor_key(platform="discord", chat_id="1502593547122249758")
+        cursor, items = kb.unseen_checkpoint_events(
+            conn, target=target, kinds=("promoted", "blocked"),
+        )
+
+        assert cursor > 0
+        matching = [(event.kind, event.task_id, task) for event, task in items if event.task_id == checkpoint]
+        assert len(matching) == 1
+        assert matching[0][0:2] == ("promoted", checkpoint)
+        assert matching[0][2] is not None
+        assert matching[0][2].assignee == "gabriel"
+
+        kb.advance_checkpoint_cursor(conn, target=target, new_cursor=cursor)
+
+    # Simulate a gateway restart by opening a fresh SQLite connection; the
+    # promoted checkpoint must not be replayed after the cursor is persisted.
+    with kb.connect() as restarted_conn:
+        cursor_after_restart, replayed = kb.unseen_checkpoint_events(
+            restarted_conn, target=target, kinds=("promoted", "blocked"),
+        )
+        assert cursor_after_restart == cursor
+        assert replayed == []
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +238,84 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "todo"
         kb.complete_task(conn, b)
         assert kb.get_task(conn, c).status == "ready"
+
+
+def test_failed_review_does_not_promote_gabriel_checkpoint_until_final_review_passes(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="Review Phase 1 UI", assignee="reviewer")
+        checkpoint = kb.create_task(
+            conn,
+            title="Decision: Gabriel approve Phase 1 UI",
+            body="Gabriel checkpoint before sends",
+            parents=[review],
+        )
+        remediation = kb.create_task(
+            conn,
+            title="Fix review blockers",
+            parents=[review],
+        )
+
+        assert kb.get_task(conn, checkpoint).status == "todo"
+        assert kb.get_task(conn, remediation).status == "todo"
+
+        kb.complete_task(
+            conn,
+            review,
+            summary="review failed; blocker found",
+            metadata={"approved": False, "blockers": ["counts mismatch"]},
+        )
+
+        assert kb.get_task(conn, checkpoint).status == "todo"
+        assert kb.get_task(conn, remediation).status == "ready"
+
+        kb.complete_task(conn, remediation, summary="blocker fixed")
+        assert kb.get_task(conn, checkpoint).status == "todo"
+
+        final_review = kb.create_task(
+            conn,
+            title="Final review after blocker remediation",
+            parents=[remediation],
+        )
+        assert kb.get_task(conn, final_review).status == "ready"
+        kb.complete_task(
+            conn,
+            final_review,
+            summary="final review passes",
+            metadata={"approved": True},
+        )
+
+        assert kb.get_task(conn, checkpoint).status == "ready"
+
+
+def test_failed_review_parent_keeps_new_checkpoint_todo_until_final_review_passes(kanban_home):
+    with kb.connect() as conn:
+        review = kb.create_task(conn, title="Review Phase 1 UI")
+        kb.complete_task(
+            conn,
+            review,
+            summary="not approved",
+            metadata={"approved": False, "blockers": ["layout clipped"]},
+        )
+
+        checkpoint = kb.create_task(
+            conn,
+            title="Gabriel review checkpoint",
+            parents=[review],
+        )
+        assert kb.get_task(conn, checkpoint).status == "todo"
+
+        final_review = kb.create_task(
+            conn,
+            title="Final review",
+            parents=[review],
+        )
+        kb.complete_task(
+            conn,
+            final_review,
+            summary="approved after fix",
+            metadata={"approved": True},
+        )
+        assert kb.get_task(conn, checkpoint).status == "ready"
 
 
 # ---------------------------------------------------------------------------

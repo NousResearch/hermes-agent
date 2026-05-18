@@ -1,0 +1,14 @@
+{
+  "name": "ghl-manager",
+  "label": "GHL Manager",
+  "description": "Mission Control-style local operator console for GoHighLevel approval inboxes, message drafts, evidence, and Blue automation health.",
+  "icon": "ShieldCheck",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/ghl-manager",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

@@ -154,9 +154,14 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Parallel implementation + validation:** one implementer card makes the change while one explorer/researcher card verifies config, docs, or source mapping. A reviewer card can depend on both. Do not make the implementer own unrelated verification just because the user mentioned both in one sentence.
 
+
 **Pipeline with gates:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
 
 **Same-profile queue:** N tasks, all assigned to the same profile, no dependencies between them. Dispatcher serializes — that profile processes them in priority order, accumulating experience in its own memory.
+
+**Blocked review before Gabriel/human checkpoint:** a review that finds blockers must not complete-and-release a downstream checkpoint. If review metadata would be `approved: false` or include blockers, keep the gate closed: block the review (or leave it non-done), create a remediation child for the implementer, then create a final-review child of the remediation. The Gabriel checkpoint depends on the passing final review, not the failed/blocked review. Existing-board remediation recipe: block the prematurely promoted checkpoint, link/create final review as a child of the remediation, and unblock or complete the checkpoint only after final review records `metadata.approved=true`.
+
+**Same-profile queue:** 50 tasks, all assigned to `translator`, no dependencies between them. Dispatcher serializes — translator processes them in priority order, accumulating experience in their own memory.
 
 **Human-in-the-loop:** Any task can `kanban_block()` to wait for input. Dispatcher respawns after `/unblock`. The comment thread carries the full context.
 

@@ -9852,6 +9852,70 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
+    # capsule command
+    # =========================================================================
+    from hermes_cli.task_capsules import DEFAULT_WORD_BUDGET, capsule_command
+
+    capsule_parser = subparsers.add_parser(
+        "capsule",
+        help="Generate a compact task capsule for coding-agent handoffs",
+        description=(
+            "Generate a markdown task capsule containing the goal, constraints, "
+            "relevant files, test commands, and acceptance criteria for a repo."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+    hermes capsule "Add rate limiting" --repo ~/app
+    hermes capsule "Fix login bug" --repo . --goal "Users can log in after password reset"
+    hermes capsule "Refactor CLI" --repo . --word-budget 800 --output /tmp/capsule.md
+""",
+    )
+    capsule_parser.add_argument("title", help="Short task title")
+    capsule_parser.add_argument(
+        "--repo",
+        default=".",
+        help="Repository/project path to inspect (default: current directory)",
+    )
+    capsule_parser.add_argument("--goal", help="Explicit goal text; defaults to title")
+    capsule_parser.add_argument(
+        "--constraints",
+        help="Semicolon- or newline-separated constraints to include",
+    )
+    capsule_parser.add_argument(
+        "--acceptance",
+        help="Semicolon- or newline-separated acceptance criteria to include",
+    )
+    capsule_parser.add_argument(
+        "--non-goals",
+        dest="non_goals",
+        help="Semicolon- or newline-separated non-goals to include",
+    )
+    capsule_parser.add_argument(
+        "--word-budget",
+        type=int,
+        default=DEFAULT_WORD_BUDGET,
+        help=f"Maximum capsule words (default: {DEFAULT_WORD_BUDGET})",
+    )
+    capsule_parser.add_argument(
+        "--max-files",
+        type=int,
+        default=12,
+        help="Maximum relevant files to list (default: 12)",
+    )
+    capsule_parser.add_argument(
+        "--output",
+        "-o",
+        help="Output markdown path (default: $HERMES_HOME/task-capsules/<slug>.md)",
+    )
+    capsule_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite the output path if it already exists",
+    )
+    capsule_parser.set_defaults(func=capsule_command)
+
+    # =========================================================================
     # model command
     # =========================================================================
     model_parser = subparsers.add_parser(

@@ -4211,6 +4211,7 @@ class GatewayRunner:
                     break
                 await asyncio.sleep(1)
 
+
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
@@ -4218,6 +4219,251 @@ class GatewayRunner:
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
+
+    def _kanban_checkpoint_config(self) -> dict:
+        """Return gateway-level Kanban checkpoint notification config."""
+        raw = _load_gateway_config().get("kanban", {}).get("checkpoint_notifications", {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {"enabled": bool(raw)}
+        return raw
+
+    def _kanban_checkpoint_targets(self, platform_enum, board: Optional[str] = None) -> list[dict]:
+        """Resolve configured checkpoint targets for a board.
+
+        Preferred shape::
+
+            kanban.checkpoint_notifications:
+              board_targets:
+                ghl-manager-ui: discord:1502593547122249758
+              default_target: discord:#inbox
+
+        If no explicit target is configured, preserve the old behavior and use
+        each configured platform's home channel.
+        """
+        cfg = self._kanban_checkpoint_config()
+        if cfg.get("enabled", True) is False:
+            return []
+
+        def _as_list(value: Any) -> list[Any]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple)):
+                return list(value)
+            return [value]
+
+        def _target_from_spec(spec: Any, *, fallback_name: Optional[str] = None) -> Optional[dict]:
+            platform_value = None
+            chat_id = None
+            thread_id = ""
+            name = fallback_name or "checkpoint"
+
+            if isinstance(spec, dict):
+                platform_value = spec.get("platform") or spec.get("platform_value")
+                chat_id = spec.get("chat_id") or spec.get("channel") or spec.get("target")
+                thread_id = str(spec.get("thread_id") or "")
+                name = str(spec.get("name") or name)
+                if isinstance(chat_id, str) and ":" in chat_id and not platform_value:
+                    spec = chat_id
+                else:
+                    platform_value = str(platform_value or "discord").strip().lower()
+            if isinstance(spec, str):
+                raw = spec.strip()
+                if not raw:
+                    return None
+                if ":" in raw:
+                    parts = raw.split(":", 2)
+                    platform_value = parts[0].strip().lower()
+                    chat_id = parts[1].strip() if len(parts) > 1 else ""
+                    thread_id = parts[2].strip() if len(parts) > 2 else ""
+                else:
+                    platform_value = raw.lower()
+                    chat_id = None
+            try:
+                plat = platform_enum(str(platform_value or "discord").strip().lower())
+            except Exception:
+                return None
+            if not chat_id:
+                pconf = self.config.platforms.get(plat)
+                home = pconf.home_channel if pconf else None
+                if not home:
+                    return None
+                chat_id = str(home.chat_id)
+                thread_id = str(home.thread_id) if home.thread_id else ""
+                if not fallback_name:
+                    name = home.name
+            return {
+                "platform": plat,
+                "platform_value": plat.value,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id or ""),
+                "name": name,
+            }
+
+        board_targets = cfg.get("board_targets") or cfg.get("boards") or {}
+        if board and isinstance(board_targets, dict) and board in board_targets:
+            targets = [
+                t for t in (
+                    _target_from_spec(spec, fallback_name=board)
+                    for spec in _as_list(board_targets.get(board))
+                )
+                if t
+            ]
+            if targets:
+                return targets
+
+        default_specs = _as_list(cfg.get("default_target")) + _as_list(cfg.get("default_targets"))
+        targets = [t for t in (_target_from_spec(spec) for spec in default_specs) if t]
+        if targets:
+            return targets
+
+        platforms = cfg.get("platforms") or ["discord"]
+        return [
+            t for t in (
+                _target_from_spec(str(raw).strip().lower())
+                for raw in _as_list(platforms)
+            )
+            if t
+        ]
+
+    def _is_kanban_checkpoint_event(self, task: Any, event: Any) -> bool:
+        """Heuristic for Kanban events that should ping a human checkpoint."""
+        if not event or getattr(event, "kind", None) not in {"blocked", "promoted"}:
+            return False
+        if task and str(getattr(task, "assignee", "") or "").strip().lower() == "gabriel":
+            return True
+        cfg = self._kanban_checkpoint_config()
+        keywords = cfg.get("keywords") or [
+            "checkpoint", "review", "approval", "approve", "decision",
+            "human review", "gabriel review",
+        ]
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        payload = getattr(event, "payload", None) or {}
+        haystack = "\n".join(str(x or "") for x in [
+            getattr(task, "title", "") if task else "",
+            getattr(task, "body", "") if task else "",
+            payload.get("reason", "") if isinstance(payload, dict) else "",
+        ]).lower()
+        return any(str(k).strip().lower() in haystack for k in keywords if str(k).strip())
+
+    @staticmethod
+    def _extract_review_artifact(text: str) -> str:
+        """Pull a likely URL/path/artifact line out of checkpoint text."""
+        if not text:
+            return "Kanban card"
+        url = re.search(r"https?://\S+", text)
+        if url:
+            return url.group(0).rstrip(".,)")
+        path = re.search(r"(?:^|\s)(/[\w .~+@%/=-]+)", text)
+        if path:
+            return path.group(1).strip().rstrip(".,)")
+        for line in text.splitlines():
+            if line.lower().strip().startswith(("review:", "artifact:", "preview:", "path:", "url:")):
+                return line.split(":", 1)[1].strip() or "Kanban card"
+        return "Kanban card"
+
+    @staticmethod
+    def _extract_safety_line(text: str) -> str:
+        for line in (text or "").splitlines():
+            if line.lower().strip().startswith("safety:"):
+                return line.split(":", 1)[1].strip() or "not specified"
+        return "not specified"
+
+    def _format_kanban_checkpoint_message(self, *, board: str, task: Any, event: Any) -> str:
+        """Format the standard human checkpoint packet for Discord/etc."""
+        payload = getattr(event, "payload", None) or {}
+        reason = str(payload.get("reason", "") if isinstance(payload, dict) else "").strip()
+        title = (getattr(task, "title", None) or getattr(event, "task_id", "checkpoint"))[:160]
+        body = getattr(task, "body", "") if task else ""
+        combined = "\n".join([title, reason, body or ""])
+        decision = reason.splitlines()[0][:220] if reason else "Review this blocked checkpoint and reply with approve / needs changes."
+        card = f"{board}/{getattr(event, 'task_id', '')}"
+        assignee = getattr(task, "assignee", None) if task else None
+        assignee_line = f"\nAssignee: @{assignee}" if assignee else ""
+        return (
+            f"Gabriel review needed: {title}\n"
+            f"Review: {self._extract_review_artifact(combined)}\n"
+            f"Card: {card}\n"
+            f"Decision needed: {decision}\n"
+            f"Safety: {self._extract_safety_line(combined)}"
+            f"{assignee_line}"
+        )
+
+    def _collect_kanban_notifier_deliveries(self, platform_enum, kb_module) -> dict:
+        """Collect regular task-subscription and human checkpoint deliveries.
+
+        This is synchronous so callers can run it via ``asyncio.to_thread``;
+        tests can also call it directly to verify board routing and cursor
+        behavior without starting the infinite gateway watcher loop.
+        """
+        deliveries: list[dict] = []
+        checkpoint_deliveries: list[dict] = []
+        terminal_kinds = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        try:
+            boards = kb_module.list_boards(include_archived=False)
+        except Exception:
+            boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+        for board_meta in boards:
+            slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            try:
+                conn = kb_module.connect(board=slug)
+            except Exception:
+                continue
+            try:
+                try:
+                    kb_module.init_db(board=slug)  # idempotent; handles first-run
+                except Exception:
+                    pass
+                subs = kb_module.list_notify_subs(conn)
+                for sub in subs:
+                    cursor, events = kb_module.unseen_events_for_sub(
+                        conn,
+                        task_id=sub["task_id"],
+                        platform=sub["platform"],
+                        chat_id=sub["chat_id"],
+                        thread_id=sub.get("thread_id") or "",
+                        kinds=terminal_kinds,
+                    )
+                    if not events:
+                        continue
+                    task = kb_module.get_task(conn, sub["task_id"])
+                    deliveries.append({
+                        "sub": sub,
+                        "cursor": cursor,
+                        "events": events,
+                        "task": task,
+                        "board": slug,
+                    })
+                checkpoint_targets = self._kanban_checkpoint_targets(platform_enum, board=slug)
+                for target in checkpoint_targets:
+                    target_key = kb_module.checkpoint_cursor_key(
+                        platform=target["platform_value"],
+                        chat_id=target["chat_id"],
+                        thread_id=target.get("thread_id") or "",
+                    )
+                    cursor, items = kb_module.unseen_checkpoint_events(
+                        conn,
+                        target=target_key,
+                        kinds=("promoted", "blocked"),
+                    )
+                    if not items:
+                        continue
+                    matched = []
+                    for ev, task in items:
+                        if self._is_kanban_checkpoint_event(task, ev):
+                            matched.append({"event": ev, "task": task})
+                    checkpoint_deliveries.append({
+                        "target": target,
+                        "target_key": target_key,
+                        "cursor": cursor,
+                        "items": matched,
+                        "board": slug,
+                    })
+            finally:
+                conn.close()
+        return {"subs": deliveries, "checkpoints": checkpoint_deliveries}
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -4277,104 +4523,41 @@ class GatewayRunner:
 
         while self._running:
             try:
-                def _collect():
-                    deliveries: list[dict] = []
-                    active_platforms = {
-                        getattr(platform, "value", str(platform)).lower()
-                        for platform in self.adapters.keys()
-                    }
-                    if not active_platforms:
-                        logger.debug("kanban notifier: no connected adapters; skipping tick")
-                        return deliveries
 
-                    # Enumerate every board on disk, but poll each resolved DB
-                    # path once. Multiple slugs can point at the same DB when
-                    # HERMES_KANBAN_DB pins the board path; without this guard
-                    # one gateway could collect the same subscription/event
-                    # more than once before advancing the cursor.
+                collected = await asyncio.to_thread(
+                    self._collect_kanban_notifier_deliveries,
+                    _Platform,
+                    _kb,
+                )
+                deliveries = collected.get("subs", []) if isinstance(collected, dict) else collected
+                checkpoint_deliveries = collected.get("checkpoints", []) if isinstance(collected, dict) else []
+                for d in checkpoint_deliveries:
+                    target = d["target"]
+                    adapter = self.adapters.get(target["platform"])
+                    if adapter is None:
+                        continue
+                    metadata: dict[str, Any] = {}
+                    if target.get("thread_id"):
+                        metadata["thread_id"] = target["thread_id"]
                     try:
-                        boards = _kb.list_boards(include_archived=False)
-                    except Exception:
-                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-                    seen_db_paths: set[str] = set()
-                    for board_meta in boards:
-                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
-                        db_path = board_meta.get("db_path")
-                        try:
-                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
-                        except Exception:
-                            resolved_db_path = f"slug:{slug}"
-                        if resolved_db_path in seen_db_paths:
-                            logger.debug(
-                                "kanban notifier: skipping duplicate board slug %s for DB %s",
-                                slug, resolved_db_path,
+                        for item in d.get("items", []):
+                            msg = self._format_kanban_checkpoint_message(
+                                board=d.get("board") or _kb.DEFAULT_BOARD,
+                                task=item.get("task"),
+                                event=item.get("event"),
                             )
-                            continue
-                        seen_db_paths.add(resolved_db_path)
-                        try:
-                            conn = _kb.connect(board=slug)
-                        except Exception as exc:
-                            logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
-                            continue
-                        try:
-                            # `connect()` runs the schema + idempotent migration
-                            # on first open per process, so an explicit
-                            # `init_db()` here would be redundant. Worse:
-                            # `init_db()` deliberately busts the per-process
-                            # cache and re-runs the migration on a *second*
-                            # connection, which races the first and used to
-                            # log a benign but noisy `duplicate column name`
-                            # traceback (and intermittent "database is locked"
-                            # — issue #21378) on every gateway start against
-                            # a legacy DB. `_add_column_if_missing` now
-                            # tolerates that race, but we still skip the
-                            # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(conn)
-                            if not subs:
-                                logger.debug("kanban notifier: board %s has no subscriptions", slug)
-                            for sub in subs:
-                                owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
-                                    )
-                                    continue
-                                platform = (sub.get("platform") or "").lower()
-                                if platform not in active_platforms:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s on %s skipped; adapter not connected",
-                                        sub.get("task_id"), platform or "<missing>",
-                                    )
-                                    continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
-                                    conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
-                                )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
-                                logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
-                                )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
-                        finally:
-                            conn.close()
-                    return deliveries
-
-                deliveries = await asyncio.to_thread(_collect)
+                            await adapter.send(target["chat_id"], msg, metadata=metadata)
+                        await asyncio.to_thread(
+                            self._kanban_checkpoint_advance,
+                            d["target_key"],
+                            d["cursor"],
+                            d.get("board"),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "kanban checkpoint notifier: send failed for %s on %s: %s",
+                            d.get("target_key"), target.get("platform_value"), exc,
+                        )
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -4574,6 +4757,17 @@ class GatewayRunner:
                 thread_id=sub.get("thread_id") or "",
                 new_cursor=cursor,
             )
+        finally:
+            conn.close()
+
+    def _kanban_checkpoint_advance(
+        self, target_key: str, cursor: int, board: Optional[str] = None,
+    ) -> None:
+        """Sync helper: advance board-wide checkpoint notification cursor."""
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.advance_checkpoint_cursor(conn, target=target_key, new_cursor=cursor)
         finally:
             conn.close()
 
@@ -10874,7 +11068,10 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            base_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = self._resolve_channel_toolsets(
+                user_config, platform_key, source, base_toolsets
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -14068,6 +14265,58 @@ class GatewayRunner:
         return out
 
     @staticmethod
+    def _resolve_channel_toolsets(user_config: dict, platform_key: str, source, base_toolsets: list) -> list:
+        """Apply optional per-channel toolset additions/removals.
+
+        Config format:
+            discord:
+              channel_toolsets:
+                "1500367666559582249": ["ghl_blue_crew", "ghl_solar_renew"]
+                "150123": {add: ["foo"], remove: ["bar"]}
+
+        The base platform toolset remains authoritative; channel entries are a
+        narrow overlay so general Discord can opt out of global MCP while Blue
+        channels add back only their required GHL servers.
+        """
+        resolved = set(base_toolsets or [])
+        platform_cfg = (user_config or {}).get(platform_key) or {}
+        if not isinstance(platform_cfg, dict):
+            return sorted(resolved)
+        bindings = platform_cfg.get("channel_toolsets") or {}
+        if not isinstance(bindings, dict):
+            return sorted(resolved)
+
+        ids = []
+        for attr in ("chat_id", "thread_id", "parent_chat_id", "chat_id_alt"):
+            val = getattr(source, attr, None)
+            if val:
+                ids.append(str(val))
+        ids.append("*")
+
+        def _as_list(value):
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, (list, tuple, set)):
+                return [str(v) for v in value if str(v).strip()]
+            return []
+
+        for cid in ids:
+            entry = bindings.get(cid)
+            if entry is None:
+                continue
+            if isinstance(entry, dict):
+                for name in _as_list(entry.get("remove")):
+                    resolved.discard(name)
+                for name in _as_list(entry.get("add")):
+                    resolved.add(name)
+            else:
+                for name in _as_list(entry):
+                    resolved.add(name)
+        return sorted(resolved)
+
+    @staticmethod
     def _agent_config_signature(
         model: str,
         runtime: dict,
@@ -14837,7 +15086,10 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        base_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._resolve_channel_toolsets(
+            user_config, platform_key, source, base_toolsets
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

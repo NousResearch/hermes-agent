@@ -168,6 +168,8 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 
 **Task state can change between dispatch and your startup.** Between when the dispatcher claimed and when your process actually booted, the task may have been blocked, reassigned, or archived. Always `kanban_show` first. If it reports `blocked` or `archived`, stop — you shouldn't be running.
 
+**Failed reviews do not release Gabriel/human checkpoints.** If your review finds blockers, do not complete in a way that lets a downstream checkpoint treat the review as passed. Use the block/remediation/final-review gate: block or keep the review non-done, create a remediation child for the implementer, then require a final-review child of the remediation to pass with `metadata.approved=true`. If you inherit an existing board where a checkpoint was prematurely promoted from an `approved:false` review, block that checkpoint, create/link the final review under the remediation, and unblock/complete the checkpoint only after final review passes.
+
 **Workspace may have stale artifacts.** Especially `dir:` and `worktree` workspaces can have files from previous runs. Read the comment thread — it usually explains why you're running again and what state the workspace is in.
 
 **Don't rely on the CLI when the guidance is available.** The `kanban_*` tools work across all terminal backends (Docker, Modal, SSH). `hermes kanban <verb>` from your terminal tool will fail in containerized backends because the CLI isn't installed there. When in doubt, use the tool.

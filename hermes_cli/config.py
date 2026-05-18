@@ -707,6 +707,24 @@ DEFAULT_CONFIG = {
             # Rehydrate tab_id from Camofox before creating a new tab.
             "adopt_existing_tab": False,
         },
+        "guarded_workflows": {
+            "enabled": True,
+            # Strict host allowlist for browser_inspect_page. Empty means no
+            # guarded workflow URLs are allowed until the user opts in.
+            # Supports exact domains ("example.com") and wildcard subdomains
+            # ("*.example.com").
+            "allowlisted_domains": [],
+            "action_log_dir": "",  # Empty -> HERMES_HOME/browser_workflows/
+            "dry_run": False,
+            # Form submits / purchase / delete / payment-style browser actions
+            # require live user approval before browser_click/browser_press run.
+            "approval_required": True,
+            "sensitive_action_keywords": [
+                "submit", "purchase", "buy", "delete", "remove", "destroy",
+                "confirm", "checkout", "pay", "payment", "place order", "book",
+                "send", "save", "archive", "cancel subscription",
+            ],
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -1413,7 +1431,7 @@ DEFAULT_CONFIG = {
     #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
-        "timeout": 60,
+        "timeout": 900,
         "cron_mode": "deny",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
@@ -1515,6 +1533,7 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+
         # Auto-block after this many consecutive non-success attempts for the
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
@@ -1543,6 +1562,26 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+
+        # Gateway-level human checkpoint pings. When a Kanban task becomes
+        # ready via promotion or blocks with checkpoint/review/approval/decision
+        # language (or is assigned to gabriel), the gateway sends one structured
+        # packet to the board-specific target, default target, or platform home
+        # channel even if nobody explicitly subscribed to that task.
+        "checkpoint_notifications": {
+            "enabled": True,
+            "platforms": ["discord"],
+            # Optional explicit routing. Values use delivery-target syntax such
+            # as "discord:#inbox", "discord:123", or "discord:123:456".
+            "default_target": "discord:#inbox",
+            "board_targets": {
+                "ghl-manager-ui": "discord:1502593547122249758",
+            },
+            "keywords": [
+                "checkpoint", "review", "approval", "approve",
+                "decision", "human review", "gabriel review",
+            ],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

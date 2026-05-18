@@ -1883,7 +1883,9 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
+                    "status": "blocked",
+                    "approval_outcome": approval.get("approval_outcome"),
+                    "description": approval.get("description", desc),
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):

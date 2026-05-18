@@ -67,16 +67,35 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     raising, so one bad snippet can't wreck the whole skill message.
     """
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             ["bash", "-c", command],
             cwd=str(cwd) if cwd else None,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=max(1, int(timeout)),
-            check=False,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return f"[inline-shell timeout after {timeout}s: {command}]"
+        try:
+            stdout, stderr = proc.communicate(timeout=max(1, int(timeout)))
+        except subprocess.TimeoutExpired:
+            try:
+                import os
+                import signal
+
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
+            return f"[inline-shell timeout after {timeout}s: {command}]"
+        completed = subprocess.CompletedProcess(
+            ["bash", "-c", command], proc.returncode, stdout, stderr
+        )
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
     except Exception as exc:

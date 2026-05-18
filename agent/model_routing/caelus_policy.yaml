@@ -1,0 +1,136 @@
+version: 1
+profile: caelus
+modes:
+  dry_run_default: true
+  require_reason_for_strong_model: true
+  forbid_free_final_authority: true
+
+tiers:
+  F:
+    name: Free Models
+    cost_class: free
+    final_authority_allowed: false
+  B:
+    name: Paid Budget Models
+    cost_class: budget
+    final_authority_allowed: false
+  S:
+    name: Paid Strong Models
+    cost_class: strong
+    final_authority_allowed: true
+
+models:
+  openai/gpt-oss-120b:free:
+    tier: F
+    fallback: deepseek/deepseek-v4-flash
+  qwen/qwen3-coder:free:
+    tier: F
+    fallback: qwen/qwen3-coder-next
+  deepseek/deepseek-v4-flash:free:
+    tier: F
+    fallback: deepseek/deepseek-v4-flash
+  google/gemma-4-31b-it:free:
+    tier: F
+    fallback: qwen/qwen3.6-plus
+  google/gemma-4-26b-a4b-it:free:
+    tier: F
+    fallback: qwen/qwen3.6-plus
+  minimax/minimax-m2.5:free:
+    tier: F
+    fallback: minimax/minimax-m2.7
+  nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free:
+    tier: F
+    fallback: qwen/qwen3.6-flash
+  openrouter/free:
+    tier: F
+    governed_default_allowed: false
+    fallback: deepseek/deepseek-v4-flash
+  deepseek/deepseek-v4-flash:
+    tier: B
+    fallback: qwen/qwen3.6-flash
+  qwen/qwen3.6-flash:
+    tier: B
+    fallback: qwen/qwen3.6-plus
+  qwen/qwen3-coder-next:
+    tier: B
+    fallback: moonshotai/kimi-k2.6
+  minimax/minimax-m2.7:
+    tier: B
+    fallback: qwen/qwen3.6-plus
+  qwen/qwen3.6-plus:
+    tier: S
+    fallback: deepseek/deepseek-v4-pro
+  moonshotai/kimi-k2.6:
+    tier: S
+    fallback: qwen/qwen3-coder-next
+  deepseek/deepseek-v4-pro:
+    tier: S
+    fallback: qwen/qwen3.6-plus
+
+task_routes:
+  daily_ops:
+    model: deepseek/deepseek-v4-flash
+    reason: daily Hermes operations need repeatable paid-budget reliability without strong-model spend.
+  summaries:
+    model: deepseek/deepseek-v4-flash:free
+    reason: low-risk first-pass summaries may use free models when not final authority.
+  extraction:
+    model: deepseek/deepseek-v4-flash:free
+    reason: low-risk first-pass extraction may use free models when not final authority.
+  strategy:
+    model: qwen/qwen3.6-plus
+    escalation_reason: Strategy is a high-leverage business decision and may become reusable source-of-truth guidance.
+  client_facing_draft:
+    model: qwen/qwen3.6-plus
+    escalation_reason: client-facing work affects Alan's reputation and cannot use free models as final authority.
+  security_privacy_review:
+    model: qwen/qwen3.6-plus
+    escalation_reason: Security/privacy judgment is high-risk and requires paid strong review.
+  code_explanation:
+    model: qwen/qwen3-coder:free
+    reason: Code explanation is low-risk and reversible when it is not final authority or implementation.
+  coding_implementation_planning:
+    model: qwen/qwen3-coder-next
+    reason: Bounded implementation planning needs a budget coding model and must not use free final authority.
+  agentic_coding_orchestration:
+    model: moonshotai/kimi-k2.6
+    escalation_reason: Agentic coding orchestration is complex technical work requiring strong CTO-level reasoning.
+  office_workflow:
+    model: minimax/minimax-m2.7
+    reason: Office automation workflows are best routed to the paid budget office-workflow specialist.
+  financial_modeling:
+    model: qwen/qwen3.6-plus
+    escalation_reason: Financial modeling and offer economics require strong reasoning and human approval.
+  legal_contract_drafting:
+    model: qwen/qwen3.6-plus
+    escalation_reason: Legal-adjacent drafting requires strong reasoning and human/legal review.
+
+agent_routes:
+  Hermes: qwen/qwen3.6-plus
+  Chief of Staff: qwen/qwen3.6-plus
+  COO: deepseek/deepseek-v4-flash
+  Operations Analyst: deepseek/deepseek-v4-flash
+  Documentation Quality Specialist: qwen/qwen3.6-plus
+  CTO: moonshotai/kimi-k2.6
+  Senior Engineering Manager: moonshotai/kimi-k2.6
+  Front-End Engineer: qwen/qwen3-coder-next
+  Back-End Engineer: qwen/qwen3-coder-next
+  Database Engineer: qwen/qwen3-coder-next
+  QA/Test Engineer: deepseek/deepseek-v4-flash
+  CPO: qwen/qwen3.6-plus
+  CMO: qwen/qwen3.6-plus
+  CRO: qwen/qwen3.6-plus
+  CFO: qwen/qwen3.6-plus
+  CISO: qwen/qwen3.6-plus
+  Legal / Contract Advisor: qwen/qwen3.6-plus
+  Advisory Board: qwen/qwen3.6-plus
+
+fallbacks:
+  unknown_task: deepseek/deepseek-v4-flash
+
+forbidden:
+  governed_default_models:
+    - openrouter/free
+  free_final_authority: true
+  free_client_facing_final: true
+  free_sensitive_final: true

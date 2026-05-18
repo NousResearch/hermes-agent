@@ -9734,7 +9734,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
-        "send", "sessions", "setup",
+        "routing", "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10241,6 +10241,12 @@ def main():
         "into an existing manifest manually).",
     )
     slack_parser.set_defaults(func=cmd_slack)
+
+    # =========================================================================
+    # routing command — dry-run policy router previews
+    # =========================================================================
+    from hermes_cli.model_routing_cmd import register_routing_subparser
+    register_routing_subparser(subparsers)
 
     # =========================================================================
     # send command — pipe shell-script output to any configured platform

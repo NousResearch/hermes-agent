@@ -1382,13 +1382,45 @@ class PluginManager:
 # ---------------------------------------------------------------------------
 
 _plugin_manager: Optional[PluginManager] = None
+_plugin_manager_home: Optional[Path] = None
+_plugin_manager_obj_id: Optional[int] = None
+
+
+def _plugin_home_key() -> Path:
+    """Return the profile/home key for process-global plugin state.
+
+    Plugins are discovered from ``get_hermes_home() / "plugins"`` and some
+    plugins (notably context engines such as hermes-lcm) capture that home at
+    registration time for profile-scoped storage.  A long-lived process can
+    temporarily switch ``HERMES_HOME`` while serving another profile, so the
+    singleton manager must be scoped to the active Hermes home instead of being
+    one process-wide cache.
+    """
+    try:
+        return get_hermes_home().expanduser().resolve()
+    except Exception:
+        return get_hermes_home().expanduser()
 
 
 def get_plugin_manager() -> PluginManager:
-    """Return (and lazily create) the global PluginManager singleton."""
-    global _plugin_manager
-    if _plugin_manager is None:
+    """Return the plugin manager for the active Hermes profile/home."""
+    global _plugin_manager, _plugin_manager_home, _plugin_manager_obj_id
+    current_home = _plugin_home_key()
+    current_obj_id = id(_plugin_manager) if _plugin_manager is not None else None
+
+    # Tests and embedders historically monkeypatch ``_plugin_manager``
+    # directly.  If that happened, adopt the injected manager for the current
+    # home instead of throwing it away because our profile-scope bookkeeping is
+    # stale.
+    if _plugin_manager is not None and current_obj_id != _plugin_manager_obj_id:
+        _plugin_manager_home = current_home
+        _plugin_manager_obj_id = current_obj_id
+        return _plugin_manager
+
+    if _plugin_manager is None or _plugin_manager_home != current_home:
         _plugin_manager = PluginManager()
+        _plugin_manager_home = current_home
+        _plugin_manager_obj_id = id(_plugin_manager)
     return _plugin_manager
 
 

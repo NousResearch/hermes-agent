@@ -1207,6 +1207,64 @@ class TestPluginCommands:
             assert engine is not None
             assert engine.name == "stub-engine"
 
+    def test_plugin_context_engine_is_scoped_by_hermes_home(self, tmp_path, monkeypatch):
+        """Profile switches must not reuse a context engine from another home."""
+        import hermes_cli.plugins as plugins_mod
+
+        def write_engine_plugin(home: Path) -> None:
+            plugin_dir = home / "plugins" / "engine-plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.safe_dump({
+                    "name": "engine-plugin",
+                    "version": "0.1.0",
+                    "description": "Context engine plugin for profile-scope test",
+                })
+            )
+            (plugin_dir / "__init__.py").write_text(
+                "import os\n"
+                "from agent.context_engine import ContextEngine\n\n"
+                "class HomeEngine(ContextEngine):\n"
+                "    def __init__(self):\n"
+                "        self.home = os.environ.get('HERMES_HOME')\n\n"
+                "    @property\n"
+                "    def name(self):\n"
+                "        return 'home-engine'\n\n"
+                "    def update_from_response(self, usage):\n"
+                "        return None\n\n"
+                "    def should_compress(self, prompt_tokens=None):\n"
+                "        return False\n\n"
+                "    def compress(self, messages, current_tokens=None, focus_topic=None):\n"
+                "        return messages\n\n"
+                "def register(ctx):\n"
+                "    ctx.register_context_engine(HomeEngine())\n"
+            )
+            (home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["engine-plugin"]}})
+            )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        write_engine_plugin(home_a)
+        write_engine_plugin(home_b)
+
+        with (
+            patch.object(plugins_mod, "_plugin_manager", None),
+            patch.object(plugins_mod, "_plugin_manager_home", None),
+            patch.object(plugins_mod, "_plugin_manager_obj_id", None),
+        ):
+            monkeypatch.setenv("HERMES_HOME", str(home_a))
+            engine_a = plugins_mod.get_plugin_context_engine()
+
+            monkeypatch.setenv("HERMES_HOME", str(home_b))
+            engine_b = plugins_mod.get_plugin_context_engine()
+
+        assert engine_a is not None
+        assert engine_b is not None
+        assert engine_a is not engine_b
+        assert engine_a.home == str(home_a)
+        assert engine_b.home == str(home_b)
+
     def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
         """Commands registered during discover_and_load() are tracked on LoadedPlugin."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

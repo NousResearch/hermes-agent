@@ -82,6 +82,108 @@ def _ra():
     return run_agent
 
 
+def _restore_or_build_system_prompt(agent, system_message, conversation_history):
+    """Restore the cached system prompt from the session DB or build it fresh.
+
+    Mutates ``agent._cached_system_prompt`` and persists a freshly-built
+    prompt back to the session DB on first build.  Extracted from
+    ``run_conversation`` so the prefix-cache restore path can be tested in
+    isolation.
+
+    Three-way state distinction for the stored row, surfaced via logs so
+    silent prefix-cache misses are visible in ``agent.log``:
+
+      * ``missing`` — no session row yet (legitimate first turn).
+      * ``null``   — row exists, ``system_prompt`` column is NULL.
+        Legacy session predating system-prompt persistence, or a migration
+        leftover.  Warns when ``conversation_history`` is non-empty.
+      * ``empty``  — row exists, ``system_prompt`` column is the empty
+        string.  Indicates a previous-turn write that ran but stored
+        nothing (silent persistence bug).  Always warns.
+      * ``present`` — row exists with a usable prompt → reused verbatim.
+
+    Read or write failures against the session DB log at WARNING (not
+    DEBUG) so persistent issues (disk full, schema drift, lock contention)
+    surface without needing verbose mode.  This used to be a debug-level
+    log that silently broke prefix-cache reuse on the gateway path
+    (which constructs a fresh ``AIAgent`` per turn and depends on this
+    DB roundtrip).
+    """
+    stored_prompt = None
+    stored_state = "missing"
+    if conversation_history and agent._session_db:
+        try:
+            session_row = agent._session_db.get_session(agent.session_id)
+            if session_row is not None:
+                raw_prompt = session_row.get("system_prompt")
+                if raw_prompt is None:
+                    stored_state = "null"
+                elif raw_prompt == "":
+                    stored_state = "empty"
+                else:
+                    stored_prompt = raw_prompt
+                    stored_state = "present"
+        except Exception as exc:
+            logger.warning(
+                "Session DB get_session failed for system-prompt restore "
+                "(session=%s): %s. Falling back to fresh build — prefix "
+                "cache will miss for this turn.",
+                agent.session_id, exc,
+            )
+
+    if stored_prompt:
+        # Continuing session — reuse the exact system prompt from the
+        # previous turn so the Anthropic cache prefix matches.
+        agent._cached_system_prompt = stored_prompt
+        return
+
+    if conversation_history and stored_state in ("null", "empty"):
+        # Continuing session whose stored prompt is unusable.  The
+        # previous turn's write either never happened or wrote an empty
+        # string — either way every turn now rebuilds and the prefix
+        # cache misses every time.
+        logger.warning(
+            "Stored system prompt for session %s is %s; rebuilding "
+            "from scratch this turn. Prefix cache will miss until "
+            "the rebuild persists. Investigate the previous turn's "
+            "update_system_prompt write path.",
+            agent.session_id, stored_state,
+        )
+
+    # First turn of a new session (or recovering from a broken stored
+    # prompt) — build from scratch.
+    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+
+    # Plugin hook: on_session_start — fired once when a brand-new
+    # session is created (not on continuation).  Plugins can use this
+    # to initialise session-scoped state (e.g. warm a memory cache).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_start",
+            session_id=agent.session_id,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except Exception as exc:
+        logger.warning("on_session_start hook failed: %s", exc)
+
+    # Persist the system prompt snapshot in SQLite.  Failure here used
+    # to log at DEBUG, which silently broke prefix-cache reuse on the
+    # gateway path (fresh AIAgent per turn → reads from this row every
+    # subsequent turn).
+    if agent._session_db:
+        try:
+            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+        except Exception as exc:
+            logger.warning(
+                "Session DB update_system_prompt failed for session %s: "
+                "%s. Subsequent turns will rebuild the system prompt and "
+                "miss the prefix cache.",
+                agent.session_id, exc,
+            )
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -313,43 +415,7 @@ def run_conversation(
     # producing a different system prompt and breaking the Anthropic
     # prefix cache.
     if agent._cached_system_prompt is None:
-        stored_prompt = None
-        if conversation_history and agent._session_db:
-            try:
-                session_row = agent._session_db.get_session(agent.session_id)
-                if session_row:
-                    stored_prompt = session_row.get("system_prompt") or None
-            except Exception:
-                pass  # Fall through to build fresh
-
-        if stored_prompt:
-            # Continuing session — reuse the exact system prompt from
-            # the previous turn so the Anthropic cache prefix matches.
-            agent._cached_system_prompt = stored_prompt
-        else:
-            # First turn of a new session — build from scratch.
-            agent._cached_system_prompt = agent._build_system_prompt(system_message)
-            # Plugin hook: on_session_start
-            # Fired once when a brand-new session is created (not on
-            # continuation).  Plugins can use this to initialise
-            # session-scoped state (e.g. warm a memory cache).
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "on_session_start",
-                    session_id=agent.session_id,
-                    model=agent.model,
-                    platform=getattr(agent, "platform", None) or "",
-                )
-            except Exception as exc:
-                logger.warning("on_session_start hook failed: %s", exc)
-
-            # Store the system prompt snapshot in SQLite
-            if agent._session_db:
-                try:
-                    agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
-                except Exception as e:
-                    logger.debug("Session DB update_system_prompt failed: %s", e)
+        _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     active_system_prompt = agent._cached_system_prompt
 

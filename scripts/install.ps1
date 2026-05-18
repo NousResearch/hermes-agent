@@ -161,7 +161,7 @@ function Install-AgentBrowser {
     $npm = Resolve-NpmCmd
     if (-not $npm) {
         Write-Err "npm not found -- install Node.js first"
-        exit 1
+        throw "npm not found"
     }
 
     Write-Info "Installing agent-browser via npm -g --prefix..."
@@ -179,7 +179,7 @@ function Install-AgentBrowser {
         $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
-        exit 1
+        throw "npm install failed"
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
@@ -2153,8 +2153,10 @@ function Invoke-EnsureMode {
         $dep = $dep.Trim()
         switch ($dep) {
             "node" {
-                if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-                    Test-Node
+                [void](Test-Node)
+                if (-not $script:HasNode) {
+                    Write-Err "Node.js could not be installed"
+                    exit 1
                 }
             }
             "browser" {

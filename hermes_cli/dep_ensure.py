@@ -103,13 +103,8 @@ def _find_install_script(
 def ensure_dependency(
     dep: str,
     interactive: bool = True,
-    env_extra: dict[str, str] | None = None,
 ) -> bool:
-    """Ensure a non-Python dependency is available. Returns True if available.
-
-    ``env_extra`` is merged into the subprocess environment — use it to forward
-    flags like ``SKIP_BROWSER=true`` to the install script.
-    """
+    """Ensure a non-Python dependency is available. Returns True if available."""
     check = _DEP_CHECKS.get(dep)
     if check is None:
         # Unknown dep — don't silently forward to install script.
@@ -152,8 +147,6 @@ def ensure_dependency(
         cmd = ["bash", str(script), "--ensure", dep]
 
     run_env = {**os.environ, "IS_INTERACTIVE": "false"}
-    if env_extra:
-        run_env.update(env_extra)
     result = subprocess.run(
         cmd,
         env=run_env,

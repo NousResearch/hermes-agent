@@ -15,6 +15,7 @@ import pytest
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -26,15 +27,26 @@ def test_registry_lists_nous():
     assert "nous" in ADAPTERS
 
 
+def test_registry_lists_xai():
+    assert "xai" in ADAPTERS
+
+
 def test_get_adapter_returns_instance():
     adapter = get_adapter("nous")
     assert isinstance(adapter, NousPortalAdapter)
     assert isinstance(adapter, UpstreamAdapter)
 
 
+def test_get_adapter_returns_xai_instance():
+    adapter = get_adapter("xai")
+    assert isinstance(adapter, XAIGrokAdapter)
+    assert isinstance(adapter, UpstreamAdapter)
+
+
 def test_get_adapter_case_insensitive():
     assert isinstance(get_adapter("NOUS"), NousPortalAdapter)
     assert isinstance(get_adapter("  Nous  "), NousPortalAdapter)
+    assert isinstance(get_adapter("XAI"), XAIGrokAdapter)
 
 
 def test_get_adapter_unknown_provider_raises():
@@ -325,6 +337,117 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
     assert len(call_log) == 3
     assert not overlap_detected.is_set(), "refresh calls overlapped — lock is broken"
     assert all(r.startswith("key-") for r in results)
+
+
+# ---------------------------------------------------------------------------
+# XAIGrokAdapter
+# ---------------------------------------------------------------------------
+
+
+def _write_xai_pool_entry(
+    hermes_home: Path,
+    *,
+    access_token: str = "xai-access-token",
+    refresh_token: str = "xai-refresh-token",
+    base_url: str = "https://api.x.ai/v1",
+    source: str = "manual:xai_pkce",
+) -> Path:
+    """Write an xai-oauth pool entry into a hermetic HERMES_HOME."""
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [
+                {
+                    "id": "xai123",
+                    "label": "xai-test",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": source,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "base_url": base_url,
+                }
+            ]
+        },
+    }))
+    return auth_path
+
+
+def test_xai_adapter_metadata():
+    adapter = XAIGrokAdapter()
+    assert adapter.name == "xai"
+    assert adapter.display_name == "xAI Grok OAuth"
+    assert "/responses" in adapter.allowed_paths
+    assert "/chat/completions" in adapter.allowed_paths
+    assert "/models" in adapter.allowed_paths
+
+
+def test_xai_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {},
+    }))
+    assert not XAIGrokAdapter().is_authenticated()
+
+
+def test_xai_adapter_authenticated_with_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path)
+    assert XAIGrokAdapter().is_authenticated()
+
+
+def test_xai_adapter_get_credential_uses_oauth_pool(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(
+        tmp_path,
+        access_token="pool-access-token",
+        base_url="https://api.x.ai/v1/",
+    )
+
+    cred = XAIGrokAdapter().get_credential()
+
+    assert cred.bearer == "pool-access-token"
+    assert cred.base_url == "https://api.x.ai/v1"
+    assert cred.token_type == "Bearer"
+
+
+def test_xai_adapter_get_credential_defaults_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path, base_url="")
+
+    cred = XAIGrokAdapter().get_credential()
+
+    assert cred.base_url == "https://api.x.ai/v1"
+
+
+def test_xai_adapter_retry_refreshes_current_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path, access_token="old-access-token")
+
+    def fake_refresh(access_token, refresh_token, **kwargs):
+        assert access_token == "old-access-token"
+        assert refresh_token == "xai-refresh-token"
+        return {
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "last_refresh": "2026-05-19T00:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", fake_refresh)
+
+    adapter = XAIGrokAdapter()
+    failed = adapter.get_credential()
+    retry = adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=401,
+    )
+
+    assert retry is not None
+    assert retry.bearer == "new-access-token"
 
 
 # ---------------------------------------------------------------------------

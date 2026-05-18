@@ -13772,9 +13772,18 @@ def main(
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
+                    # Shut down memory provider BEFORE atexit runs during
+                    # sys.exit(). gRPC-backed memory plugins (mem0-oss,
+                    # qdrant) can SIGABRT if their threads are alive when
+                    # the interpreter starts tearing down (#27832).
+                    _run_cleanup()
+
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
-            
+
+            # Shut down memory provider before process exit (#27832)
+            _run_cleanup()
+
             # Exit with error code if credentials or agent init fails
             sys.exit(1)
         else:
@@ -13799,6 +13808,9 @@ def main(
             cli._show_security_advisories()
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
+
+            # Shut down memory provider before process exit (#27832)
+            _run_cleanup()
         return
     
     # Run interactive mode

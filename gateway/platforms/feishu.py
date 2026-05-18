@@ -161,6 +161,14 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_OUTBOUND_AT_TAG_RE = re.compile(r"<at\s+([^>]*)>(.*?)</at>", re.IGNORECASE | re.DOTALL)
+_OUTBOUND_AT_ATTR_RE = re.compile(
+    r"([A-Za-z_][\w:-]*)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"
+)
+_OUTBOUND_MARKDOWN_MENTION_RE = re.compile(
+    r"@\[([^\]\n]+)\]\((?:feishu|lark):([^) \t\r\n]+)\)"
+)
+_OUTBOUND_OPEN_ID_MENTION_RE = re.compile(r"(?<![\w@])@(ou_[A-Za-z0-9]+)\b")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -322,6 +330,14 @@ class FeishuMentionRef:
     open_id: str = ""
     is_all: bool = False
     is_self: bool = False
+
+
+@dataclass(frozen=True)
+class _OutboundMention:
+    start: int
+    end: int
+    user_id: str
+    display_name: str
 
 
 @dataclass(frozen=True)
@@ -519,7 +535,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     horizontal rules, \\r\\n normalisation).
     """
     from gateway.platforms.helpers import strip_markdown
-    plain = text.replace("\r\n", "\n")
+    plain = _render_outbound_structured_mentions_as_text(text).replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
@@ -558,6 +574,156 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_structured_mention_post_payload(content: str) -> str:
+    rows = _build_structured_mention_post_rows(content)
+    return json.dumps(
+        {
+            "zh_cn": {
+                "content": rows,
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_structured_mention_post_rows(content: str) -> List[List[Dict[str, str]]]:
+    text_tag = (
+        "md"
+        if _MARKDOWN_HINT_RE.search(content) and not _MARKDOWN_TABLE_RE.search(content)
+        else "text"
+    )
+    if "```" not in content:
+        return [_build_structured_mention_elements(content, text_tag=text_tag)]
+
+    rows: List[List[Dict[str, str]]] = []
+    for row in _build_markdown_post_rows(content):
+        if len(row) != 1:
+            rows.append(row)
+            continue
+        element = row[0]
+        segment = element.get("text", "")
+        # Keep fenced code blocks literal. A sample <at ...> inside code should
+        # not ping anyone.
+        if str(segment).lstrip().startswith("```"):
+            rows.append(row)
+        else:
+            rows.append(_build_structured_mention_elements(str(segment), text_tag=text_tag))
+    return rows or [[{"tag": text_tag, "text": content}]]
+
+
+def _build_structured_mention_elements(content: str, *, text_tag: str) -> List[Dict[str, str]]:
+    mentions = _parse_outbound_structured_mentions(content)
+    if not mentions:
+        return [{"tag": text_tag, "text": content}]
+
+    elements: List[Dict[str, str]] = []
+    cursor = 0
+    for mention in mentions:
+        if mention.start > cursor:
+            elements.append({"tag": text_tag, "text": content[cursor:mention.start]})
+        at_element = {"tag": "at", "user_id": mention.user_id}
+        if mention.display_name:
+            at_element["user_name"] = mention.display_name
+        elements.append(at_element)
+        cursor = mention.end
+    if cursor < len(content):
+        elements.append({"tag": text_tag, "text": content[cursor:]})
+    return elements or [{"tag": text_tag, "text": ""}]
+
+
+def _has_outbound_structured_mentions(content: str) -> bool:
+    return bool(_parse_outbound_structured_mentions(content))
+
+
+def _parse_outbound_structured_mentions(content: str) -> List[_OutboundMention]:
+    mentions: List[_OutboundMention] = []
+
+    for match in _OUTBOUND_AT_TAG_RE.finditer(content):
+        attrs = _parse_outbound_at_attrs(match.group(1))
+        user_id = (
+            attrs.get("user_id")
+            or attrs.get("open_id")
+            or attrs.get("id")
+            or attrs.get("user-id")
+            or attrs.get("open-id")
+            or ""
+        ).strip()
+        if not user_id:
+            continue
+        display_name = (
+            _strip_inline_whitespace(match.group(2))
+            or attrs.get("user_name")
+            or attrs.get("name")
+            or user_id
+        ).strip()
+        mentions.append(
+            _OutboundMention(
+                start=match.start(),
+                end=match.end(),
+                user_id=user_id,
+                display_name=display_name,
+            )
+        )
+
+    for match in _OUTBOUND_MARKDOWN_MENTION_RE.finditer(content):
+        mentions.append(
+            _OutboundMention(
+                start=match.start(),
+                end=match.end(),
+                user_id=match.group(2).strip(),
+                display_name=match.group(1).strip(),
+            )
+        )
+
+    for match in _OUTBOUND_OPEN_ID_MENTION_RE.finditer(content):
+        open_id = match.group(1).strip()
+        mentions.append(
+            _OutboundMention(
+                start=match.start(),
+                end=match.end(),
+                user_id=open_id,
+                display_name=open_id,
+            )
+        )
+
+    mentions.sort(key=lambda item: (item.start, item.end))
+    filtered: List[_OutboundMention] = []
+    last_end = -1
+    for mention in mentions:
+        if mention.start < last_end:
+            continue
+        filtered.append(mention)
+        last_end = mention.end
+    return filtered
+
+
+def _parse_outbound_at_attrs(raw_attrs: str) -> Dict[str, str]:
+    attrs: Dict[str, str] = {}
+    for match in _OUTBOUND_AT_ATTR_RE.finditer(raw_attrs or ""):
+        value = next((group for group in match.groups()[1:] if group is not None), "")
+        attrs[match.group(1).lower()] = value
+    return attrs
+
+
+def _strip_inline_whitespace(value: str) -> str:
+    return _WHITESPACE_RE.sub(" ", value or "").strip()
+
+
+def _render_outbound_structured_mentions_as_text(content: str) -> str:
+    mentions = _parse_outbound_structured_mentions(content)
+    if not mentions:
+        return content
+
+    parts: List[str] = []
+    cursor = 0
+    for mention in mentions:
+        parts.append(content[cursor:mention.start])
+        parts.append(f"@{mention.display_name or mention.user_id}")
+        cursor = mention.end
+    parts.append(content[cursor:])
+    return "".join(parts)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4374,6 +4540,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        if _has_outbound_structured_mentions(content):
+            return "post", _build_structured_mention_post_payload(content)
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.

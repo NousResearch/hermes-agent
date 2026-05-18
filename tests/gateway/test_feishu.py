@@ -2643,6 +2643,72 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_builds_structured_at_tag_for_outbound_mentions(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload_raw = adapter._build_outbound_payload(
+            '<at user_id="ou_cto">技术总监CTO</at> 联调测试'
+        )
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(payload_raw)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [
+                    {"tag": "at", "user_id": "ou_cto", "user_name": "技术总监CTO"},
+                    {"tag": "text", "text": " 联调测试"},
+                ]
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_supports_markdown_style_feishu_mentions(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload_raw = adapter._build_outbound_payload(
+            "@[技术总监CTO](feishu:ou_cto) 请看 **联调测试**。"
+        )
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(payload_raw)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [
+                    {"tag": "at", "user_id": "ou_cto", "user_name": "技术总监CTO"},
+                    {"tag": "md", "text": " 请看 **联调测试**。"},
+                ]
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_supports_bare_open_id_feishu_mentions(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload_raw = adapter._build_outbound_payload(
+            "@ou_cto 请看一下上线事项"
+        )
+
+        self.assertEqual(msg_type, "post")
+        payload = json.loads(payload_raw)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [
+                    {"tag": "at", "user_id": "ou_cto", "user_name": "ou_cto"},
+                    {"tag": "text", "text": " 请看一下上线事项"},
+                ]
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

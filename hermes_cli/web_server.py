@@ -525,8 +525,15 @@ def _runtime_status_recently_running(
     runtime: dict | None,
     *,
     max_age_seconds: float = 180.0,
+    future_skew_seconds: float = 5.0,
 ) -> bool:
-    """Return True when gateway_state.json is a fresh running heartbeat."""
+    """Return True when gateway_state.json is a fresh running heartbeat.
+
+    Stale, malformed, or future-dated runtime files (clock skew or corruption)
+    fall back to ``False`` so callers preserve the existing stopped behavior.
+    A small ``future_skew_seconds`` tolerance accommodates benign clock drift
+    between containers without trusting timestamps from the far future.
+    """
     if not isinstance(runtime, dict) or runtime.get("gateway_state") != "running":
         return False
 
@@ -541,7 +548,19 @@ def _runtime_status_recently_running(
 
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
-    age = time.time() - stamp.timestamp()
+
+    try:
+        stamp_seconds = stamp.timestamp()
+    except (OverflowError, OSError, ValueError):
+        # Extreme-but-parseable dates (e.g. year 9999) can blow up timestamp
+        # conversion on some platforms; treat them as not-fresh rather than
+        # bubbling up a 500 from /api/status.
+        return False
+
+    age = time.time() - stamp_seconds
+    if age < -future_skew_seconds:
+        # Timestamp is meaningfully in the future -> corrupted or skewed clock.
+        return False
     return age <= max_age_seconds
 
 

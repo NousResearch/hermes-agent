@@ -1528,6 +1528,82 @@ class TestStatusRemoteGateway:
         assert data["gateway_state"] == "running"
         assert data["gateway_platforms"] == {"weixin": {"state": "connected"}}
 
+    def test_status_future_runtime_updated_at_not_trusted(self, monkeypatch):
+        """Future-dated gateway_state.json must NOT be treated as fresh.
+
+        Without clamping, a negative ``age`` would still satisfy
+        ``age <= max_age_seconds`` and report the gateway as running
+        indefinitely on clock-skewed/corrupted runtime files.
+        """
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as ws
+
+        # updated_at is one hour ahead of "now" -> clearly future-dated
+        future = "2026-05-08T13:00:00+00:00"
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            ws,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": future,
+                "pid": 7,
+            },
+        )
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        # time.time() corresponds to 2026-05-08T12:00:00+00:00
+        monkeypatch.setattr(ws.time, "time", lambda: 1778241600.0)
+        monkeypatch.setattr(
+            gateway_config,
+            "load_gateway_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("no gateway config")),
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+
+    def test_status_malformed_runtime_updated_at_falls_back(self, monkeypatch):
+        """Malformed/extreme ``updated_at`` must fall back to stopped, not 500.
+
+        Year-9999 timestamps parse via ``datetime.fromisoformat`` but can raise
+        ``OverflowError``/``OSError`` from ``stamp.timestamp()`` on some
+        platforms. The freshness check should catch that and return False so
+        ``/api/status`` keeps reporting a stopped gateway instead of erroring.
+        """
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as ws
+
+        # Parseable by datetime.fromisoformat but unrepresentable as a POSIX
+        # timestamp on many platforms.
+        malformed = "9999-12-31T23:59:59+00:00"
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            ws,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "updated_at": malformed,
+                "pid": 7,
+            },
+        )
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        monkeypatch.setattr(ws.time, "time", lambda: 1778241600.0)
+        monkeypatch.setattr(
+            gateway_config,
+            "load_gateway_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("no gateway config")),
+        )
+
+        resp = self.client.get("/api/status")
+
+        # Must not 500, must fall back to gateway_running == False.
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+
     def test_status_remote_running_null_pid(self, monkeypatch):
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws

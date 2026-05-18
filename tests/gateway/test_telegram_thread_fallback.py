@@ -130,6 +130,11 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._model_picker_state = {}
+    adapter._text_batch_delay_seconds = 0
+    adapter._text_batch_split_delay_seconds = 0
     adapter.platform = Platform.TELEGRAM
     return adapter
 
@@ -529,6 +534,66 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_model_picker_text_query_filters_models_before_dispatch():
+    """A text reply after /model should filter picker results instead of reaching the agent."""
+    adapter = _make_adapter()
+    edit_calls = []
+    dispatched = []
+
+    adapter._bot = SimpleNamespace()
+    adapter.handle_message = lambda event: dispatched.append(event)
+    adapter._model_picker_state = {
+        "123": {
+            "providers": [
+                {
+                    "name": "Nvidia",
+                    "slug": "nvidia",
+                    "models": [
+                        "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+                        "nvidia/llama-3.3-nemotron-super-49b-v1",
+                        "nvidia/mistral-nemo-12b",
+                        "meta/llama-3.1-8b-instruct",
+                    ],
+                    "total_models": 4,
+                }
+            ],
+            "session_key": "telegram:123",
+            "on_model_selected": lambda *_: None,
+            "current_model": "old-model",
+            "current_provider": "openrouter",
+        }
+    }
+
+    async def mock_edit_message_text(**kwargs):
+        edit_calls.append(dict(kwargs))
+
+    message = SimpleNamespace(
+        text="nemotron",
+        caption=None,
+        chat=SimpleNamespace(id=123, type="private", is_forum=False, title=None, full_name="Alice"),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=None,
+        reply_to_message=None,
+        message_id=10,
+        date=None,
+        edit_text=mock_edit_message_text,
+    )
+    update = SimpleNamespace(message=message, update_id=99)
+
+    await adapter._handle_text_message(update, SimpleNamespace())
+
+    assert dispatched == []
+    assert edit_calls
+    assert "nemotron" in edit_calls[0]["text"]
+    assert "2 matches" in edit_calls[0]["text"]
+    keyboard = edit_calls[0]["reply_markup"].inline_keyboard
+    buttons = [button for row in keyboard for button in row]
+    model_buttons = [button for button in buttons if button.callback_data.startswith("mm:")]
+    assert [button.callback_data for button in model_buttons] == ["mm:0", "mm:1"]
+    assert all("nemotron" in button.text.lower() for button in model_buttons)
 
 
 @pytest.mark.asyncio

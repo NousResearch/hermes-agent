@@ -2394,6 +2394,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _MODEL_PAGE_SIZE = 8
 
+    def _filter_model_picker_models(self, models: list, query: str) -> list:
+        """Return model ids matching a Telegram picker text query."""
+        terms = [term for term in re.split(r"\s+", (query or "").strip().lower()) if term]
+        if not terms:
+            return list(models)
+        return [
+            model_id
+            for model_id in models
+            if all(term in str(model_id).lower() for term in terms)
+        ]
+
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_size = self._MODEL_PAGE_SIZE
@@ -2434,6 +2445,75 @@ class TelegramAdapter(BasePlatformAdapter):
 
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
         return InlineKeyboardMarkup(rows), page_info
+
+    async def _handle_model_picker_text_query(self, message: Message) -> bool:
+        """Filter the active model picker when the user types a search query."""
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            return False
+
+        query = (getattr(message, "text", "") or "").strip()
+        if not query:
+            return False
+
+        providers = state.get("providers", [])
+        matches: list = []
+        matched_provider: Optional[Dict[str, Any]] = None
+        for provider in providers:
+            provider_matches = self._filter_model_picker_models(
+                provider.get("models", []), query
+            )
+            if provider_matches and matched_provider is None:
+                matched_provider = provider
+                matches = provider_matches
+
+        if not matched_provider:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀ Back", callback_data="mb")],
+                [InlineKeyboardButton("✗ Cancel", callback_data="mx")],
+            ])
+            text = (
+                f"⚙ *Model Configuration*\n\n"
+                f"No models found for `{query}`.\n"
+                f"Type another search query, or go back to providers."
+            )
+        else:
+            provider_slug = matched_provider.get("slug", "")
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = matched_provider.get("name", provider_slug)
+            state["model_list"] = matches
+            state["model_page"] = 0
+            keyboard, page_info = self._build_model_keyboard(matches, 0)
+            text = (
+                f"⚙ *Model Configuration*\n\n"
+                f"Search: `{query}` — {len(matches)} matches\n"
+                f"Provider: *{state['selected_provider_name']}*{page_info}\n"
+                f"Select a model:"
+            )
+
+        msg_id = state.get("msg_id")
+        try:
+            if msg_id and self._bot:
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(msg_id),
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+            elif hasattr(message, "edit_text"):
+                await message.edit_text(
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+            else:
+                return False
+        except Exception as exc:
+            logger.warning("[%s] Failed to filter model picker: %s", self.name, exc)
+            return False
+        return True
 
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
@@ -4003,6 +4083,8 @@ class TelegramAdapter(BasePlatformAdapter):
         them into a single MessageEvent before dispatching.
         """
         if not update.message or not update.message.text:
+            return
+        if await self._handle_model_picker_text_query(update.message):
             return
         if not self._should_process_message(update.message):
             return

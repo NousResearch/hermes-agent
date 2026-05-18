@@ -609,6 +609,195 @@ def test_server_strips_client_auth_header():
 
 
 # ---------------------------------------------------------------------------
+# Inbound bearer middleware
+#
+# When HERMES_API_KEY (or the configured env var) is set, the proxy
+# requires every inbound /v1/* call to carry a matching
+# ``Authorization: Bearer <token>``. When unset, the legacy localhost-
+# only behavior (no inbound auth) is preserved. ``/health`` is always
+# open so operators can probe status without sending the credential.
+# ---------------------------------------------------------------------------
+
+
+def test_inbound_bearer_unset_no_enforcement(monkeypatch):
+    """Legacy: no env var → any inbound bearer accepted (forwarded
+    after replacement). Preserves the nous-on-localhost contract."""
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    # Also disable dotenv resolution by patching get_env_value to
+    # return None for the relevant key.
+    import hermes_cli.proxy.server as srv
+
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: None)
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions",
+                    json={},
+                    # NO Authorization header at all
+                ) as resp:
+                    assert resp.status == 200
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_inbound_bearer_set_missing_auth_401(monkeypatch):
+    """Env set, request has NO Authorization header → 401 with
+    inbound_auth_missing code. Request never reaches upstream."""
+    import hermes_cli.proxy.server as srv
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: "hb_secret")
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={},
+                ) as resp:
+                    assert resp.status == 401
+                    body = await resp.json()
+                    assert body["error"]["code"] == "inbound_auth_missing"
+            # Upstream never hit.
+            assert captured["requests"] == []
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_inbound_bearer_set_wrong_token_401(monkeypatch):
+    """Env set, request has wrong bearer → 401 with
+    inbound_auth_mismatch code. Request never reaches upstream."""
+    import hermes_cli.proxy.server as srv
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: "hb_secret")
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={},
+                    headers={"Authorization": "Bearer hb_wrong"},
+                ) as resp:
+                    assert resp.status == 401
+                    body = await resp.json()
+                    assert body["error"]["code"] == "inbound_auth_mismatch"
+            assert captured["requests"] == []
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_inbound_bearer_set_malformed_auth_401(monkeypatch):
+    """Authorization header without the ``Bearer`` scheme → 401."""
+    import hermes_cli.proxy.server as srv
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: "hb_secret")
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={},
+                    headers={"Authorization": "Basic hb_secret"},
+                ) as resp:
+                    assert resp.status == 401
+                    body = await resp.json()
+                    assert body["error"]["code"] == "inbound_auth_missing"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_inbound_bearer_set_correct_token_forwards(monkeypatch):
+    """Env set, request has matching bearer → request reaches upstream
+    with the inbound bearer REPLACED by the adapter's bearer (existing
+    proxy contract preserved)."""
+    import hermes_cli.proxy.server as srv
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: "hb_secret")
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="upstream-key")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/chat/completions", json={"a": 1},
+                    headers={"Authorization": "Bearer hb_secret"},
+                ) as resp:
+                    assert resp.status == 200
+            # Inbound bearer was replaced by adapter's; not leaked
+            # to upstream.
+            assert captured["requests"][0]["auth"] == "Bearer upstream-key"
+            assert "hb_secret" not in captured["requests"][0]["auth"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_inbound_bearer_set_health_endpoint_still_open(monkeypatch):
+    """Operators must be able to probe /health without sending the
+    credential. The middleware exempts /health regardless of env."""
+    import hermes_cli.proxy.server as srv
+    monkeypatch.setattr(srv, "_resolve_inbound_bearer", lambda env_var=None: "hb_secret")
+
+    async def run():
+        adapter = FakeAdapter("https://upstream.invalid/v1", bearer="x")
+        runner, base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/health") as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert body["status"] == "ok"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_resolve_inbound_bearer_reads_env(monkeypatch):
+    """The helper honors os.environ when hermes_cli.config is
+    unavailable, and strips whitespace."""
+    from hermes_cli.proxy.server import _resolve_inbound_bearer
+
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    assert _resolve_inbound_bearer() is None
+
+    monkeypatch.setenv("HERMES_API_KEY", "  hb_padded  ")
+    assert _resolve_inbound_bearer() == "hb_padded"
+
+    monkeypatch.setenv("HERMES_API_KEY", "")
+    assert _resolve_inbound_bearer() is None
+
+
+# ---------------------------------------------------------------------------
 # CLI handlers
 # ---------------------------------------------------------------------------
 

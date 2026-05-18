@@ -52,6 +52,24 @@ _HOP_BY_HOP_HEADERS = frozenset(
 DEFAULT_PORT = 8645
 DEFAULT_HOST = "127.0.0.1"
 
+# Env var the proxy checks for inbound-bearer enforcement. When the
+# variable resolves to a non-empty value via
+# ``hermes_cli.config.get_env_value`` (i.e. set in ``~/.hermes/.env``
+# or the process environment), the proxy refuses requests whose
+# ``Authorization: Bearer <token>`` does not match the configured
+# value. When the variable is unset, the proxy preserves its legacy
+# behavior of accepting any inbound bearer and replacing it with the
+# upstream credential.
+#
+# Why opt-in rather than opt-out: existing localhost callers (the
+# nous adapter, for example) rely on the bind-to-127.0.0.1 boundary
+# alone. Forcing inbound bearer on those would be a regression.
+# Opt-in lets a deployment that exposes the proxy beyond localhost
+# (e.g. via a Cloudflare Tunnel pointing at hermes-bridge.<domain>)
+# add the credential gate without disturbing the localhost-only
+# default.
+INBOUND_BEARER_ENV_VAR = "HERMES_API_KEY"
+
 
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
     """Return an OpenAI-style error JSON response."""
@@ -82,6 +100,72 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
+def _resolve_inbound_bearer(env_var: str = INBOUND_BEARER_ENV_VAR) -> Optional[str]:
+    """Resolve the expected inbound bearer.
+
+    Reads ``env_var`` via ``hermes_cli.config.get_env_value`` so values
+    in ``~/.hermes/.env`` are honored — not just ones already exported
+    into ``os.environ``. Returns ``None`` when unset/empty (signal to
+    skip enforcement)."""
+    try:
+        from hermes_cli.config import get_env_value
+    except Exception:
+        import os
+        value = os.environ.get(env_var, "")
+    else:
+        value = get_env_value(env_var) or ""
+    value = str(value).strip()
+    return value or None
+
+
+def _inbound_bearer_middleware(env_var: str = INBOUND_BEARER_ENV_VAR):
+    """Build an aiohttp middleware that enforces the inbound bearer.
+
+    When ``_resolve_inbound_bearer`` returns ``None`` the middleware
+    is a no-op (legacy localhost-only deployments). When set, every
+    forwarded request must carry ``Authorization: Bearer <value>``
+    matching exactly; otherwise the middleware returns 401 with an
+    OpenAI-style error body. ``/health`` is exempt — operators need
+    to probe status without sending the credential."""
+
+    @web.middleware
+    async def middleware(request: "web.Request", handler):
+        # /health is always open. Anything else requires the credential
+        # if one is configured.
+        if request.path == "/health":
+            return await handler(request)
+
+        expected = _resolve_inbound_bearer(env_var)
+        if expected is None:
+            # Legacy: no enforcement configured. Localhost-only
+            # callers (nous on 127.0.0.1, etc.) keep working.
+            return await handler(request)
+
+        auth = request.headers.get("Authorization", "")
+        scheme, _, token = auth.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return _json_error(
+                401,
+                "Missing or malformed Authorization header. "
+                "Expected: Bearer <token>.",
+                code="inbound_auth_missing",
+            )
+        # Constant-time compare. The bearer is a static secret and
+        # localhost is the dominant case; timing-side-channel risk
+        # is low, but ``secrets.compare_digest`` costs nothing.
+        import secrets as _secrets
+        if not _secrets.compare_digest(token.strip(), expected):
+            return _json_error(
+                401,
+                "Inbound bearer token does not match the proxy's "
+                "configured HERMES_API_KEY.",
+                code="inbound_auth_mismatch",
+            )
+        return await handler(request)
+
+    return middleware
+
+
 def create_app(adapter: UpstreamAdapter) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
@@ -90,7 +174,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = web.Application()
+    app = web.Application(middlewares=[_inbound_bearer_middleware()])
     # AppKey ensures forward-compat with future aiohttp versions that strip
     # bare-string keys.
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)

@@ -69,6 +69,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 
 def _add_accept_hooks_flag(parser) -> None:
@@ -6314,19 +6315,72 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     return None
 
 
-def _is_fork(origin_url: Optional[str]) -> bool:
-    """Check if the origin remote points to a fork (not the official repo)."""
-    if not origin_url:
-        return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
+def _strip_git_suffix(value: str) -> str:
+    """Return *value* without trailing separators or a final ``.git`` suffix."""
+    normalized = value.strip().rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
+    return normalized
+
+
+def _canonical_git_remote(origin_url: Optional[str]) -> Optional[str]:
+    """Normalize a git remote for comparison without retaining credentials."""
+    if not origin_url:
+        return None
+
+    remote = origin_url.strip()
+    if not remote:
+        return None
+
+    parsed = urlsplit(remote)
+    if parsed.scheme and parsed.netloc:
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return _strip_git_suffix(remote).lower()
+        port = f":{parsed.port}" if parsed.port else ""
+        path = _strip_git_suffix(parsed.path.lstrip("/"))
+        return f"{host}{port}/{path}".lower()
+
+    # Handle scp-like SSH remotes: [user@]host:owner/repo(.git).
+    if ":" in remote and "/" in remote.split(":", 1)[1]:
+        host_part, path_part = remote.split(":", 1)
+        host = host_part.rsplit("@", 1)[-1].lower()
+        path = _strip_git_suffix(path_part.lstrip("/"))
+        return f"{host}/{path}".lower()
+
+    return _strip_git_suffix(remote).lower()
+
+
+def _redact_git_remote_url(origin_url: Optional[str]) -> str:
+    """Return a display-safe git remote URL with credential userinfo removed."""
+    if not origin_url:
+        return "<unknown>"
+
+    remote = origin_url.strip()
+    parsed = urlsplit(remote)
+    if parsed.scheme and parsed.netloc and "@" in parsed.netloc:
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        netloc = f"[REDACTED]@{host}{port}"
+        return urlunsplit(
+            (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+        )
+
+    if ":" in remote and "/" in remote.split(":", 1)[1]:
+        userinfo, sep, rest = remote.partition("@")
+        if sep and ":" in userinfo:
+            return f"[REDACTED]@{rest}"
+
+    return remote
+
+
+def _is_fork(origin_url: Optional[str]) -> bool:
+    """Check if the origin remote points to a fork (not the official repo)."""
+    normalized = _canonical_git_remote(origin_url)
+    if not normalized:
+        return False
     for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
+        if normalized == _canonical_git_remote(official):
             return False
     return True
 
@@ -7408,7 +7462,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if is_fork:
         print("⚠ Updating from fork:")
-        print(f"  {origin_url}")
+        print(f"  {_redact_git_remote_url(origin_url)}")
         print()
 
     if use_zip_update:

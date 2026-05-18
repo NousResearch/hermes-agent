@@ -459,7 +459,37 @@ class TestSendUpdateNotification:
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         assert call_args[0][0] == "67890"  # chat_id
-        assert "Update complete" in call_args[0][1] or "update finished" in call_args[0][1].lower()
+        assert (
+            "Update complete" in call_args[0][1]
+            or "update finished" in call_args[0][1].lower()
+        )
+
+    @pytest.mark.asyncio
+    async def test_redacts_credential_bearing_remote_url_from_output(self, tmp_path):
+        """Does not leak git remote URL credentials in chat notifications."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "67890", "user_id": "12345"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text(
+            "⚠ Updating from fork:\n"
+            "  https://alice:ghp_LEAKME1234567890@github.com/badMade/hermes-agent.git\n"
+        )
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "ghp_LEAKME1234567890" not in sent_text
+        assert "alice" not in sent_text
+        assert "https://[REDACTED]@github.com/badMade/hermes-agent.git" in sent_text
 
     @pytest.mark.asyncio
     async def test_sends_notification_with_thread_metadata(self, tmp_path):

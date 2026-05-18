@@ -3152,6 +3152,14 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    if not hasattr(os, "WIFEXITED"):
+        # Windows does not expose POSIX wait-status helpers. Tests and any
+        # direct callers record subprocess-style return codes there.
+        if raw == 0:
+            return ("clean_exit", 0)
+        if raw > 0:
+            return ("nonzero_exit", raw)
+        return ("unknown", None)
     try:
         if os.WIFEXITED(raw):
             code = os.WEXITSTATUS(raw)

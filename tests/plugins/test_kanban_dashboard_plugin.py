@@ -11,6 +11,7 @@ import importlib.util
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,17 @@ def _load_plugin_router():
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod.router
+
+
+def _plugin_module():
+    return sys.modules["hermes_dashboard_plugin_kanban_test"]
+
+
+def _dashboard_dist_text(filename: str = "index.js") -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    return (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / filename
+    ).read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -136,9 +148,7 @@ def test_dashboard_select_filters_use_sdk_value_change_handler():
     filtered board query.
     """
 
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    js = bundle.read_text()
+    js = _dashboard_dist_text()
 
     assert "function selectChangeHandler(setter)" in js
     assert "onValueChange: function (v)" in js
@@ -156,9 +166,7 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
     full reload finishes.
     """
 
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    js = bundle.read_text()
+    js = _dashboard_dist_text()
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
@@ -358,6 +366,168 @@ def test_add_comment_empty_rejected(client):
         json={"body": "   "},
     )
     assert r.status_code == 400
+
+
+@dataclass
+class _FakeDispatchResult:
+    spawned: int = 0
+    skipped: int = 0
+    claimed: list[str] | None = None
+
+
+def test_inline_dispatch_streams_sse_and_reports_created_cards(client, monkeypatch):
+    pa = _plugin_module()
+    dispatch_calls: list[str | None] = []
+
+    def fake_prompt(*, board, prompt, profile=None):
+        conn = kb.connect(board=board)
+        try:
+            created = kb.create_task(
+                conn,
+                title="Created from inline dispatch",
+                assignee="worker",
+                created_by="dashboard",
+            )
+        finally:
+            conn.close()
+        return f"created {created}"
+
+    monkeypatch.setattr(pa, "_run_kanban_orchestrator_prompt", fake_prompt)
+    monkeypatch.setattr(
+        pa.kanban_db,
+        "dispatch_once",
+        lambda conn, *, max_spawn=None, board=None: (
+            dispatch_calls.append(board) or _FakeDispatchResult(spawned=1)
+        ),
+    )
+
+    r = client.post(
+        "/api/plugins/kanban/boards/default/inline-dispatch",
+        headers={"Accept": "text/event-stream"},
+        json={"text": "turn this into a card"},
+    )
+    assert r.status_code == 200, r.text
+    assert "text/event-stream" in r.headers["content-type"]
+    assert '"type": "card_status"' in r.text
+    assert '"type": "card_created"' in r.text
+    assert '"type": "result"' in r.text
+    assert dispatch_calls == ["default"]
+
+
+def test_inline_dispatch_api_v1_alias_returns_json(kanban_home, monkeypatch):
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/v1/kanban")
+    c = TestClient(app)
+    pa = _plugin_module()
+
+    monkeypatch.setattr(
+        pa,
+        "_run_kanban_orchestrator_prompt",
+        lambda *, board, prompt, profile=None: "no card needed",
+    )
+
+    r = c.post(
+        "/api/v1/kanban/default/inline-dispatch",
+        json={"text": "summarize the board"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["board"] == "default"
+    assert body["content"] == "no card needed"
+
+
+def test_comment_auto_route_only_unassigned_first_comment(client, monkeypatch):
+    pa = _plugin_module()
+    calls: list[str] = []
+
+    monkeypatch.setattr(pa, "_selected_default_assignee", lambda: "worker")
+    monkeypatch.setattr(pa, "_selected_orchestrator_profile", lambda: "orchestrator")
+    monkeypatch.setattr(
+        pa,
+        "_run_kanban_orchestrator_prompt",
+        lambda **kwargs: calls.append(kwargs["prompt"]) or "routed",
+    )
+    monkeypatch.setattr(
+        pa.kanban_db,
+        "dispatch_once",
+        lambda *args, **kwargs: _FakeDispatchResult(claimed=[]),
+    )
+
+    unassigned = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "needs routing"},
+    ).json()["task"]
+    first = client.post(
+        f"/api/plugins/kanban/tasks/{unassigned['id']}/comments",
+        json={"body": "please take this", "author": "human"},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["auto_route"]["routed"] is True
+    assert len(calls) == 1
+    detail = client.get(f"/api/plugins/kanban/tasks/{unassigned['id']}").json()
+    assert detail["task"]["assignee"] == "worker"
+
+    second = client.post(
+        f"/api/plugins/kanban/tasks/{unassigned['id']}/comments",
+        json={"body": "second note"},
+    )
+    assert second.json()["auto_route"] == {
+        "routed": False,
+        "reason": "not_first_comment",
+    }
+    assert len(calls) == 1
+
+    assigned = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "already assigned", "assignee": "worker"},
+    ).json()["task"]
+    assigned_comment = client.post(
+        f"/api/plugins/kanban/tasks/{assigned['id']}/comments",
+        json={"body": "first but assigned"},
+    )
+    assert assigned_comment.json()["auto_route"] == {
+        "routed": False,
+        "reason": "already_assigned",
+    }
+    assert len(calls) == 1
+
+
+def test_comment_auto_route_throttle_blocks_repeat_route(client, monkeypatch):
+    pa = _plugin_module()
+    calls: list[str] = []
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "recently routed"},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'comment_auto_routed', '{}', ?)",
+            (task["id"], int(time.time())),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(pa, "_selected_default_assignee", lambda: "worker")
+    monkeypatch.setattr(
+        pa,
+        "_run_kanban_orchestrator_prompt",
+        lambda **kwargs: calls.append(kwargs["prompt"]) or "routed",
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/comments",
+        json={"body": "first comment after recent route"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["auto_route"] == {"routed": False, "reason": "throttled"}
+    assert calls == []
+    detail = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()
+    assert detail["task"]["assignee"] is None
 
 
 def test_add_link_and_delete_link(client):
@@ -711,10 +881,7 @@ def test_bulk_status_done_forwards_completion_summary(client):
 
 
 def test_dashboard_done_actions_prompt_for_completion_summary():
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (
-        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    bundle = _dashboard_dist_text()
 
     assert "withCompletionSummary" in bundle
     assert "Completion summary" in bundle
@@ -729,10 +896,7 @@ def test_dashboard_dependency_selects_use_value_change_handler():
     selectChangeHandler helper so their value actually lands on the
     underlying React state. Salvaged from #20019 @LeonSGP43.
     """
-    repo_root = Path(__file__).resolve().parents[2]
-    bundle = (
-        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    bundle = _dashboard_dist_text()
 
     parent_select = (
         'value: newParent,\n'
@@ -1734,8 +1898,7 @@ def test_board_endpoint_accepts_explicit_board_default_param(client):
 
 def test_dashboard_requests_default_board_explicitly():
     """Dashboard REST calls must include board=default instead of relying on server current board."""
-    repo_root = Path(__file__).resolve().parents[2]
-    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    dist = _dashboard_dist_text()
 
     assert "SDK.fetchJSON(withBoard(`${API}/config`, board))" in dist
     assert "SDK.fetchJSON(withBoard(`${API}/boards`, board))" in dist
@@ -1745,8 +1908,7 @@ def test_dashboard_requests_default_board_explicitly():
 def test_dashboard_search_includes_body_and_result():
     """Client-side search must match body, result, latest_summary, and summary
     so full card contents are findable."""
-    repo_root = Path(__file__).resolve().parents[2]
-    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    dist = _dashboard_dist_text()
 
     assert "t.body || \"\"" in dist
     assert "t.result || \"\"" in dist
@@ -1755,8 +1917,7 @@ def test_dashboard_search_includes_body_and_result():
 
 def test_dashboard_bulk_actions_include_reclaim_first():
     """Bulk action bar must expose reclaim_first checkbox and expanded status buttons."""
-    repo_root = Path(__file__).resolve().parents[2]
-    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    dist = _dashboard_dist_text()
 
     assert "reclaim_first: reclaimFirst" in dist
     assert "hermes-kanban-bulk-reclaim-first" in dist
@@ -1767,8 +1928,7 @@ def test_dashboard_bulk_actions_include_reclaim_first():
 
 def test_dashboard_shift_click_range_selection_exists():
     """Shift-click must trigger range selection via toggleRange."""
-    repo_root = Path(__file__).resolve().parents[2]
-    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    dist = _dashboard_dist_text()
 
     assert "function toggleRange" in dist or "const toggleRange =" in dist
     assert "props.toggleRange(t.id)" in dist or "props.toggleRange" in dist
@@ -1777,8 +1937,7 @@ def test_dashboard_shift_click_range_selection_exists():
 
 def test_dashboard_multi_move_bulk_exists():
     """Dragging a selected card with other selections must use /tasks/bulk."""
-    repo_root = Path(__file__).resolve().parents[2]
-    dist = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    dist = _dashboard_dist_text()
 
     assert "onMoveSelected" in dist
     assert "props.onMoveSelected" in dist
@@ -1787,9 +1946,8 @@ def test_dashboard_multi_move_bulk_exists():
 
 def test_dashboard_failed_card_highlight_class_exists():
     """Partial bulk failures must highlight failing cards."""
-    repo_root = Path(__file__).resolve().parents[2]
-    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
-    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+    js = _dashboard_dist_text()
+    css = _dashboard_dist_text("style.css")
 
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css

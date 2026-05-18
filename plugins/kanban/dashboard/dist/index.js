@@ -908,6 +908,14 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        h(KanbanInlineChat, {
+          boardSlug: board,
+          onRefresh: function () {
+            loadBoard();
+            loadBoardList();
+          },
+          onOpenTask: setSelectedTaskId,
+        }),
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
@@ -973,6 +981,313 @@
   // per session via state flag.
   // -------------------------------------------------------------------------
 
+  const WHISPER_MODEL = "Xenova/whisper-small";
+  const WHISPER_IMPORT_URL = "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2";
+  const WHISPER_SAMPLE_RATE = 16000;
+  const WHISPER_DOWNLOAD_ACK_KEY = "hermes.kanban.whisper-small-download-ack";
+  let whisperPipelinePromise = null;
+  const WHISPER_LANGUAGE_BY_LOCALE = {
+    af: "afrikaans",
+    de: "german",
+    en: "english",
+    es: "spanish",
+    fr: "french",
+    ga: "irish",
+    hu: "hungarian",
+    it: "italian",
+    ja: "japanese",
+    ko: "korean",
+    pt: "portuguese",
+    ru: "russian",
+    tr: "turkish",
+    uk: "ukrainian",
+    zh: "chinese",
+    "zh-hant": "chinese",
+  };
+
+  function getAudioContextCtor() {
+    if (typeof window === "undefined") return null;
+    return window.AudioContext || window.webkitAudioContext || null;
+  }
+
+  function voiceSupported() {
+    return !!(
+      typeof window !== "undefined" &&
+      navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+      window.MediaRecorder && getAudioContextCtor() && window.OfflineAudioContext
+    );
+  }
+
+  function loadWhisperPipeline() {
+    if (!whisperPipelinePromise) {
+      whisperPipelinePromise = import(WHISPER_IMPORT_URL).then(function (mod) {
+        return mod.pipeline("automatic-speech-recognition", WHISPER_MODEL);
+      });
+    }
+    return whisperPipelinePromise;
+  }
+
+  function audioBlobToMono16k(blob) {
+    const AudioCtx = getAudioContextCtor();
+    if (!AudioCtx) return Promise.reject(new Error("AudioContext is not available"));
+    const ctx = new AudioCtx();
+    return blob.arrayBuffer()
+      .then(function (buf) { return ctx.decodeAudioData(buf); })
+      .then(function (audioBuffer) {
+        if (audioBuffer.sampleRate === WHISPER_SAMPLE_RATE) {
+          return audioBuffer.getChannelData(0).slice();
+        }
+        const offline = new OfflineAudioContext(
+          1,
+          Math.ceil(audioBuffer.duration * WHISPER_SAMPLE_RATE),
+          WHISPER_SAMPLE_RATE,
+        );
+        const source = offline.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(offline.destination);
+        source.start(0);
+        return offline.startRendering().then(function (rendered) {
+          return rendered.getChannelData(0).slice();
+        });
+      })
+      .finally(function () {
+        if (ctx.close) ctx.close().catch(function () { /* noop */ });
+      });
+  }
+
+  function parseSseChunk(buffer) {
+    const parts = buffer.split(/\n\n/);
+    const rest = parts.pop() || "";
+    const events = [];
+    parts.forEach(function (part) {
+      const data = part.split(/\n/)
+        .filter(function (line) { return line.indexOf("data:") === 0; })
+        .map(function (line) { return line.slice(5).trim(); })
+        .join("\n");
+      if (!data) return;
+      try { events.push(JSON.parse(data)); }
+      catch (_e) { events.push({ type: "result", content: data }); }
+    });
+    return { events, rest };
+  }
+
+  function KanbanInlineChat(props) {
+    const { t, locale } = useI18n();
+    const [text, setText] = useState("");
+    const [messages, setMessages] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [recording, setRecording] = useState(false);
+    const [transcribing, setTranscribing] = useState(false);
+    const [ttsEnabled, setTtsEnabled] = useState(false);
+    const recorderRef = useRef(null);
+    const streamRef = useRef(null);
+    const micSupported = voiceSupported();
+
+    useEffect(function () {
+      return function () {
+        try { recorderRef.current && recorderRef.current.stop(); } catch (_e) { /* noop */ }
+        if (streamRef.current) streamRef.current.getTracks().forEach(function (track) { track.stop(); });
+      };
+    }, []);
+
+    const appendMessage = useCallback(function (msg) {
+      setMessages(function (prev) {
+        return prev.concat([Object.assign({ id: Date.now() + Math.random() }, msg)]).slice(-10);
+      });
+    }, []);
+
+    const playTts = useCallback(function (content) {
+      if (!ttsEnabled || !content) return Promise.resolve();
+      return SDK.fetchJSON(`${API}/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: content }),
+      }).then(function (res) {
+        if (!res || !res.data_url) return;
+        appendMessage({ role: "status", text: tx(t, "ttsPlaying", "Playing response audio") });
+        return new Audio(res.data_url).play().catch(function (e) {
+          appendMessage({ role: "status", text: tx(t, "ttsBlocked", "Audio playback was blocked by the browser") + ": " + String(e.message || e) });
+        });
+      }).catch(function (e) {
+        appendMessage({ role: "status", text: tx(t, "ttsFailed", "TTS failed: ") + String(e.message || e) });
+      });
+    }, [appendMessage, t, ttsEnabled]);
+
+    const handleStreamEvent = useCallback(function (event) {
+      if (!event || !event.type) return "";
+      if (event.type === "card_created" && event.card_id) {
+        appendMessage({ role: "status", text: tx(t, "inlineDispatchCreated", "Created: ") + event.card_id, created: [event.card_id] });
+        if (props.onRefresh) props.onRefresh();
+        return "";
+      }
+      if (event.type === "card_status" && event.status) {
+        appendMessage({ role: "status", text: event.status });
+        return "";
+      }
+      if (event.type === "error") {
+        appendMessage({ role: "error", text: event.content || tx(t, "inlineDispatchFailed", "Inline dispatch failed: ") });
+        return "";
+      }
+      if (event.type === "result" && event.content) {
+        appendMessage({ role: "assistant", text: event.content });
+        return event.content;
+      }
+      return "";
+    }, [appendMessage, props, t]);
+
+    const send = useCallback(function (overrideText) {
+      const bodyText = String(overrideText != null ? overrideText : text).trim();
+      if (!bodyText || busy) return;
+      setBusy(true);
+      appendMessage({ role: "user", text: bodyText });
+      setText("");
+      let lastResult = "";
+      fetch(`${API}/boards/${encodeURIComponent(props.boardSlug || "default")}/inline-dispatch?stream=true`, {
+        method: "POST",
+        headers: { "Accept": "text/event-stream", "Content-Type": "application/json" },
+        body: JSON.stringify({ text: bodyText }),
+      }).then(function (res) {
+        if (!res.ok) return res.text().then(function (body) { throw new Error(body); });
+        const reader = res.body && res.body.getReader();
+        if (!reader) throw new Error("stream response body is unavailable");
+        const decoder = new TextDecoder();
+        let pending = "";
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) {
+              const parsedDone = parseSseChunk(pending + "\n\n");
+              parsedDone.events.forEach(function (event) { lastResult = handleStreamEvent(event) || lastResult; });
+              return playTts(lastResult);
+            }
+            pending += decoder.decode(chunk.value, { stream: true });
+            const parsed = parseSseChunk(pending);
+            pending = parsed.rest;
+            parsed.events.forEach(function (event) { lastResult = handleStreamEvent(event) || lastResult; });
+            return pump();
+          });
+        }
+        return pump();
+      }).catch(function (e) {
+        appendMessage({ role: "error", text: tx(t, "inlineDispatchFailed", "Inline dispatch failed: ") + String(e.message || e) });
+      }).finally(function () {
+        setBusy(false);
+      });
+    }, [appendMessage, busy, handleStreamEvent, playTts, props, t, text]);
+
+    const transcribe = useCallback(function (blob) {
+      setTranscribing(true);
+      audioBlobToMono16k(blob)
+        .then(function (audio) {
+          return loadWhisperPipeline().then(function (pipeline) {
+            return pipeline(audio, {
+              language: WHISPER_LANGUAGE_BY_LOCALE[locale] || "english",
+              task: "transcribe",
+            });
+          });
+        })
+        .then(function (result) {
+          const transcript = typeof result === "string" ? result : (result && result.text) || "";
+          setText(transcript.trim());
+        })
+        .catch(function (e) {
+          appendMessage({ role: "error", text: tx(t, "microphoneError", "Microphone input stopped.") + " " + String(e.message || e) });
+        })
+        .finally(function () { setTranscribing(false); });
+    }, [appendMessage, t]);
+
+    const toggleMic = function () {
+      if (!micSupported) {
+        appendMessage({ role: "error", text: tx(t, "unsupportedBrowser", "Voice input is unavailable in this browser. Please use text input.") });
+        return;
+      }
+      if (recording && recorderRef.current) {
+        try { recorderRef.current.stop(); } catch (_e) { /* noop */ }
+        setRecording(false);
+        return;
+      }
+      if (!window.localStorage.getItem(WHISPER_DOWNLOAD_ACK_KEY)) {
+        const ok = window.confirm(tx(t, "whisperDownloadConfirm", "Voice input downloads the Whisper small model (~244 MB) on first use and caches it in IndexedDB. Continue?"));
+        if (!ok) return;
+        window.localStorage.setItem(WHISPER_DOWNLOAD_ACK_KEY, "1");
+      }
+      loadWhisperPipeline()
+        .then(function () { return navigator.mediaDevices.getUserMedia({ audio: true }); })
+        .then(function (stream) {
+          const chunks = [];
+          const recorder = new MediaRecorder(stream);
+          recorder.ondataavailable = function (event) { if (event.data && event.data.size > 0) chunks.push(event.data); };
+          recorder.onstop = function () {
+            stream.getTracks().forEach(function (track) { track.stop(); });
+            transcribe(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+          };
+          streamRef.current = stream;
+          recorderRef.current = recorder;
+          recorder.start();
+          setRecording(true);
+        })
+        .catch(function (e) {
+          appendMessage({
+            role: "error",
+            text: e && e.name === "NotAllowedError"
+              ? tx(t, "microphonePermissionDenied", "Microphone permission was denied.")
+              : tx(t, "microphoneError", "Microphone input stopped.") + " " + String(e.message || e),
+          });
+          setRecording(false);
+        });
+    };
+
+    return h("section", { className: "hermes-kanban-inline-chat", "aria-label": tx(t, "inlineChatHistory", "Board inline chat") },
+      h("form", { className: "hermes-kanban-inline-chat-form", onSubmit: function (e) { e.preventDefault(); send(); } },
+        h(Input, {
+          value: text,
+          onChange: function (e) { setText(e.target.value); },
+          placeholder: tx(t, "inlineChatPlaceholder", "Tell the board what to do..."),
+          className: "hermes-kanban-inline-chat-input",
+          disabled: busy || transcribing,
+          "aria-label": tx(t, "inlineChatPlaceholder", "Tell the board what to do..."),
+        }),
+        h(Button, {
+          type: "button",
+          variant: "outline",
+          disabled: !micSupported || busy || transcribing,
+          onClick: toggleMic,
+          "aria-label": recording ? tx(t, "microphoneStop", "Stop voice input") : tx(t, "microphoneStart", "Start voice input"),
+          title: micSupported ? undefined : tx(t, "unsupportedBrowser", "Voice input is unavailable in this browser. Please use text input."),
+          className: recording ? "hermes-kanban-mic hermes-kanban-mic--recording" : "hermes-kanban-mic",
+        }, recording ? "■" : "●"),
+        h(Button, {
+          type: "button",
+          variant: "outline",
+          onClick: function () { setTtsEnabled(function (v) { return !v; }); },
+          "aria-pressed": ttsEnabled ? "true" : "false",
+          "aria-label": tx(t, "ttsToggle", "Read responses aloud"),
+          title: tx(t, "ttsToggle", "Read responses aloud"),
+          className: ttsEnabled ? "hermes-kanban-tts hermes-kanban-tts--on" : "hermes-kanban-tts",
+        }, ttsEnabled ? "♪" : "mute"),
+        h(Button, { type: "submit", disabled: busy || transcribing || !text.trim() }, busy ? tx(t, "inlineDispatchSending", "Sending...") : tx(t, "send", "Send")),
+      ),
+      !micSupported ? h("div", { className: "hermes-kanban-inline-chat-status", role: "status" },
+        tx(t, "unsupportedBrowser", "Voice input is unavailable in this browser. Please use text input.")) : null,
+      recording ? h("div", { className: "hermes-kanban-inline-chat-status", role: "status" }, tx(t, "recordingIndicator", "Recording...")) : null,
+      transcribing ? h("div", { className: "hermes-kanban-inline-chat-status", role: "status" }, tx(t, "voiceTranscribing", "Transcribing voice input...")) : null,
+      messages.length > 0 ? h("div", { className: "hermes-kanban-inline-chat-history", "aria-live": "polite" },
+        messages.map(function (m) {
+          return h("div", { key: m.id, className: "hermes-kanban-inline-chat-message hermes-kanban-inline-chat-message--" + m.role },
+            h("span", { className: "hermes-kanban-inline-chat-role" },
+              m.role === "user" ? tx(t, "you", "You") :
+              m.role === "assistant" ? tx(t, "board", "Board") :
+              m.role === "error" ? tx(t, "warning", "Warning") : tx(t, "status", "Status")),
+            h("span", { className: "hermes-kanban-inline-chat-text" }, m.text),
+            m.created && m.created.length > 0 ? h("span", { className: "hermes-kanban-inline-chat-created" },
+              m.created.map(function (id) {
+                return h("button", { key: id, type: "button", onClick: function () { props.onOpenTask && props.onOpenTask(id); } }, id);
+              })) : null,
+          );
+        }),
+        h("button", { type: "button", className: "hermes-kanban-inline-chat-clear", onClick: function () { setMessages([]); } }, tx(t, "clearHistory", "Clear history")),
+      ) : null,
+    );
+  }
   function collectDiagTasks(boardData) {
     if (!boardData || !boardData.columns) return [];
     const out = [];

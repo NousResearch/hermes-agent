@@ -36,16 +36,19 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import sqlite3
 import time
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -53,6 +56,9 @@ from hermes_cli import kanban_db
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_INLINE_DISPATCH_MAX_CHARS = 8000
+_COMMENT_AUTO_ROUTE_THROTTLE_SECONDS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +127,208 @@ def _conn(board: Optional[str] = None):
     except Exception as exc:
         log.warning("kanban init_db failed: %s", exc)
     return kanban_db.connect(board=board)
+
+
+def _selected_orchestrator_profile() -> str:
+    """Resolve the profile used for board-level routing prompts."""
+    try:
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        configured = str(kanban_cfg.get("orchestrator_profile") or "").strip()
+        if configured and profiles_mod.profile_exists(configured):
+            return profiles_mod.normalize_profile_name(configured)
+        active = profiles_mod.get_active_profile_name() or "default"
+        return profiles_mod.normalize_profile_name(active)
+    except Exception:
+        return "default"
+
+
+def _selected_default_assignee() -> str:
+    """Resolve the profile used when a human comment should route a card."""
+    try:
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        configured = str(kanban_cfg.get("default_assignee") or "").strip()
+        if configured:
+            return profiles_mod.normalize_profile_name(configured)
+        active = profiles_mod.get_active_profile_name() or "default"
+        return profiles_mod.normalize_profile_name(active)
+    except Exception:
+        return "default"
+
+
+def _task_ids(conn: sqlite3.Connection) -> set[str]:
+    return {r["id"] for r in conn.execute("SELECT id FROM tasks").fetchall()}
+
+
+def _created_ids_since(
+    conn: sqlite3.Connection,
+    before_ids: set[str],
+) -> list[str]:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE status != 'archived' ORDER BY created_at ASC"
+    ).fetchall()
+    return [r["id"] for r in rows if r["id"] not in before_ids]
+
+
+def _run_kanban_orchestrator_prompt(
+    *,
+    board: Optional[str],
+    prompt: str,
+    profile: Optional[str] = None,
+) -> str:
+    """Forward a dashboard routing prompt into a regular Hermes agent turn.
+
+    The env juggling is intentionally local and restored in all cases.  In
+    particular, ``HERMES_TEST_MODE`` is explicitly unset while constructing the
+    agent so dashboard routing cannot accidentally inherit test-mode behavior
+    from a parent process.
+    """
+    prev_board = os.environ.get("HERMES_KANBAN_BOARD")
+    prev_profile = os.environ.get("HERMES_PROFILE")
+    prev_test_mode = os.environ.get("HERMES_TEST_MODE")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        os.environ["HERMES_PROFILE"] = profile or _selected_orchestrator_profile()
+        os.environ.pop("HERMES_TEST_MODE", None)
+
+        from run_agent import AIAgent  # noqa: WPS433 (intentional lazy import)
+
+        agent = AIAgent(
+            enabled_toolsets=["kanban"],
+            quiet_mode=True,
+            platform="dashboard-kanban",
+            user_name="dashboard",
+            skip_memory=True,
+            max_iterations=12,
+            ephemeral_system_prompt=(
+                "You are the Kanban board inline-dispatch router. "
+                "Use kanban_create to turn the user's request into one or more "
+                "specific, assigned cards. Keep the final response brief and "
+                "include the created task ids."
+            ),
+        )
+        return agent.chat(prompt)
+    finally:
+        if prev_board is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_board
+        if prev_profile is None:
+            os.environ.pop("HERMES_PROFILE", None)
+        else:
+            os.environ["HERMES_PROFILE"] = prev_profile
+        if prev_test_mode is None:
+            os.environ.pop("HERMES_TEST_MODE", None)
+        else:
+            os.environ["HERMES_TEST_MODE"] = prev_test_mode
+
+
+def _inline_dispatch_prompt(board: Optional[str], text: str) -> str:
+    return (
+        f"Board: {board or kanban_db.DEFAULT_BOARD}\n\n"
+        "The dashboard user typed this board-level instruction. Create and "
+        "route Kanban cards as needed. If the instruction is ambiguous, create "
+        "a triage card assigned to the best available profile rather than "
+        "silently doing nothing.\n\n"
+        f"Instruction:\n{text}"
+    )
+
+
+def _comment_auto_route_prompt(
+    task: kanban_db.Task,
+    comment: str,
+    assignee: str,
+) -> str:
+    return (
+        f"Task {task.id} is currently unassigned and just received its first "
+        "human comment. Assign it and prepare it for dispatch.\n\n"
+        f"Recommended assignee: {assignee}\n"
+        f"Title: {task.title}\n"
+        f"Body:\n{task.body or ''}\n\n"
+        f"First comment:\n{comment}"
+    )
+
+
+def _recent_auto_route_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    now: Optional[int] = None,
+) -> Optional[sqlite3.Row]:
+    now = int(time.time()) if now is None else now
+    return conn.execute(
+        "SELECT id, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'comment_auto_routed' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+
+
+def _maybe_auto_route_first_comment(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str],
+    task: kanban_db.Task,
+    previous_comment_count: int,
+    comment: str,
+) -> dict[str, Any]:
+    if previous_comment_count != 0:
+        return {"routed": False, "reason": "not_first_comment"}
+    if task.assignee:
+        return {"routed": False, "reason": "already_assigned"}
+
+    now = int(time.time())
+    recent = _recent_auto_route_event(conn, task.id, now=now)
+    if recent and now - int(recent["created_at"] or 0) < _COMMENT_AUTO_ROUTE_THROTTLE_SECONDS:
+        return {"routed": False, "reason": "throttled"}
+
+    assignee = _selected_default_assignee()
+    try:
+        ok = kanban_db.assign_task(conn, task.id, assignee)
+    except RuntimeError as exc:
+        return {"routed": False, "reason": str(exc)}
+    if not ok:
+        return {"routed": False, "reason": "task_not_found"}
+
+    try:
+        _run_kanban_orchestrator_prompt(
+            board=board,
+            profile=_selected_orchestrator_profile(),
+            prompt=_comment_auto_route_prompt(task, comment, assignee),
+        )
+    except Exception as exc:
+        log.info("kanban comment auto-route prompt failed: %s", exc)
+
+    try:
+        dispatch_result = kanban_db.dispatch_once(
+            conn,
+            max_spawn=1,
+            board=board,
+        )
+        dispatch_payload = asdict(dispatch_result)
+    except Exception as exc:
+        dispatch_payload = {"error": str(exc)}
+
+    with kanban_db.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'comment_auto_routed', ?, ?)",
+            (
+                task.id,
+                json.dumps({"assignee": assignee, "dispatch": dispatch_payload}),
+                now,
+            ),
+        )
+    return {
+        "routed": True,
+        "assignee": assignee,
+        "dispatch": dispatch_payload,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +770,188 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 
 
 # ---------------------------------------------------------------------------
+# Inline board dispatch
+# ---------------------------------------------------------------------------
+
+class InlineDispatchBody(BaseModel):
+    text: str
+    author: Optional[str] = "dashboard"
+
+
+def _sse_event(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _execute_inline_dispatch(board: Optional[str], text: str) -> dict[str, Any]:
+    conn = _conn(board=board)
+    try:
+        before = _task_ids(conn)
+    finally:
+        conn.close()
+
+    try:
+        content = _run_kanban_orchestrator_prompt(
+            board=board,
+            profile=_selected_orchestrator_profile(),
+            prompt=_inline_dispatch_prompt(board, text),
+        )
+        ok = True
+        error = None
+    except Exception as exc:
+        log.info("kanban inline dispatch failed: %s", exc)
+        content = str(exc)
+        ok = False
+        error = str(exc)
+
+    conn = _conn(board=board)
+    try:
+        created = _created_ids_since(conn, before)
+        dispatch_payload: Optional[dict[str, Any]] = None
+        if created:
+            try:
+                dispatch_result = kanban_db.dispatch_once(
+                    conn,
+                    max_spawn=max(1, len(created)),
+                    board=board,
+                )
+                dispatch_payload = asdict(dispatch_result)
+            except Exception as exc:
+                dispatch_payload = {"error": str(exc)}
+    finally:
+        conn.close()
+
+    events = (
+        [{"type": "card_created", "card_id": task_id} for task_id in created]
+        + (
+            [
+                {
+                    "type": "card_status",
+                    "status": "dispatch",
+                    "dispatch": dispatch_payload,
+                }
+            ]
+            if dispatch_payload is not None
+            else []
+        )
+        + [{"type": "result", "content": content}]
+    )
+    if error:
+        events.append({"type": "error", "content": error})
+    return {
+        "ok": ok,
+        "board": board or kanban_db.DEFAULT_BOARD,
+        "content": content,
+        "error": error,
+        "created_task_ids": created,
+        "dispatch": dispatch_payload,
+        "events": events,
+    }
+
+
+def _inline_dispatch_response(
+    *,
+    board: Optional[str],
+    text: str,
+    request: Request,
+    stream: bool,
+):
+    wants_stream = stream or "text/event-stream" in request.headers.get("accept", "")
+    if not wants_stream:
+        return _execute_inline_dispatch(board, text)
+
+    async def generate():
+        yield _sse_event({"type": "card_status", "status": "running"})
+        result = await asyncio.to_thread(_execute_inline_dispatch, board, text)
+        for event in result["events"]:
+            yield _sse_event(event)
+        yield _sse_event({"type": "done", "ok": result["ok"]})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/boards/{board_slug}/inline-dispatch")
+@router.post("/{board_slug}/inline-dispatch")
+def inline_dispatch_board(
+    board_slug: str,
+    payload: InlineDispatchBody,
+    request: Request,
+    stream: bool = Query(False),
+):
+    board = _resolve_board(board_slug)
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > _INLINE_DISPATCH_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text is too long (max {_INLINE_DISPATCH_MAX_CHARS} chars)",
+        )
+
+    return _inline_dispatch_response(
+        board=board,
+        text=text,
+        request=request,
+        stream=stream,
+    )
+
+
+@router.post("/inline-dispatch")
+def inline_dispatch_current_board(
+    payload: InlineDispatchBody,
+    request: Request,
+    board: Optional[str] = Query(None),
+    stream: bool = Query(False),
+):
+    board = _resolve_board(board)
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > _INLINE_DISPATCH_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text is too long (max {_INLINE_DISPATCH_MAX_CHARS} chars)",
+        )
+    return _inline_dispatch_response(
+        board=board,
+        text=text,
+        request=request,
+        stream=stream,
+    )
+
+
+class TTSBody(BaseModel):
+    text: str
+
+
+@router.post("/tts")
+def synthesize_tts(payload: TTSBody):
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        from tools.tts_tool import text_to_speech_tool  # noqa: WPS433
+        raw = text_to_speech_tool(text=text)
+        result = json.loads(raw)
+        if not result.get("success"):
+            raise ValueError(result.get("error") or raw)
+        path = result.get("file_path")
+        if not path:
+            raise ValueError("TTS tool did not return a file path")
+        audio_path = os.path.abspath(str(path))
+        with open(audio_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+        mime = mimetypes.guess_type(audio_path)[0] or "audio/mpeg"
+        return {
+            "ok": True,
+            "provider": result.get("provider"),
+            "voice_compatible": bool(result.get("voice_compatible")),
+            "data_url": f"data:{mime};base64,{encoded}",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # PATCH /tasks/:id  (status / assignee / priority / title / body)
 # ---------------------------------------------------------------------------
 
@@ -763,12 +1153,26 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
-        if kanban_db.get_task(conn, task_id) is None:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        previous_comment_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM task_comments WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()[0]
+        )
         kanban_db.add_comment(
             conn, task_id, author=payload.author or "dashboard", body=payload.body,
         )
-        return {"ok": True}
+        auto_route = _maybe_auto_route_first_comment(
+            conn,
+            board=board,
+            task=task,
+            previous_comment_count=previous_comment_count,
+            comment=payload.body,
+        )
+        return {"ok": True, "auto_route": auto_route}
     finally:
         conn.close()
 

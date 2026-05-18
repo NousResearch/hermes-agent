@@ -301,6 +301,117 @@
 
 /* ---- Inline create --------------------------------------------------- */
 
+.hermes-kanban-inline-chat {
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.hermes-kanban-inline-chat-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.hermes-kanban-inline-chat-input {
+  min-width: 0;
+}
+
+.hermes-kanban-mic,
+.hermes-kanban-tts {
+  min-width: 36px;
+}
+
+.hermes-kanban-mic--recording {
+  color: var(--color-destructive, #d14a4a);
+  border-color: currentColor;
+  animation: hermes-kanban-pulse 1s ease-in-out infinite;
+}
+
+.hermes-kanban-tts--on {
+  color: var(--color-primary, #4a8cd1);
+  border-color: currentColor;
+}
+
+@keyframes hermes-kanban-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.hermes-kanban-inline-chat-status,
+.hermes-kanban-inline-chat-error {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.hermes-kanban-inline-chat-status {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-inline-chat-error {
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-inline-chat-history {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.hermes-kanban-inline-chat-message {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.hermes-kanban-inline-chat-role {
+  color: var(--color-muted-foreground);
+  font-weight: 600;
+}
+
+.hermes-kanban-inline-chat-message--error .hermes-kanban-inline-chat-text {
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-inline-chat-created {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hermes-kanban-inline-chat-created button,
+.hermes-kanban-inline-chat-clear {
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-foreground);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.hermes-kanban-inline-chat-clear {
+  justify-self: start;
+  color: var(--color-muted-foreground);
+}
+
+@media (max-width: 640px) {
+  .hermes-kanban-inline-chat-form {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .hermes-kanban-inline-chat-form > button[type="submit"] {
+    grid-column: 1 / -1;
+  }
+  .hermes-kanban-inline-chat-message {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+}
+
 .hermes-kanban-inline-create {
   display: flex;
   flex-direction: column;

@@ -4382,6 +4382,9 @@ def _mount_plugin_api_routes():
                 continue
             app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
+            if plugin["name"] == "kanban":
+                app.include_router(router, prefix="/api/v1/kanban")
+                _log.info("Mounted kanban compatibility API routes: /api/v1/kanban/")
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 

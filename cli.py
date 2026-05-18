@@ -692,6 +692,11 @@ from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_b
 _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
+# Set to False in tests to prevent os._exit(0) from killing the test process.
+# Production (CLI) runs expect immediate exit after cleanup to avoid the
+# Py_FinalizeEx worker-thread deadlock; tests call _run_cleanup() directly
+# and need it to return normally.
+_enable_force_exit = True
 
 def _run_cleanup():
     """Run resource cleanup exactly once."""
@@ -743,6 +748,15 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider()
     except Exception:
         pass
+    # Force immediate exit after cleanup to prevent Py_FinalizeEx deadlock
+    # with non-daemon threads (httpx pools, prompt_toolkit workers) that
+    # don't check exit flags during interpreter shutdown.  All critical
+    # resources (terminals, browsers, MCP, voice, session, memory provider)
+    # have been released above — bypassing normal shutdown is safe here.
+    # Guarded by _enable_force_exit so tests that call _run_cleanup() directly
+    # are not killed mid-process.  See #27563.
+    if _enable_force_exit:
+        os._exit(0)
 
 
 # =============================================================================

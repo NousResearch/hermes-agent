@@ -42,6 +42,7 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
     mock_agent.session_id = "cleanup-session-id"
     cli_mod._active_agent_ref = mock_agent
     cli_mod._cleanup_done = False
+    cli_mod._enable_force_exit = False
 
     cli_mod._run_cleanup()
 

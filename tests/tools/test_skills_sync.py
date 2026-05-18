@@ -484,9 +484,11 @@ class TestSyncSkills:
 
     def test_nonexistent_bundled_dir(self, tmp_path):
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
-            result = sync_skills(quiet=True)
+            with patch("tools.skills_sync._get_external_skill_names", return_value=set()):
+                result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
+            "skipped_external": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
         }
 
@@ -731,4 +733,105 @@ class TestResetBundledSkill:
             # Manifest entry still present (re-baselined), user copy still present
             post_manifest = _read_manifest()
             assert "google-workspace" in post_manifest
-        assert (skills_dir / "productivity" / "google-workspace" / "SKILL.md").exists()
+
+
+class TestExternalDirsSkip:
+    """Tests for #28126: sync_skills skips bundled skills already in external_dirs."""
+
+    def _setup_bundled(self, tmp_path):
+        """Create a fake bundled skills directory."""
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "devops" / "kanban-worker").mkdir(parents=True)
+        (bundled / "devops" / "kanban-worker" / "SKILL.md").write_text(
+            "---\nname: kanban-worker\n---\n# Kanban Worker"
+        )
+        (bundled / "utils" / "my-skill").mkdir(parents=True)
+        (bundled / "utils" / "my-skill" / "SKILL.md").write_text(
+            "---\nname: my-skill\n---\n# My Skill"
+        )
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file, external_names=None):
+        """Return context manager stack for patching sync globals."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        if external_names is not None:
+            stack.enter_context(
+                patch("tools.skills_sync._get_external_skill_names", return_value=external_names)
+            )
+        else:
+            stack.enter_context(
+                patch("tools.skills_sync._get_external_skill_names", return_value=set())
+            )
+        return stack
+
+    def test_no_external_dirs_copies_all(self, tmp_path):
+        """Without external_dirs, all bundled skills are synced normally."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert len(result["copied"]) == 2
+        assert result["skipped_external"] == 0
+
+    def test_external_dirs_skips_matching_skills(self, tmp_path):
+        """Skills in external_dirs are skipped to prevent collision."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # kanban-worker is in external_dirs
+        with self._patches(bundled, skills_dir, manifest_file, external_names={"kanban-worker"}):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped_external"] == 1
+        assert len(result["copied"]) == 1
+        assert "my-skill" in result["copied"]
+        assert not (skills_dir / "devops" / "kanban-worker").exists()
+
+    def test_all_skills_in_external_dirs_skips_everything(self, tmp_path):
+        """When all skills are in external_dirs, nothing is copied."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(
+            bundled, skills_dir, manifest_file,
+            external_names={"kanban-worker", "my-skill"},
+        ):
+            result = sync_skills(quiet=True)
+
+        assert result["skipped_external"] == 2
+        assert result["copied"] == []
+        assert result["total_bundled"] == 2
+
+    def test_skipped_external_not_in_manifest(self, tmp_path):
+        """Skills skipped due to external_dirs should not appear in manifest."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file, external_names={"kanban-worker"}):
+            sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        assert "kanban-worker" not in manifest
+        assert "my-skill" in manifest
+
+    def test_return_dict_includes_skipped_external_key(self, tmp_path):
+        """Return dict always has skipped_external key (backward compat)."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "skipped_external" in result
+        assert isinstance(result["skipped_external"], int)

@@ -27,7 +27,7 @@ import os
 import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,80 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
+
+
+def _get_external_skill_names() -> Set[str]:
+    """Read skills.external_dirs from the current profile's config and collect
+    all skill names already available via those external directories.
+
+    Returns a set of skill names (from SKILL.md frontmatter ``name:`` field)
+    that exist in any of the configured external_dirs.  Used by sync_skills()
+    to skip copying bundled skills whose names would collide with external
+    sources — avoiding the shadow-copy bug described in #28126.
+    """
+    config_path = _find_config_yaml()
+    if not config_path:
+        return set()
+
+    try:
+        import yaml
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+
+    if not isinstance(parsed, dict):
+        return set()
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return set()
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+
+    local_skills = SKILLS_DIR.resolve()
+    names: Set[str] = set()
+
+    for entry in raw_dirs:
+        entry = str(entry).strip()
+        if not entry:
+            continue
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        p = Path(expanded)
+        if not p.is_absolute():
+            p = (HERMES_HOME / p).resolve()
+        else:
+            p = p.resolve()
+        # Skip if it's the same as the local skills dir
+        if p == local_skills:
+            continue
+        if not p.is_dir():
+            continue
+        # Scan for SKILL.md and read names
+        for skill_md in p.rglob("SKILL.md"):
+            path_str = str(skill_md)
+            if "/.git/" in path_str or "/.hub/" in path_str:
+                continue
+            name = _read_skill_name(skill_md, skill_md.parent.name)
+            names.add(name)
+
+    return names
+
+
+def _find_config_yaml() -> Optional[Path]:
+    """Locate config.yaml for the current HERMES_HOME."""
+    # Standard location
+    cfg = HERMES_HOME / "config.yaml"
+    if cfg.exists():
+        return cfg
+    # Fallback: check for .hermes/config.yaml pattern
+    alt = HERMES_HOME / ".hermes" / "config.yaml"
+    if alt.exists():
+        return alt
+    return None
 
 
 def _get_bundled_dir() -> Path:
@@ -186,6 +260,7 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
+            "skipped_external": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
         }
 
@@ -193,6 +268,12 @@ def sync_skills(quiet: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
+
+    # Check if this profile delegates skill resolution via external_dirs.
+    # If so, skip syncing bundled skills that are already available from
+    # external sources to prevent shadow copies and name collisions (#28126).
+    external_names = _get_external_skill_names()
+    skipped_external = 0
 
     copied = []
     updated = []
@@ -202,6 +283,13 @@ def sync_skills(quiet: bool = False) -> dict:
     for skill_name, skill_src in bundled_skills:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
+
+        # Skip if this skill is already provided by an external_dir (#28126).
+        # This prevents writing shadow copies into profile-local skills/ that
+        # would collide with the delegated external source.
+        if skill_name in external_names:
+            skipped_external += 1
+            continue
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
@@ -312,6 +400,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "copied": copied,
         "updated": updated,
         "skipped": skipped,
+        "skipped_external": skipped_external,
         "user_modified": user_modified,
         "cleaned": cleaned,
         "total_bundled": len(bundled_skills),

@@ -20,7 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type IDisposable } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
@@ -113,6 +113,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+  const recoverWebglRef = useRef<(() => void) | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -345,7 +346,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -446,25 +447,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
-
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
     //
@@ -530,6 +512,59 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
     syncMetricsRef.current = syncTerminalMetrics;
+
+    let webglAddon: WebglAddon | null = null;
+    let webglContextLossDisposable: IDisposable | null = null;
+    let webglRecoverRaf = 0;
+
+    const disposeWebglAddon = () => {
+      webglContextLossDisposable?.dispose();
+      webglContextLossDisposable = null;
+      webglAddon?.dispose();
+      webglAddon = null;
+    };
+
+    const installWebglAddon = () => {
+      // WebGL draws from a texture atlas sized with device pixels. On phones and
+      // in DevTools device mode that often produces *visually* much larger cells
+      // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
+      // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
+      // hosts. Wide layouts still get WebGL for crisp box-drawing.
+      if (webglAddon || terminalTierWidthPx(host) < 768) {
+        return;
+      }
+
+      let nextWebgl: WebglAddon | null = null;
+      try {
+        nextWebgl = new WebglAddon();
+        const contextLossDisposable = nextWebgl.onContextLoss(() => {
+          if (webglAddon !== nextWebgl) return;
+          disposeWebglAddon();
+          if (!host.isConnected || webglRecoverRaf) return;
+          webglRecoverRaf = requestAnimationFrame(() => {
+            webglRecoverRaf = 0;
+            installWebglAddon();
+            syncTerminalMetrics();
+          });
+        });
+        webglContextLossDisposable = contextLossDisposable;
+        term.loadAddon(nextWebgl);
+        webglAddon = nextWebgl;
+      } catch (err) {
+        webglContextLossDisposable?.dispose();
+        webglContextLossDisposable = null;
+        nextWebgl?.dispose();
+        console.warn(
+          "[hermes-chat] WebGL renderer unavailable; falling back to default",
+          err,
+        );
+      }
+    };
+    installWebglAddon();
+    recoverWebglRef.current = () => {
+      installWebglAddon();
+      syncTerminalMetrics();
+    };
 
     const scheduleSyncTerminalMetrics = () => {
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -647,6 +682,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       unmounting = true;
       syncMetricsRef.current = null;
+      recoverWebglRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -659,6 +695,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      if (webglRecoverRaf) cancelAnimationFrame(webglRecoverRaf);
+      disposeWebglAddon();
       ws.close();
       wsRef.current = null;
       term.dispose();
@@ -695,7 +733,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf1 = 0;
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
-        syncMetricsRef.current?.();
+        recoverWebglRef.current?.();
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement

@@ -2,6 +2,22 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Plan Workflow
+
+When working on specifications, architecture, or implementation tasks, follow the
+plan lifecycle described in [`docs/session-workflow.md`](docs/session-workflow.md).
+
+**Quick reference for all roles:**
+
+- **Specifiers & Architects:** Write plans into `docs/plans-active/`. Index them in
+  `docs/agent-index.md`. Block for human review when ready.
+- **Implementors:** Read the plan before coding. Annotate deviations with `[CHANGED]`
+  and `[DOWNSTREAM]` markers (do not overwrite original content). On completion,
+  move the plan to `docs/plans-complete/` with a `YYYY-MM-DD-` date prefix and
+  remove its entry from the Active Plans index.
+
+See [`docs/agent-index.md`](docs/agent-index.md) for the current list of active plans.
+
 ## Development Environment
 
 ```bash

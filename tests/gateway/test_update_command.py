@@ -678,6 +678,98 @@ class TestSendUpdateNotification:
         assert not pending_path.exists()
         assert not exit_code_path.exists()
 
+    @pytest.mark.asyncio
+    async def test_writes_notification_to_transcript(self, tmp_path):
+        """The update notification is written to the session transcript (#27846).
+
+        When the gateway restarts after an update, _send_update_notification sends
+        a standalone adapter.send() that lands outside the conversation history.
+        The agent then cannot see that an update already occurred, causing it to
+        behave as if no update happened (repeating upgrade prompts, losing context).
+
+        The fix writes the notification as a system message into the session
+        transcript so the agent retains context of the update result.
+        """
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        session_key = "telegram:67890:user:12345"
+        session_id = "sess_abc123"
+
+        # Build a mock session store with an active session entry
+        mock_session_store = MagicMock()
+        mock_session_store._entries = {
+            session_key: SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+        }
+        mock_session_store.append_to_transcript = MagicMock()
+        runner.session_store = mock_session_store
+
+        # Write pending marker that includes the session_key
+        pending = {
+            "platform": "telegram",
+            "chat_id": "67890",
+            "user_id": "12345",
+            "session_key": session_key,
+            "timestamp": "2026-03-04T21:00:00",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("Done")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        # adapter.send still called (user-visible notification)
+        mock_adapter.send.assert_called_once()
+
+        # append_to_transcript called with system message in the right session
+        mock_session_store.append_to_transcript.assert_called_once()
+        call_args = mock_session_store.append_to_transcript.call_args
+        assert call_args[0][0] == session_id  # session_id positional arg
+        msg_dict = call_args[0][1]
+        assert msg_dict["role"] == "system"
+        assert "update finished" in msg_dict["content"]
+
+    @pytest.mark.asyncio
+    async def test_transcript_write_skipped_when_no_session(self, tmp_path):
+        """No error when session_key is absent or session not in store."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        # Pending without session_key
+        pending = {
+            "platform": "telegram",
+            "chat_id": "67890",
+            "user_id": "12345",
+            # no session_key
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("Done")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        runner.session_store = None  # no session store at all
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            # Should not raise
+            await runner._send_update_notification()
+
+        mock_adapter.send.assert_called_once()  # user still gets notified
+
 
 # ---------------------------------------------------------------------------
 # /update in help and known_commands

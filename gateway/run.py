@@ -13257,6 +13257,24 @@ class GatewayRunner:
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+
+                # Write the notification to the session transcript so the agent
+                # retains context of the update result (#27846).  Without this,
+                # the standalone adapter.send() lands outside the conversation
+                # history and the agent cannot see that an update already occurred.
+                session_key = pending.get("session_key")
+                if session_key and hasattr(self, "session_store") and self.session_store is not None:
+                    entry = self.session_store._entries.get(session_key)
+                    if entry:
+                        self.session_store.append_to_transcript(
+                            entry.session_id,
+                            {"role": "system", "content": msg},
+                        )
+                        logger.debug(
+                            "Update notification written to transcript session %s",
+                            entry.session_id,
+                        )
+
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
@@ -15334,16 +15352,26 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            _last_assistant_rationale = ""
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                nonlocal _last_assistant_rationale
                 if not _run_still_current():
                     return
+                # Capture the assistant's latest text for contextual approval
+                # prompts.  We keep only the last non-empty chunk so the
+                # approval card shows the most recent rationale, not an
+                # accumulation of every streaming segment.
+                _stripped = str(text or "").strip()
+                if _stripped:
+                    _last_assistant_rationale = _stripped
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(text)
                     return
-                if already_streamed or not _status_adapter or not str(text or "").strip():
+                if already_streamed or not _status_adapter or not _stripped:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
@@ -15659,6 +15687,7 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                _rationale = _last_assistant_rationale
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -15671,6 +15700,7 @@ class GatewayRunner:
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
+                                contextual_reason=_rationale,
                                 metadata=_status_thread_metadata,
                             ),
                             _loop_for_step,
@@ -15693,8 +15723,10 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                _rationale_block = f"\n{_rationale}\n\n" if _rationale else ""
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{_rationale_block}"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "

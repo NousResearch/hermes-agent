@@ -3990,6 +3990,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """
@@ -4014,9 +4015,12 @@ class DiscordAdapter(BasePlatformAdapter):
             # Discord embed description limit is 4096; show full command up to that
             max_desc = 4088
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            _embed_desc = f"```\n{cmd_display}\n```"
+            if contextual_reason:
+                _embed_desc = f"{contextual_reason}\n\n{_embed_desc}"
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                description=_embed_desc,
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=description, inline=False)

@@ -6029,7 +6029,7 @@ def _is_default_local_cdp(parsed) -> bool:
     discovery_path = parsed.path in {"", "/", "/json", "/json/version"}
     return (
         parsed.scheme in {"http", "ws"}
-        and parsed.hostname in {"127.0.0.1", "localhost"}
+        and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
         and port == 9222
         and discovery_path
     )
@@ -6049,6 +6049,46 @@ def _probe_urls(parsed) -> list[str]:
     scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
     return [f"{root}/json/version", f"{root}/json"]
+
+
+def _loopback_probe_candidates(parsed) -> list:
+    """Return local CDP discovery candidates, preserving the user's first choice.
+
+    macOS can end up with two Chrome listeners on the same port: one bound to
+    IPv4 ``127.0.0.1`` that is not a DevTools endpoint, and the real debug
+    Chrome bound to IPv6 ``::1``.  A plain TCP check or a hard normalization to
+    ``127.0.0.1`` then misses the connectable browser.  For the default local
+    CDP endpoint, probe all loopback spellings and keep the first one that
+    actually serves Chrome's discovery API.
+    """
+    try:
+        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
+    except ValueError:
+        return [parsed]
+
+    hosts = [parsed.hostname or ""]
+    if _is_default_local_cdp(parsed):
+        hosts.extend(["127.0.0.1", "::1", "localhost"])
+
+    candidates = []
+    seen: set[str] = set()
+    for host in hosts:
+        if not host:
+            continue
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        candidate = parsed._replace(
+            netloc=netloc,
+            path="",
+            params="",
+            query="",
+            fragment="",
+        )
+        key = candidate.geturl()
+        if key not in seen:
+            candidates.append(candidate)
+            seen.add(key)
+
+    return candidates or [parsed]
 
 
 def _normalize_cdp_url(parsed) -> str:
@@ -6133,11 +6173,10 @@ def _browser_connect(rid, params: dict) -> dict:
     except ValueError:
         return _err(rid, 4015, f"invalid port in browser url: {url}")
 
-    # Always normalize default-local to 127.0.0.1:9222 so downstream
-    # comparisons + messaging match what we'll actually persist.
-    if _is_default_local_cdp(parsed):
-        url = DEFAULT_BROWSER_CDP_URL
-        parsed = urlparse(url)
+    default_local_cdp = _is_default_local_cdp(parsed)
+    if default_local_cdp:
+        parsed = _normalize_cdp_url(parsed)
+        parsed = urlparse(parsed)
         port = parsed.port or 9222
 
     try:
@@ -6155,10 +6194,21 @@ def _browser_connect(rid, params: dict) -> dict:
             except OSError as e:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
         else:
-            probes = _probe_urls(parsed)
-            ok = any(_http_ok(p, timeout=2.0) for p in probes)
+            candidates = _loopback_probe_candidates(parsed) if default_local_cdp else [parsed]
 
-            if not ok and _is_default_local_cdp(parsed):
+            def _pick_reachable_candidate(timeout: float):
+                for candidate in candidates:
+                    if any(_http_ok(p, timeout=timeout) for p in _probe_urls(candidate)):
+                        return candidate
+                return None
+
+            reachable = _pick_reachable_candidate(timeout=2.0)
+            ok = reachable is not None
+            if reachable is not None:
+                parsed = reachable
+                port = parsed.port or port
+
+            if not ok and default_local_cdp:
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
                 announce(
@@ -6168,7 +6218,10 @@ def _browser_connect(rid, params: dict) -> dict:
                 if try_launch_chrome_debug(port, system):
                     for _ in range(20):
                         time.sleep(0.5)
-                        if any(_http_ok(p, timeout=1.0) for p in probes):
+                        reachable = _pick_reachable_candidate(timeout=1.0)
+                        if reachable is not None:
+                            parsed = reachable
+                            port = parsed.port or port
                             ok = True
                             break
 
@@ -6182,7 +6235,7 @@ def _browser_connect(rid, params: dict) -> dict:
                     )
             elif not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
-            elif _is_default_local_cdp(parsed):
+            elif default_local_cdp:
                 announce(f"Chrome is already listening on port {port}")
 
         normalized = _normalize_cdp_url(parsed)

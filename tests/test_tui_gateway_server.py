@@ -3935,6 +3935,45 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
+def test_browser_manage_connect_default_local_uses_ipv6_when_ipv4_is_not_cdp(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    urls: list[str] = []
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 - match urllib signature
+        urls.append(url)
+        if "[::1]:9222" in url:
+            return _Resp()
+        raise OSError("not a Chrome CDP discovery endpoint")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://[::1]:9222"
+    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert os.environ["BROWSER_CDP_URL"] == "http://[::1]:9222"
+    assert "http://127.0.0.1:9222/json/version" in urls
+    assert "http://[::1]:9222/json/version" in urls
+
+
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     emitted: list[tuple[str, dict]] = []
@@ -3971,13 +4010,13 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
             )
 
     assert resp["result"]["connected"] is False
-    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["url"] == "http://localhost:9222"
     assert (
         resp["result"]["messages"][0]
         == "Chrome isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No Chrome/Chromium executable was found" in line
+        "Start Chrome with remote debugging" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -4086,7 +4125,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
         attempts["n"] += 1
-        if attempts["n"] < 3:
+        if attempts["n"] < 7:
             raise OSError("not ready")
         return _Resp()
 

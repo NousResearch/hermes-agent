@@ -89,7 +89,18 @@ def _locales_dir() -> Path:
 
     Lives next to the repo root so both the bundled install and editable
     checkouts find it without PYTHONPATH gymnastics.
+
+    Resolution order:
+    1. ``HERMES_BUNDLED_LOCALES`` env var — set by the Nix wrapper (or any
+       sealed-packaging system) to point at the installed locale directory.
+    2. ``<repo-root>/locales/`` — works for editable checkouts and
+       ``pip install -e .`` where the source tree is the working copy.
     """
+    bundled = os.environ.get("HERMES_BUNDLED_LOCALES")
+    if bundled:
+        p = Path(bundled)
+        if p.is_dir():
+            return p
     # agent/i18n.py -> agent/ -> repo root
     return Path(__file__).resolve().parent.parent / "locales"
 

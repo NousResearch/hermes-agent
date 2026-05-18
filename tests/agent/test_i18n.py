@@ -167,3 +167,29 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 def test_t_unknown_language_uses_english():
     """Unknown lang codes normalize to English, not to a key-path fallback."""
     assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
+
+
+def test_bundled_locales_env_var(tmp_path, monkeypatch):
+    """HERMES_BUNDLED_LOCALES overrides the default locales directory.
+
+    This is used by sealed-packaging systems (Nix, pip wheels, etc.)
+    where the repo-root ``locales/`` directory is not available at runtime.
+    """
+    bundled = tmp_path / "bundled-locales"
+    bundled.mkdir()
+    (bundled / "en.yaml").write_text("test.key: Bundled English\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    try:
+        assert i18n._locales_dir() == bundled
+    finally:
+        monkeypatch.delenv("HERMES_BUNDLED_LOCALES", raising=False)
+
+
+def test_bundled_locales_env_var_ignored_when_missing(tmp_path, monkeypatch):
+    """HERMES_BUNDLED_LOCALES is ignored if the directory doesn't exist."""
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(tmp_path / "nonexistent"))
+    try:
+        result = i18n._locales_dir()
+        assert result.name == "locales"
+    finally:
+        monkeypatch.delenv("HERMES_BUNDLED_LOCALES", raising=False)

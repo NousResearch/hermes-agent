@@ -209,6 +209,12 @@ hermes skills uninstall <skill-name>
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web application penetration testing — reconnaissance, vulnerability analysis, proof-based exploitation, and professional reporting. Adapts Shannon's "No Exploit, No Report" methodology with hard guardrails for scope, authoriza... |
 
+## smart-home
+
+| Skill | Description |
+|-------|-------------|
+| [**hermes-tescmd-plugin**](/docs/user-guide/skills/optional/smart-home/smart-home-hermes-tescmd-plugin) | Install and operate the native Hermes Tesla Fleet plugin for vehicle state, guarded controls, /tescmd dashboard widgets, and /tescmd-* slash commands. |
+
 ## software-development
 
 | Skill | Description |

@@ -576,6 +576,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'smart-home',
+                  key: 'skills-optional-smart-home',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/smart-home/smart-home-hermes-tescmd-plugin',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'software-development',
                   key: 'skills-optional-software-development',
                   collapsed: true,

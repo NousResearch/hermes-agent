@@ -588,6 +588,12 @@ def _guess_category(tags: list) -> str:
 
 MIN_CATEGORY_SIZE = 4
 
+# Curated categories that should stay visible even before they reach the
+# normal consolidation threshold. "smart-home" currently has a small official
+# optional-skill footprint, but it is a durable top-level domain alongside the
+# bundled smart-home skills rather than noisy tag drift.
+CURATED_SMALL_CATEGORIES = {"smart-home"}
+
 
 def _consolidate_small_categories(skills: list) -> list:
     for s in skills:
@@ -597,11 +603,16 @@ def _consolidate_small_categories(skills: list) -> list:
 
     # Skills with a sidecar-declared category (skills.sh.json grouping) keep
     # their category even if it's the only skill in it — the tap explicitly
-    # chose that label, so it's not a heuristic guess to collapse away.
+    # chose that label, so it's not a heuristic guess to collapse away. Curated
+    # small categories are also exempt from the collapse, but they still don't
+    # contribute to non-fixed category counts for other categories.
     counts = Counter(
         s["category"] for s in skills if not s.get("fixedCategory")
     )
-    small_cats = {cat for cat, n in counts.items() if n < MIN_CATEGORY_SIZE}
+    small_cats = {
+        cat for cat, n in counts.items()
+        if n < MIN_CATEGORY_SIZE and cat not in CURATED_SMALL_CATEGORIES
+    }
 
     for s in skills:
         if s.get("fixedCategory"):

@@ -158,19 +158,22 @@ def test_codex_stream_postlude_error_still_falls_back():
 
 
 # ---------------------------------------------------------------------------
-# Fix B: friendly entitlement message
+# Fix B: surface xAI's entitlement body verbatim (no editorializing)
+#
+# The original PR #26644 appended a hint that led with "X Premium+ does NOT
+# include xAI API access — only standalone SuperGrok subscribers can use this
+# provider."  xAI announced on 2026-05-16 that X Premium subs now work in
+# Hermes (https://x.ai/news/grok-hermes), making that hint actively wrong:
+# a Premium+ user hitting a real entitlement issue (no Grok sub, wrong tier,
+# exhausted quota) would be misdirected to switch subscriptions when their
+# Premium sub is in fact valid.  We now surface xAI's own body text verbatim
+# (which already says "Manage subscriptions at https://grok.com/?_s=usage")
+# and leave the diagnosis to xAI's wording.
 # ---------------------------------------------------------------------------
 
 
-def test_summarize_api_error_decorates_xai_entitlement_403():
-    """xAI's OAuth 403 must surface the X Premium+ gotcha + neutral causes.
-
-    Wording deliberately leads with the X Premium+ gotcha because that's
-    the #1 confusing case: people see Grok in their X app, assume it
-    works here too, and hit this 403 with no idea API access is a
-    separate SKU.  Other causes (no subscription, wrong tier, exhausted
-    quota) follow.
-    """
+def test_summarize_api_error_surfaces_xai_entitlement_body_verbatim():
+    """xAI's OAuth 403 body must surface as-is, with no Hermes-side hint."""
     from run_agent import AIAgent
 
     error = RuntimeError(
@@ -180,45 +183,15 @@ def test_summarize_api_error_decorates_xai_entitlement_403():
         "subscriptions at https://grok.com'}"
     )
     summary = AIAgent._summarize_api_error(error)
-    # The original xAI text must survive — it's still useful diagnostic info.
+    # xAI's own body text must reach the user — they need it to diagnose.
     assert "do not have an active Grok subscription" in summary
-    # The hint MUST lead with the X Premium+ gotcha (most likely cause
-    # for users who think they're subscribed).
-    assert "X Premium+ does NOT include" in summary
-    assert "standalone SuperGrok subscribers" in summary
-    # Other causes still listed.
-    assert "no Grok subscription" in summary
-    assert "tier doesn't include this model" in summary
-    assert "quota is exhausted" in summary
-    # The hint must point at the usage page where the user can verify.
-    assert "https://grok.com/?_s=usage" in summary
-    # Switching providers is still a valid escape hatch.
-    assert "/model" in summary
+    # No stale claim that X Premium is incompatible with Hermes.
+    assert "X Premium+ does NOT include" not in summary
+    assert "standalone SuperGrok subscribers" not in summary
 
 
-def test_summarize_api_error_does_not_accuse_subscribers():
-    """Hint must not confidently say the user has no subscription.
-
-    Don Piedro reported his subscription is active. The hint must not
-    contradict him — leading with the X Premium+ gotcha gives subscribers
-    a plausible reason ("oh, I'm on Premium+ not pure SuperGrok") instead
-    of accusing them of lying about having a subscription.
-    """
-    from run_agent import AIAgent
-
-    error = RuntimeError(
-        "HTTP 403: do not have an active Grok subscription"
-    )
-    summary = AIAgent._summarize_api_error(error)
-    # MUST NOT contain language that flatly assumes the user is unsubscribed.
-    assert "lacks SuperGrok" not in summary
-    assert "you are not subscribed" not in summary.lower()
-    # MUST lead with the most-likely-but-non-accusatory cause.
-    assert "X Premium+ does NOT include" in summary
-
-
-def test_summarize_api_error_decorates_xai_body_message():
-    """SDK-style error with structured body must also get the hint."""
+def test_summarize_api_error_xai_body_message_unwrapped():
+    """SDK-style error with structured body surfaces the message cleanly."""
     from run_agent import AIAgent
 
     class _XaiErr(Exception):
@@ -235,19 +208,9 @@ def test_summarize_api_error_decorates_xai_body_message():
 
     summary = AIAgent._summarize_api_error(_XaiErr("403"))
     assert "HTTP 403" in summary
-    assert "X Premium+ does NOT include" in summary
-
-
-def test_summarize_api_error_idempotent_for_entitlement_hint():
-    """Decorating twice must not double up the hint."""
-    from run_agent import AIAgent
-
-    raw = "HTTP 403: do not have an active Grok subscription"
-    once = AIAgent._decorate_xai_entitlement_error(raw)
-    twice = AIAgent._decorate_xai_entitlement_error(once)
-    assert once == twice
-    # Sanity: the hint did fire on the first pass.
-    assert "X Premium+ does NOT include" in once
+    assert "do not have an active Grok subscription" in summary
+    # No editorializing on top of xAI's own wording.
+    assert "X Premium+ does NOT include" not in summary
 
 
 def test_summarize_api_error_passes_through_unrelated_errors():
@@ -259,6 +222,62 @@ def test_summarize_api_error_passes_through_unrelated_errors():
     assert "SuperGrok" not in summary
     assert "grok.com" not in summary
     assert "upstream is sad" in summary
+
+
+# ---------------------------------------------------------------------------
+# Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
+#
+# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# when the Responses stream emits a ``type=error`` SSE frame.  Before this
+# fix, classify_api_error had no match for "grok subscription" in its pattern
+# lists, so it returned FailoverReason.unknown (retryable=True) — burning
+# max_retries before the agent stopped.  _is_entitlement_failure was never
+# called because it only runs when FailoverReason.auth is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_classify_api_error_stream_event_grok_subscription_is_auth():
+    """_StreamErrorEvent with xAI subscription message classifies as auth/non-retryable.
+
+    The SSE error path has status_code=None, so _classify_by_status is
+    skipped.  The explicit pattern added at step 1 must fire first and
+    return auth/non-retryable so _is_entitlement_failure can stop the loop.
+    """
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have either run out of available resources or do not have an "
+        "active Grok subscription. Manage subscriptions at https://grok.com",
+        code="The caller does not have permission to execute the specified operation",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+    assert result.should_fallback is True
+
+
+def test_classify_api_error_stream_event_resources_exhausted_grok_is_auth():
+    """'out of available resources' + 'grok' variant also classifies as auth."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent(
+        "You have run out of available resources for Grok.",
+    )
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason == FailoverReason.auth
+    assert result.retryable is False
+
+
+def test_classify_api_error_stream_event_unrelated_not_reclassified():
+    """An unrelated _StreamErrorEvent must not be caught by the xAI guard."""
+    from run_agent import _StreamErrorEvent
+    from agent.error_classifier import classify_api_error, FailoverReason
+
+    err = _StreamErrorEvent("Internal server error — try again later")
+    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
+    assert result.reason != FailoverReason.auth
 
 
 # ---------------------------------------------------------------------------

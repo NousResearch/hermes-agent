@@ -610,6 +610,43 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- decompose --- (triage → fan-out via auxiliary LLM + orchestrator)
+    p_decompose = sub.add_parser(
+        "decompose",
+        help="Decompose a triage-column task into a graph of child tasks "
+             "routed to specialist profiles by description. Falls back to "
+             "specify-style single-task promotion when the task doesn't "
+             "benefit from fan-out. Uses auxiliary.kanban_decomposer.",
+    )
+    p_decompose.add_argument(
+        "task_id",
+        nargs="?",
+        default=None,
+        help="Task id to decompose (required unless --all is given)",
+    )
+    p_decompose.add_argument(
+        "--all",
+        dest="all_triage",
+        action="store_true",
+        help="Decompose every task currently in the triage column",
+    )
+    p_decompose.add_argument(
+        "--tenant",
+        default=None,
+        help="When used with --all, restrict the sweep to this tenant",
+    )
+    p_decompose.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on the audit comment "
+             "(default: $HERMES_PROFILE or 'decomposer')",
+    )
+    p_decompose.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one JSON object per task on stdout",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -740,6 +777,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "notify-unsubscribe": _cmd_notify_unsubscribe,
         "context":  _cmd_context,
         "specify":  _cmd_specify,
+        "decompose":  _cmd_decompose,
         "gc":       _cmd_gc,
     }
     handler = handlers.get(action)
@@ -1355,6 +1393,9 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     the dashboard uses, so CLI output matches what the UI shows.
     """
     from hermes_cli import kanban_diagnostics as kd
+    from hermes_cli.config import load_config
+
+    diag_config = kd.config_from_runtime_config(load_config())
 
     with kb.connect() as conn:
         # Either one-task mode or fleet mode.
@@ -1368,6 +1409,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    config=diag_config,
                 )
             }
         else:
@@ -1395,7 +1437,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
-                    dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []))
+                    dl = kd.compute_task_diagnostics(
+                        r,
+                        ev_by.get(tid, []),
+                        run_by.get(tid, []),
+                        config=diag_config,
+                    )
                     if dl:
                         diags_by_task[tid] = dl
 
@@ -1403,7 +1450,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         sev = getattr(args, "severity", None)
         if sev:
             for tid in list(diags_by_task.keys()):
-                kept = [d for d in diags_by_task[tid] if d.severity == sev]
+                kept = [d for d in diags_by_task[tid] if kd.SEVERITY_ORDER.index(d.severity) >= kd.SEVERITY_ORDER.index(sev)]
                 if kept:
                     diags_by_task[tid] = kept
                 else:
@@ -2112,6 +2159,87 @@ def _cmd_specify(args: argparse.Namespace) -> int:
         return 0 if ok_count == 1 else 1
     # --all: succeed if at least one promotion landed; exit 1 only when
     # every candidate failed (honest signal for scripts).
+    return 0 if (ok_count > 0 or not ids) else 1
+
+
+def _cmd_decompose(args: argparse.Namespace) -> int:
+    """Fan a triage task (or all of them) out into a graph of child
+    tasks via the auxiliary LLM, routed to specialist profiles by
+    description. Thin wrapper over ``kanban_decompose``."""
+    from hermes_cli import kanban_decompose as decomp
+
+    all_flag = bool(getattr(args, "all_triage", False))
+    tenant = getattr(args, "tenant", None)
+    author = getattr(args, "author", None) or _profile_author()
+    want_json = bool(getattr(args, "json", False))
+
+    if args.task_id and all_flag:
+        print(
+            "kanban: pass either a task id OR --all, not both",
+            file=sys.stderr,
+        )
+        return 2
+
+    if all_flag:
+        ids = decomp.list_triage_ids(tenant=tenant)
+        if not ids:
+            msg = (
+                "No triage tasks"
+                + (f" for tenant {tenant!r}" if tenant else "")
+                + "."
+            )
+            if want_json:
+                print(json.dumps({"decomposed": 0, "total": 0}))
+            else:
+                print(msg)
+            return 0
+    elif args.task_id:
+        ids = [args.task_id]
+    else:
+        print(
+            "kanban: decompose requires a task id or --all",
+            file=sys.stderr,
+        )
+        return 2
+
+    ok_count = 0
+    for tid in ids:
+        outcome = decomp.decompose_task(tid, author=author)
+        if outcome.ok:
+            ok_count += 1
+        if want_json:
+            print(json.dumps({
+                "task_id": outcome.task_id,
+                "ok": outcome.ok,
+                "reason": outcome.reason,
+                "fanout": outcome.fanout,
+                "child_ids": outcome.child_ids,
+                "new_title": outcome.new_title,
+            }))
+        elif outcome.ok:
+            if outcome.fanout and outcome.child_ids:
+                child_summary = ", ".join(outcome.child_ids)
+                print(
+                    f"Decomposed {outcome.task_id} → {len(outcome.child_ids)} "
+                    f"children ({child_summary}); root promoted to todo"
+                )
+            else:
+                title_suffix = (
+                    f" — retitled: {outcome.new_title!r}"
+                    if outcome.new_title
+                    else ""
+                )
+                print(
+                    f"Specified {outcome.task_id} → todo "
+                    f"(no fanout){title_suffix}"
+                )
+        else:
+            print(
+                f"kanban: decompose {outcome.task_id}: {outcome.reason}",
+                file=sys.stderr,
+            )
+    if not all_flag:
+        return 0 if ok_count == 1 else 1
     return 0 if (ok_count > 0 or not ids) else 1
 
 

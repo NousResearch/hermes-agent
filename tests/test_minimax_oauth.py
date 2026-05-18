@@ -470,6 +470,110 @@ def test_resolve_credentials_requires_login():
 
 
 # ---------------------------------------------------------------------------
+# 11b. Terminal refresh failure quarantines dead tokens (#28003)
+# ---------------------------------------------------------------------------
+
+def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure():
+    """Terminal refresh failure (relogin_required + refresh_token present) must
+    clear access_token/refresh_token/expires_* from auth.json and write a
+    last_auth_error marker, so subsequent calls fail fast with not_logged_in
+    instead of replaying the dead refresh token over the network.
+    Mirrors Nous / xAI-OAuth / Codex-OAuth quarantine pattern.
+    """
+    stale_state = {
+        "access_token": "dead-access-token",
+        "refresh_token": "dead-refresh-token",
+        "expires_at": "2026-01-01T00:00:00Z",
+        "expires_in": 3600,
+        "obtained_at": "2026-01-01T00:00:00Z",
+        "inference_base_url": "https://api.minimax.io/v1",
+        "portal_base_url": "https://portal.minimax.io",
+        "client_id": "test-client",
+        "region": "global",
+    }
+    saved_states = []
+
+    def _capture_save(s):
+        saved_states.append(dict(s))
+
+    def _terminal_refresh(_state):
+        raise AuthError(
+            "invalid_grant",
+            provider="minimax-oauth",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=stale_state), \
+         patch("hermes_cli.auth._refresh_minimax_oauth_state", side_effect=_terminal_refresh), \
+         patch("hermes_cli.auth._minimax_save_auth_state", side_effect=_capture_save):
+        with pytest.raises(AuthError) as exc_info:
+            resolve_minimax_oauth_runtime_credentials()
+
+    # The original AuthError is re-raised so callers get the right error surface.
+    assert exc_info.value.code == "invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+    # A quarantine save must have happened.
+    assert len(saved_states) == 1
+    quarantined = saved_states[0]
+
+    # Dead OAuth fields cleared.
+    assert "access_token" not in quarantined
+    assert "refresh_token" not in quarantined
+    assert "expires_at" not in quarantined
+    assert "expires_in" not in quarantined
+    assert "obtained_at" not in quarantined
+
+    # Routing/identity metadata preserved.
+    assert quarantined["inference_base_url"] == "https://api.minimax.io/v1"
+    assert quarantined["portal_base_url"] == "https://portal.minimax.io"
+    assert quarantined["client_id"] == "test-client"
+    assert quarantined["region"] == "global"
+
+    # Structured diagnostic blob written.
+    err = quarantined.get("last_auth_error")
+    assert isinstance(err, dict)
+    assert err["provider"] == "minimax-oauth"
+    assert err["code"] == "invalid_grant"
+    assert err["reason"] == "runtime_refresh_failure"
+    assert err["relogin_required"] is True
+    assert "at" in err
+
+
+def test_resolve_credentials_does_not_quarantine_on_transient_refresh_failure():
+    """When refresh raises with relogin_required=False (e.g. 429 / 5xx), the
+    dead-token quarantine path must NOT fire — tokens stay on disk for the
+    next attempt.
+    """
+    stale_state = {
+        "access_token": "still-good-access-token",
+        "refresh_token": "still-good-refresh-token",
+        "expires_at": "2026-01-01T00:00:00Z",
+        "inference_base_url": "https://api.minimax.io/v1",
+    }
+    saved_states = []
+
+    def _transient_refresh(_state):
+        raise AuthError(
+            "service unavailable",
+            provider="minimax-oauth",
+            code="refresh_failed",
+            relogin_required=False,
+        )
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=stale_state), \
+         patch("hermes_cli.auth._refresh_minimax_oauth_state", side_effect=_transient_refresh), \
+         patch("hermes_cli.auth._minimax_save_auth_state", side_effect=lambda s: saved_states.append(dict(s))):
+        with pytest.raises(AuthError) as exc_info:
+            resolve_minimax_oauth_runtime_credentials()
+
+    assert exc_info.value.relogin_required is False
+    # No quarantine save should have happened.
+    assert saved_states == []
+
+
+# ---------------------------------------------------------------------------
 # 12. test_provider_registry_contains_minimax_oauth
 # ---------------------------------------------------------------------------
 

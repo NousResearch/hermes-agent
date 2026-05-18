@@ -65,16 +65,23 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None, so should use truncation fallback
+        # compressor has client=None and abort_on_summary_failure=False (default),
+        # so the LEGACY fallback path inserts a static "summary unavailable"
+        # placeholder and the middle window is dropped.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
         result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
         assert compressor.compression_count == 1
+        # Abort flag must NOT fire under the default config.
+        assert compressor._last_compress_aborted is False
+        assert compressor._last_summary_fallback_used is True
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
+        # Default config (abort_on_summary_failure=False) — fallback path
+        # increments the count even on summary failure.
         compressor.compress(msgs)
         assert compressor.compression_count == 1
         compressor.compress(msgs)
@@ -716,9 +723,10 @@ class TestAuxModelFallbackSurfacedToCallers:
 
 
 class TestSummaryFailureTrackingForGatewayWarning:
-    """When summary generation fails, the compressor must record dropped count
-    + fallback flag so gateway hygiene & /compress can surface a visible
-    warning instead of silently dropping context."""
+    """Default behavior (compression.abort_on_summary_failure=False):
+    summary-generation failure inserts a static fallback placeholder and
+    records dropped count + fallback flag so gateway hygiene & /compress
+    can surface a visible warning."""
 
     def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -735,15 +743,14 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "msg 7"},
         ]
 
-        # Simulate summary LLM call failing — covers the 404 / model-not-found
-        # case from issue (auxiliary compression model misconfigured).
         with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
             result = c.compress(msgs)
 
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
-        # Result must still be well-formed (fallback summary present).
+        # Default mode: abort flag must NOT fire.
+        assert c._last_compress_aborted is False
         assert any(
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
             for m in result
@@ -768,17 +775,103 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "msg 7"},
         ]
 
-        # First call fails, second succeeds — flag must reset on second compress.
         with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
             c.compress(msgs)
         assert c._last_summary_fallback_used is True
 
-        # Reset cooldown to allow retry on second compress
         c._summary_failure_cooldown_until = 0.0
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             c.compress(msgs)
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
+
+
+class TestAbortOnSummaryFailure:
+    """Opt-in behavior (compression.abort_on_summary_failure=True):
+    summary-generation failure ABORTS compression entirely — returns the
+    original messages unchanged and sets _last_compress_aborted=True so
+    gateway hygiene & /compress can surface a visible warning."""
+
+    def _make_msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=True,
+            )
+
+    def test_compress_aborts_and_preserves_messages_on_summary_failure(self):
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+            result = c.compress(msgs)
+
+        assert c._last_compress_aborted is True
+        assert c._last_summary_error is not None
+        # No fallback inserted, no messages dropped
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+        # Original messages preserved byte-for-byte.
+        assert result == msgs
+        # No "Summary generation was unavailable" placeholder leaked in.
+        assert not any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_abort_flag_on_subsequent_success(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
+            c.compress(msgs)
+        assert c._last_compress_aborted is True
+
+        c._summary_failure_cooldown_until = 0.0
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            c.compress(msgs)
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+    def test_force_true_bypasses_failure_cooldown(self):
+        """Manual /compress passes force=True so it can retry immediately
+        after an auto-compress abort instead of waiting out the 30-60s
+        cooldown."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+
+        import time as _time
+        c._summary_failure_cooldown_until = _time.monotonic() + 999.0
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs, force=True)
+
+        assert c._last_compress_aborted is False
+        assert c._summary_failure_cooldown_until == 0.0
+        assert len(result) < len(msgs)
 
 
 class TestSummaryPrefixNormalization:
@@ -1046,7 +1139,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
     def test_double_collision_merges_summary_into_tail(self):
@@ -1087,7 +1180,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary text should be merged into the first tail message
@@ -1164,7 +1257,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary should be merged into the first tail message (assistant at index 5)

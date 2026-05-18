@@ -83,11 +83,13 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/voice-mode',
             'user-guide/features/web-search',
+            'user-guide/features/x-search',
             'user-guide/features/browser',
             'user-guide/features/computer-use',
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/tts',
+            'user-guide/features/deliverable-mode',
           ],
         },
         {
@@ -423,6 +425,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/devops/devops-cli',
                     'user-guide/skills/optional/devops/devops-docker-management',
+                    'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-watchers',
                   ],
                 },
@@ -547,10 +550,12 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/research/research-bioinformatics',
+                    'user-guide/skills/optional/research/research-darwinian-evolver',
                     'user-guide/skills/optional/research/research-domain-intel',
                     'user-guide/skills/optional/research/research-drug-discovery',
                     'user-guide/skills/optional/research/research-duckduckgo-search',
                     'user-guide/skills/optional/research/research-gitnexus-explorer',
+                    'user-guide/skills/optional/research/research-osint-investigation',
                     'user-guide/skills/optional/research/research-parallel-cli',
                     'user-guide/skills/optional/research/research-qmd',
                     'user-guide/skills/optional/research/research-scrapling',
@@ -689,6 +694,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/gateway-internals',
             'developer-guide/session-storage',
             'developer-guide/provider-runtime',
+            'developer-guide/programmatic-integration',
           ],
         },
         {

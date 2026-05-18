@@ -895,16 +895,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_ignored_when_parent_is_codex_and_delegation_is_not(self):
-        parent = _make_mock_parent(depth=0)
-        parent.base_url = "https://chatgpt.com/backend-api/codex"
-        parent.provider = "openai-codex"
-        cfg = {"base_url": "http://127.0.0.1:8091/v1"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["provider"])
-        self.assertIsNone(creds["base_url"])
-        self.assertIsNone(creds["api_key"])
-        self.assertIsNone(creds["api_mode"])
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so
@@ -971,6 +961,89 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         cfg = {"max_iterations": 45}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["model"])
+        self.assertIsNone(creds["provider"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_named_custom_provider_preserves_provider_name(self, mock_resolve):
+        """Named custom provider (e.g. crof.ai) resolves to 'custom' at runtime level
+        but the subagent must retain the original provider identity so that
+        resolve_provider_client routes to the correct endpoint on retry/fallback.
+        Regression test for #26954.
+        """
+        mock_resolve.return_value = {
+            "provider": "custom",  # runtime marks it as "custom" type
+            "model": "deepseek-v4-pro-CEER",
+            "base_url": "https://api.crof.ai/v1",
+            "api_key": "crof-key-abc",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "deepseek-v4-pro-CEER", "provider": "crof.ai"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # The key assertion: subagent must keep "crof.ai", NOT "custom"
+        self.assertEqual(creds["provider"], "crof.ai")
+        self.assertEqual(creds["model"], "deepseek-v4-pro-CEER")
+        self.assertEqual(creds["base_url"], "https://api.crof.ai/v1")
+        self.assertEqual(creds["api_key"], "crof-key-abc")
+        # Verify resolve_runtime_provider was called with the configured name
+        mock_resolve.assert_called_once_with(
+            requested="crof.ai", target_model="deepseek-v4-pro-CEER"
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
+        """Standard (non-custom) providers must still return runtime identity,
+        not the configured name, to preserve existing behaviour for openrouter,
+        nous, etc.
+        """
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "or-key-xyz",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "anthropic/claude-sonnet-4", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Standard provider returns its own name, not "custom"
+        self.assertEqual(creds["provider"], "openrouter")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_custom_provider_with_empty_configured_provider_falls_back_to_runtime(self, mock_resolve):
+        """When configured_provider is empty/None, the early return kicks in and
+        we return provider=None regardless of what runtime resolved. The runtime
+        path is only reached when configured_provider is a non-empty string.
+        """
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "model": "some-model",
+            "base_url": "https://fallback.example.com/v1",
+            "api_key": "key-fallback",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-model", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Empty provider → early return with None (child inherits parent)
+        self.assertIsNone(creds["provider"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_runtime_missing_provider_key_returns_none(self, mock_resolve):
+        """When resolve_runtime_provider returns a dict without 'provider' key,
+        the result must be None regardless of configured_provider.
+        This protects against malformed runtime responses.
+        """
+        mock_resolve.return_value = {
+            # deliberately missing "provider"
+            "model": "some-model",
+            "base_url": "https://example.com/v1",
+            "api_key": "key-123",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-model", "provider": "crof.ai"}
+        creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
 
 

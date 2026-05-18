@@ -366,24 +366,65 @@ For deeper analytics — token usage, cost estimates, tool breakdown, and activi
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
 
-### How It Works
+### Three calling shapes
 
-1. FTS5 searches matching messages ranked by relevance
-2. Groups results by session, takes the top N unique sessions (default 3)
-3. Loads each session's conversation, truncates to ~100K chars centered on matches
-4. Sends to a fast summarization model for focused summaries
-5. Returns per-session summaries with metadata and surrounding context
+The tool infers what you want from which arguments you set. There's no `mode` parameter.
+
+**1. Discovery — pass `query`:**
+
+```python
+session_search(query="auth refactor", limit=3)
+```
+
+Runs FTS5, dedupes hits by session lineage, returns the top N sessions. Each result carries:
+
+- `session_id`, `title`, `when`, `source`
+- `snippet` — FTS5-highlighted match excerpt
+- `bookend_start` — first 3 user+assistant messages of the session (the goal/kickoff)
+- `messages` — ±5 messages around the FTS5 match, with the anchor message flagged (the hit in context)
+- `bookend_end` — last 3 user+assistant messages of the session (the resolution/decisions)
+- `match_message_id`, `messages_before`, `messages_after`
+
+Bookends + window together reconstruct goal → match → resolution without paying for the whole transcript. Typical wall time: 15–50ms on a real session DB.
+
+**2. Scroll — pass `session_id` + `around_message_id`:**
+
+```python
+session_search(session_id="20260510_174648_805cc2", around_message_id=590803, window=10)
+```
+
+Returns a window of ±`window` messages centered on the anchor. No FTS5, no bookends — just the slice. Use after a discovery call when you need more context than the ±5 default window.
+
+- To scroll **forward**: pass `messages[-1].id` back as `around_message_id`
+- To scroll **backward**: pass `messages[0].id` back as `around_message_id`
+- The boundary message appears in both windows as an orientation marker
+- When `messages_before` or `messages_after` is less than `window`, you're at the start or end of the session
+
+Typical wall time: 1–2ms per scroll call.
+
+**3. Browse — no args:**
+
+```python
+session_search()
+```
+
+Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
 
 ### FTS5 Query Syntax
 
 The search supports standard FTS5 query syntax:
 
-- Simple keywords: `docker deployment`
+- Simple keywords: `docker deployment` (FTS5 defaults to AND)
 - Phrases: `"exact phrase"`
 - Boolean: `docker OR kubernetes`, `python NOT java`
 - Prefix: `deploy*`
+
+### Optional parameters
+
+- `sort` — `newest` or `oldest`, on top of FTS5 ranking. Omit for relevance-only ordering (the default; suitable for exploratory recall). Use `newest` for "where did we leave X" questions, `oldest` for "how did X start" questions.
+- `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
 ### When It's Used
 

@@ -125,6 +125,10 @@ Jobs with a `workdir` run sequentially on the scheduler tick, not in the paralle
 
 You do not need to delete and recreate jobs just to change them.
 
+:::tip Job reference
+The `<job_id>` placeholder below (and in [Lifecycle actions](#lifecycle-actions)) also accepts the job's name (case-insensitive) — handy when you remember `morning-digest` but not the hex ID. An exact job ID takes precedence over name matches; if the reference is not an ID and a name matches more than one job, the command refuses and prints the candidate IDs so you can disambiguate.
+:::
+
 ### Chat
 
 ```bash

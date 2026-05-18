@@ -338,14 +338,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        setStatus(p.text)
-
-        if (p.kind === 'compressing') {
+        if (p.kind === 'goal') {
           sys(p.text)
+          const brief = p.text.startsWith('✓')
+            ? '✓ goal complete'
+            : p.text.startsWith('↻')
+              ? '↻ goal continuing'
+              : p.text.startsWith('⏸')
+                ? '⏸ goal paused'
+                : 'ready'
+          setStatus(brief)
+          restoreStatusAfter(6000)
           return
         }
 
-        if (p.kind === 'goal') {
+        setStatus(p.text)
+
+        if (p.kind === 'compressing') {
           sys(p.text)
           return
         }

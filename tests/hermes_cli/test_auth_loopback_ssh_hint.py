@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import contextlib
+import socket
 
 import pytest
 
@@ -93,3 +94,56 @@ def test_loopback_ssh_hint_accepts_localhost_hostname(monkeypatch):
         "http://localhost:56121/callback"
     ))
     assert "ssh -N -L 56121:127.0.0.1:56121" in out
+
+
+def test_loopback_ssh_hint_includes_user_at_host(monkeypatch):
+    """The SSH command should include a detected user@host so the user can
+    copy-paste it without manually substituting placeholders."""
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+    monkeypatch.setattr(auth_mod, "_ssh_user_at_host", lambda: "alice@myserver.lan")
+    out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
+        "http://127.0.0.1:56121/callback"
+    ))
+    assert "ssh -N -L 56121:127.0.0.1:56121 alice@myserver.lan" in out
+
+
+def test_loopback_ssh_hint_has_visual_header(monkeypatch):
+    """The hint should print a divider and header so it stands out in noisy output."""
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: True)
+    out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
+        "http://127.0.0.1:56121/callback"
+    ))
+    assert "Remote session detected" in out
+    assert "---" in out  # divider is present
+
+
+class TestSshUserAtHost:
+    def test_resolves_user_and_hostname(self, monkeypatch):
+        monkeypatch.setenv("USER", "alice")
+        monkeypatch.delenv("LOGNAME", raising=False)
+        monkeypatch.setattr(socket, "gethostname", lambda: "myserver")
+        assert auth_mod._ssh_user_at_host() == "alice@myserver"
+
+    def test_falls_back_to_logname(self, monkeypatch):
+        monkeypatch.delenv("USER", raising=False)
+        monkeypatch.setenv("LOGNAME", "bob")
+        monkeypatch.setattr(socket, "gethostname", lambda: "host1")
+        assert auth_mod._ssh_user_at_host() == "bob@host1"
+
+    def test_placeholder_when_no_env_vars(self, monkeypatch):
+        monkeypatch.delenv("USER", raising=False)
+        monkeypatch.delenv("LOGNAME", raising=False)
+        monkeypatch.setattr(socket, "gethostname", lambda: "host1")
+        assert auth_mod._ssh_user_at_host() == "<user>@host1"
+
+    def test_placeholder_when_socket_raises(self, monkeypatch):
+        monkeypatch.setenv("USER", "charlie")
+        def _raise():
+            raise OSError("no network")
+        monkeypatch.setattr(socket, "gethostname", _raise)
+        assert auth_mod._ssh_user_at_host() == "charlie@<this-host>"
+
+    def test_placeholder_when_empty_hostname(self, monkeypatch):
+        monkeypatch.setenv("USER", "dave")
+        monkeypatch.setattr(socket, "gethostname", lambda: "")
+        assert auth_mod._ssh_user_at_host() == "dave@<this-host>"

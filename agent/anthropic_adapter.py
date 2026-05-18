@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -364,7 +365,7 @@ def _normalize_base_url_text(base_url) -> str:
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
-    Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted) authenticate
+    Third-party proxies (Microsoft Foundry, AWS Bedrock, self-hosted) authenticate
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
@@ -471,14 +472,18 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer *** of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
+    Foundry's Anthropic-style endpoint follow this pattern.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+    return (
+        normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+        or "azure.com" in normalized
+    )
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
@@ -487,6 +492,44 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     if not normalized:
         return False
     return "azure.com" in normalized
+
+
+def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for MiniMax's Anthropic-compatible endpoints.
+
+    MiniMax rejects the fine-grained-tool-streaming and context-1m betas;
+    those need to be stripped even though MiniMax also uses Bearer auth.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    normalized = normalized.rstrip("/").lower()
+    return normalized.startswith(
+        ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
+    )
+
+
+def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Azure-hosted Anthropic Messages endpoints.
+
+    Covers both the modern Foundry host family (``*.services.ai.azure.*``)
+    and the legacy Azure OpenAI host family (``*.openai.azure.*``) when
+    serving Anthropic's ``/anthropic`` route. Used to opt-in those hosts
+    to the ``api-version`` query-param plumbing required by Azure.
+
+    Intentionally avoids a finite allow-list of TLD suffixes so it works
+    across sovereign / private Azure clouds.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = (parsed.path or "").lower()
+    host_padded = f".{host}."
+    is_foundry_host = ".services.ai.azure." in host_padded
+    is_legacy_azoai_host = ".openai.azure." in host_padded
+    return (is_foundry_host or is_legacy_azoai_host) and "/anthropic" in path
 
 
 def _common_betas_for_base_url(
@@ -498,11 +541,13 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.
+    tool-use message triggers a connection error. They also reject the
+    1M-context beta. Azure AI Foundry's Anthropic endpoint also uses
+    Bearer auth but keeps both betas (it needs the 1M beta for 1M context).
 
     The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
     default because some subscriptions reject it. Add it only for endpoint
-    families that still require it for 1M context, currently Azure AI Foundry.
+    families that still require it for 1M context, currently Microsoft Foundry.
     Bedrock uses its own client helper below and opts in explicitly.
 
     ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
@@ -511,7 +556,7 @@ def _common_betas_for_base_url(
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
         betas.append(_CONTEXT_1M_BETA)
-    if _requires_bearer_auth(base_url):
+    if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
@@ -519,14 +564,98 @@ def _common_betas_for_base_url(
     return betas
 
 
+def _build_anthropic_client_with_bearer_hook(
+    token_provider,
+    base_url: str = None,
+    timeout: float = None,
+    *,
+    drop_context_1m_beta: bool = False,
+):
+    """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
+
+    Anthropic SDK 0.86.0 stores ``api_key`` / ``auth_token`` as static
+    strings; there is no callable-token contract. To get per-request
+    bearer refresh (Microsoft's documented Foundry pattern), we hand
+    the SDK a custom ``httpx.Client`` whose request event hook mints a
+    fresh JWT from the Entra credential chain and rewrites
+    ``Authorization: Bearer <jwt>`` on every outbound request. The SDK
+    ignores its own auth logic when ``http_client`` is provided (the
+    hook strips any pre-set Authorization).
+
+    The placeholder ``auth_token`` is required because the SDK raises
+    ``AnthropicError`` at construction if neither ``api_key`` nor
+    ``auth_token`` is set — but the hook overrides it per-request so
+    the placeholder value never reaches Azure.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for Azure Foundry Anthropic-style "
+            "endpoints with Entra ID auth. Install with: pip install 'anthropic>=0.39.0'"
+        )
+
+    normalize_proxy_env_vars()
+
+    from httpx import Timeout
+    from agent.azure_identity_adapter import build_bearer_http_client
+
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
+
+    # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
+    normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        import re as _re
+        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
+
+    http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
+
+    kwargs = {
+        "timeout": timeout_obj,
+        "http_client": http_client,
+        # The SDK requires *something* for api_key/auth_token. Our
+        # event hook overrides Authorization per request so this value
+        # is never sent. The sentinel string makes accidental leaks
+        # diagnosable in logs.
+        "auth_token": "entra-id-bearer-via-http-hook",
+    }
+
+    if normalized_base_url:
+        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+            kwargs["base_url"] = normalized_base_url
+            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        else:
+            kwargs["base_url"] = normalized_base_url
+
+    common_betas = _common_betas_for_base_url(
+        normalized_base_url,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
+    if common_betas:
+        kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    return _anthropic_sdk.Anthropic(**kwargs)
+
+
 def build_anthropic_client(
-    api_key: str,
+    api_key,
     base_url: str = None,
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+
+    ``api_key`` accepts either:
+
+    * a static ``str`` — the historical contract for all key-based and
+      OAuth flows.
+    * a ``Callable[[], str]`` — an Entra ID bearer token provider from
+      :mod:`agent.azure_identity_adapter`. The Anthropic SDK itself
+      requires a static string, so when given a callable we construct
+      a custom ``httpx.Client`` with a request event hook that mints a
+      fresh JWT per outbound request and rewrites the ``Authorization``
+      header. The SDK never sees the callable directly.
 
     If *timeout* is provided it overrides the default 900s read timeout.  The
     connect timeout stays at 10s.  Callers pass this from the per-provider /
@@ -549,6 +678,14 @@ def build_anthropic_client(
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
 
+    # Callable api_key → Entra ID bearer provider path. Delegated to a
+    # helper so the existing static-key code below stays unchanged.
+    if callable(api_key) and not isinstance(api_key, str):
+        return _build_anthropic_client_with_bearer_hook(
+            api_key, base_url, timeout,
+            drop_context_1m_beta=drop_context_1m_beta,
+        )
+
     normalize_proxy_env_vars()
 
     from httpx import Timeout
@@ -563,8 +700,7 @@ def build_anthropic_client(
         # Pass it via default_query so the SDK appends it to every request URL
         # without corrupting the base_url (appending it directly produces
         # malformed paths like /anthropic?api-version=.../v1/messages).
-        _is_azure_endpoint = "azure.com" in normalized_base_url.lower()
-        if _is_azure_endpoint and "api-version" not in normalized_base_url:
+        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
             kwargs["base_url"] = normalized_base_url.rstrip("/")
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
@@ -594,7 +730,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
-        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
+        # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
@@ -1060,10 +1196,12 @@ def _generate_pkce() -> tuple:
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import secrets
     import time
     import webbrowser
 
     verifier, challenge = _generate_pkce()
+    oauth_state = secrets.token_urlsafe(32)
 
     params = {
         "code": "true",
@@ -1073,7 +1211,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         "scope": _OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     from urllib.parse import urlencode
 
@@ -1110,7 +1248,12 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
     splits = auth_code.split("#")
     code = splits[0]
-    state = splits[1] if len(splits) > 1 else ""
+    received_state = splits[1] if len(splits) > 1 else ""
+
+    # Validate state to prevent CSRF (RFC 6749 §10.12)
+    if received_state != oauth_state:
+        logger.warning("OAuth state mismatch — possible CSRF, aborting")
+        return None
 
     try:
         import urllib.request
@@ -1119,7 +1262,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "grant_type": "authorization_code",
             "client_id": _OAUTH_CLIENT_ID,
             "code": code,
-            "state": state,
+            "state": received_state,
             "redirect_uri": _OAUTH_REDIRECT_URI,
             "code_verifier": verifier,
         }).encode()
@@ -1729,7 +1872,7 @@ def convert_messages_to_anthropic(
     # causing HTTP 400 "Invalid signature in thinking block".
     #
     # Signatures are Anthropic-proprietary.  Third-party endpoints
-    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
+    # (MiniMax, Microsoft Foundry, self-hosted proxies) cannot validate
     # them and will reject them outright.  When targeting a third-party
     # endpoint, strip ALL thinking/redacted_thinking blocks from every
     # assistant message — the third-party will generate its own
@@ -2075,5 +2218,3 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
-

@@ -2628,12 +2628,20 @@ class AIAgent:
             return False
 
         try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
+            from hermes_cli.auth import (
+                NOUS_INFERENCE_AUTH_MODE_AUTO,
+                NOUS_INFERENCE_AUTH_MODE_LEGACY,
+                resolve_nous_runtime_credentials,
+            )
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                force_mint=force,
+                inference_auth_mode=(
+                    NOUS_INFERENCE_AUTH_MODE_LEGACY
+                    if force
+                    else NOUS_INFERENCE_AUTH_MODE_AUTO
+                ),
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)

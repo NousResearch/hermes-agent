@@ -1759,11 +1759,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
+                edit_kwargs: Dict[str, Any] = dict(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=content,
                 )
+                if busy_keyboard is not None:
+                    edit_kwargs["reply_markup"] = busy_keyboard
+                await self._bot.edit_message_text(**edit_kwargs)
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)

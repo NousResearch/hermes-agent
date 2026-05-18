@@ -449,3 +449,22 @@ class TestBaseAdapterClarifyFallback:
         assert "Free form?" in adapter.sent[0]
         # No numbered list — choices were empty
         assert "1." not in adapter.sent[0]
+
+class TestTelegramEditMessageBusyControls:
+    """Regression: streaming edits must preserve busy-session controls."""
+
+    @pytest.mark.asyncio
+    async def test_nonfinal_edit_reattaches_busy_keyboard(self):
+        adapter = _make_adapter()
+        keyboard = object()
+        adapter._busy_session_button_map["sk1"] = "200"
+        adapter._build_busy_session_keyboard = MagicMock(return_value=keyboard)
+        adapter._bot.edit_message_text = AsyncMock()
+
+        result = await adapter.edit_message("12345", "200", "working", finalize=False)
+
+        assert result.success is True
+        kwargs = adapter._bot.edit_message_text.call_args.kwargs
+        assert kwargs["reply_markup"] is keyboard
+        adapter._build_busy_session_keyboard.assert_called_once_with("sk1")
+

@@ -277,6 +277,63 @@ class TestQwenProfile:
         assert "metadata" not in eb
 
 
+class TestSaladCloudProfile:
+    def test_profile_metadata(self):
+        p = get_provider_profile("saladcloud")
+        assert p.display_name == "Salad AI Gateway"
+        assert p.base_url == "https://ai.salad.cloud/v1"
+        assert p.models_url == "https://ai.salad.cloud/v1/models"
+        assert p.env_vars == ("SALAD_CLOUD_API_KEY",)
+        assert p.auth_type == "api_key"
+        assert "salad-cloud" in p.aliases
+        assert get_provider_profile("salad-cloud").name == "saladcloud"
+        assert p.default_aux_model == "qwen3.5-9b"
+        assert "qwen3.6-35b-a3b" in p.fallback_models
+
+    def test_reasoning_disabled_maps_to_chat_template_kwargs(self):
+        p = get_provider_profile("saladcloud")
+        eb, tl = p.build_api_kwargs_extras(
+            model="qwen3.6-35b-a3b",
+            reasoning_config={"enabled": False},
+        )
+        assert eb == {"chat_template_kwargs": {"enable_thinking": False}}
+        assert tl == {}
+
+    def test_reasoning_none_effort_maps_to_chat_template_kwargs(self):
+        p = get_provider_profile("saladcloud")
+        eb, _ = p.build_api_kwargs_extras(
+            model="qwen3.6-35b-a3b",
+            reasoning_config={"enabled": True, "effort": "none"},
+        )
+        assert eb == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def test_reasoning_enabled_maps_to_chat_template_kwargs(self):
+        p = get_provider_profile("saladcloud")
+        eb, _ = p.build_api_kwargs_extras(
+            model="qwen3.6-35b-a3b",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert eb == {"chat_template_kwargs": {"enable_thinking": True}}
+
+    def test_reasoning_omitted_by_default(self):
+        p = get_provider_profile("saladcloud")
+        eb, tl = p.build_api_kwargs_extras(
+            model="qwen3.6-35b-a3b",
+            reasoning_config=None,
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_reasoning_omitted_for_non_qwen_models(self):
+        p = get_provider_profile("saladcloud")
+        eb, tl = p.build_api_kwargs_extras(
+            model="example-non-qwen-model",
+            reasoning_config={"enabled": False, "effort": "none"},
+        )
+        assert eb == {}
+        assert tl == {}
+
+
 class TestBaseProfile:
     def test_prepare_messages_passthrough(self):
         p = ProviderProfile(name="test")

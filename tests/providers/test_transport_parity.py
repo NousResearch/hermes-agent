@@ -257,3 +257,28 @@ class TestCustomOllamaParity:
             reasoning_config={"enabled": False, "effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+
+class TestSaladCloudParity:
+    """SaladCloud: Qwen thinking uses vLLM chat_template_kwargs."""
+
+    def test_reasoning_disabled_without_generic_supports_reasoning_gate(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.6-35b-a3b",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("saladcloud"),
+            reasoning_config={"enabled": False, "effort": "none"},
+        )
+        assert kw["extra_body"]["chat_template_kwargs"] == {
+            "enable_thinking": False
+        }
+
+    def test_no_default_thinking_override(self, transport):
+        kw = transport.build_kwargs(
+            model="qwen3.6-35b-a3b",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("saladcloud"),
+        )
+        assert "extra_body" not in kw

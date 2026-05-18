@@ -78,6 +78,36 @@ export const midnightTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Midnight's deep blue-violet palette with contemporary Geist typography while
+ * preserving the original Midnight sizing/spacing. The explicit `bg: "none"`
+ * suppresses the default filler artwork so this variant stays image-free.
+ */
+export const midnightModernTheme: DashboardTheme = {
+  name: "midnight-modern",
+  label: "Midnight Modern",
+  description: "Midnight colors with original sizing, Geist typography, and no background image",
+  palette: midnightTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Geist", ${SYSTEM_SANS}`,
+    fontMono: `"Geist Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Geist", ${SYSTEM_SANS}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap",
+    letterSpacing: "-0.01em",
+  },
+  layout: midnightTheme.layout,
+  assets: {
+    bg: "none",
+  },
+  customCSS: `
+#root .font-mondwest {
+  font-family: var(--theme-font-sans) !important;
+}
+`,
+};
+
 export const emberTheme: DashboardTheme = {
   name: "ember",
   label: "Ember",
@@ -208,6 +238,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   midnight: midnightTheme,
+  "midnight-modern": midnightModernTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,

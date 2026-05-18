@@ -387,6 +387,8 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+    if event in _STATUS_EVENTS:
+        _write_session_status(event, sid, payload)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -398,6 +400,81 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         sid,
         {"kind": kind if text is not None else "status", "text": body},
     )
+
+
+# ── Session status file for external consumers (Keryx, etc.) ──────────
+# Best-effort write of /tmp/hermes-status/<sid>.json on every relevant
+# event so external tools can read agent status in real-time.
+
+_STATUS_DIR = Path("/tmp/hermes-status")
+_STATUS_EVENTS = frozenset({
+    "message.start",
+    "message.complete",
+    "thinking.delta",
+    "reasoning.delta",
+    "tool.generating",
+    "tool.progress",
+    "tool.complete",
+    "status.update",
+    "error",
+})
+
+_EVENT_TO_STATUS = {
+    "message.start": "thinking",
+    "thinking.delta": "thinking",
+    "reasoning.delta": "thinking",
+    "tool.generating": "tool",
+    "tool.progress": "tool",
+    "tool.complete": "tool",
+    "message.complete": "idle",
+    "error": "failed",
+}
+
+
+def _resolve_status(event: str, payload: dict | None) -> str:
+    """Derive a short status string from the event type and payload."""
+    if event == "status.update":
+        kind = (payload or {}).get("kind", "")
+        if kind == "ready":
+            return "idle"
+        return "busy"
+    return _EVENT_TO_STATUS.get(event, "idle")
+
+
+def _resolve_session_title(session: dict) -> str:
+    """Best-effort title lookup — never raises."""
+    try:
+        db = _get_db()
+        if db:
+            key = session.get("session_key")
+            if key:
+                title = db.get_session_title(key)
+                if title:
+                    return title
+        return session.get("pending_title") or ""
+    except Exception:
+        return ""
+
+
+def _write_session_status(event: str, sid: str, payload: dict | None = None):
+    """Write a small JSON file to /tmp/hermes-status/<sid>.json."""
+    try:
+        session = _sessions.get(sid)
+        if session is None:
+            return
+        status = _resolve_status(event, payload)
+        title = _resolve_session_title(session)
+        _STATUS_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "session_id": sid,
+            "title": title,
+            "status": status,
+            "event": event,
+            "timestamp": time.time(),
+        }
+        (_STATUS_DIR / f"{sid}.json").write_text(json.dumps(data))
+    except Exception:
+        pass  # best-effort — never crash the gateway
 
 
 def _estimate_image_tokens(width: int, height: int) -> int:

@@ -354,23 +354,28 @@ class TestRunJobProfileContext:
         assert observed["hermes_home_during_init"] == str(root)
         assert os.environ["HERMES_HOME"] == str(root)
 
-    def test_run_job_rejects_missing_runtime_profile(
+    def test_run_job_falls_back_on_missing_runtime_profile(
         self, isolated_cron_profile_home, monkeypatch
     ):
         import cron.scheduler as sched
 
         root, _profile_home = isolated_cron_profile_home
-        monkeypatch.setattr(sched, "_hermes_home", None)
+        observed: dict = {}
+        self._install_agent_stubs(monkeypatch, observed)
 
-        with pytest.raises(FileNotFoundError):
-            sched.run_job(
-                {
-                    "id": "missing-profile",
-                    "name": "missing-profile-job",
-                    "profile": "missing",
-                }
-            )
+        job = {
+            "id": "missing-profile",
+            "name": "missing-profile-job",
+            "profile": "missing",
+            "schedule_display": "manual",
+        }
 
+        # Should succeed with fallback, not raise
+        success, _output, response, error = sched.run_job(job)
+
+        assert success is True, f"run_job should fallback, not fail: error={error!r}"
+        # Verify it used the default home, not the missing profile
+        assert observed["hermes_home_during_init"] == str(root)
         assert os.environ["HERMES_HOME"] == str(root)
 
 

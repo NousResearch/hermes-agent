@@ -1,11 +1,11 @@
 """NATS gateway adapter.
 
 Registers one ``natsagent.Agent`` at ``agents.<agent>.<owner>.<name>`` and
-routes inbound NATS Agent Protocol v0.1 prompts through the gateway's
+routes inbound NATS Agent Protocol v0.2 prompts through the gateway's
 normal ``MessageEvent`` pipeline. Streams responses back chunk-by-chunk
 over the reply subject; the SDK owns terminator + heartbeat emission.
 
-Protocol spec: ``../nats-ai-pysdk/docs/nats-agent-protocol.md`` (v0.1).
+Protocol spec: ``../nats-agent-sdk-docs/core-protocol.md`` (v0.2).
 Hermes architectural reference: ``docs/nats-gateway-design.md``.
 
 Phase 4 scope (T4.1–T4.3): full inbound pipeline — session extraction,
@@ -355,7 +355,7 @@ def _positive_int(value: Any, default: int, field_name: str) -> int:
 
 
 class NatsAdapter(BasePlatformAdapter):
-    """Gateway adapter for the NATS Agent Protocol v0.1.
+    """Gateway adapter for the NATS Agent Protocol v0.2.
 
     Phase 4 scope — settings parsing, connect/disconnect lifecycle, and
     the full inbound pipeline: ``_on_prompt`` reads ``envelope.session``,
@@ -510,6 +510,7 @@ class NatsAdapter(BasePlatformAdapter):
                 heartbeat_interval_s=settings.heartbeat_interval_s,
                 max_payload=settings.max_payload,
                 attachments_ok=settings.attachments_ok,
+                session=settings.session_default,
             )
             self._agent.on_prompt(self._on_prompt)
             await self._agent.start()
@@ -1481,7 +1482,7 @@ class NatsAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Publish audio as an attachment. v0.1 has no voice/audio distinction
+        """Publish audio as an attachment. v0.2 has no voice/audio distinction
         on the wire — the caller interprets by filename extension (§5.2).
         """
         return await self._send_attachment(
@@ -1521,7 +1522,7 @@ class NatsAdapter(BasePlatformAdapter):
         Centralized so the four ``send_*`` helpers share filename
         resolution, file-existence checks, the attachment construction,
         and the shared race-safe stream lookup. The ``kind`` parameter
-        is used only for error messages — the v0.1 wire carries the
+        is used only for error messages — the v0.2 wire carries the
         attachment identically regardless of media type.
         """
         stream = self._resolve_stream(chat_id)
@@ -1609,7 +1610,7 @@ class NatsAdapter(BasePlatformAdapter):
         contract (§7.2 of the design doc) asks adapters to distinguish
         "no answer" from "delivery failed" by raising only on programmer
         error. ``kind`` is accepted for the :class:`BasePlatformAdapter`
-        signature but not wired into the query — v0.1 has no per-kind
+        signature but not wired into the query — v0.2 has no per-kind
         field on the wire, so the adapter just forwards the prompt text.
         """
         stream = self._resolve_stream(chat_id)

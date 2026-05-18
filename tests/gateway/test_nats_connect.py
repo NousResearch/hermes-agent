@@ -178,6 +178,18 @@ class TestConnectHappyPath:
         assert kwargs["heartbeat_interval_s"] == 15
         assert kwargs["max_payload"] == "2MB"
         assert kwargs["attachments_ok"] is False
+        assert kwargs["session"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_connect_propagates_custom_session_default(
+        self, mock_natsagent, lock_granted
+    ):
+        adapter = _build_adapter(session_default="acme-prod")
+        await adapter.connect()
+
+        mock_natsagent.Agent.assert_called_once()
+        kwargs = mock_natsagent.Agent.call_args.kwargs
+        assert kwargs["session"] == "acme-prod"
 
     @pytest.mark.asyncio
     async def test_connect_registers_prompt_handler_before_start(

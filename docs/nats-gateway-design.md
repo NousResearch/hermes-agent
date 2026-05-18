@@ -1,9 +1,9 @@
 # NATS Gateway Channel — Design Doc
 
 **Status:** Draft (Phase 0 deliverable, pending review before any code changes)
-**Scope:** Add NATS as a new gateway channel in Hermes Agent so callers can prompt the agent over NATS — send text, send attachments, and receive token-streamed responses — using the **NATS Agent Protocol v0.1**.
-**Wire spec:** `/Users/rs/code/github.com/synadia/synadia-ai/nats-ai-pysdk/docs/nats-agent-protocol.md` (v0.1.0-draft, 2026-04-21).
-**Agent-side SDK:** `natsagent` at `/Users/rs/code/github.com/synadia/synadia-ai/nats-ai-pysdk`.
+**Scope:** Add NATS as a new gateway channel in Hermes Agent so callers can prompt the agent over NATS — send text, send attachments, and receive token-streamed responses — using the **NATS Agent Protocol v0.2**.
+**Wire spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.2.0-draft).
+**Agent-side SDK:** `natsagent` at `../nats-ai-pysdk`.
 
 Cross-references to the protocol spec are by section number (e.g. §5.6). Cross-references to the Hermes codebase use `file:line`.
 
@@ -21,7 +21,7 @@ Explicit non-goals: the future `attachments` endpoint (§5.5), JetStream at-leas
 
 ## 2. Protocol ↔ Adapter mapping
 
-| Direction | Protocol (v0.1)                                                   | Adapter surface                                                                                     |
+| Direction | Protocol (v0.2)                                                   | Adapter surface                                                                                     |
 |-----------|-------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
 | Inbound   | `Envelope.prompt`                                                 | `MessageEvent.text`                                                                                  |
 | Inbound   | `Envelope.attachments[i]` (base64)                                 | Decoded via `att.to_bytes()`, routed through `cache_{image,audio,document,video}_from_bytes` → `MessageEvent.media_urls` / `media_types` |
@@ -34,7 +34,7 @@ Explicit non-goals: the future `attachments` endpoint (§5.5), JetStream at-leas
 | Outbound  | Empty-body terminator (§6.5)                                       | Emitted automatically by the SDK when `_on_prompt()` returns (see `agent.py:278`)                    |
 | Outbound  | Error-headered frame + terminator (§9.3)                           | Raise from `_on_prompt()`; SDK calls `respond_error(...)` + terminator                               |
 | Liveness  | `agents.hermes.<owner>.<name>.heartbeat` (§8)                      | Automatic, SDK-owned — we pass `heartbeat_interval_s` only                                           |
-| Discovery | `$SRV.PING.Synadia Agents`, `$SRV.INFO.Synadia Agents[.{id}]` (§4) | Automatic — SDK registers as a NATS micro service                                                    |
+| Discovery | `$SRV.PING.agents`, `$SRV.INFO.agents[.{id}]` (§4) | Automatic — SDK registers as a NATS micro service                                                    |
 | Cancel    | None (§6.7 — interest-based, no wire signal)                       | MVP: no detection. Agent runs to completion. Revisit post-MVP with a periodic `stream.ask("alive?")` |
 
 ### Key points
@@ -601,7 +601,7 @@ uv run python examples/04-query-reply.py --url nats://127.0.0.1:4222
 uv run python examples/05-liveness.py --url nats://127.0.0.1:4222
 # expect: heartbeats visible; kill hermes; liveness flips False after 3× interval
 
-nats req '$SRV.INFO.Synadia Agents' '' --replies=0 --timeout=2s
+nats req '$SRV.INFO.agents' '' --replies=0 --timeout=2s
 nats sub 'agents.hermes.*.*.heartbeat'
 # expect: protocol Appendix C interop confirmed
 ```
@@ -626,7 +626,7 @@ nats sub 'agents.hermes.*.*.heartbeat'
 | CLI approval callback          | `hermes_cli/callbacks.py` (reference only)           | CLI-only; gateway uses its own notify bridge         |
 | SDK source                     | `../nats-ai-pysdk/src/natsagent/`                    | `agent.py`, `envelope.py`, `messages.py`, `connect.py` |
 | SDK examples                   | `../nats-ai-pysdk/examples/01..05-*.py`              | Smoke-test inputs (§14)                              |
-| Protocol spec                  | `../nats-ai-pysdk/docs/nats-agent-protocol.md`       | v0.1.0-draft                                         |
+| Protocol spec                  | `../nats-agent-sdk-docs/core-protocol.md`            | v0.2.0-draft                                         |
 
 ---
 

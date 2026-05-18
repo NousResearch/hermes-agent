@@ -6,7 +6,7 @@ description: "Expose Hermes Agent over NATS using the NATS Agent Protocol for pr
 
 # NATS Setup
 
-Hermes Agent can expose itself over [NATS](https://nats.io/) using the **NATS Agent Protocol v0.1**. Instead of a chat app, callers are programs (or other agents) that publish prompts to a well-known subject and iterate streamed responses back. The gateway appears on NATS as a micro service at `agents.hermes.<owner>.<name>`, with heartbeats, discovery via `$SRV.PING`, and mid-stream approval queries.
+Hermes Agent can expose itself over [NATS](https://nats.io/) using the **NATS Agent Protocol v0.2**. Instead of a chat app, callers are programs (or other agents) that publish prompts to a well-known subject and iterate streamed responses back. The gateway appears on NATS as a micro service at `agents.hermes.<owner>.<name>`, with heartbeats, discovery via `$SRV.PING`, and mid-stream approval queries.
 
 Unlike Telegram / Slack / Discord, there's no chat UI and no user allowlist — authorization is delegated to the NATS server layer (accounts / NKey / JWT / TLS), the same pattern used by Webhooks (HMAC) and Home Assistant (HASS_TOKEN).
 
@@ -94,7 +94,7 @@ NATS: registered as agents.hermes.yourname.gateway (heartbeat=30s, max_payload=1
 Verify the micro service is live:
 
 ```bash
-nats req '$SRV.INFO.SynadiaAgents' '' --replies=0 --timeout=2s
+nats req '$SRV.INFO.agents' '' --replies=0 --timeout=2s
 ```
 
 You should see a JSON response listing the `prompt` endpoint with metadata `max_payload=1MB attachments_ok=true` and your identity `hermes/yourname`.
@@ -136,7 +136,7 @@ You'll see the response stream chunk-by-chunk, terminated by an empty-body frame
 |---------|-----------|---------|
 | `agents.hermes.<owner>.<name>` | inbound | Prompt endpoint — publish an `Envelope` with `prompt` + optional `attachments` |
 | `agents.hermes.<owner>.<name>.heartbeat` | outbound | Liveness beacon every `heartbeat_interval_s` seconds |
-| `$SRV.PING.SynadiaAgents`, `$SRV.INFO.SynadiaAgents[.{id}]` | both | NATS micro service discovery |
+| `$SRV.PING.agents`, `$SRV.INFO.agents[.{id}]` | both | NATS micro service discovery |
 
 ### Sessions
 
@@ -216,7 +216,7 @@ If the caller doesn't handle the `query` chunk, `stream.ask(...)` times out at `
 
 ## Non-Goals (MVP scope)
 
-The v0.1 adapter does **not** support:
+The v0.2 adapter does **not** support:
 
 - Cron-based proactive delivery (NATS has no persistent reply address for a cron job to target)
 - `send_message` tool routing to NATS (same reason)
@@ -229,7 +229,7 @@ Each is a candidate for a future phase, not a bug.
 
 ## Reference
 
-- **Protocol spec:** `../nats-ai-pysdk/docs/nats-agent-protocol.md` (v0.1.0-draft)
+- **Protocol spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.2.0-draft)
 - **Agent SDK:** `../nats-ai-pysdk` ([GitHub](https://github.com/synadia-io/nats-ai-pysdk))
 - **Hermes adapter:** `gateway/platforms/nats.py`
 - **Design doc:** `docs/nats-gateway-design.md` — architectural reference, protocol↔adapter mapping, streaming model, failure modes

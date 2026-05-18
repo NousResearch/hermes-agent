@@ -663,6 +663,26 @@ The `natsagent` SDK grew a first-class `Envelope.session: str | None` field (cal
 
 Earlier phase logs above still reference `x-session` and the raw-bytes workaround — that's historical record of what shipped in Phases 4–8, deliberately preserved, not stale documentation to be updated.
 
+### 2026-04-22 — Post-Phase 9 — Bumped to NATS Agent Protocol v0.2
+
+The protocol spec bumped from v0.1 to v0.2; v0.2 is **not wire-compatible with v0.1** (§11.3). The SDK (`natsagent` at `../nats-ai-pysdk`, now 0.2.0) absorbed the three breaking wire changes — service name `SynadiaAgents`/`Synadia Agents` → `agents`, queue group `""` → `agents`, `metadata.protocol_version = "0.1"` → `"0.2"` — so hermes's diff is narrow: pin bump + one SDK kwarg + docs.
+
+- **Dep pin.** `pyproject.toml` bumped `natsagent>=0.1.0,<1` → `>=0.2.0,<1`. Unchanged install path (editable from `../nats-ai-pysdk`). `uv pip install -e ../nats-ai-pysdk` resolved cleanly (0.1.0 → 0.2.0).
+- **§3.2 compliance gap closed.** The spec says session-aware harnesses (and names `hermes` by example) MUST set `metadata.session` at registration. The adapter had parsed `session_default` from config since Phase 4 but never forwarded it to `natsagent.Agent(...)`. Added `session=settings.session_default` to the `Agent(...)` call at `gateway/platforms/nats.py:505-514`. No other adapter wiring needed — `envelope.session` routing is per-request and orthogonal to the service-level metadata field. Judgment call on the default value: kept `"default"` as the default. It's semantically muddy (`"default"` is spec convention for the session-less escape hatch) but hermes doesn't have a single canonical instance-wide session to advertise, and `session_default` is already user-overridable via `HERMES_NATS_SESSION` / `config.yaml`. Introducing a separate `metadata_session` config key would be over-engineering for a label-not-routing-key field; if a future spec reviewer flags `metadata.session = "default"` as a smell, that's the fix.
+- **Test coverage.** `test_nats_connect.py` — existing `test_connect_constructs_agent_with_full_settings` gained `assert kwargs["session"] == "default"`; new sibling `test_connect_propagates_custom_session_default` pins the custom-override path via `_build_adapter(session_default="acme-prod")`. Full-file run 20 → 21 tests, all green. Broader NATS subtree unchanged (`pytest -k nats` = 194 passed + 1 skipped).
+- **Docs.** Refreshed protocol-version callouts and wire-name references across `CLAUDE.md`, `docs/nats-gateway-design.md`, `docs/nats-gateway.md`, `website/docs/user-guide/messaging/nats.md`, and module + class docstrings in `gateway/platforms/nats.py`. Also retargeted the protocol-spec URL: the SDK deleted its embedded copy in v0.2 (only `docs/protocol-mapping.md` remains), so every `../nats-ai-pysdk/docs/nats-agent-protocol.md` pointer now resolves to `../nats-agent-sdk-docs/core-protocol.md` (the canonical spec, now a separate repo). Historical Phase 4–8 entries in this file left untouched — they were accurate snapshots of v0.1 behavior and mutating them would falsify the decision log.
+- **Live smoke.** Local `nats-server -p 4224` (4222/4223 held by other processes on this host). Isolated `HERMES_HOME=/tmp/hermes-nats-v02-smoke` with a minimal config. `nats req '$SRV.INFO.agents'` returned the full `io.nats.micro.v1.info_response` with all v0.2 invariants:
+  - `"name": "agents"` ✓ (was `SynadiaAgents` in v0.1)
+  - `"metadata.protocol_version": "0.2"` ✓
+  - `"metadata.session": "default"` ✓ (the §3.2 fix — new for hermes)
+  - `endpoints[0].queue_group: "agents"` ✓ (was `"q"` in v0.1)
+  - `endpoints[0].subject: "agents.hermes.rene.smoke"` ✓ (unchanged)
+  Negative check: `nats req '$SRV.INFO.SynadiaAgents'` → `No responders are available`. Old wire is correctly dead. Non-LLM subset only — `examples/02`/`03`/`04` not re-run in this smoke since Phase 8's OpenRouter-backed runs still cover that surface and the v0.2 delta is entirely in the registration / discovery path, not the prompt / stream / attachment path.
+
+### 2026-04-22 — Post-Phase 9 — Phase 4 docstring drift labeled v0.1 → v0.2
+
+Three method docstrings in `gateway/platforms/nats.py` (`send_voice` at 1485, `_send_attachment` at 1525, `_ask_approval_question` at 1613) labeled current wire behavior as "v0.1". Each is a spec-version-independent observation (no voice/audio wire distinction, attachments carry identically, no per-kind query field) that is also true in v0.2 — not a historical distinguisher like `docs/nats-gateway-design.md:537` (which contrasts the current inline-base64 behavior against the *future* §5.5 chunked-upload endpoint and was deliberately left at "v0.1"). Updated the three `nats.py` docstrings to "v0.2" so they accurately reflect what the adapter currently speaks; left the design doc's contrast intact.
+
 ## Task definitions reference
 
 If `TaskList` is empty after a context clear and you need to recreate the tasks, use these verbatim. Subject / description / activeForm are the `TaskCreate` parameters.

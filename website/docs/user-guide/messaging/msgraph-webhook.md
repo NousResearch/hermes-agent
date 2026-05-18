@@ -58,7 +58,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address for the HTTP listener. |
+| `host` | `127.0.0.1` | Bind address for the HTTP listener. Keep the loopback default when a reverse proxy or tunnel terminates public HTTPS; set `0.0.0.0` only when you intentionally want the listener to bind every interface. |
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |

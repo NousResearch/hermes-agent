@@ -6,7 +6,7 @@ import json
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+from gateway.platforms.msgraph_webhook import DEFAULT_HOST, MSGraphWebhookAdapter
 
 
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
@@ -31,6 +31,17 @@ class _FakeRequest:
 
 
 class TestMSGraphWebhookConfig:
+    def test_default_listener_host_is_loopback(self):
+        adapter = _make_adapter()
+
+        assert DEFAULT_HOST == "127.0.0.1"
+        assert adapter._host == "127.0.0.1"
+
+    def test_public_listener_host_requires_explicit_opt_in(self):
+        adapter = _make_adapter(host="0.0.0.0")
+
+        assert adapter._host == "0.0.0.0"
+
     def test_gateway_config_accepts_msgraph_webhook_platform(self):
         config = GatewayConfig.from_dict(
             {

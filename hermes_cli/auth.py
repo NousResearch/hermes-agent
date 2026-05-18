@@ -2890,7 +2890,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
     print("browser is on a different machine, forward the port first from your")
     print("local machine in a separate terminal:")
     print()
-    print(f"  ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>")
+    print(f"  ssh -N -4 -L {port}:127.0.0.1:{port} <user>@<this-host>")
     print()
     print("Then open the authorize URL above in your local browser.")
     if docs_url:

@@ -35,8 +35,8 @@ def test_loopback_ssh_hint_prints_tunnel_command_on_ssh(monkeypatch):
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://127.0.0.1:56121/callback", docs_url=auth_mod.XAI_OAUTH_DOCS_URL
     ))
-    # Must include the exact ssh -L command with the port from the redirect URI
-    assert "ssh -N -L 56121:127.0.0.1:56121" in out
+    # Must include the exact IPv4 ssh -L command with the port from the redirect URI
+    assert "ssh -N -4 -L 56121:127.0.0.1:56121" in out
     # Must include the provider-specific docs URL
     assert auth_mod.XAI_OAUTH_DOCS_URL in out
     # Must always include the cross-provider SSH guide
@@ -51,7 +51,7 @@ def test_loopback_ssh_hint_uses_actual_bound_port(monkeypatch):
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://127.0.0.1:51234/callback", docs_url=auth_mod.XAI_OAUTH_DOCS_URL
     ))
-    assert "ssh -N -L 51234:127.0.0.1:51234" in out
+    assert "ssh -N -4 -L 51234:127.0.0.1:51234" in out
     assert "56121" not in out
 
 
@@ -78,7 +78,7 @@ def test_loopback_ssh_hint_works_without_provider_docs_url(monkeypatch):
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://127.0.0.1:43827/spotify/callback"
     ))
-    assert "ssh -N -L 43827:127.0.0.1:43827" in out
+    assert "ssh -N -4 -L 43827:127.0.0.1:43827" in out
     # Generic SSH guide is always present even without a provider-specific URL
     assert auth_mod.OAUTH_OVER_SSH_DOCS_URL in out
     # Should not falsely show "Provider docs:" when no docs_url was passed
@@ -92,4 +92,4 @@ def test_loopback_ssh_hint_accepts_localhost_hostname(monkeypatch):
     out = _cap(lambda: auth_mod._print_loopback_ssh_hint(
         "http://localhost:56121/callback"
     ))
-    assert "ssh -N -L 56121:127.0.0.1:56121" in out
+    assert "ssh -N -4 -L 56121:127.0.0.1:56121" in out

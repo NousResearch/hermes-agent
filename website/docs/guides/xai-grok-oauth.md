@@ -65,7 +65,7 @@ On servers, containers, or SSH sessions where no browser is available, Hermes de
 
 ```bash
 # In a separate terminal on your local machine:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+ssh -N -4 -L 56121:127.0.0.1:56121 user@remote-host
 
 # Then in your SSH session on the remote machine:
 hermes auth add xai-oauth --no-browser
@@ -200,7 +200,7 @@ On SSH or container sessions Hermes prints the authorization URL instead of open
 
 ```bash
 # Local machine, separate terminal:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+ssh -N -4 -L 56121:127.0.0.1:56121 user@remote-host
 
 # Remote machine:
 hermes auth add xai-oauth --no-browser

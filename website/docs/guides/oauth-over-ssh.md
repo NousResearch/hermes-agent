@@ -16,7 +16,7 @@ The fix is a one-line SSH local-forward.
 
 ```bash
 # On your local machine (laptop), in a separate terminal:
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+ssh -N -4 -L 56121:127.0.0.1:56121 user@remote-host
 
 # In your existing SSH session on the remote machine:
 hermes auth add xai-oauth --no-browser
@@ -49,10 +49,10 @@ xAI and Spotify both validate the `redirect_uri` parameter against an allowlist.
 
 ```bash
 # xAI Grok OAuth (port 56121)
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+ssh -N -4 -L 56121:127.0.0.1:56121 user@remote-host
 
 # Or for Spotify (port 43827)
-ssh -N -L 43827:127.0.0.1:43827 user@remote-host
+ssh -N -4 -L 43827:127.0.0.1:43827 user@remote-host
 ```
 
 `-N` means "don't open a remote shell, just hold the tunnel open." Keep this terminal running for the duration of the login.
@@ -79,7 +79,7 @@ You can tear down the tunnel (Ctrl+C in the first terminal) once you see the suc
 If you reach Hermes through a bastion / jump host, use SSH's built-in `-J` (ProxyJump):
 
 ```bash
-ssh -N -L 56121:127.0.0.1:56121 -J jump-user@jump-host user@final-host
+ssh -N -4 -L 56121:127.0.0.1:56121 -J jump-user@jump-host user@final-host
 ```
 
 This chains a SSH connection through the jump host without putting the loopback port on the jump box itself. The local `127.0.0.1:56121` on your laptop tunnels straight through to `127.0.0.1:56121` on the final remote host.
@@ -101,7 +101,7 @@ If you use `ssh -o ControlMaster=auto`, port forwards on a multiplexed connectio
 
 ```bash
 ssh -O exit user@remote-host
-ssh -N -L 56121:127.0.0.1:56121 user@remote-host
+ssh -N -4 -L 56121:127.0.0.1:56121 user@remote-host
 ```
 
 ## Troubleshooting

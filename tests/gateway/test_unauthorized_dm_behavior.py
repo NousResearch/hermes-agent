@@ -140,8 +140,8 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
-def test_discord_allow_bots_does_not_bypass_user_authorization(monkeypatch):
-    """DISCORD_ALLOW_BOTS admits bot messages but does not authenticate bot IDs."""
+def test_discord_allow_bots_authorizes_bot_sender_when_policy_permits(monkeypatch):
+    """DISCORD_ALLOW_BOTS should authorize Discord bot senders at gateway level."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "owner-only")
@@ -160,8 +160,8 @@ def test_discord_allow_bots_does_not_bypass_user_authorization(monkeypatch):
         is_bot=True,
     )
 
-    assert runner._is_user_authorized(source) is False
-    runner.pairing_store.is_approved.assert_called_once_with("discord", "untrusted-bot")
+    assert runner._is_user_authorized(source) is True
+    runner.pairing_store.is_approved.assert_not_called()
 
 
 def test_discord_allow_bots_still_allows_explicitly_allowlisted_bot(monkeypatch):

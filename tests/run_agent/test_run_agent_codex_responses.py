@@ -123,6 +123,25 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_incomplete_response(text: str = ""):
+    content = []
+    if text:
+        content.append(SimpleNamespace(type="output_text", text=text))
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="incomplete",
+                content=content,
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=270_000, output_tokens=1, total_tokens=270_001),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -1386,6 +1405,87 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatch):
+    """Codex max_output_tokens terminal status is a resumable incomplete turn.
+
+    It must not be routed through the generic chat-completions length handler,
+    which returns the user-facing "Response truncated due to output length
+    limit" warning and stops the gateway turn.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_incomplete_response("Partial final answer"),
+        _codex_message_response(" after continuation."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write a long final answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "after continuation."
+    assert "Response truncated due to output length limit" not in str(result)
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "Partial final answer" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+
+
+def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
+    """Long tool-heavy turns should compact before the next API request.
+
+    Initial preflight compression only sees the user's first message. A single
+    turn can then grow by many tool results and leave almost no output budget
+    (the live 271k/272k GPT-5.5 failure). The agent should re-check request
+    pressure before every API call and compact before asking the model to
+    produce the final answer.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: requests.append(api_kwargs) or responses.pop(0),
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "x" * 80_000,
+                }
+            )
+
+    compress_calls = []
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        compress_calls.append(approx_tokens)
+        return [
+            {"role": "user", "content": "[summary of prior tool-heavy work]"},
+        ], "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Summary after compaction."
+    assert len(compress_calls) == 1
+    assert compress_calls[0] >= 15_000
+    assert len(requests) == 2
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

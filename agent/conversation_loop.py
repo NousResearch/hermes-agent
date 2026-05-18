@@ -946,15 +946,20 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
-        # Calculate approximate request size for logging
+        # Calculate approximate request size for logging and pressure checks.
+        # estimate_messages_tokens_rough(api_messages) includes the system
+        # prompt copy but not the tool schema payload, which is sent as a
+        # separate field. Add tools back for compression decisions so long
+        # tool-heavy turns do not creep up to the context ceiling and leave
+        # no room for the model's final answer.
         total_chars = sum(len(str(msg)) for msg in api_messages)
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        approx_request_tokens = estimate_request_tokens_rough(
+        request_pressure_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
 
         _runtime_context_error = _ollama_context_limit_error(
-            agent, approx_request_tokens
+            agent, request_pressure_tokens
         )
         if _runtime_context_error:
             final_response = _runtime_context_error
@@ -969,6 +974,64 @@ def run_conversation(
             except Exception:
                 pass
             break
+
+        _ctx_len = int(getattr(agent.context_compressor, "context_length", 0) or 0)
+        _threshold_tokens = int(getattr(agent.context_compressor, "threshold_tokens", 0) or 0)
+        _reserve_base = agent.max_tokens if isinstance(agent.max_tokens, int) and agent.max_tokens > 0 else 8192
+        _reserve_cap = max(2048, _ctx_len // 4) if _ctx_len else _reserve_base
+        _output_reserve_tokens = min(max(_reserve_base, 8192), _reserve_cap)
+        _output_pressure_limit = (_ctx_len - _output_reserve_tokens) if _ctx_len else 0
+        _compression_pressure_limit = _threshold_tokens or _output_pressure_limit
+        if _output_pressure_limit > 0:
+            _compression_pressure_limit = (
+                min(_compression_pressure_limit, _output_pressure_limit)
+                if _compression_pressure_limit > 0 else _output_pressure_limit
+            )
+
+        if (
+            agent.compression_enabled
+            and _compression_pressure_limit > 0
+            and request_pressure_tokens >= _compression_pressure_limit
+            and len(messages) > 1
+            and compression_attempts < 3
+        ):
+            compression_attempts += 1
+            logger.info(
+                "Pre-API compression: ~%s request tokens >= %s pressure limit "
+                "(threshold=%s, context=%s, output_reserve=%s, attempt=%s/3)",
+                f"{request_pressure_tokens:,}",
+                f"{_compression_pressure_limit:,}",
+                f"{_threshold_tokens:,}" if _threshold_tokens else "unknown",
+                f"{_ctx_len:,}" if _ctx_len else "unknown",
+                f"{_output_reserve_tokens:,}" if _output_reserve_tokens else "unknown",
+                compression_attempts,
+            )
+            agent._emit_status(
+                f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
+                f"near the context/output limit. Compacting before the next model call."
+            )
+            messages, active_system_prompt = agent._compress_context(
+                messages,
+                system_message,
+                approx_tokens=request_pressure_tokens,
+                task_id=effective_task_id,
+            )
+            # Reset retry/empty-response state so the compacted request
+            # gets a fresh chance instead of inheriting stale recovery
+            # counters from the pre-compaction history.
+            agent._empty_content_retries = 0
+            agent._thinking_prefill_retries = 0
+            agent._last_content_with_tools = None
+            agent._last_content_tools_all_housekeeping = False
+            agent._mute_post_response = False
+            # Compression creates a new durable session boundary; write all
+            # compacted messages on the next persistence flush and rebuild
+            # the API-message copy from the compressed history.
+            conversation_history = None
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+            agent.iteration_budget.refund()
+            continue
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
@@ -1508,7 +1571,14 @@ def run_conversation(
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        finish_reason = "length"
+                        # Responses API max-output exhaustion is a normal
+                        # Codex incomplete turn.  Let the Codex-specific
+                        # continuation path below append the incomplete
+                        # assistant state and retry, instead of routing to
+                        # the generic chat-completions length rollback that
+                        # emits "Response truncated due to output length
+                        # limit" and stops gateway turns.
+                        finish_reason = "incomplete"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":

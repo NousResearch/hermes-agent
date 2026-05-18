@@ -653,7 +653,10 @@ function FallbackProvidersPanel({ refreshKey }: { refreshKey: number }) {
   }, []);
 
   useEffect(() => {
-    loadFallbacks();
+    const timer = window.setTimeout(() => {
+      loadFallbacks();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [loadFallbacks, refreshKey]);
 
   const persist = async (next: FallbackProviderEntry[]) => {
@@ -993,7 +996,10 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => {
+      load();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   return (

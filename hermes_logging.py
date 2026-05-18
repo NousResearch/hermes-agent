@@ -296,19 +296,43 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode.
+    """RotatingFileHandler that ensures group-writable perms in managed mode
+    *and* is safe against external rotation by sibling Hermes processes.
 
     In managed mode (NixOS), the stateDir uses setgid (2770) so new files
     inherit the hermes group. However, both _open() (initial creation) and
-    doRollover() create files via open(), which uses the process umask —
+    doRollover() create files via open(), which uses the process umask --
     typically 0022, producing 0644. This subclass applies chmod 0660 after
     both operations so the gateway and interactive users can share log files.
+
+    External-rotation safety (issue #27649)
+    ---------------------------------------
+    The stdlib ``RotatingFileHandler`` keeps an open file descriptor to
+    the active log file.  When *another* Hermes process rotates the file
+    (renaming ``agent.log`` -> ``agent.log.1``), the open fd in this
+    process still points at the renamed inode -- so subsequent writes
+    silently land in ``agent.log.1`` instead of the live ``agent.log``.
+
+    This subclass periodically compares the inode of the open stream
+    against the inode of ``baseFilename`` on disk; on mismatch the stale
+    stream is closed and a fresh one is opened on ``baseFilename``.  In
+    addition, ``doRollover`` short-circuits when the file has already
+    been rotated externally so we don't clobber the newer ``agent.log``
+    that another process created.
+
+    The check is throttled to one ``os.stat`` per
+    ``_REOPEN_CHECK_INTERVAL`` records to avoid doubling the syscall
+    count on hot debug loggers; tests can lower this attribute to 1 to
+    exercise the path on every emit.
     """
+
+    _REOPEN_CHECK_INTERVAL: int = 16
 
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
+        self._emit_count = 0
 
     def _chmod_if_managed(self):
         if self._managed:
@@ -322,7 +346,102 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._chmod_if_managed()
         return stream
 
+    # ------------------------------------------------------------------
+    # External-rotation detection helpers (#27649)
+    # ------------------------------------------------------------------
+    def _stream_inode_key(self):
+        """Return ``(st_dev, st_ino)`` for the open stream, or ``None``.
+
+        Returns ``None`` when the stream is missing, closed, or the
+        platform refuses ``fstat`` -- in which case the caller must
+        treat the inode comparison as inconclusive and skip the
+        reopen (no regression vs pre-#27649 behaviour).
+        """
+        stream = self.stream
+        if stream is None:
+            return None
+        try:
+            st = os.fstat(stream.fileno())
+        except (OSError, AttributeError, ValueError):
+            return None
+        if st.st_ino == 0:
+            # Some Windows + Python combinations return st_ino == 0
+            # for regular files; treat as "unknown" rather than
+            # forcing spurious reopens.
+            return None
+        return (st.st_dev, st.st_ino)
+
+    def _baseFilename_inode_key(self):
+        """Return ``(st_dev, st_ino)`` for ``baseFilename`` on disk."""
+        try:
+            st = os.stat(self.baseFilename)
+        except OSError:
+            return None
+        if st.st_ino == 0:
+            return None
+        return (st.st_dev, st.st_ino)
+
+    def _reopen_if_rotated_externally(self) -> bool:
+        """Close + reopen the stream if another process rotated the file.
+
+        Returns ``True`` if a reopen happened, ``False`` otherwise.
+        Safe to call when the stream is missing -- it becomes a no-op.
+        """
+        current = self._stream_inode_key()
+        on_disk = self._baseFilename_inode_key()
+        if current is None or on_disk is None:
+            return False
+        if current == on_disk:
+            return False
+
+        # Inode mismatch: our open fd points at a rotated backup file
+        # (e.g. ``agent.log.1``).  Close it and reopen ``baseFilename``
+        # so subsequent writes land in the live log.
+        try:
+            self.stream.close()
+        except OSError:
+            pass
+        self.stream = self._open()
+        return True
+
+    def emit(self, record):
+        # Periodic inode check -- bounded by ``_REOPEN_CHECK_INTERVAL``
+        # so this only doubles the syscall count once every N records
+        # under steady-state.  We always check on the very first emit
+        # so a freshly-opened handler immediately notices a pre-existing
+        # rotation rather than waiting N records.
+        self._emit_count += 1
+        if (
+            self._emit_count == 1
+            or (self._emit_count % self._REOPEN_CHECK_INTERVAL) == 0
+        ):
+            try:
+                self._reopen_if_rotated_externally()
+            except Exception:  # pragma: no cover -- defensive: never let
+                # a logging-side check kill the calling code.
+                pass
+        super().emit(record)
+
     def doRollover(self):
+        # If another process already rotated for us, just reopen the
+        # live ``baseFilename`` instead of performing our own rename
+        # (which would otherwise overwrite the newer ``agent.log`` that
+        # the other process just created).  Issue #27649.
+        current = self._stream_inode_key()
+        on_disk = self._baseFilename_inode_key()
+        if (
+            current is not None
+            and on_disk is not None
+            and current != on_disk
+        ):
+            try:
+                self.stream.close()
+            except OSError:
+                pass
+            self.stream = self._open()
+            self._chmod_if_managed()
+            return
+
         super().doRollover()
         self._chmod_if_managed()
 

@@ -545,6 +545,12 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
+# Pattern to identify markdown table blocks: header line + separator + optional data rows
+_TABLE_BLOCK_RE = re.compile(
+    r'(^\|.*\|\n\|[-|: ]+\|(?:\n\|.*\|)*)',
+    re.MULTILINE,
+)
+
 
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
@@ -561,9 +567,9 @@ def _build_markdown_post_payload(content: str) -> str:
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
+    Feishu's ``md`` tag supports full GFM markdown (tables, bold, italic,
+    code blocks, lists, links, etc.). Split at fenced code-block boundaries
+    so prose before/after the code block remains visible while code stays
     in a dedicated row.
     """
     if not content:
@@ -4222,13 +4228,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Feishu post-type 'md' elements support tables natively (GFM).
+        # Route tables and markdown content through post for full rendering.
+        if _MARKDOWN_HINT_RE.search(content) or _TABLE_BLOCK_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

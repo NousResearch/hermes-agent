@@ -622,6 +622,7 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        "failure_history": [],  # Rolling last-5 failures: [{at, error, session_id}]
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -831,6 +832,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+
+                # Maintain rolling failure history (last 5 entries).
+                # On success, clear it so the counter resets.
+                if not success:
+                    _entry = {"at": now, "error": (error or "unknown")[:200]}
+                    _hist = list(job.get("failure_history") or [])
+                    _hist.append(_entry)
+                    job["failure_history"] = _hist[-5:]  # keep last 5
+                else:
+                    job["failure_history"] = []
                 
                 # Increment completed count
                 if job.get("repeat"):

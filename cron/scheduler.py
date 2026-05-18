@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1605,22 +1606,52 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        
+
+        # Collect agent activity diagnostics if available
+        _diag_lines: list[str] = []
+        if agent is not None:
+            try:
+                _act = agent.get_activity_summary() if hasattr(agent, "get_activity_summary") else {}
+                _api_calls = _act.get("api_call_count", "?")
+                _max_iter = _act.get("max_iterations", "?")
+                _last_act = _act.get("last_activity_desc", "unknown")
+                _idle = _act.get("seconds_since_activity", 0)
+                _diag_lines.append(f"**Iterations:** {_api_calls}/{_max_iter}")
+                _diag_lines.append(f"**Last activity:** {_last_act} ({int(_idle)}s ago)")
+                if _act.get("current_tool"):
+                    _diag_lines.append(f"**Stuck on tool:** `{_act['current_tool']}`")
+            except Exception:
+                pass
+
+        _tb = traceback.format_exc()
+        _diag_block = ("\n".join(_diag_lines) + "\n\n") if _diag_lines else ""
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
+**Session:** `{_cron_session_id}`
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-
-## Prompt
-
-{prompt}
 
 ## Error
 
 ```
 {error_msg}
 ```
+
+## Agent Diagnostics
+
+{_diag_block}**Session log:** `~/.hermes/sessions/session_{_cron_session_id}.json`
+
+## Traceback
+
+```
+{_tb}
+```
+
+## Prompt
+
+{prompt}
 """
         return False, output, "", error_msg
 
@@ -1752,7 +1783,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                if success:
+                    deliver_content = final_response
+                else:
+                    # Build a structured failure notification with enough
+                    # context to diagnose without opening logs manually.
+                    _fail_lines = [
+                        f"❌ **Cron job failed:** `{job.get('name', job['id'])}`",
+                        f"**Error:** {error}",
+                    ]
+                    # Surface consecutive failure count if available
+                    _history = job.get("failure_history") or []
+                    if len(_history) > 1:
+                        _fail_lines.append(f"**Consecutive failures:** {len(_history)} (first: {_history[0].get('at', '?')[:16]})")
+                    # Include session log path for easy debugging
+                    _session_files = sorted(
+                        (f for f in (Path(_hermes_home) / "sessions").glob(f"session_cron_{job['id']}_*.json") if f.is_file()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if _session_files:
+                        _fail_lines.append(f"**Session log:** `{_session_files[0]}`")
+                    deliver_content = "\n".join(_fail_lines)
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)

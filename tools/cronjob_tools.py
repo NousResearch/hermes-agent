@@ -273,6 +273,14 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    # Surface failure history and last error only when there are failures —
+    # keeps the list output clean for healthy jobs.
+    if job.get("last_status") == "error" or job.get("failure_history"):
+        result["last_error"] = job.get("last_error")
+        _hist = job.get("failure_history") or []
+        if _hist:
+            result["failure_history"] = _hist
+            result["consecutive_failures"] = len(_hist)
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):

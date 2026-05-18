@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
@@ -106,9 +106,11 @@ def _read_nous_auth(
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
+        if not isinstance(provider, dict):
+            return None
         if not provider.get("agent_key") and not provider.get("access_token"):
             return None
-        return provider
+        return cast(dict[str, Any], provider)
     except Exception as exc:
         logger.debug("Could not read Nous auth: %s", exc)
         return None
@@ -116,7 +118,7 @@ def _read_nous_auth(
 
 def _nous_api_key(provider: dict[str, Any]) -> str:
     """Extract the Nous runtime credential from the compatibility field."""
-    return provider.get("agent_key") or provider.get("access_token", "")
+    return str(provider.get("agent_key") or provider.get("access_token", ""))
 
 
 def _nous_base_url() -> str:

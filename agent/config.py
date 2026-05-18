@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
-from typing import Any, Callable, MutableMapping, Sequence, TypeVar
+from typing import Any, Callable, MutableMapping, Sequence, TypeVar, cast
 
 
 AgentCallback = Callable[..., Any]
@@ -168,11 +168,12 @@ _CHECKPOINT_LEGACY_NAMES: dict[str, str] = {
 
 def _merge_dataclass(instance: T, kwargs: MutableMapping[str, Any]) -> T:
     updates: dict[str, Any] = {}
-    for field in fields(instance):
+    dataclass_instance = cast(Any, instance)
+    for field in fields(dataclass_instance):
         if field.name in kwargs:
             updates[field.name] = kwargs.pop(field.name)
     if updates:
-        return replace(instance, **updates)
+        return cast(T, replace(dataclass_instance, **updates))
     return instance
 
 

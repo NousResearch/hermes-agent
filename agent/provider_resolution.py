@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
 
         profile = get_provider_profile(provider_id)
         if profile and profile.default_aux_model:
-            return profile.default_aux_model
+            return str(profile.default_aux_model)
     except Exception:
         pass
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
@@ -229,7 +229,7 @@ def _normalize_resolved_model(model_name: str | None, provider: str) -> str | No
     try:
         from hermes_cli.model_normalize import normalize_model_for_provider
 
-        return normalize_model_for_provider(model_name, provider)
+        return cast(str | None, normalize_model_for_provider(model_name, provider))
     except Exception:
         return model_name
 

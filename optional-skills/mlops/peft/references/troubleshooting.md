@@ -58,10 +58,22 @@ python -c "import peft; print(peft.__version__)"
 **Solutions**:
 
 1. **Enable gradient checkpointing**:
+
+Only useful during training. For non-quantized models:
+
+```python
+model.enable_input_require_grads()
+model.gradient_checkpointing_enable()
+```
+
+For quantized models:
+
 ```python
 from peft import prepare_model_for_kbit_training
 model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 ```
+
+In both cases, call this _before_ calling `get_peft_model`.
 
 2. **Reduce batch size**:
 ```python
@@ -154,10 +166,8 @@ for batch in dataloader:
 
 **Fix**:
 ```python
-# Verify LoRA applied to correct modules
-for name, module in model.named_modules():
-    if "lora" in name.lower():
-        print(f"Found LoRA: {name}")
+# Verify LoRA applied to correct modules and that requires_grad is True
+model.get_layer_status()
 
 # Check target_modules match model architecture
 from peft.utils import TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING
@@ -166,7 +176,7 @@ print(TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING.get(model.config.model_
 # Ensure model in training mode
 model.train()
 
-# Check requires_grad
+# Check requires_grad is only True for LoRA modules
 for name, param in model.named_parameters():
     if param.requires_grad:
         print(f"Trainable: {name}")
@@ -319,7 +329,7 @@ bnb_config = BitsAndBytesConfig(
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     quantization_config=bnb_config,
-    torch_dtype=torch.bfloat16
+    dtype=torch.bfloat16,
 )
 ```
 
@@ -356,7 +366,7 @@ from peft import PeftModel
 # Load in higher precision for merging
 base_model = AutoModelForCausalLM.from_pretrained(
     base_model_name,
-    torch_dtype=torch.float16,  # Not quantized
+    dtype=torch.float16,  # Not quantized
     device_map="auto"
 )
 
@@ -397,7 +407,7 @@ model = model.to(torch.bfloat16)
 model = PeftModel.from_pretrained(
     base_model,
     "./adapter",
-    torch_dtype=torch.bfloat16
+    dtype=torch.bfloat16,
 )
 ```
 

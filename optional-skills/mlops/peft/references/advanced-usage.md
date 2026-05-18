@@ -20,9 +20,20 @@ dora_config = LoraConfig(
 model = get_peft_model(model, dora_config)
 ```
 
+At inference, consider using caching for faster speed at the expense of higher memory usage:
+
+```python
+from peft.helpers import DoraCaching
+
+model.eval()
+with DoraCaching():
+    output = model(inputs)
+```
+
 **When to use DoRA**:
 - Consistently outperforms LoRA on instruction-following tasks
-- Slightly higher memory (~10%) due to magnitude vectors
+- Slightly higher memory (~10%) and runtime due to magnitude vectors
+- When using `lora_dropout = 0.0` (the default), as dropout adds more overhead to DoRA
 - Best for quality-critical fine-tuning
 
 ### AdaLoRA (Adaptive Rank)
@@ -37,6 +48,7 @@ adalora_config = AdaLoraConfig(
     target_r=16,            # Target average rank
     tinit=200,              # Warmup steps
     tfinal=1000,            # Final pruning step
+    total_step=2000,        # Indicate the total number of trainig steps
     deltaT=10,              # Rank update frequency
     beta1=0.85,
     beta2=0.85,
@@ -96,6 +108,8 @@ lora_config = LoraConfig(
 - When experimenting with different ranks
 - Helps maintain consistent behavior across rank values
 - Recommended for r > 32
+
+When not using rsLoRA, a good rule of thumb is to set `lora_alpha = 2 * r`.
 
 ## LoftQ (LoRA-Fine-Tuning-aware Quantization)
 
@@ -166,15 +180,27 @@ lora_config = LoraConfig(
 )
 ```
 
+### Target all linear layers
+
+```python
+lora_config = LoraConfig(
+    target_modules="all-linear",
+)
+```
+
 ### Exclude specific layers
+
+Pass `exclude_modules` to avoid targeting specific layers.
 
 ```python
 lora_config = LoraConfig(
     r=16,
-    target_modules="all-linear",
-    modules_to_save=["lm_head"],  # Train these fully (not LoRA)
+    target_modules=["q_proj", "v_proj"],
+    exclude_modules=["model.layers.0.self_attn.q_proj"],
 )
 ```
+
+For more complex patterns, `target_modules` can also be set to a string, in which case it is used for regex matching.
 
 ## Embedding and LM Head Training
 
@@ -221,6 +247,8 @@ model = get_peft_model(model, lora_config)
 
 ### Adapter composition
 
+Combine multiple LoRA adapters into a single new adapter.
+
 ```python
 from peft import PeftModel
 
@@ -241,6 +269,8 @@ model.set_adapter("combined")
 ```
 
 ### Adapter stacking
+
+Stack multiple LoRA adapters into a single new adapter with increased LoRA rank.
 
 ```python
 # Stack adapters (apply sequentially)
@@ -281,15 +311,28 @@ class MultiAdapterModel:
 
 ### Gradient checkpointing with LoRA
 
+Gradient checkpointing reduces memory usage during training but incrases compute time. For non-quantized models, use:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(...)
+model.enable_input_require_grads()
+model.gradient_checkpointing_enable()
+model = get_peft_model(model, lora_config)
+```
+
+For quantized models, use:
+
 ```python
 from peft import prepare_model_for_kbit_training
 
+model = AutoModelForCausalLM.from_pretrained(...)
 # Enable gradient checkpointing
 model = prepare_model_for_kbit_training(
     model,
     use_gradient_checkpointing=True,
     gradient_checkpointing_kwargs={"use_reentrant": False}
 )
+model = get_peft_model(model, lora_config)
 ```
 
 ### CPU offloading for training
@@ -315,16 +358,32 @@ from transformers import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained(
     "meta-llama/Llama-3.1-8B",
     attn_implementation="flash_attention_2",
-    torch_dtype=torch.bfloat16
+    dtype=torch.bfloat16,
 )
 
 # Apply LoRA
 model = get_peft_model(model, lora_config)
 ```
 
+### Loading the adapter at half precision
+
+```python
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.1-8B",
+    dtype=torch.bfloat16,
+)
+
+# LoRA weights use bfloat16 instead of float32 (default)
+model = get_peft_model(model, lora_config, autocast_adapter_dtype=False)
+```
+
 ## Inference Optimization
 
 ### Merge for deployment
+
+By merging the adapter, the compute and memory overhead is completely removed.
 
 ```python
 # Merge adapter weights into base model
@@ -361,6 +420,30 @@ ort_model.save_pretrained("./onnx-model")
 ```
 
 ### Batch adapter inference
+
+Run inference efficiently with multiple adapters.
+
+#### PEFT
+
+```python
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
+
+model_id = ...
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+model = AutoModelForCausalLM.from_pretrained(model_id)
+peft_model = PeftModel.from_pretrained(model, <path1>, adapter_name="adapter1")
+peft_model.load_adapter(<path2>, adapter_name="adapter2")
+
+inputs = tokenizer(...)
+
+# uses base model for 1st sample, adapter1 for second, adapter2 for third
+adapter_names = ["__base__", "adapter1", "adapter2"]
+output = peft_model.generate(**inputs, adapter_names=adapter_names, ...)
+```
+
+#### vLLM
 
 ```python
 from vllm import LLM
@@ -470,17 +553,21 @@ trainer = SFTTrainer(
 ### Verify adapter application
 
 ```python
-# Check which modules have LoRA
-for name, module in model.named_modules():
-    if hasattr(module, "lora_A"):
-        print(f"LoRA applied to: {name}")
-
 # Print detailed config
 print(model.peft_config)
 
 # Check adapter state
 print(f"Active adapters: {model.active_adapters}")
-print(f"Trainable: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+model.print_trainable_parameters()
+```
+
+### Detailed overview of how PEFT is applied to the model
+
+```
+# aggregated view
+model.get_model_status()
+# per-layer view
+model.get_layer_status()
 ```
 
 ### Compare with base model

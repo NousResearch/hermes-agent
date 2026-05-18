@@ -3,9 +3,9 @@
 **Status:** Living doc — Phase 10 migration to protocol v0.3 is the current shipped state.
 **Scope:** NATS as a gateway channel in Hermes Agent so callers can prompt the agent over NATS — send text, send attachments, and receive token-streamed responses — using the **NATS Agent Protocol v0.3**.
 **Wire spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.3).
-**SDKs (split as of client v0.5 / agent v0.1, 2026-04-30):** Two distributions sourced from the `synadia-ai/synadia-agents` monorepo, both resolved locally via `[tool.uv.sources]` until they ship on PyPI.
-- **Client SDK** — `synadia-ai-agents` at `../synadia-agents/client-sdk/python` (import root `synadia_ai.agents`). Wire types only: `Envelope`, `Attachment`, `ResponseChunk`, `StatusChunk`, `QueryChunk`, `HeartbeatPayload`, `AgentSubject`, errors (`QueryTimeout`, `ProtocolError`, …), discovery (`Agents`, `DiscoverFilter`), helpers (`load_context_options`, `parse_nats_url`).
-- **Agent SDK** — `synadia-ai-agent-service` at `../synadia-agents/agent-sdk/python` (import root `synadia_ai.agent_service`). Host-side only: `AgentService`, `PromptStream`, `PromptHandler`, host defaults, heartbeat publisher loop. Depends on `synadia-ai-agents>=0.5`.
+**SDKs (split as of client v0.5 / agent v0.1, 2026-04-30; published to PyPI 2026-05-01):** Two distributions sourced from the `synadia-ai/synadia-agents` monorepo, both pulled in by the `hermes-agent[nats]` extra.
+- **Client SDK** — [`synadia-ai-agents`](https://pypi.org/project/synadia-ai-agents/) (source: `../synadia-agents/client-sdk/python`, import root `synadia_ai.agents`). Wire types only: `Envelope`, `Attachment`, `ResponseChunk`, `StatusChunk`, `QueryChunk`, `HeartbeatPayload`, `AgentSubject`, errors (`QueryTimeout`, `ProtocolError`, …), discovery (`Agents`, `DiscoverFilter`), helpers (`load_context_options`, `parse_nats_url`).
+- **Agent SDK** — [`synadia-ai-agent-service`](https://pypi.org/project/synadia-ai-agent-service/) (source: `../synadia-agents/agent-sdk/python`, import root `synadia_ai.agent_service`). Host-side only: `AgentService`, `PromptStream`, `PromptHandler`, host defaults, heartbeat publisher loop. Depends on `synadia-ai-agents>=0.5`.
 
 Cross-references to the protocol spec are by section number (e.g. §5.6). Cross-references to the Hermes codebase use `file:line`.
 
@@ -565,13 +565,9 @@ Installation (one-time):
 
 ```bash
 source venv/bin/activate
-# Both SDKs are resolved from the sibling synadia-agents checkout via
-# [tool.uv.sources] in pyproject.toml — uv sync handles them in one step:
+# Both SDKs are pulled from PyPI by the [nats] extra:
 uv sync --all-extras --locked
-
-# Manual fallback if you bypass uv:
-# pip install -e ../synadia-agents/client-sdk/python
-# pip install -e ../synadia-agents/agent-sdk/python
+# or, without uv:  pip install 'hermes-agent[nats]'
 ```
 
 Local broker:
@@ -602,7 +598,7 @@ Start the gateway:
 hermes gateway
 ```
 
-Verify (from `../synadia-agents/client-sdk/python`):
+Verify (from a checkout of the SDK monorepo — `git clone https://github.com/synadia-ai/synadia-agents && cd synadia-agents/client-sdk/python`; the wheel doesn't include `examples/`):
 
 ```bash
 uv run python examples/01-discover.py --url nats://127.0.0.1:4222
@@ -643,9 +639,9 @@ nats sub 'agents.hermes.*.*.heartbeat'
 | Session source + key           | `gateway/session.py`                                 | `SessionSource`, `build_session_key`                 |
 | Test mock pattern              | `tests/gateway/conftest.py::_ensure_telegram_mock`   | Mirror for `_ensure_synadia_agents_mock`             |
 | CLI approval callback          | `hermes_cli/callbacks.py` (reference only)           | CLI-only; gateway uses its own notify bridge         |
-| Client SDK source (wire types) | `../synadia-agents/client-sdk/python/src/synadia_ai/agents/` | `envelope.py`, `messages.py`, `connect.py`, errors, discovery |
-| Agent SDK source (host)        | `../synadia-agents/agent-sdk/python/src/synadia_ai/agent_service/` | `service.py`, `prompt_stream.py`, heartbeat publisher |
-| SDK examples                   | `../synadia-agents/client-sdk/python/examples/01..05-*.py` | Smoke-test inputs (§14)                        |
+| Client SDK source (wire types) | `synadia-agents/client-sdk/python/src/synadia_ai/agents/` (monorepo) | `envelope.py`, `messages.py`, `connect.py`, errors, discovery |
+| Agent SDK source (host)        | `synadia-agents/agent-sdk/python/src/synadia_ai/agent_service/` (monorepo) | `service.py`, `prompt_stream.py`, heartbeat publisher |
+| SDK examples                   | `synadia-agents/client-sdk/python/examples/01..05-*.py` (monorepo only — not in wheel) | Smoke-test inputs (§14)                        |
 | Protocol spec                  | `../nats-agent-sdk-docs/core-protocol.md`            | v0.3                                                 |
 
 ---

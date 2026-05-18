@@ -17,12 +17,7 @@ Use the NATS gateway when you want to reach Hermes programmatically from other s
 ## Prerequisites
 
 - A running NATS server (local or remote). For local testing: `brew install nats-server` then `nats-server -p 4222 -a 127.0.0.1`.
-- The `synadia-ai-agents` SDK (import root `synadia_ai.agents`). **Until it ships on PyPI, install from source:**
-  ```bash
-  source venv/bin/activate
-  uv pip install --python venv/bin/python -e ../synadia-agents/client-sdk/python
-  ```
-  Without the SDK, the gateway logs `NATS: synadia-ai-agents not installed` at startup and does not register the adapter.
+- The `synadia-ai-agents` and `synadia-ai-agent-service` SDKs (host-side imports `synadia_ai.agents` and `synadia_ai.agent_service`). Both are pulled in automatically by the `[nats]` extra: `pip install 'hermes-agent[nats]'` (or `uv sync --extra nats`). Without them, the gateway logs `NATS: synadia-ai-agents / synadia-ai-agent-service not installed` at startup and does not register the adapter.
 - An LLM provider key in `~/.hermes/.env` (e.g. `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`). The `/help` and `/status` commands work without one, but actual prompts need a model.
 
 ## Step 1: Configure the Gateway
@@ -130,17 +125,43 @@ A heartbeat-shaped JSON reply with `metadata.protocol_version: "0.3"` confirms t
 
 ## Step 3: Send a Prompt
 
-The `synadia-ai-agents` SDK ships runnable examples. From the SDK repo:
+The simplest caller is a few lines of Python on top of the `synadia-ai-agents` client SDK. After `pip install synadia-ai-agents`:
+
+```python
+# prompt.py
+import asyncio, sys
+from synadia_ai.agents import Agents, DiscoverFilter, ResponseChunk
+import nats
+
+async def main(text: str) -> None:
+    nc = await nats.connect("nats://127.0.0.1:4222")
+    agents = Agents(nc=nc)
+    try:
+        found = await agents.discover(filter=DiscoverFilter(session_name="default"))
+        if not found:
+            sys.exit("no agent found — is the gateway running?")
+        async for msg in found[0].prompt(text):
+            if isinstance(msg, ResponseChunk):
+                sys.stdout.write(msg.text); sys.stdout.flush()
+    finally:
+        await agents.close()
+        await nc.close()
+
+asyncio.run(main("what is 2+2? answer in one short sentence"))
+```
+
+You'll see the response stream chunk-by-chunk, terminated by an empty-body frame.
+
+For a full set of runnable callers — discovery, attachments, mid-stream approval handling, liveness monitoring — clone the SDK repo and run them directly:
 
 ```bash
-cd ../synadia-agents/client-sdk/python
+git clone https://github.com/synadia-ai/synadia-agents.git
+cd synadia-agents/client-sdk/python
 uv run python examples/02-prompt-text.py \
     --url nats://127.0.0.1:4222 \
     --session default \
     "what is 2+2? answer in one short sentence"
 ```
-
-You'll see the response stream chunk-by-chunk, terminated by an empty-body frame. Other examples:
 
 | Example | Demonstrates |
 |---------|--------------|
@@ -218,8 +239,8 @@ Cross-machine collisions are allowed — the NATS protocol explicitly permits mu
 
 ## Troubleshooting
 
-**Gateway startup: `NATS: synadia-ai-agents not installed`**
-The SDK isn't on PyPI yet. Install from source: `uv pip install --python venv/bin/python -e ../synadia-agents/client-sdk/python`.
+**Gateway startup: `NATS: synadia-ai-agents / synadia-ai-agent-service not installed`**
+Install the `[nats]` extra: `pip install 'hermes-agent[nats]'` (or `uv sync --extra nats`).
 
 **`ModuleNotFoundError: No module named 'synadia_ai'`**
 Same as above. Make sure you installed into the gateway's venv, not a global Python.
@@ -253,7 +274,9 @@ Each is a candidate for a future phase, not a bug.
 ## Reference
 
 - **Protocol spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.3)
-- **Agent SDK:** `../synadia-agents/client-sdk/python` (PyPI package `synadia-ai-agents`, import root `synadia_ai.agents`; lives inside the [`synadia-ai/synadia-agents`](https://github.com/synadia-ai/synadia-agents) monorepo)
+- **Client SDK (caller side):** [`synadia-ai-agents`](https://pypi.org/project/synadia-ai-agents/) on PyPI (import root `synadia_ai.agents`)
+- **Agent SDK (gateway side):** [`synadia-ai-agent-service`](https://pypi.org/project/synadia-ai-agent-service/) on PyPI (import root `synadia_ai.agent_service`)
+- **SDK source:** [`synadia-ai/synadia-agents`](https://github.com/synadia-ai/synadia-agents) monorepo (`client-sdk/python`, `agent-sdk/python`, plus `examples/`)
 - **Hermes adapter:** `gateway/platforms/nats.py`
 - **Design doc:** `docs/nats-gateway-design.md` — architectural reference, protocol↔adapter mapping, streaming model, failure modes
 - **Lessons learned:** `docs/nats-gateway-design.md` §17 — retrospective on surprises during Phases 1–8

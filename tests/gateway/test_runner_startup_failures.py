@@ -64,7 +64,14 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, tmp_path):
+async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_path):
+    """Retryable startup errors should leave the gateway running in
+    degraded mode so the reconnect watcher can recover the platform when
+    the underlying problem clears.  Previously this returned False from
+    ``start()`` and exited the process, which converted a single broken
+    platform (e.g. unpaired WhatsApp, DNS blip on Telegram) into a
+    systemd restart loop and killed cron jobs in the meantime.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = GatewayConfig(
         platforms={
@@ -78,11 +85,13 @@ async def test_runner_returns_failure_for_retryable_startup_errors(monkeypatch, 
 
     ok = await runner.start()
 
-    assert ok is False
+    # Gateway stays alive in degraded mode; reconnect watcher takes over.
+    assert ok is True
     assert runner.should_exit_cleanly is False
     state = read_runtime_status()
-    assert state["gateway_state"] == "startup_failed"
-    assert "temporary DNS resolution failure" in state["exit_reason"]
+    assert state["gateway_state"] in {"degraded", "running"}
+    # Telegram was queued for retry, not given up on.
+    assert Platform.TELEGRAM in runner._failed_platforms
     assert state["platforms"]["telegram"]["state"] == "retrying"
     assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
 
@@ -337,6 +346,47 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     assert ok is False
     # Marker must NOT be left behind
     assert not (tmp_path / ".gateway-takeover.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch, tmp_path, caplog):
+    """When all enabled platforms have no adapter (missing library or credentials),
+    the gateway should NOT return failure — it should warn and continue running for
+    cron job execution, matching the behaviour of 'no platforms enabled' (#5196).
+
+    In fleet deployments the same config.yaml is shared across nodes that may only
+    have credentials for a subset of platforms.  Requiring perfect credentials on
+    every node makes fleet operation impossible."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    # Simulate _create_adapter returning None for ALL platforms (missing library /
+    # missing credentials — no connection attempt ever made).
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        ok = await runner.start()
+
+    # Must NOT return False — gateway should keep running for cron.
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner.adapters == {}
+    # Runtime state must remain "running", not "startup_failed".
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    # A warning must be emitted explaining why no platforms connected.
+    assert any(
+        "No adapter could be created" in record.message
+        for record in caplog.records
+    ), "Expected degraded-mode warning when all adapters are missing"
 
 
 def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):

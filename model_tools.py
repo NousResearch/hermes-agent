@@ -21,6 +21,7 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
+import re
 import asyncio
 import logging
 import threading
@@ -97,9 +98,7 @@ def _run_async(coro):
     asyncio.run()'s create-and-destroy lifecycle.
 
     This is the single source of truth for sync->async bridging in tool
-    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
-    outer thread-pool wrapping as defense-in-depth, but each handler is
-    self-protecting via this function.
+    handlers. Each handler is self-protecting via this function.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -231,13 +230,6 @@ _LEGACY_TOOLSET_MAP = {
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
-    "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
-    ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
@@ -353,9 +345,8 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            else:
-                if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
@@ -378,9 +369,8 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            else:
-                if not quiet_mode:
-                    print(f"⚠️  Unknown toolset: {toolset_name}")
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -497,6 +487,48 @@ _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
 # =========================================================================
+# Tool error sanitization
+# =========================================================================
+#
+# Tool exceptions can carry arbitrary text into the model's context as the
+# `tool` message content. json.dumps() handles quote/backslash escaping so a
+# raw injection of `</tool_call>` won't break message framing, but the model
+# still *reads* those tokens and they can confuse downstream tool-call
+# parsing or, in adversarial cases, nudge it toward role-confusion framing.
+#
+# This helper strips structural framing tokens (XML role tags, CDATA,
+# markdown code fences) and caps the message at a sane upper bound before it
+# becomes part of the conversation. It's defense-in-depth — the json layer
+# already prevents framing escape — but cheap and worth having.
+#
+# Ported from ironclaw#1639.
+_TOOL_ERROR_ROLE_TAG_RE = re.compile(
+    r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>',
+    re.IGNORECASE,
+)
+_TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
+_TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
+_TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
+_TOOL_ERROR_MAX_LEN = 2000
+
+
+def _sanitize_tool_error(error_msg: str) -> str:
+    """Strip structural framing tokens from a tool error before showing it to the model.
+
+    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
+    """
+    if not error_msg:
+        return "[TOOL_ERROR] "
+    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
+    sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
+    sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    if len(sanitized) > _TOOL_ERROR_MAX_LEN:
+        sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
+    return f"[TOOL_ERROR] {sanitized}"
+
+
+# =========================================================================
 # Tool argument type coercion
 # =========================================================================
 
@@ -550,6 +582,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     # nullable "null" → None).
                     args[key] = coerced
                     continue
+                # If the string looks like a JSON array but _coerce_value
+                # failed to parse it, warn clearly instead of silently wrapping.
+                if value.strip().startswith("["):
+                    logger.warning(
+                        "coerce_tool_args: %s.%s looks like a JSON array string "
+                        "but could not be parsed — model may have emitted a "
+                        "JSON-encoded string instead of a native array. "
+                        "Falling back to single-element list.",
+                        tool_name, key,
+                    )
                 args[key] = [value]
                 logger.info(
                     "coerce_tool_args: wrapped bare string in list for %s.%s",
@@ -590,7 +632,7 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
                 return result
         return value
 
-    if expected_type in ("integer", "number"):
+    if expected_type in {"integer", "number"}:
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
@@ -637,7 +679,12 @@ def _coerce_json(value: str, expected_python_type: type):
     """
     try:
         parsed = json.loads(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "coerce_tool_args: failed to parse string as JSON for expected type %s: %s",
+            expected_python_type.__name__,
+            exc,
+        )
         return value
     if isinstance(parsed, expected_python_type):
         logger.debug(
@@ -645,6 +692,11 @@ def _coerce_json(value: str, expected_python_type: type):
             expected_python_type.__name__,
         )
         return parsed
+    logger.warning(
+        "coerce_tool_args: JSON-parsed value is %s, expected %s — skipping coercion",
+        type(parsed).__name__,
+        expected_python_type.__name__,
+    )
     return value
 
 
@@ -730,8 +782,8 @@ def handle_function_call(
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
-            except Exception:
-                pass
+            except Exception as _hook_err:
+                logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
@@ -782,8 +834,8 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("post_tool_call hook error: %s", _hook_err)
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -807,15 +859,15 @@ def handle_function_call(
                 if isinstance(hook_result, str):
                     result = hook_result
                     break
-        except Exception:
-            pass
+        except Exception as _hook_err:
+            logger.debug("transform_tool_result hook error: %s", _hook_err)
 
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
 
 
 # =============================================================================

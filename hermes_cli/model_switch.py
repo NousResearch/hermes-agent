@@ -799,6 +799,12 @@ def switch_model(
                         )
 
         # --- Step d: Aggregator catalog search ---
+        # Track whether the live catalog of the CURRENT provider resolved the
+        # model — if so, step e must not second-guess and switch providers.
+        # Critical for flat-namespace resellers like opencode-go / opencode-zen
+        # whose live /v1/models returns bare IDs (e.g. "deepseek-v4-flash") that
+        # coincidentally match entries in native providers' static catalogs.
+        resolved_in_current_catalog = False
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
             if catalog:
@@ -806,6 +812,7 @@ def switch_model(
                 for mid in catalog:
                     if mid.lower() == new_model_lower:
                         new_model = mid
+                        resolved_in_current_catalog = True
                         break
                 else:
                     for mid in catalog:
@@ -813,11 +820,12 @@ def switch_model(
                             _, bare = mid.split("/", 1)
                             if bare.lower() == new_model_lower:
                                 new_model = mid
+                                resolved_in_current_catalog = True
                                 break
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in ("custom", "local") or (
+        is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -825,6 +833,7 @@ def switch_model(
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
+            and not resolved_in_current_catalog
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
@@ -880,10 +889,9 @@ def switch_model(
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
             # base_url adjustments for OpenCode, etc.).
-            if runtime.get("provider") != "custom":
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-                api_mode = runtime.get("api_mode", "")
+            api_key = runtime.get("api_key", "")
+            base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -1071,6 +1079,7 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
+        get_curated_nous_model_ids,
     )
 
     results: List[dict] = []
@@ -1152,9 +1161,12 @@ def list_authenticated_providers(
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
-    if "nous" not in curated:
-        curated["nous"] = curated["openrouter"]
+    # "nous" pulls from the remote model-catalog manifest published at
+    # https://hermes-agent.nousresearch.com/docs/api/model-catalog.json so
+    # newly added Portal models surface in the /model picker without
+    # requiring a Hermes release. Falls back to the in-repo
+    # _PROVIDER_MODELS["nous"] snapshot when the manifest is unreachable.
+    curated["nous"] = get_curated_nous_model_ids()
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
@@ -1334,7 +1346,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+            # Use live OAuth-backed discovery so the gateway /model picker
+            # matches what the user's authenticated Codex/Copilot backend
+            # actually serves — including ChatGPT-Pro-only Codex slugs
+            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
+            # catalog. ``provider_model_ids()`` falls back to the curated
+            # list when the live endpoint is unreachable, so this is safe
+            # for unauthenticated and offline cases too.
             model_ids = provider_model_ids(hermes_slug)
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
@@ -1506,7 +1525,7 @@ def list_authenticated_providers(
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
+                discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -1628,7 +1647,8 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
 
         _section4_emitted_slugs: set = set()
-        for grp in groups.values():
+        for grp_key, grp in groups.items():
+            api_url, api_key = grp_key
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
@@ -1666,6 +1686,37 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # Live model discovery from custom provider endpoints (matches
+            # Section 3 behavior for user ``providers:`` entries).
+            # Also probes when no api_key is set (e.g. local llama.cpp /
+            # Ollama servers) — the /models endpoint often works without
+            # auth.  The CLI's _model_flow_named_custom always probes, so
+            # the Telegram/Discord picker should do the same for parity.
+            # Live-discovery policy:
+            # - With an api_key, the user has explicitly opted into the
+            #   endpoint and live /models is the source of truth — replace
+            #   the (possibly partial) ``models:`` subset configured for
+            #   context-length overrides with the full live catalog.
+            #   This is the Bifrost / aggregator-gateway case.
+            # - Without an api_key but with an explicit ``models:`` list
+            #   (or top-level ``model:``), the user is narrowing a public
+            #   endpoint to a specific subset (e.g. ollama.com /v1/models
+            #   returns 35 models but the user only wants 4). Preserve the
+            #   explicit list and skip live discovery.
+            # - Without an api_key AND no explicit models, fall through to
+            #   live discovery so bare-endpoint custom providers (local
+            #   llama.cpp / Ollama servers) still appear populated.
+            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            if should_probe:
+                try:
+                    from hermes_cli.models import fetch_api_models
+
+                    live_models = fetch_api_models(api_key, api_url)
+                    if live_models:
+                        grp["models"] = live_models
+                        grp["total_models"] = len(live_models)
+                except Exception:
+                    pass
             results.append({
                 "slug": slug,
                 "name": grp["name"],
@@ -1687,9 +1738,11 @@ def list_authenticated_providers(
 
 def list_picker_providers(
     current_provider: str = "",
+    current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
+    current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -1714,9 +1767,11 @@ def list_picker_providers(
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
+        current_base_url=current_base_url,
         user_providers=user_providers,
         custom_providers=custom_providers,
         max_models=max_models,
+        current_model=current_model,
     )
 
     filtered: List[dict] = []

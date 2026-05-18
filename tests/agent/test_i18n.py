@@ -89,6 +89,12 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
+    assert i18n._normalize_lang("Ukrainian") == "uk"
+    assert i18n._normalize_lang("uk-UA") == "uk"
+    assert i18n._normalize_lang("ua") == "uk"
+    assert i18n._normalize_lang("Turkish") == "tr"
+    assert i18n._normalize_lang("tr-TR") == "tr"
+    assert i18n._normalize_lang("türkçe") == "tr"
 
 
 def test_normalize_lang_unknown_falls_back():
@@ -126,6 +132,8 @@ def test_default_when_nothing_set(monkeypatch):
 def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="en").endswith("Denied")
     assert i18n.t("approval.denied", lang="zh").endswith("已拒绝")
+    assert i18n.t("approval.denied", lang="uk").endswith("Відхилено")
+    assert i18n.t("approval.denied", lang="tr").endswith("Reddedildi")
 
 
 def test_t_formats_placeholders():
@@ -148,7 +156,12 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
     (fake_locales / "zh.yaml").write_text("# intentionally empty\n", encoding="utf-8")
     monkeypatch.setattr(i18n, "_locales_dir", lambda: fake_locales)
     i18n.reset_language_cache()
-    assert i18n.t("foo", lang="zh") == "English Foo"
+    try:
+        assert i18n.t("foo", lang="zh") == "English Foo"
+    finally:
+        # Clear the cache on teardown so subsequent tests don't see the
+        # fake "foo: English Foo" catalog instead of the real locales/*.yaml.
+        i18n.reset_language_cache()
 
 
 def test_t_unknown_language_uses_english():

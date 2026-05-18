@@ -13,15 +13,24 @@ reads run alongside the dispatcher's IMMEDIATE write transactions).
 
 Security note
 -------------
-The dashboard's HTTP auth middleware (``web_server.auth_middleware``)
-explicitly skips ``/api/plugins/`` — plugin routes are unauthenticated by
-design because the dashboard binds to localhost by default. For the
-WebSocket we still require the session token as a ``?token=`` query
-parameter (browsers cannot set the ``Authorization`` header on an upgrade
-request), matching the established pattern used by the in-browser PTY
-bridge in ``hermes_cli/web_server.py``. If you run the dashboard with
-``--host 0.0.0.0``, every plugin route — kanban included — becomes
-reachable from the network. Don't do that on a shared host.
+Plugin HTTP routes go through the dashboard's session-token auth middleware
+(``web_server.auth_middleware``) just like core API routes — every
+``/api/plugins/...`` request must present the session bearer token (or the
+session cookie set when you load the dashboard HTML). The token is the
+random per-process ``_SESSION_TOKEN`` printed at startup; the dashboard's
+own pages inject it via ``window.__HERMES_SESSION_TOKEN__`` so logged-in
+browsers don't have to handle it manually.
+
+For the ``/events`` WebSocket we still require the session token as a
+``?token=`` query parameter (browsers cannot set the ``Authorization``
+header on an upgrade request), matching the established pattern used by
+the in-browser PTY bridge in ``hermes_cli/web_server.py``.
+
+This means ``hermes dashboard --host 0.0.0.0`` is safe to run on a LAN:
+plugin routes are no longer an unauthenticated exception. The auth still
+isn't multi-user — anyone who can read the printed URL+token gets full
+dashboard access — but they can't ride along just because they can reach
+the port.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import asdict
@@ -124,11 +134,26 @@ BOARD_COLUMNS: list[str] = [
 ]
 
 
-def _task_dict(task: kanban_db.Task) -> dict[str, Any]:
+_CARD_SUMMARY_PREVIEW_CHARS = 200
+
+
+def _task_dict(
+    task: kanban_db.Task,
+    *,
+    latest_summary: Optional[str] = None,
+) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
-    d["age"] = kanban_db.task_age(task)
+    try:
+        d["age"] = kanban_db.task_age(task)
+    except Exception:
+        d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
+    # Surface the latest non-null run summary so dashboards don't show
+    # blank cards/drawers for tasks where the worker handed off via
+    # ``task_runs.summary`` (the kanban-worker pattern) instead of
+    # ``tasks.result``. ``None`` when no run has produced a summary yet.
+    d["latest_summary"] = latest_summary
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -381,8 +406,18 @@ def get_board(
         if include_archived:
             columns["archived"] = []
 
+        # Batch-fetch the latest non-null run summary per task in one
+        # window-function query (avoids N+1 ``latest_summary`` calls
+        # for boards with hundreds of tasks). Truncated to a card-size
+        # preview here — the full text is available via /tasks/:id.
+        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+
         for t in tasks:
-            d = _task_dict(t)
+            full = summary_map.get(t.id)
+            preview = (
+                full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
+            )
+            d = _task_dict(t, latest_summary=preview)
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -440,7 +475,11 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-        task_d = _task_dict(task)
+        # Drawer/detail view returns the FULL summary (no truncation) so
+        # operators can read the complete worker handoff without making
+        # a second round-trip. Cards on /board carry a 200-char preview.
+        full_summary = kanban_db.latest_summary(conn, task_id)
+        task_d = _task_dict(task, latest_summary=full_summary)
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -589,7 +628,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     status_code=400,
                     detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
                 )
-            elif s in ("todo", "triage"):
+            elif s in {"todo", "triage"}:
                 ok = _set_status_direct(conn, task_id, s)
             else:
                 raise HTTPException(status_code=400, detail=f"unknown status: {s}")
@@ -662,6 +701,22 @@ def _set_status_direct(
         ).fetchone()
         if prev is None:
             return False
+
+        # Guard: don't allow promoting to 'ready' unless all parents are done.
+        # Prevents the dispatcher from spawning a child whose upstream work
+        # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
+        if new_status == "ready":
+            parent_statuses = conn.execute(
+                "SELECT t.status FROM tasks t "
+                "JOIN task_links l ON l.parent_id = t.id "
+                "WHERE l.child_id = ?",
+                (task_id,),
+            ).fetchall()
+            if parent_statuses and not all(
+                p["status"] == "done" for p in parent_statuses
+            ):
+                return False
+
         was_running = prev["status"] == "running"
 
         cur = conn.execute(
@@ -687,7 +742,7 @@ def _set_status_direct(
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
     # If we re-opened something, children may have gone stale.
-    if new_status in ("done", "ready"):
+    if new_status in {"done", "ready"}:
         kanban_db.recompute_ready(conn)
     return True
 
@@ -768,6 +823,7 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    reclaim_first: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -812,7 +868,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             ok = kanban_db.unblock_task(conn, tid)
                         else:
                             ok = _set_status_direct(conn, tid, "ready")
-                    elif s in ("todo", "running", "triage"):
+                    elif s in {"todo", "running", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
                         entry.update(ok=False, error=f"unknown status {s!r}")
@@ -822,9 +878,16 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         entry.update(ok=False, error=f"transition to {s!r} refused")
                 if payload.assignee is not None:
                     try:
-                        if not kanban_db.assign_task(
-                            conn, tid, payload.assignee or None,
-                        ):
+                        if payload.reclaim_first:
+                            ok = kanban_db.reassign_task(
+                                conn, tid, payload.assignee or None,
+                                reclaim_first=True,
+                            )
+                        else:
+                            ok = kanban_db.assign_task(
+                                conn, tid, payload.assignee or None,
+                            )
+                        if not ok:
                             entry.update(ok=False, error="assign refused")
                     except RuntimeError as e:
                         entry.update(ok=False, error=str(e))
@@ -967,6 +1030,61 @@ def reclaim_task_endpoint(
         return {"ok": True, "task_id": task_id}
     finally:
         conn.close()
+
+
+class SpecifyBody(BaseModel):
+    """Optional author override. Nothing else is configurable from the
+    dashboard — model + prompt come from ``auxiliary.triage_specifier``
+    in config.yaml, same as the CLI."""
+
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/specify")
+def specify_task_endpoint(
+    task_id: str,
+    payload: SpecifyBody,
+    board: Optional[str] = Query(None),
+):
+    """Flesh out a triage-column task via the auxiliary LLM and promote
+    it to ``todo``. Maps 1:1 to ``hermes kanban specify <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    new_title}``. A non-OK outcome is NOT an HTTP error — the UI renders
+    the reason inline (e.g. "no auxiliary client configured") so the
+    operator knows what to fix, and retries without a page reload.
+
+    This endpoint runs in FastAPI's threadpool (sync ``def``) because
+    the underlying LLM call can take tens of seconds to minutes on
+    reasoning models, which would block the event loop if we used
+    ``async def`` without an explicit ``run_in_executor``.
+    """
+    board = _resolve_board(board)
+    # Pin the board for the duration of this call so the specifier module
+    # (which calls ``kb.connect()`` with no args) hits the right DB.
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        # Import lazily so a missing auxiliary client at import time
+        # doesn't break plugin load.
+        from hermes_cli import kanban_specify  # noqa: WPS433 (intentional)
+
+        outcome = kanban_specify.specify_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "new_title": outcome.new_title,
+    }
 
 
 class ReassignBody(BaseModel):
@@ -1417,6 +1535,279 @@ def switch_board(slug: str):
 _EVENT_POLL_SECONDS = 0.3
 
 
+# ---------------------------------------------------------------------------
+# Profile metadata & description editing (consumed by the kanban orchestrator)
+# ---------------------------------------------------------------------------
+
+class DescribeBody(BaseModel):
+    description: Optional[str] = None  # explicit user-authored text
+
+
+class DescribeAutoBody(BaseModel):
+    overwrite: bool = False
+
+
+@router.get("/profiles")
+def list_profile_roster():
+    """Return every installed profile with its description.
+
+    Consumed by the dashboard's settings panel (orchestrator picker)
+    and the profile-description editing UI. Profiles without a
+    description still appear here — they're routable on name alone,
+    just less precisely.
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        profiles = profiles_mod.list_profiles()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to list profiles: {exc}")
+    return {
+        "profiles": [
+            {
+                "name": p.name,
+                "is_default": bool(p.is_default),
+                "model": p.model or "",
+                "provider": p.provider or "",
+                "description": p.description or "",
+                "description_auto": bool(p.description_auto),
+                "skill_count": int(p.skill_count or 0),
+            }
+            for p in profiles
+        ],
+    }
+
+
+@router.patch("/profiles/{profile_name}")
+def update_profile_description(profile_name: str, payload: DescribeBody):
+    """Set or clear the description of a profile.
+
+    Empty string clears the description; non-empty stores it as a
+    user-authored description (``description_auto: false``) so the
+    auto-describer won't overwrite it on a sweep without
+    ``--overwrite``.
+    """
+    try:
+        from hermes_cli import profiles as profiles_mod
+        canon = profiles_mod.normalize_profile_name(profile_name)
+        if canon == "default":
+            from hermes_constants import get_hermes_home  # type: ignore
+            from pathlib import Path as _Path
+            profile_dir = _Path(get_hermes_home())
+        else:
+            profile_dir = profiles_mod.get_profile_dir(canon)
+        if not profile_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found")
+        text = (payload.description or "").strip()
+        profiles_mod.write_profile_meta(
+            profile_dir,
+            description=text,
+            description_auto=False,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to update profile: {exc}")
+    return {"ok": True, "profile": canon, "description": text}
+
+
+@router.post("/profiles/{profile_name}/describe-auto")
+def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
+    """Generate a description for the named profile via the auxiliary
+    LLM (``auxiliary.profile_describer``). Persists with
+    ``description_auto: true`` so the dashboard can surface a "review"
+    badge.
+
+    Maps 1:1 to ``hermes profile describe <name> --auto``. Non-OK
+    outcomes are NOT HTTP errors — the UI renders the reason inline
+    (e.g. "no auxiliary client configured") so the operator can fix
+    config and retry without a page reload.
+    """
+    try:
+        from hermes_cli import profile_describer  # noqa: WPS433 (intentional)
+        outcome = profile_describer.describe_profile(
+            profile_name,
+            overwrite=bool(payload.overwrite),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"describer crashed: {exc}")
+    return {
+        "ok": bool(outcome.ok),
+        "profile": outcome.profile_name,
+        "reason": outcome.reason,
+        "description": outcome.description,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Decompose endpoint (orchestrator-driven fan-out)
+# ---------------------------------------------------------------------------
+
+class DecomposeBody(BaseModel):
+    author: Optional[str] = None
+
+
+@router.post("/tasks/{task_id}/decompose")
+def decompose_task_endpoint(
+    task_id: str,
+    payload: DecomposeBody,
+    board: Optional[str] = Query(None),
+):
+    """Fan a triage-column task out into a graph of child tasks via the
+    auxiliary LLM, routed to specialist profiles by description. Maps
+    1:1 to ``hermes kanban decompose <task_id>``.
+
+    Returns the outcome shape used by the CLI: ``{ok, task_id, reason,
+    fanout, child_ids, new_title}``. A non-OK outcome is NOT an HTTP
+    error — the UI renders the reason inline.
+
+    Runs in FastAPI's threadpool (sync ``def``) because the LLM call
+    can take minutes on reasoning models.
+    """
+    board = _resolve_board(board)
+    prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+    try:
+        os.environ["HERMES_KANBAN_BOARD"] = board or kanban_db.DEFAULT_BOARD
+        from hermes_cli import kanban_decompose  # noqa: WPS433 (intentional)
+        outcome = kanban_decompose.decompose_task(
+            task_id,
+            author=(payload.author or None),
+        )
+    finally:
+        if prev_env is None:
+            os.environ.pop("HERMES_KANBAN_BOARD", None)
+        else:
+            os.environ["HERMES_KANBAN_BOARD"] = prev_env
+
+    return {
+        "ok": bool(outcome.ok),
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "fanout": bool(outcome.fanout),
+        "child_ids": outcome.child_ids or [],
+        "new_title": outcome.new_title,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Orchestration settings (kanban.orchestrator_profile / default_assignee /
+# auto_decompose) — surfaced to the dashboard's settings panel
+# ---------------------------------------------------------------------------
+
+class OrchestrationSettingsBody(BaseModel):
+    orchestrator_profile: Optional[str] = None
+    default_assignee: Optional[str] = None
+    auto_decompose: Optional[bool] = None
+
+
+@router.get("/orchestration")
+def get_orchestration_settings():
+    """Return the current kanban orchestration knobs from config.yaml
+    plus the resolved effective values (filling in fallbacks)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
+    explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
+    explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
+    auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+
+    # Resolve fallbacks the same way the decomposer does.
+    resolved_orch = explicit_orch
+    resolved_default = explicit_default
+    try:
+        from hermes_cli import profiles as profiles_mod
+        active_default = profiles_mod.get_active_profile_name() or "default"
+        if not resolved_orch or not profiles_mod.profile_exists(resolved_orch):
+            resolved_orch = active_default
+        if not resolved_default or not profiles_mod.profile_exists(resolved_default):
+            resolved_default = active_default
+    except Exception:
+        active_default = "default"
+        if not resolved_orch:
+            resolved_orch = active_default
+        if not resolved_default:
+            resolved_default = active_default
+
+    return {
+        "orchestrator_profile": explicit_orch,
+        "default_assignee": explicit_default,
+        "auto_decompose": auto_decompose,
+        "resolved_orchestrator_profile": resolved_orch,
+        "resolved_default_assignee": resolved_default,
+        "active_profile": active_default,
+    }
+
+
+@router.put("/orchestration")
+def set_orchestration_settings(payload: OrchestrationSettingsBody):
+    """Update the kanban orchestration knobs in ~/.hermes/config.yaml.
+
+    Each field is optional — only fields explicitly passed are
+    written. ``orchestrator_profile`` / ``default_assignee`` accept
+    empty strings to clear the override and fall back to the default
+    profile.
+    """
+    try:
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config() or {}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to load config: {exc}")
+
+    kanban_section = cfg.setdefault("kanban", {})
+    if not isinstance(kanban_section, dict):
+        kanban_section = {}
+        cfg["kanban"] = kanban_section
+
+    # Validate any non-empty profile names exist before saving.
+    try:
+        from hermes_cli import profiles as profiles_mod
+    except Exception:
+        profiles_mod = None  # type: ignore
+
+    if payload.orchestrator_profile is not None:
+        name = (payload.orchestrator_profile or "").strip()
+        if name and profiles_mod is not None:
+            try:
+                if not profiles_mod.profile_exists(name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"profile '{name}' does not exist",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass  # fail open if the lookup itself errors
+        kanban_section["orchestrator_profile"] = name
+
+    if payload.default_assignee is not None:
+        name = (payload.default_assignee or "").strip()
+        if name and profiles_mod is not None:
+            try:
+                if not profiles_mod.profile_exists(name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"profile '{name}' does not exist",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+        kanban_section["default_assignee"] = name
+
+    if payload.auto_decompose is not None:
+        kanban_section["auto_decompose"] = bool(payload.auto_decompose)
+
+    try:
+        save_config(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to save config: {exc}")
+
+    # Echo back the resolved state (callers usually re-render from it).
+    return get_orchestration_settings()
+
+
 @router.websocket("/events")
 async def stream_events(ws: WebSocket):
     # Enforce the dashboard session token as a query param — browsers can't
@@ -1478,6 +1869,13 @@ async def stream_events(ws: WebSocket):
                 await ws.send_json({"events": events, "cursor": cursor})
             await asyncio.sleep(_EVENT_POLL_SECONDS)
     except WebSocketDisconnect:
+        return
+    except asyncio.CancelledError:
+        # Normal shutdown path: dashboard process exit (Ctrl-C) cancels the
+        # websocket task while it is sleeping in the poll loop.
+        # CancelledError is a BaseException in 3.8+ so the bare Exception
+        # handler below would not catch it; without this clause Uvicorn
+        # surfaces the cancellation as an application traceback. Quiet it.
         return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)

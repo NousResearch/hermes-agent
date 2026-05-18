@@ -31,4 +31,12 @@ describe('virtual height estimates', () => {
       estimatedMsgHeight(msg, 80, { compact: false, details: false })
     )
   })
+
+  it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
+    const msg: Msg = { role: 'user', text: 'follow-up question' }
+    const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })
+    const withSep = estimatedMsgHeight(msg, 80, { compact: false, details: false, withSeparator: true })
+
+    expect(withSep).toBe(base + 2)
+  })
 })

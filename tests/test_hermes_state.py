@@ -957,6 +957,39 @@ class TestCJKSearchFallback:
         session_ids = {r["session_id"] for r in results}
         assert session_ids == {"s1", "s2"}
 
+    def test_cjk_or_combined_short_tokens_returns_results(self, db):
+        """Regression test for #20494.
+
+        OR-combined 2-char CJK tokens (e.g. "广西 OR 桂林 OR 漓江 OR 旅游")
+        previously returned 0 results because _count_cjk of the whole query
+        was >=3 (8 chars here), selecting the trigram path, but each individual
+        token is only 2 CJK chars and trigram requires >=3 chars per token.
+        The per-token check must route such queries to the LIKE fallback.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.create_session(session_id="s3", source="cli")
+        db.append_message("s1", role="user", content="广西是个好地方，去过桂林")
+        db.append_message("s2", role="user", content="漓江风景很美，值得旅游")
+        db.append_message("s3", role="user", content="unrelated English content")
+
+        results = db.search_messages("广西 OR 桂林 OR 漓江 OR 旅游")
+        session_ids = {r["session_id"] for r in results}
+        assert "s1" in session_ids, "广西/桂林 terms not matched"
+        assert "s2" in session_ids, "漓江/旅游 terms not matched"
+        assert "s3" not in session_ids, "unrelated message must not match"
+
+    def test_cjk_short_token_or_query_preserves_filters(self, db):
+        """Source filter applies correctly in the short-token LIKE path (#20494)."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="广西旅游攻略cli")
+        db.append_message("s2", role="user", content="广西旅游攻略telegram")
+
+        results = db.search_messages("广西 OR 旅游", source_filter=["telegram"])
+        assert len(results) == 1
+        assert results[0]["source"] == "telegram"
+
 
 # =========================================================================
 # Session search and listing

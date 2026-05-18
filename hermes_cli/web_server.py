@@ -52,14 +52,26 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
-    raise SystemExit(
-        "Web UI requires fastapi and uvicorn.\n"
-        f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
-    )
+    # First try lazy-installing the dashboard extras. Only the user actually
+    # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
+    # them out of every other install path. After install, re-import.
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("tool.dashboard", prompt=False)
+        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi.middleware.cors import CORSMiddleware
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.staticfiles import StaticFiles
+        from pydantic import BaseModel
+    except Exception:
+        raise SystemExit(
+            "Web UI requires fastapi and uvicorn.\n"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+        )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
@@ -179,7 +191,7 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
-    if bound_host in ("0.0.0.0", "::"):
+    if bound_host in {"0.0.0.0", "::"}:
         return True
 
     # Loopback bind: accept the loopback names
@@ -225,7 +237,7 @@ async def host_header_middleware(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
@@ -273,7 +285,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "stt.provider": {
         "type": "select",
         "description": "Speech-to-text provider",
-        "options": ["local", "openai", "mistral"],
+        # "mistral" temporarily removed — mistralai PyPI package quarantined
+        # (malicious 2.4.6 release on 2026-05-12). Restore once available.
+        "options": ["local", "openai"],
     },
     "display.skin": {
         "type": "select",
@@ -385,7 +399,7 @@ def _build_schema_from_config(
         full_key = f"{prefix}.{key}" if prefix else key
 
         # Skip internal / version keys
-        if full_key in ("_config_version",):
+        if full_key in {"_config_version",}:
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -533,7 +547,7 @@ async def get_status():
     remote_health_body: dict | None = None
 
     if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         alive, remote_health_body = await loop.run_in_executor(
             None, _probe_gateway_health
         )
@@ -576,13 +590,13 @@ async def get_status():
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
         elif gateway_running and remote_health_body is not None:
             # The health probe confirmed the gateway is alive, but the local
             # runtime status file may be stale (cross-container).  Override
             # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in (None, "stopped"):
+            if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
     # If there was no runtime info at all but the health probe confirmed alive,
@@ -692,7 +706,7 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if not path.exists():
         return []
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     lines = text.splitlines()
@@ -980,39 +994,9 @@ def get_model_options():
     can share the same types.
     """
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
-            current_provider = model_cfg.get("provider", "") or ""
-            current_base_url = model_cfg.get("base_url", "") or ""
-        else:
-            current_model = str(model_cfg) if model_cfg else ""
-            current_provider = ""
-            current_base_url = ""
-
-        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-        custom_providers = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-
-        providers = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=user_providers,
-            custom_providers=custom_providers,
-            max_models=50,
-        )
-        return {
-            "providers": providers,
-            "model": current_model,
-            "provider": current_provider,
-        }
+        return build_models_payload(load_picker_context(), max_models=50)
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -1075,7 +1059,7 @@ async def set_model_assignment(body: ModelAssignment):
     model = (body.model or "").strip()
     task = (body.task or "").strip().lower()
 
-    if scope not in ("main", "auxiliary"):
+    if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     try:
@@ -1190,14 +1174,13 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     disk_model.pop("context_length", None)
                 config["model"] = disk_model
-            else:
-                # Model was previously a bare string — upgrade to dict if
-                # user is setting a context_length override
-                if ctx_override > 0:
-                    config["model"] = {
-                        "default": model_val,
-                        "context_length": ctx_override,
-                    }
+            # Model was previously a bare string — upgrade to dict if
+            # user is setting a context_length override
+            elif ctx_override > 0:
+                config["model"] = {
+                    "default": model_val,
+                    "context_length": ctx_override,
+                }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -1457,7 +1440,12 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
-        "flow": "pkce",
+        # MiniMax's flow is structurally device-code (verification URI +
+        # user code, backend polls the token endpoint) with a PKCE
+        # extension for code-binding. The dashboard renders the same UX
+        # as Nous's device-code flow; the PKCE bit is a security
+        # extension that doesn't change the operator experience.
+        "flow": "device_code",
         "cli_command": "hermes auth add minimax-oauth",
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
@@ -1569,7 +1557,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     # AND forget the Claude Code import. We don't touch ~/.claude/* directly
     # — that's owned by the Claude Code CLI; users can re-auth there if they
     # want to undo a disconnect.
-    if provider_id in ("anthropic", "claude-code"):
+    if provider_id in {"anthropic", "claude-code"}:
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
@@ -1820,14 +1808,18 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
 
 async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
-    """Initiate a device-code flow (Nous or OpenAI Codex).
+    """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
     if provider_id == "nous":
-        from hermes_cli.auth import _request_device_code, PROVIDER_REGISTRY
+        from hermes_cli.auth import (
+            _nous_device_scope_with_env_override,
+            _request_nous_device_code_with_scope_fallback,
+            PROVIDER_REGISTRY,
+        )
         import httpx
         pconfig = PROVIDER_REGISTRY["nous"]
         portal_base_url = (
@@ -1836,22 +1828,34 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             or pconfig.portal_base_url
         ).rstrip("/")
         client_id = pconfig.client_id
-        scope = pconfig.scope
+        scope, explicit_scope = _nous_device_scope_with_env_override(
+            None,
+            default_scope=pconfig.scope,
+        )
+
         def _do_nous_device_request():
-            with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
-                return _request_device_code(
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                headers={"Accept": "application/json"},
+            ) as client:
+                return _request_nous_device_code_with_scope_fallback(
                     client=client,
                     portal_base_url=portal_base_url,
                     client_id=client_id,
                     scope=scope,
+                    allow_legacy_fallback=not explicit_scope,
                 )
-        device_data = await asyncio.get_event_loop().run_in_executor(None, _do_nous_device_request)
+
+        device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
+            None, _do_nous_device_request
+        )
         sid, sess = _new_oauth_session("nous", "device_code")
         sess["device_code"] = str(device_data["device_code"])
         sess["interval"] = int(device_data["interval"])
         sess["expires_at"] = time.time() + int(device_data["expires_in"])
         sess["portal_base_url"] = portal_base_url
         sess["client_id"] = client_id
+        sess["scope"] = effective_scope
         threading.Thread(
             target=_nous_poller, args=(sid,), daemon=True, name=f"oauth-poll-{sid[:6]}"
         ).start()
@@ -1877,8 +1881,8 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             name=f"oauth-codex-{sid[:6]}",
         ).start()
         # Block briefly until the worker has populated the user_code, OR error.
-        deadline = time.time() + 10
-        while time.time() < deadline:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
             with _oauth_sessions_lock:
                 s = _oauth_sessions.get(sid)
             if s and (s.get("user_code") or s["status"] != "pending"):
@@ -1899,12 +1903,92 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
             "poll_interval": int(s.get("interval") or 5),
         }
 
+    if provider_id == "minimax-oauth":
+        # MiniMax uses a device-code-style flow (verification URI + user
+        # code + background poll) with a PKCE extension on top. From the
+        # operator's perspective it's identical to Nous's device-code
+        # flow; the PKCE bit (verifier + challenge from
+        # _minimax_pkce_pair) is a security extension that binds the
+        # token exchange to the original session.
+        from hermes_cli.auth import (
+            _minimax_pkce_pair,
+            _minimax_request_user_code,
+            MINIMAX_OAUTH_CLIENT_ID,
+            MINIMAX_OAUTH_GLOBAL_BASE,
+        )
+        import httpx
+        verifier, challenge, state = _minimax_pkce_pair()
+        portal_base_url = (
+            os.getenv("MINIMAX_PORTAL_BASE_URL") or MINIMAX_OAUTH_GLOBAL_BASE
+        ).rstrip("/")
+        def _do_minimax_request():
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                headers={"Accept": "application/json"},
+                follow_redirects=True,
+            ) as client:
+                return _minimax_request_user_code(
+                    client=client,
+                    portal_base_url=portal_base_url,
+                    client_id=MINIMAX_OAUTH_CLIENT_ID,
+                    code_challenge=challenge,
+                    state=state,
+                )
+        device_data = await asyncio.get_event_loop().run_in_executor(
+            None, _do_minimax_request
+        )
+        sid, sess = _new_oauth_session("minimax-oauth", "device_code")
+        # The CLI flow names this `interval_ms` because MiniMax's
+        # `interval` field is in milliseconds (defensive default 2000ms
+        # in _minimax_poll_token).
+        interval_raw = device_data.get("interval")
+        sess["interval_ms"] = (
+            int(interval_raw) if interval_raw is not None else None
+        )
+        sess["user_code"] = str(device_data["user_code"])
+        sess["code_verifier"] = verifier
+        sess["state"] = state
+        sess["portal_base_url"] = portal_base_url
+        sess["client_id"] = MINIMAX_OAUTH_CLIENT_ID
+        sess["region"] = "global"
+        # `expired_in` from MiniMax is overloaded — could be a unix-ms
+        # timestamp OR a seconds-from-now duration. Mirror the heuristic
+        # in _minimax_poll_token. Stash the raw value for the poller;
+        # compute a derived expires_at + UI-friendly expires_in seconds.
+        expired_in_raw = int(device_data["expired_in"])
+        sess["expired_in_raw"] = expired_in_raw
+        if expired_in_raw > 1_000_000_000_000:  # likely unix-ms
+            expires_at_ts = expired_in_raw / 1000.0
+            expires_in_seconds = max(0, int(expires_at_ts - time.time()))
+        else:
+            expires_at_ts = time.time() + expired_in_raw
+            expires_in_seconds = expired_in_raw
+        sess["expires_at"] = expires_at_ts
+        threading.Thread(
+            target=_minimax_poller,
+            args=(sid,),
+            daemon=True,
+            name=f"oauth-poll-{sid[:6]}",
+        ).start()
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "user_code": str(device_data["user_code"]),
+            "verification_url": str(device_data["verification_uri"]),
+            "expires_in": expires_in_seconds,
+            "poll_interval": max(2, (sess["interval_ms"] or 2000) // 1000),
+        }
+
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
-    from hermes_cli.auth import _poll_for_token, refresh_nous_oauth_from_state
+    from hermes_cli.auth import (
+        NOUS_INFERENCE_AUTH_MODE_FRESH,
+        _poll_for_token,
+        refresh_nous_oauth_from_state,
+    )
     from datetime import datetime, timezone
     import httpx
     with _oauth_sessions_lock:
@@ -1915,6 +1999,7 @@ def _nous_poller(session_id: str) -> None:
     client_id = sess["client_id"]
     device_code = sess["device_code"]
     interval = sess["interval"]
+    scope = sess.get("scope")
     expires_in = max(60, int(sess["expires_at"] - time.time()))
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
@@ -1933,7 +2018,7 @@ def _nous_poller(session_id: str) -> None:
             "portal_base_url": portal_base_url,
             "inference_base_url": token_data.get("inference_base_url"),
             "client_id": client_id,
-            "scope": token_data.get("scope"),
+            "scope": token_data.get("scope") or scope,
             "token_type": token_data.get("token_type", "Bearer"),
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token"),
@@ -1945,8 +2030,11 @@ def _nous_poller(session_id: str) -> None:
             "expires_in": token_ttl,
         }
         full_state = refresh_nous_oauth_from_state(
-            auth_state, min_key_ttl_seconds=300, timeout_seconds=15.0,
-            force_refresh=False, force_mint=True,
+            auth_state,
+            min_key_ttl_seconds=300,
+            timeout_seconds=15.0,
+            force_refresh=False,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_FRESH,
         )
         from hermes_cli.auth import persist_nous_credentials
         persist_nous_credentials(full_state)
@@ -1955,6 +2043,89 @@ def _nous_poller(session_id: str) -> None:
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
     except Exception as e:
         _log.warning("nous device-code poll failed (session=%s): %s", session_id, e)
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = str(e)
+
+
+def _minimax_poller(session_id: str) -> None:
+    """Background poller that drives a MiniMax OAuth flow to completion.
+
+    Mirrors `_nous_poller` but calls the MiniMax-specific token endpoint,
+    which uses a PKCE-style ``code_verifier`` + ``user_code`` rather than
+    the ``device_code`` field used by Nous. On success, builds the same
+    auth_state dict that ``_minimax_oauth_login`` (the CLI flow) builds
+    and persists via ``_minimax_save_auth_state`` — so the dashboard
+    path leaves the system in the same state as
+    ``hermes auth add minimax-oauth``.
+    """
+    from hermes_cli.auth import (
+        _minimax_poll_token,
+        _minimax_resolve_token_expiry_unix,
+        _minimax_save_auth_state,
+        MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        MINIMAX_OAUTH_SCOPE,
+    )
+    from datetime import datetime, timezone
+    import httpx
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+    portal_base_url = sess["portal_base_url"]
+    client_id = sess["client_id"]
+    user_code = sess["user_code"]
+    code_verifier = sess["code_verifier"]
+    interval_ms = sess.get("interval_ms")
+    expired_in_raw = sess["expired_in_raw"]
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            headers={"Accept": "application/json"},
+            follow_redirects=True,
+        ) as client:
+            token_data = _minimax_poll_token(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                user_code=user_code,
+                code_verifier=code_verifier,
+                expired_in=expired_in_raw,
+                interval_ms=interval_ms,
+            )
+        # Build the auth_state dict in the same shape as the CLI flow's
+        # `_minimax_oauth_login` so `_minimax_save_auth_state` writes
+        # the canonical record. Region is fixed to "global" for the
+        # dashboard path; cn-region operators can still use the CLI
+        # flow which supports `--region cn`.
+        now = datetime.now(timezone.utc)
+        expires_at_ts = _minimax_resolve_token_expiry_unix(
+            int(token_data["expired_in"]), now=now,
+        )
+        expires_in_s = max(0, int(expires_at_ts - now.timestamp()))
+        auth_state = {
+            "provider": "minimax-oauth",
+            "region": sess.get("region", "global"),
+            "portal_base_url": portal_base_url,
+            "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "token_type": token_data.get("token_type", "Bearer"),
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data["refresh_token"],
+            "resource_url": token_data.get("resource_url"),
+            "obtained_at": now.isoformat(),
+            "expires_at": datetime.fromtimestamp(
+                expires_at_ts, tz=timezone.utc
+            ).isoformat(),
+            "expires_in": expires_in_s,
+        }
+        _minimax_save_auth_state(auth_state)
+        with _oauth_sessions_lock:
+            sess["status"] = "approved"
+        _log.info("oauth/device: minimax login completed (session=%s)", session_id)
+    except Exception as e:
+        _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
             sess["error_message"] = str(e)
@@ -2012,10 +2183,10 @@ def _codex_full_login_worker(session_id: str) -> None:
             sess["expires_at"] = time.time() + sess["expires_in"]
 
         # Step 2: poll until authorized
-        deadline = time.time() + sess["expires_in"]
+        deadline = time.monotonic() + sess["expires_in"]
         code_resp = None
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 time.sleep(poll_interval)
                 poll = client.post(
                     f"{issuer}/api/accounts/deviceauth/token",
@@ -2025,7 +2196,7 @@ def _codex_full_login_worker(session_id: str) -> None:
                 if poll.status_code == 200:
                     code_resp = poll.json()
                     break
-                if poll.status_code in (403, 404):
+                if poll.status_code in {403, 404}:
                     continue  # user hasn't authorized yet
                 raise RuntimeError(f"deviceauth/token poll returned {poll.status_code}")
 
@@ -2112,7 +2283,13 @@ async def start_oauth_login(provider_id: str, request: Request):
             detail=f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually",
         )
     try:
-        if catalog_entry["flow"] == "pkce":
+        # The pkce branch is gated on provider_id == "anthropic" because
+        # `_start_anthropic_pkce()` is hardcoded to the Anthropic flow.
+        # Routing any other future pkce-flagged provider through it would
+        # silently launch the Anthropic OAuth flow (the bug fixed in this
+        # change for MiniMax). New PKCE providers must add their own
+        # start function and an explicit branch here.
+        if catalog_entry["flow"] == "pkce" and provider_id == "anthropic":
             return _start_anthropic_pkce()
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
@@ -2134,7 +2311,7 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
-        return await asyncio.get_event_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
@@ -2173,6 +2350,83 @@ async def cancel_oauth_session(session_id: str, request: Request):
 # ---------------------------------------------------------------------------
 
 
+
+def _session_latest_descendant(session_id: str):
+    """Resolve a session id to the newest child leaf session.
+
+    /model may create child sessions. Dashboard refresh should continue the
+    newest child instead of reopening the old parent.
+    """
+    from hermes_state import SessionDB
+
+    def row_get(row, key, index):
+        if isinstance(row, dict):
+            return row.get(key)
+        try:
+            return row[key]
+        except Exception:
+            try:
+                return row[index]
+            except Exception:
+                return None
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid or not db.get_session(sid):
+            return None, []
+
+        conn = (
+            getattr(db, "conn", None)
+            or getattr(db, "_conn", None)
+            or getattr(db, "connection", None)
+            or getattr(db, "_connection", None)
+        )
+
+        rows = []
+        if conn is not None:
+            raw_rows = conn.execute(
+                "SELECT id, parent_session_id, started_at FROM sessions"
+            ).fetchall()
+            for row in raw_rows:
+                rows.append({
+                    "id": row_get(row, "id", 0),
+                    "parent_session_id": row_get(row, "parent_session_id", 1),
+                    "started_at": row_get(row, "started_at", 2),
+                })
+        else:
+            rows = db.list_sessions_rich(limit=10000, offset=0)
+
+        children = {}
+        for row in rows:
+            rid = row.get("id")
+            parent = row.get("parent_session_id")
+            if rid and parent:
+                children.setdefault(parent, []).append(row)
+
+        def started(row):
+            try:
+                return float(row.get("started_at") or 0)
+            except Exception:
+                return 0.0
+
+        current = sid
+        path = [sid]
+        seen = {sid}
+
+        while children.get(current):
+            candidates = [r for r in children[current] if r.get("id") not in seen]
+            if not candidates:
+                break
+            candidates.sort(key=started, reverse=True)
+            current = candidates[0]["id"]
+            path.append(current)
+            seen.add(current)
+
+        return current, path
+    finally:
+        db.close()
+
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
     from hermes_state import SessionDB
@@ -2186,6 +2440,19 @@ async def get_session_detail(session_id: str):
     finally:
         db.close()
 
+
+
+@app.get("/api/sessions/{session_id}/latest-descendant")
+async def get_session_latest_descendant(session_id: str):
+    latest, path = _session_latest_descendant(session_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "requested_session_id": path[0] if path else session_id,
+        "session_id": latest,
+        "path": path,
+        "changed": bool(path and latest != path[0]),
+    }
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
@@ -2366,6 +2633,7 @@ async def delete_cron_job(job_id: str):
 class ProfileCreate(BaseModel):
     name: str
     clone_from_default: bool = False
+    no_skills: bool = False
 
 
 class ProfileRename(BaseModel):
@@ -2471,11 +2739,13 @@ async def create_profile_endpoint(body: ProfileCreate):
             name=body.name,
             clone_from="default" if body.clone_from_default else None,
             clone_config=body.clone_from_default,
+            no_skills=body.no_skills,
         )
         # Match the CLI's profile-create flow: fresh named profiles get the
         # bundled skills installed. When cloning from default, create_profile()
         # has already copied the source profile's skills, including any
-        # user-installed skills.
+        # user-installed skills. When no_skills=True, create_profile() wrote
+        # the opt-out marker and seed_profile_skills() will no-op.
         if not body.clone_from_default:
             profiles_mod.seed_profile_skills(path, quiet=True)
 
@@ -2886,7 +3156,20 @@ async def get_models_analytics(days: int = 30):
 import re
 import asyncio
 
-from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
+# Windows the import raises; catch and leave PtyBridge=None so the rest of
+# the dashboard (sessions, jobs, metrics, config editor) still loads and the
+# /api/pty endpoint cleanly refuses with a WSL-suggested message.
+try:
+    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+    _PTY_BRIDGE_AVAILABLE = True
+except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
+    PtyBridge = None  # type: ignore[assignment]
+    _PTY_BRIDGE_AVAILABLE = False
+
+    class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
+        """Stub on platforms where pty_bridge can't be imported."""
+        pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
@@ -2898,7 +3181,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 def _is_public_bind() -> bool:
     """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in ("0.0.0.0", "::")
+    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
 
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
@@ -2946,8 +3229,18 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
+    # Browser-embedded chat should prefer stable wheel-based scrollback over
+    # native terminal mouse tracking. When mouse tracking is enabled, wheel
+    # events are consumed by the TUI and forwarded as terminal input, which
+    # makes browser-side transcript scrolling feel broken. Keep the terminal
+    # build unchanged for native CLI usage; only disable mouse tracking for
+    # the dashboard PTY path.
+    env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
 
     if resume:
+        latest_resume, _latest_path = _session_latest_descendant(resume)
+        if latest_resume:
+            resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
 
     if sidecar_url:
@@ -3009,6 +3302,18 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+
+    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
+    # client and close cleanly rather than pretending the feature works.
+    if not _PTY_BRIDGE_AVAILABLE:
+        await ws.send_text(
+            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+        )
+        await ws.close(code=1011)
+        return
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
@@ -3205,12 +3510,42 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
+def _normalise_prefix(raw: Optional[str]) -> str:
+    """Normalise an X-Forwarded-Prefix header value.
+
+    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
+    no prefix is set / the header is malformed. We deliberately reject
+    anything containing ``..`` or non-printable bytes so a hostile proxy
+    can't inject HTML via the prefix.
+    """
+    if not raw:
+        return ""
+    p = raw.strip()
+    if not p:
+        return ""
+    if not p.startswith("/"):
+        p = "/" + p
+    p = p.rstrip("/")
+    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        return ""
+    if len(p) > 64:
+        return ""
+    return p
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.
 
     The session token is injected into index.html via a ``<script>`` tag so
     the SPA can authenticate against protected API endpoints without a
     separate (unauthenticated) token-dispensing endpoint.
+
+    When served behind a path-prefix reverse proxy (e.g.
+    ``mission-control.tilos.com/hermes/*`` -> local Caddy -> :9119), the
+    proxy injects ``X-Forwarded-Prefix: /hermes`` on every request. We
+    rewrite the served ``index.html`` so absolute asset URLs (``/assets/...``)
+    and the SPA's runtime ``__HERMES_BASE_PATH__`` honour that prefix
+    without rebuilding the bundle.
     """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
@@ -3223,24 +3558,62 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index():
-        """Return index.html with the session token injected."""
+    def _serve_index(prefix: str = ""):
+        """Return index.html with the session token + base-path injected.
+
+        ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
+        or empty string when served at root.
+        """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};</script>"
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
+            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
+        if prefix:
+            # Rewrite absolute asset URLs baked into the Vite build so the
+            # browser fetches them through the same proxy prefix.
+            html = html.replace('href="/assets/', f'href="{prefix}/assets/')
+            html = html.replace('src="/assets/', f'src="{prefix}/assets/')
+            html = html.replace('href="/favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
+            html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
+            html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
         html = html.replace("</head>", f"{token_script}</head>", 1)
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
         )
 
+    # When served behind a path-prefix proxy, the built CSS contains
+    # absolute ``url(/fonts/...)`` and ``url(/ds-assets/...)`` references.
+    # Browsers resolve those against the document origin, which means
+    # under ``/hermes`` they'd hit ``mission-control.tilos.com/fonts/...``
+    # (the MC Pages app), not the Hermes backend. Intercept CSS asset
+    # requests BEFORE the StaticFiles mount and rewrite the absolute paths
+    # when a prefix is in play.
+    @application.get("/assets/{filename}.css")
+    async def serve_css(filename: str, request: Request):
+        css_path = WEB_DIST / "assets" / f"{filename}.css"
+        if not css_path.is_file() or not css_path.resolve().is_relative_to(
+            WEB_DIST.resolve()
+        ):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        css = css_path.read_text()
+        if prefix:
+            for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
+                css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
+                css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
+                css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
+        return Response(content=css, media_type="text/css")
+
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
     @application.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
+    async def serve_spa(full_path: str, request: Request):
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
@@ -3250,7 +3623,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index()
+        return _serve_index(prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -3260,8 +3633,9 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
+    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
@@ -3389,7 +3763,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if isinstance(radius, str) and radius.strip():
         layout["radius"] = radius
     density = layout_src.get("density")
-    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+    if isinstance(density, str) and density in {"compact", "comfortable", "spacious"}:
         layout["density"] = density
 
     # Color overrides — keep only valid keys with string values.
@@ -3641,6 +4015,9 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
     if _dashboard_plugins_cache is None or force_rescan:
         _dashboard_plugins_cache = _discover_dashboard_plugins()
+    elif _dashboard_plugins_cache:
+        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
+            _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
 
 
@@ -3722,7 +4099,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             pass
 
         can_remove_update = (
-            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+            source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
         )
 
         # Check if this plugin provides tools that require auth
@@ -4052,11 +4429,36 @@ def start_server(
     if open_browser:
         import webbrowser
 
-        def _open():
-            time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+        # On headless Linux (no DISPLAY or WAYLAND_DISPLAY) some registered
+        # browsers are TUI programs (links, lynx, www-browser) that try to
+        # take over the terminal.  That can send SIGHUP to the server process
+        # and cause an immediate exit even though uvicorn bound successfully.
+        # Skip the auto-open attempt on headless systems and let the user
+        # open the URL manually.  macOS and Windows are always considered
+        # display-capable.
+        _has_display = (
+            sys.platform != "linux"
+            or bool(os.environ.get("DISPLAY"))
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
 
-        threading.Thread(target=_open, daemon=True).start()
+        if _has_display:
+            def _open():
+                try:
+                    time.sleep(1.0)
+                    webbrowser.open(f"http://{host}:{port}")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_open, daemon=True).start()
+        else:
+            _log.debug(
+                "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
+                "(headless Linux). Pass --no-open to suppress this detection."
+            )
 
     print(f"  Hermes Web UI → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    # proxy_headers=False so _ws_client_is_allowed sees the real connection peer
+    # rather than X-Forwarded-For's rewritten value (which would defeat the
+    # loopback gate when behind a reverse proxy).
+    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=False)

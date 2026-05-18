@@ -119,6 +119,14 @@ def _ensure_discord_mock() -> None:
             self.title = title
             self.description = description
             self.color = color
+            self.fields = []
+            self.footer = None
+        def add_field(self, *, name=None, value=None, inline=False, **_):
+            self.fields.append({"name": name, "value": value, "inline": inline})
+            return self
+        def set_footer(self, *, text=None, icon_url=None, **_):
+            self.footer = {"text": text, "icon_url": icon_url}
+            return self
     discord_mod.Embed = _FakeEmbed
 
     # ui.View / ui.Select / ui.Button: real classes (not MagicMock) so
@@ -261,7 +269,7 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
                     and isinstance(func.value.value, ast.Name)
                     and func.value.value.id == "sys"
                     and func.value.attr == "path"
-                    and func.attr in ("insert", "append", "extend")
+                    and func.attr in {"insert", "append", "extend"}
                 ):
                     target_name = f"sys.path.{func.attr}"
 

@@ -83,6 +83,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from toolsets import get_toolset_names
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -90,6 +92,8 @@ from typing import Any, Iterable, Optional
 
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+_IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -595,6 +599,14 @@ class Task:
     # JSON array of skill names. None = use only the defaults; empty
     # list = explicitly no extra skills.
     skills: Optional[list] = None
+    # Per-task override for the consecutive-failure circuit breaker.
+    # The value is the failure count at which the breaker trips — e.g.
+    # ``max_retries=1`` blocks on the first failure (zero retries),
+    # ``max_retries=3`` blocks on the third (two retries allowed).
+    # ``None`` (the common case) falls through to the dispatcher-level
+    # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
+    # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
+    max_retries: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -628,11 +640,16 @@ class Task:
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
+                # Pre-migration fallback: ``_migrate_add_optional_columns`` always
+                # adds ``consecutive_failures`` now, so this branch is only reachable
+                # on a DB that was never opened since pre-#20410 code ran. Keep for
+                # belt-and-suspenders safety; in practice it is dead code post-migration.
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
+                # Same belt-and-suspenders fallback as consecutive_failures above.
                 else (row["last_spawn_error"] if "last_spawn_error" in keys else None)
             ),
             max_runtime_seconds=(
@@ -651,6 +668,9 @@ class Task:
                 row["current_step_key"] if "current_step_key" in keys else None
             ),
             skills=skills_value,
+            max_retries=(
+                row["max_retries"] if "max_retries" in keys else None
+            ),
         )
 
 
@@ -771,7 +791,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Force-loaded skills for the worker on this task, stored as JSON.
     -- Appended to the dispatcher's built-in `--skills kanban-worker`.
     -- NULL or empty array = no extras.
-    skills               TEXT
+    skills               TEXT,
+    -- Per-task override for the consecutive-failure circuit breaker.
+    -- The value is the failure count at which the breaker trips — e.g.
+    -- ``max_retries=1`` blocks on the first failure. NULL (the common
+    -- case) falls through to the dispatcher-level ``kanban.failure_limit``
+    -- config and then ``DEFAULT_FAILURE_LIMIT``.
+    max_retries          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -836,6 +862,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
+    notifier_profile TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -895,7 +922,11 @@ def connect(
     needs_init = resolved not in _INITIALIZED_PATHS
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # WAL doesn't work on network filesystems (NFS/SMB/FUSE).  Shared helper
+    # falls back to DELETE with one WARNING so kanban stays usable there.
+    # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
+    from hermes_state import apply_wal_with_fallback
+    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     if needs_init:
@@ -937,6 +968,25 @@ def init_db(
     return path
 
 
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, ddl: str
+) -> bool:
+    """Run ``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
+
+    Returns ``True`` when the column was actually added by this call.
+    Swallows ``duplicate column name`` errors so a concurrent connection
+    that ran the same migration first does not crash the dispatcher tick
+    (issue #21708).
+    """
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        return True
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            return False
+        raise
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -944,65 +994,110 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN tenant TEXT")
+        _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
     if "result" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN result TEXT")
+        _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "idempotency_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN idempotency_key TEXT")
+        _add_column_if_missing(
+            conn, "tasks", "idempotency_key", "idempotency_key TEXT"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key)"
         )
-    # Legacy column rename: ``spawn_failures`` → ``consecutive_failures``
-    # and ``last_spawn_error`` → ``last_failure_error``. The counter was
-    # originally spawn-only; it's now unified across spawn/timeout/
-    # crash outcomes. Rename when only the legacy columns exist to
-    # preserve historical counter values across upgrades. Add fresh
-    # otherwise.
+    # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
+    # and ``last_spawn_error`` → ``last_failure_error``.
+    #
+    # Avoid ``ALTER TABLE ... RENAME COLUMN`` for two reasons:
+    #   1. Primary: very old DBs may never have had ``spawn_failures`` at
+    #      all, so RENAME raises OperationalError: no such column (the crash
+    #      reported in issue #20842 after the #20410 update).
+    #   2. Secondary: SQLite reparses the whole schema on any RENAME, which
+    #      fails if related objects (views, triggers) reference the old name.
+    #
+    # ADD-first-then-copy is tolerant of both shapes and preserves
+    # historical counter values when the legacy columns do exist.
+    #
+    # NOTE: ``cols`` reflects the schema at entry to this function and is
+    # not refreshed between ALTER TABLE calls.  Every guard below checks
+    # the *original* snapshot; this is intentional and safe as long as
+    # no step depends on a column added by a previous step in the same call.
     if "consecutive_failures" not in cols:
-        if "spawn_failures" in cols:
+        added = _add_column_if_missing(
+            conn,
+            "tasks",
+            "consecutive_failures",
+            "consecutive_failures INTEGER NOT NULL DEFAULT 0",
+        )
+        if added and "spawn_failures" in cols:
             conn.execute(
-                "ALTER TABLE tasks RENAME COLUMN spawn_failures TO consecutive_failures"
-            )
-        else:
-            conn.execute(
-                "ALTER TABLE tasks ADD COLUMN consecutive_failures "
-                "INTEGER NOT NULL DEFAULT 0"
+                "UPDATE tasks SET consecutive_failures = COALESCE(spawn_failures, 0)"
             )
     if "worker_pid" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN worker_pid INTEGER")
+        _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
     if "last_failure_error" not in cols:
-        if "last_spawn_error" in cols:
+        added = _add_column_if_missing(
+            conn, "tasks", "last_failure_error", "last_failure_error TEXT"
+        )
+        if added and "last_spawn_error" in cols:
             conn.execute(
-                "ALTER TABLE tasks RENAME COLUMN last_spawn_error TO last_failure_error"
+                "UPDATE tasks SET last_failure_error = last_spawn_error"
             )
-        else:
-            conn.execute("ALTER TABLE tasks ADD COLUMN last_failure_error TEXT")
     if "max_runtime_seconds" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN max_runtime_seconds INTEGER")
+        _add_column_if_missing(
+            conn, "tasks", "max_runtime_seconds", "max_runtime_seconds INTEGER"
+        )
     if "last_heartbeat_at" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at INTEGER")
+        _add_column_if_missing(
+            conn, "tasks", "last_heartbeat_at", "last_heartbeat_at INTEGER"
+        )
     if "current_run_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_run_id INTEGER")
+        _add_column_if_missing(
+            conn, "tasks", "current_run_id", "current_run_id INTEGER"
+        )
     if "workflow_template_id" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN workflow_template_id TEXT")
+        _add_column_if_missing(
+            conn, "tasks", "workflow_template_id", "workflow_template_id TEXT"
+        )
     if "current_step_key" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN current_step_key TEXT")
+        _add_column_if_missing(
+            conn, "tasks", "current_step_key", "current_step_key TEXT"
+        )
     if "skills" not in cols:
         # JSON array of skill names the dispatcher force-loads into the
         # worker (additive to the built-in `kanban-worker`). NULL is fine
         # for existing rows.
-        conn.execute("ALTER TABLE tasks ADD COLUMN skills TEXT")
+        _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
+
+    if "max_retries" not in cols:
+        # Per-task override for the consecutive-failure circuit breaker.
+        # NULL = fall through to the dispatcher-level ``kanban.failure_limit``
+        # config, then ``DEFAULT_FAILURE_LIMIT``. Existing rows get NULL,
+        # which is the correct default (they keep the global behaviour
+        # they were getting before the column existed).
+        _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
     ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
     if "run_id" not in ev_cols:
-        conn.execute("ALTER TABLE task_events ADD COLUMN run_id INTEGER")
+        _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_run "
             "ON task_events(run_id, id)"
         )
+
+    notify_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+    ).fetchone() is not None
+    if notify_table_exists:
+        notify_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+        }
+        if "notifier_profile" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -1149,6 +1244,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -1193,6 +1289,12 @@ def create_task(
     if skills is not None:
         cleaned: list[str] = []
         seen: set[str] = set()
+        # Collect all toolset-name confusions up front so the user sees the
+        # whole list at once. Raising on the first hit is friendly when the
+        # input has one mistake, but agents that confuse skills with toolsets
+        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
+        # and serial-correcting one per failure round-trips wastes tokens.
+        toolset_typos: list[str] = []
         for s in skills:
             if not s:
                 continue
@@ -1204,10 +1306,23 @@ def create_task(
                     f"skill name cannot contain comma: {name!r} "
                     f"(pass a list of separate names instead of a comma-joined string)"
                 )
+            if name.casefold() in KNOWN_TOOLSET_NAMES:
+                toolset_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if toolset_typos:
+            quoted = ", ".join(repr(n) for n in toolset_typos)
+            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). "
+                "Put toolsets in the assignee profile's `toolsets:` config "
+                "instead of per-task skills. Skills are named skill bundles "
+                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+                "capabilities (e.g. `web`, `browser`, `terminal`)."
+            )
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a
@@ -1262,8 +1377,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        tenant, idempotency_key, max_runtime_seconds, skills
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        tenant, idempotency_key, max_runtime_seconds, skills,
+                        max_retries
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1280,6 +1396,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        int(max_retries) if max_retries is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1366,7 +1483,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
@@ -1375,7 +1492,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
-        conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        if row["assignee"] != profile:
+            # The retry guard is scoped to the task/profile combination. A
+            # human reassigning the task is an explicit recovery action, so the
+            # new profile should not inherit the previous profile's streak.
+            conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ?",
+                (profile, task_id),
+            )
+        else:
+            conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
         return True
 
@@ -1448,7 +1575,14 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
             )
-        return cur.rowcount > 0
+        removed = cur.rowcount > 0
+    if removed:
+        # Dependency edge removed — re-evaluate promotion eligibility for the
+        # child immediately.  Matches the contract of complete_task and
+        # unblock_task; without this the child stays stuck in todo until the
+        # next dispatcher tick or a manual `hermes kanban recompute` (issue #22459).
+        recompute_ready(conn)
+    return removed
 
 
 def parent_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
@@ -1693,7 +1827,7 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done``.
+    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -1711,7 +1845,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] == "done" for p in parents):
+            if all(p["status"] in {"done", "archived"} for p in parents):
                 conn.execute(
                     "UPDATE tasks SET status = 'ready' WHERE id = ? AND status = 'todo'",
                     (task_id,),
@@ -1741,6 +1875,31 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + int(ttl_seconds)
     with write_txn(conn):
+        # Structural invariant: never transition ready -> running while any
+        # parent is not yet 'done'. This is the single enforcement point
+        # regardless of which writer (create_task, link_tasks, unblock_task,
+        # release_stale_claims, manual SQL) set status='ready'. If a racy
+        # writer promoted a task with undone parents, demote it back to
+        # 'todo' here — recompute_ready will re-promote when the parents
+        # actually finish. See RCA at
+        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if undone:
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'ready'",
+                (task_id,),
+            )
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "parents_not_done"},
+            )
+            return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -1845,34 +2004,113 @@ def heartbeat_claim(
         return False
 
 
-def release_stale_claims(conn: sqlite3.Connection) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> int:
     """Reset any ``running`` task whose claim has expired.
 
-    Returns the number of stale claims reclaimed.  Safe to call often.
+    A stale-by-TTL claim whose host-local worker PID is still alive is
+    *extended* (with a ``claim_extended`` event) instead of being
+    reclaimed. Reclaiming a live worker mid-flight produces the spawn-
+    then-immediately-reclaim loop seen on slow models that spend longer
+    than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
+    call (#23025): no tool calls means no ``kanban_heartbeat``, even
+    though the subprocess is healthy. ``enforce_max_runtime`` and
+    ``detect_crashed_workers`` remain the upper bounds for genuinely
+    wedged or dead workers.
+
+    Returns the number of stale claims actually reclaimed (live-pid
+    extensions don't count). Safe to call often.
     """
     now = int(time.time())
     reclaimed = 0
-    with write_txn(conn):
-        stale = conn.execute(
-            "SELECT id, claim_lock FROM tasks "
-            "WHERE status = 'running' AND claim_expires IS NOT NULL AND claim_expires < ?",
-            (now,),
-        ).fetchall()
-        for row in stale:
-            conn.execute(
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    stale = conn.execute(
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "FROM tasks "
+        "WHERE status = 'running' AND claim_expires IS NOT NULL "
+        "  AND claim_expires < ?",
+        (now,),
+    ).fetchall()
+    for row in stale:
+        lock = row["claim_lock"] or ""
+        host_local = lock.startswith(host_prefix)
+        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]):
+            new_expires = now + int(DEFAULT_CLAIM_TTL_SECONDS)
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ? "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ? "
+                    "  AND claim_expires IS NOT NULL "
+                    "  AND claim_expires < ?",
+                    (new_expires, row["id"], row["claim_lock"], now),
+                )
+                if cur.rowcount != 1:
+                    continue
+                run_id = _current_run_id(conn, row["id"])
+                if run_id is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                        (new_expires, run_id),
+                    )
+                _append_event(
+                    conn, row["id"], "claim_extended",
+                    {
+                        "reason": "pid_alive",
+                        "worker_pid": int(row["worker_pid"]),
+                        "claim_lock": row["claim_lock"],
+                        "claim_expires_was": int(row["claim_expires"]),
+                        "claim_expires_now": new_expires,
+                        "last_heartbeat_at": (
+                            int(row["last_heartbeat_at"])
+                            if row["last_heartbeat_at"] is not None
+                            else None
+                        ),
+                    },
+                    run_id=run_id,
+                )
+            continue
+
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+        )
+        with write_txn(conn):
+            cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (row["id"],),
+                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                (row["id"], row["claim_lock"], now),
             )
+            if cur.rowcount != 1:
+                continue
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",
                 error=f"stale_lock={row['claim_lock']}",
+                metadata=termination,
             )
+            payload = {
+                "stale_lock": row["claim_lock"],
+                "worker_pid": (
+                    int(row["worker_pid"])
+                    if row["worker_pid"] is not None else None
+                ),
+                "claim_expires": int(row["claim_expires"]),
+                "last_heartbeat_at": (
+                    int(row["last_heartbeat_at"])
+                    if row["last_heartbeat_at"] is not None else None
+                ),
+                "now": now,
+                "host_local": host_local,
+            }
+            payload.update(termination)
             _append_event(
                 conn, row["id"], "reclaimed",
-                {"stale_lock": row["claim_lock"]},
+                payload,
                 run_id=run_id,
             )
             reclaimed += 1
@@ -1884,6 +2122,7 @@ def reclaim_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    signal_fn=None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and reset to ``ready``.
 
@@ -1896,24 +2135,29 @@ def reclaim_task(
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False
+    if row["status"] != "running" and row["claim_lock"] is None:
+        # Nothing to reclaim — already ready / blocked / done.
+        return False
+    prev_lock = row["claim_lock"]
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+    )
     with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if not row:
-            return False
-        if row["status"] != "running" and row["claim_lock"] is None:
-            # Nothing to reclaim — already ready / blocked / done.
-            return False
-        prev_lock = row["claim_lock"]
-        prev_pid = row["worker_pid"]
-        conn.execute(
+        cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked')",
-            (task_id,),
+            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+            "AND claim_lock IS ?",
+            (task_id, prev_lock),
         )
+        if cur.rowcount != 1:
+            return False
         run_id = _end_run(
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
@@ -1921,15 +2165,17 @@ def reclaim_task(
                 f"manual_reclaim: {reason}" if reason
                 else f"manual_reclaim lock={prev_lock}"
             ),
+            metadata=termination,
         )
+        payload = {
+            "manual": True,
+            "reason": reason,
+            "prev_lock": prev_lock,
+        }
+        payload.update(termination)
         _append_event(
             conn, task_id, "reclaimed",
-            {
-                "manual": True,
-                "reason": reason,
-                "prev_lock": prev_lock,
-                "prev_pid": prev_pid,
-            },
+            payload,
             run_id=run_id,
         )
     # Operator intervention — they've looked at the task, so the
@@ -1978,14 +2224,23 @@ def _verify_created_cards(
 ) -> tuple[list[str], list[str]]:
     """Partition ``claimed_ids`` into (verified, phantom).
 
-    A card is "verified" iff a row exists in ``tasks`` with the given id
-    AND ``created_by`` matches the completing task's ``assignee`` (or
-    the completing task itself — workers that create children of their
-    own task also qualify).
+    A card is "verified" iff a row exists in ``tasks`` AND at least one
+    of the following holds:
 
-    ``phantom`` returns ids that either don't exist at all or exist but
-    were not created by the completing worker. The caller decides what
-    to do with each bucket; this helper never mutates.
+    * ``created_by`` matches the completing task's ``assignee`` profile
+      (the common case: worker A spawns a card via ``kanban_create``,
+      which stamps ``created_by=A``).
+    * ``created_by`` matches the completing task's id (edge case where
+      a worker passed its own task id as the ``created_by`` value).
+    * The card is linked as a ``task_links.child`` of the completing
+      task — i.e. the worker explicitly called ``kanban_create`` with
+      ``parents=[<current_task>]``. This accepts cards created through
+      the dashboard/CLI by a different principal but then attached to
+      the completing task by the worker.
+
+    ``phantom`` returns ids that either don't exist at all, or exist
+    but don't satisfy any of the three trust conditions. The caller
+    decides what to do with each bucket; this helper never mutates.
     """
     claimed = [str(x).strip() for x in (claimed_ids or []) if str(x).strip()]
     if not claimed:
@@ -2014,6 +2269,10 @@ def _verify_created_cards(
     ).fetchall()
     found = {r["id"]: r["created_by"] for r in rows}
 
+    # Pull the set of cards linked as children of the completing task.
+    # Cheap: one query, indexed on parent_id.
+    linked_children: set[str] = set(child_ids(conn, completing_task_id))
+
     verified: list[str] = []
     phantom: list[str] = []
     for cid in ordered:
@@ -2021,12 +2280,12 @@ def _verify_created_cards(
         if created_by is None:
             phantom.append(cid)
             continue
-        # Accept if created_by matches the completing task's assignee
-        # profile, OR the task itself (workers whose created_by happens
-        # to match their task id are unusual but harmless to accept).
+        # Accept if any of the three trust conditions holds.
         if completing_assignee and created_by == completing_assignee:
             verified.append(cid)
         elif created_by == completing_task_id:
+            verified.append(cid)
+        elif cid in linked_children:
             verified.append(cid)
         else:
             phantom.append(cid)
@@ -2406,15 +2665,290 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 """,
                 (now, int(stale["current_run_id"])),
             )
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', current_run_id = NULL "
-            "WHERE id = ? AND status = 'blocked'",
+        # Re-gate on parent completion before flipping 'blocked' back to
+        # 'ready'. Unconditionally setting status='ready' here bypasses the
+        # parent-completion invariant (the dispatcher trusts that column);
+        # if parents are still in progress the task must wait in 'todo'
+        # until recompute_ready picks it up. RCA: Bug 2 at
+        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+        undone_parents = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
             (task_id,),
+        ).fetchone()
+        new_status = "todo" if undone_parents else "ready"
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL "
+            "WHERE id = ? AND status = 'blocked'",
+            (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(conn, task_id, "unblocked", None)
+        _append_event(
+            conn, task_id, "unblocked",
+            {"status": new_status} if new_status != "ready" else None,
+        )
         return True
+
+
+def specify_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    author: Optional[str] = None,
+) -> bool:
+    """Flesh out a triage task and promote it to ``todo``.
+
+    Atomically updates ``title`` / ``body`` (when provided) and transitions
+    ``status: triage -> todo`` in a single write txn. Returns False when
+    the task is missing or not in the ``triage`` column — callers should
+    surface that as "nothing to specify" rather than an error.
+
+    ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
+    promotes parent-free / parent-done todos to ``ready`` on the next
+    dispatcher tick, which keeps the normal parent-gating behaviour intact
+    for specified tasks that happen to have open parents.
+
+    ``author`` is recorded on an audit comment only when at least one of
+    ``title`` / ``body`` actually changed — avoids noisy comment spam for
+    status-only promotions.
+    """
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if existing is None:
+            return False
+        sets: list[str] = ["status = 'todo'"]
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != (existing["title"] or ""):
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and (body or "") != (existing["body"] or ""):
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} "
+            f"WHERE id = ? AND status = 'triage'",
+            tuple(params),
+        )
+        if cur.rowcount != 1:
+            return False
+        if changed_fields and author and author.strip():
+            # Inline INSERT (rather than ``add_comment``) because we're
+            # already inside this function's write_txn — nested BEGIN
+            # IMMEDIATE would raise OperationalError. We also skip the
+            # 'commented' event that ``add_comment`` emits, since the
+            # 'specified' event below already records the change.
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author.strip(),
+                    "Specified — updated "
+                    + ", ".join(changed_fields)
+                    + " and promoted to todo.",
+                    int(time.time()),
+                ),
+            )
+        _append_event(
+            conn,
+            task_id,
+            "specified",
+            {"changed_fields": changed_fields} if changed_fields else None,
+        )
+    # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
+    # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
+    # logic the dispatcher would on its next tick, so a specified task
+    # with no open parents flips straight to 'ready' here instead of
+    # idling in 'todo' until the next sweep.
+    recompute_ready(conn)
+    return True
+
+
+def decompose_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    root_assignee: Optional[str],
+    children: list[dict],
+    author: Optional[str] = None,
+) -> Optional[list[str]]:
+    """Fan a triage task out into child tasks and promote the root to ``todo``.
+
+    The root task stays alive and becomes the parent of every child —
+    when all children reach ``done``, the root promotes to ``ready`` and
+    its assignee (typically the orchestrator profile) wakes back up to
+    judge completion or spawn more work.
+
+    ``children`` is a list of dicts, each shaped like::
+
+        {
+            "title": "...",
+            "body": "...",                     # optional
+            "assignee": "profile-name",        # optional, None -> default fallback
+            "parents": [0, 2],                 # indices into this same children list
+        }
+
+    Returns the list of created child task ids (in input order) on
+    success. Returns ``None`` when:
+      - The root task does not exist
+      - The root task is not in ``triage``
+      - A cycle would result (caller built a bad graph)
+
+    Validation of titles/assignees happens inside the same write_txn as
+    the inserts so a malformed entry aborts the whole decomposition
+    cleanly (no orphan children).
+    """
+    if not children:
+        return None
+    if root_assignee is not None:
+        root_assignee = _canonical_assignee(root_assignee)
+
+    # Pre-validate the children list shape outside the txn. Cheap checks
+    # that don't need DB access. Bad input aborts before we touch the DB.
+    for idx, child in enumerate(children):
+        if not isinstance(child, dict):
+            raise ValueError(f"child[{idx}] is not a dict")
+        title = child.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"child[{idx}].title is required")
+        parents_idx = child.get("parents") or []
+        if not isinstance(parents_idx, list):
+            raise ValueError(f"child[{idx}].parents must be a list")
+        for p in parents_idx:
+            if not isinstance(p, int) or p < 0 or p >= len(children):
+                raise ValueError(
+                    f"child[{idx}].parents[{p}] is not a valid index into children"
+                )
+            if p == idx:
+                raise ValueError(f"child[{idx}] cannot list itself as a parent")
+
+    # We do the full decomposition in a SINGLE write_txn so it's
+    # atomic: either every child is created AND the root flips to
+    # ``todo``, or nothing changes. We deliberately do NOT call any
+    # kb helper that opens its own write_txn (create_task, link_tasks,
+    # add_comment) from inside this block — see architecture.md
+    # write_txn pitfalls. Instead we inline the INSERTs and
+    # _append_event calls.
+    now = int(time.time())
+    child_ids: list[str] = []
+    with write_txn(conn):
+        root_row = conn.execute(
+            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if root_row is None:
+            return None
+        if root_row["status"] != "triage":
+            return None
+        tenant = root_row["tenant"]
+
+        # Create children. Status is 'todo' regardless of parents — we
+        # link them under the root AFTER creation so the dispatcher
+        # sees a coherent state, and recompute_ready() at the end
+        # promotes parent-free children to 'ready'.
+        for idx, child in enumerate(children):
+            new_id = _new_task_id()
+            title = child["title"].strip()
+            body = child.get("body")
+            assignee = _canonical_assignee(child.get("assignee"))
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, title, body, assignee, status, workspace_kind, "
+                " tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                (
+                    new_id,
+                    title,
+                    body if isinstance(body, str) else None,
+                    assignee,
+                    tenant,
+                    now,
+                    (author or "decomposer"),
+                ),
+            )
+            _append_event(
+                conn, new_id, "created",
+                {"by": author or "decomposer", "from_decompose_of": task_id},
+            )
+            child_ids.append(new_id)
+
+        # Link children to their sibling parents (within the decomposed graph).
+        for idx, child in enumerate(children):
+            for p_idx in child.get("parents") or []:
+                parent_id = child_ids[p_idx]
+                child_id = child_ids[idx]
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                    "VALUES (?, ?)",
+                    (parent_id, child_id),
+                )
+                _append_event(
+                    conn, child_id, "linked",
+                    {"parent": parent_id, "child": child_id},
+                )
+
+        # Link the ROOT task as a child of every leaf child — i.e. the
+        # root waits for the whole graph. Simpler than computing leaves:
+        # link root under every child. Cycle-free because the root is
+        # only ever a child here, never a parent of children.
+        for cid in child_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                "VALUES (?, ?)",
+                (cid, task_id),
+            )
+
+        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        sets = ["status = 'todo'"]
+        params: list[Any] = []
+        if root_assignee is not None:
+            sets.append("assignee = ?")
+            params.append(root_assignee)
+        params.append(task_id)
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+
+        # Audit comment + event on the root so the timeline shows the fan-out.
+        if author and author.strip():
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author.strip(),
+                    "Decomposed into "
+                    + ", ".join(child_ids)
+                    + ". Root will wake when all children complete.",
+                    now,
+                ),
+            )
+        _append_event(
+            conn, task_id, "decomposed",
+            {
+                "child_ids": child_ids,
+                "root_assignee": root_assignee,
+            },
+        )
+
+    # Outside the write_txn: promote parent-free children to 'ready'
+    # so the dispatcher picks them up on its next tick. Same pattern
+    # specify_triage_task uses.
+    recompute_ready(conn)
+    return child_ids
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -2521,11 +3055,11 @@ def set_workspace_path(
 # Dispatcher (one-shot pass)
 # ---------------------------------------------------------------------------
 
-# After this many consecutive `spawn_failed` events on a task, the dispatcher
-# stops retrying and parks the task in ``blocked`` with a reason so a human
-# can investigate. Prevents the dispatcher from thrashing forever on a task
-# whose profile doesn't exist, whose workspace is unmountable, etc.
-DEFAULT_FAILURE_LIMIT = 5
+# After this many consecutive non-success attempts on a task/profile, the
+# dispatcher stops retrying and parks the task in ``blocked`` with a reason so
+# a human can investigate. Prevents retry storms when a worker repeatedly times
+# out, crashes, or cannot spawn.
+DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
@@ -2560,15 +3094,92 @@ class DispatchResult:
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
 
 
+# Bounded registry of recently-reaped worker child exits, populated by the
+# reap loop at the top of ``dispatch_once`` and consulted by
+# ``detect_crashed_workers`` to classify a dead-pid task.
+#
+# Entry: ``pid -> (raw_wait_status, reaped_at_epoch)``. We keep raw status
+# so both ``os.WIFEXITED`` / ``os.WEXITSTATUS`` and ``os.WIFSIGNALED`` can
+# be consulted. Entries are trimmed by age (and total size cap as a
+# belt-and-braces against unbounded growth on exotic platforms).
+_RECENT_WORKER_EXIT_TTL_SECONDS = 600
+_RECENT_WORKER_EXITS_MAX = 4096
+_recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+
+
+def _record_worker_exit(pid: int, raw_status: int) -> None:
+    """Record a reaped child's exit status for later classification.
+
+    Called from the reap loop in ``dispatch_once``. Safe to call many
+    times; duplicate pids overwrite (pids can cycle, latest wins).
+    """
+    if not pid or pid <= 0:
+        return
+    now = time.time()
+    _recent_worker_exits[int(pid)] = (int(raw_status), now)
+    # Age-based trim: drop entries older than the TTL.
+    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
+        cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
+        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+            _recent_worker_exits.pop(_pid, None)
+    # Size cap as a final guard.
+    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
+        # Drop oldest half.
+        ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
+        for _pid, _ in ordered[: len(ordered) // 2]:
+            _recent_worker_exits.pop(_pid, None)
+
+
+def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
+    """Classify a recently-reaped worker by pid.
+
+    Returns ``(kind, code)`` where ``kind`` is one of:
+
+    * ``"clean_exit"`` — ``WIFEXITED`` with ``WEXITSTATUS == 0``. When the
+      task is still ``running`` in the DB, this is a protocol violation
+      (worker exited without calling ``kanban_complete`` / ``kanban_block``)
+      and should be auto-blocked immediately — retrying will just loop.
+    * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
+    * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
+    * ``"unknown"`` — pid was not in the reap registry (either reaped by
+      something else, or died between reap tick and liveness check). Fall
+      back to existing crashed-counter behavior.
+
+    ``code`` is the exit status (for ``clean_exit`` / ``nonzero_exit``) or
+    the signal number (for ``signaled``), or ``None`` for ``unknown``.
+    """
+    entry = _recent_worker_exits.get(int(pid))
+    if entry is None:
+        return ("unknown", None)
+    raw, _ = entry
+    try:
+        if os.WIFEXITED(raw):
+            code = os.WEXITSTATUS(raw)
+            if code == 0:
+                return ("clean_exit", 0)
+            return ("nonzero_exit", code)
+        if os.WIFSIGNALED(raw):
+            return ("signaled", os.WTERMSIG(raw))
+    except Exception:
+        pass
+    return ("unknown", None)
+
+
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
-    Cross-platform: uses ``os.kill(pid, 0)`` on POSIX and ``OpenProcess``
-    on Windows. Returns False for falsy PIDs or on any OS error.
+    Cross-platform: uses ``OpenProcess`` + ``WaitForSingleObject`` on
+    Windows (via ``gateway.status._pid_exists``) and ``os.kill(pid, 0)``
+    on POSIX. Returns False for falsy PIDs or on any OS error.
 
-    **Zombie handling:** ``os.kill(pid, 0)`` succeeds against
-    zombie processes (post-exit, pre-reap) because the process table
-    entry still exists. A worker that exits without being reaped by its
+    **DO NOT** use ``os.kill(pid, 0)`` directly on Windows — Python's
+    Windows ``os.kill`` treats ``sig=0`` as ``CTRL_C_EVENT`` (bpo-14484)
+    and will broadcast it to the target's console group, potentially
+    killing unrelated processes.
+
+    **Zombie handling:** the existence check succeeds against zombie
+    processes (post-exit, pre-reap) because the process table entry
+    still exists. A worker that exits without being reaped by its
     parent would stay "alive" to the dispatcher forever. Dispatcher
     workers are started via ``start_new_session=True`` + intentional
     Popen handle abandonment, so init reaps them quickly — but during
@@ -2579,21 +3190,14 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
-    try:
-        if hasattr(os, "kill"):
-            os.kill(int(pid), 0)
-    except ProcessLookupError:
+    from gateway.status import _pid_exists
+    if not _pid_exists(int(pid)):
         return False
-    except PermissionError:
-        # Process exists, we just can't signal it.
-        return True
-    except OSError:
-        return False
-    # Still here → kill(0) succeeded. Check for zombie on platforms
+    # Still here → process exists. Check for zombie on platforms
     # where we have a cheap, deterministic process-state probe.
     if sys.platform == "linux":
         try:
-            with open(f"/proc/{int(pid)}/status", "r") as f:
+            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("State:"):
                         # "State:\tZ (zombie)" → dead
@@ -2623,6 +3227,62 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
+
+
+def _terminate_reclaimed_worker(
+    pid: Optional[int],
+    claim_lock: Optional[str],
+    *,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Best-effort host-local worker termination for reclaim paths."""
+    import signal
+
+    info: dict[str, Any] = {
+        "prev_pid": int(pid) if pid else None,
+        "host_local": False,
+        "termination_attempted": False,
+        "terminated": False,
+        "sigkill": False,
+    }
+    if not pid or pid <= 0 or not claim_lock:
+        return info
+
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    if not str(claim_lock).startswith(host_prefix):
+        return info
+    info["host_local"] = True
+
+    kill = signal_fn if signal_fn is not None else (
+        os.kill if hasattr(os, "kill") else None
+    )
+    if kill is None:
+        return info
+
+    info["termination_attempted"] = True
+    try:
+        kill(int(pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        return info
+
+    for _ in range(10):
+        if not _pid_alive(pid):
+            info["terminated"] = True
+            return info
+        time.sleep(0.5)
+
+    if _pid_alive(pid):
+        try:
+            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
+            # (which maps to TerminateProcess via the stdlib shim).
+            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            kill(int(pid), _sigkill)
+            info["sigkill"] = True
+        except (ProcessLookupError, OSError):
+            return info
+
+    info["terminated"] = not _pid_alive(pid)
+    return info
 
 
 def heartbeat_worker(
@@ -2699,16 +3359,23 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT id, worker_pid, started_at, max_runtime_seconds, claim_lock "
-        "FROM tasks "
-        "WHERE status = 'running' AND max_runtime_seconds IS NOT NULL "
-        "  AND started_at IS NOT NULL AND worker_pid IS NOT NULL"
+        "SELECT t.id, t.worker_pid, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       t.max_runtime_seconds, t.claim_lock "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
+        "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
-        elapsed = now - int(row["started_at"])
+        # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
+        # intentionally records the first time a task ever started, so retries
+        # must be measured from the active task_runs row when present.
+        elapsed = now - int(row["active_started_at"])
         if elapsed < int(row["max_runtime_seconds"]):
             continue
 
@@ -2733,7 +3400,9 @@ def enforce_max_runtime(
                 time.sleep(0.5)
             if _pid_alive(pid):
                 try:
-                    kill(pid, signal.SIGKILL)
+                    # signal.SIGKILL doesn't exist on Windows.
+                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                    kill(pid, _sigkill)
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass
@@ -2806,12 +3475,22 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     are meaningless here. The host-local check is enough because
     ``_default_spawn`` always runs the worker on the same host as the
     dispatcher (the whole design is single-host).
+
+    When the reap registry shows the worker exited cleanly (rc=0) but
+    the task was still ``running`` in the DB, treat it as a protocol
+    violation (worker answered conversationally without calling
+    ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
+    on the first occurrence — retrying a worker whose CLI keeps
+    returning 0 without a terminal transition just loops forever.
     """
     crashed: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
-    # write_txn so can't nest).
-    crash_details: list[tuple[str, int, str]] = []  # (task_id, pid, claimer)
+    # write_txn so can't nest). ``protocol_violation`` flags the
+    # clean-exit-but-still-running case so we can trip the breaker
+    # immediately instead of incrementing by 1.
+    crash_details: list[tuple[str, int, str, bool, str]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock FROM tasks "
@@ -2825,6 +3504,39 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             if _pid_alive(row["worker_pid"]):
                 continue
+
+            pid = int(row["worker_pid"])
+            kind, code = _classify_worker_exit(pid)
+            if kind == "clean_exit":
+                # Worker subprocess returned 0 but its task is still
+                # ``running`` in the DB — it exited without calling
+                # ``kanban_complete`` / ``kanban_block``. Retrying won't
+                # help.
+                protocol_violation = True
+                error_text = (
+                    "worker exited cleanly (rc=0) without calling "
+                    "kanban_complete or kanban_block — protocol violation"
+                )
+                event_kind = "protocol_violation"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                }
+            else:
+                protocol_violation = False
+                if kind == "nonzero_exit":
+                    error_text = f"pid {pid} exited with code {code}"
+                elif kind == "signaled":
+                    error_text = f"pid {pid} killed by signal {code}"
+                else:
+                    error_text = f"pid {pid} not alive"
+                event_kind = "crashed"
+                event_payload = {"pid": pid, "claimer": row["claim_lock"]}
+                if code is not None and kind != "unknown":
+                    event_payload["exit_kind"] = kind
+                    event_payload["exit_code"] = code
+
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -2835,34 +3547,47 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 run_id = _end_run(
                     conn, row["id"],
                     outcome="crashed", status="crashed",
-                    error=f"pid {int(row['worker_pid'])} not alive",
-                    metadata={
-                        "pid": int(row["worker_pid"]),
-                        "claimer": row["claim_lock"],
-                    },
+                    error=error_text,
+                    metadata=dict(event_payload),
                 )
                 _append_event(
-                    conn, row["id"], "crashed",
-                    {"pid": int(row["worker_pid"]), "claimer": row["claim_lock"]},
+                    conn, row["id"], event_kind,
+                    event_payload,
                     run_id=run_id,
                 )
                 crashed.append(row["id"])
                 crash_details.append(
-                    (row["id"], int(row["worker_pid"]), row["claim_lock"])
+                    (row["id"], pid, row["claim_lock"],
+                     protocol_violation, error_text)
                 )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
-    for tid, pid, claimer in crash_details:
-        _record_task_failure(
+    #
+    # Protocol-violation crashes force an immediate trip (failure_limit=1)
+    # because clean-exit-without-transition is deterministic: the next
+    # respawn will do exactly the same thing. Better to surface to a
+    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
+    # times first.
+    auto_blocked: list[str] = []
+    for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        tripped = _record_task_failure(
             conn, tid,
-            error=f"pid {pid} not alive",
+            error=error_text,
             outcome="crashed",
+            failure_limit=(1 if protocol_violation else None),
             release_claim=False,
             end_run=False,
             event_payload_extra={"pid": pid, "claimer": claimer},
         )
+        if tripped:
+            auto_blocked.append(tid)
+    # Stash auto-blocked ids on the function for the dispatch loop to pick up.
+    # Keeps the public return type (``list[str]``) stable for direct callers
+    # and tests that destructure the result; ``dispatch_once`` reads this
+    # side-channel attribute to populate ``DispatchResult.auto_blocked``.
+    detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     return crashed
 
 
@@ -2904,20 +3629,39 @@ def _record_task_failure(
     ``event_payload_extra`` merges into the ``gave_up`` event payload
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
+
+    Resolution order for the effective threshold:
+      1. per-task ``max_retries`` if set (nothing else overrides)
+      2. caller-supplied ``failure_limit`` (gateway passes the config
+         value from ``kanban.failure_limit``; tests pass fixed values)
+      3. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status FROM tasks WHERE id = ?", (task_id,),
+            "SELECT consecutive_failures, status, max_retries "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
 
-        if failures >= failure_limit:
+        # Per-task override wins over both caller-supplied and default
+        # thresholds. None (the common case) falls through.
+        task_override = (
+            row["max_retries"] if "max_retries" in row.keys() else None
+        )
+        if task_override is not None:
+            effective_limit = int(task_override)
+            limit_source = "task"
+        else:
+            effective_limit = int(failure_limit)
+            limit_source = "dispatcher"
+
+        if failures >= effective_limit:
             # Trip the breaker.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
@@ -2945,10 +3689,17 @@ def _record_task_failure(
                     conn, task_id,
                     outcome="gave_up", status="gave_up",
                     error=error[:500],
-                    metadata={"failures": failures, "trigger_outcome": outcome},
+                    metadata={
+                        "failures": failures,
+                        "trigger_outcome": outcome,
+                        "effective_limit": effective_limit,
+                        "limit_source": limit_source,
+                    },
                 )
             payload = {
                 "failures": failures,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
                 "error": error[:500],
                 "trigger_outcome": outcome,
             }
@@ -3112,15 +3863,79 @@ def dispatch_once(
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
+    ``max_spawn`` is a **live concurrency cap**, not a per-tick spawn budget:
+    it counts tasks already in ``status='running'`` plus this tick's spawns
+    against the limit. So ``max_spawn=4`` means "at most 4 workers running
+    at any time across the whole board" — matching the gateway's stated
+    intent ("limit concurrent kanban tasks"). With a per-tick interpretation
+    a 60-second tick interval could grow concurrency by N every minute on a
+    busy board and accumulate without bound.
+
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    # Reap zombie children from previously spawned workers.
+    # The gateway-embedded dispatcher is the parent of every worker spawned
+    # via _default_spawn (start_new_session=True only detaches the
+    # controlling tty, not the parent). Without an explicit waitpid, each
+    # completed worker becomes a <defunct> entry that lingers until gateway
+    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
+    # children to reap. Bounded: at most one tick's worth of completions
+    # can be in <defunct> at once.
+    #
+    # We also record the exit status keyed by pid, so
+    # ``detect_crashed_workers`` can distinguish a worker that exited
+    # cleanly without calling ``kanban_complete`` / ``kanban_block``
+    # (protocol violation — auto-block) from a real crash (OOM killer,
+    # SIGKILL, non-zero exit — existing counter behavior).
+    #
+    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
+    # are freed when the Python object is garbage-collected or .wait() is
+    # called explicitly.  The kanban dispatcher discards the Popen handle
+    # after spawn (``_default_spawn`` → abandon), so on Windows there's
+    # nothing to reap here — skip the whole block.
+    if os.name != "nt":
+        try:
+            while True:
+                try:
+                    _pid, _status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if _pid == 0:
+                    break
+                _record_worker_exit(_pid, _status)
+        except Exception:
+            pass
+
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     result.crashed = detect_crashed_workers(conn)
+    # detect_crashed_workers stashes protocol-violation auto-blocks on
+    # itself so the public list-return stays stable. Pull them into the
+    # DispatchResult here so telemetry / tests see the trip.
+    _crash_auto_blocked = getattr(
+        detect_crashed_workers, "_last_auto_blocked", []
+    )
+    if _crash_auto_blocked:
+        result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+
+    # Count tasks already running so max_spawn enforces concurrency rather
+    # than a per-tick spawn budget. See the docstring above for the full
+    # rationale; the short version is that a 60-second tick interval with a
+    # per-tick budget of N would grow concurrency by N every tick on a busy
+    # board, since "running" tasks aren't reclaimed by completion alone —
+    # they sit in status='running' until the worker calls
+    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
+    running_count = 0
+    if max_spawn is not None:
+        running_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -3129,7 +3944,7 @@ def dispatch_once(
     ).fetchall()
     spawned = 0
     for row in ready_rows:
-        if max_spawn is not None and spawned >= max_spawn:
+        if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
@@ -3233,6 +4048,35 @@ def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
         pass
 
 
+def _resolve_hermes_argv() -> list[str]:
+    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
+
+    Tries in order:
+
+    1. ``shutil.which("hermes")`` — the console-script shim, the same form
+       that shows up in ``ps`` output and existing logs. Preferred so live
+       systems' diagnostics stay familiar.
+    2. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+       Hermes is launched from a venv and the ``hermes`` shim is not on
+       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
+       launchd jobs, detached processes, etc.). Goes through the running
+       interpreter so the result is independent of ``$PATH``.
+
+    Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
+    local (not imported from gateway) because ``hermes_cli`` sits below
+    ``gateway`` in the dependency order.
+    """
+    import shutil
+
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
+    # Fallback to the module form. ``hermes_cli.main`` is the actual
+    # console-script target declared in pyproject.toml, NOT a top-level
+    # ``hermes`` package — there is no ``hermes`` package to import.
+    return [sys.executable, "-m", "hermes_cli.main"]
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -3261,6 +4105,25 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+
+    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
+    # (fallback_providers, toolsets, agent settings, etc.) instead of the root
+    # config.  Without this, `env = dict(os.environ)` copies only the parent's
+    # env, and when the child process starts `hermes -p <name>` the
+    # _apply_profile_override() runs *before* hermes_constants is imported.
+    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
+    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
+    # profile-specific config entirely.  Fixes profile-scoped fallback_providers
+    # being invisible to kanban workers.
+    from hermes_cli.profiles import resolve_profile_env
+    try:
+        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        # Profile dir doesn't exist — defer resolution to the CLI's
+        # _apply_profile_override() via HERMES_PROFILE (set below).
+        # This only happens in test fixtures where the isolated
+        # HERMES_HOME never had profiles created.
+        pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -3289,7 +4152,7 @@ def _default_spawn(
     env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
-        "hermes",
+        *_resolve_hermes_argv(),
         "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
@@ -3336,6 +4199,7 @@ def _default_spawn(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
         log_f.close()
@@ -3591,7 +4455,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             )
         for c in shown_c:
             ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
-            lines.append(f"**{c.author}** ({ts}):")
+            # Render author with explicit "comment from worker" framing so
+            # operator-controlled HERMES_PROFILE values like "hermes-system"
+            # or "operator" can't be misread by the next worker as a system
+            # directive above the (attacker-influenceable) comment body.
+            # Defense-in-depth — the LLM-controlled author-forgery surface
+            # was already closed in #22435. See #22452.
+            safe_author = (c.author or "").replace("`", "")
+            lines.append(f"comment from worker `{safe_author}` at {ts}:")
             lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
             lines.append("")
 
@@ -3638,16 +4509,26 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _safe_int(val: Optional[str]) -> Optional[int]:
+    """Parse a timestamp field to int, returning None on garbage like '%s'."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    age_since_created = now - int(task.created_at) if task.created_at else None
-    age_since_started = (
-        now - int(task.started_at) if task.started_at else None
-    )
+    created = _safe_int(task.created_at)
+    started = _safe_int(task.started_at)
+    completed = _safe_int(task.completed_at)
+    age_since_created = now - created if created else None
+    age_since_started = now - started if started else None
     time_to_complete = (
-        int(task.completed_at) - int(task.started_at or task.created_at)
-        if task.completed_at else None
+        completed - (started or created) if completed else None
     )
     return {
         "created_age_seconds": age_since_created,
@@ -3668,6 +4549,7 @@ def add_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
@@ -3676,10 +4558,10 @@ def add_notify_sub(
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, now),
+            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
         )
 
 
@@ -3761,6 +4643,57 @@ def unseen_events_for_sub(
     return max_id, out
 
 
+def claim_unseen_events_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen notification events for one subscription.
+
+    Returns ``(old_cursor, new_cursor, events)``. When events are returned,
+    ``kanban_notify_subs.last_event_id`` has already been advanced to
+    ``new_cursor`` inside a ``BEGIN IMMEDIATE`` transaction. That makes the
+    notifier's read/claim step single-owner across multiple gateway watcher
+    processes pointed at the same board DB: concurrent watchers serialize on
+    SQLite's writer lock, and only the first process sees and claims a given
+    event range.
+
+    Callers should send the claimed events, then either leave the cursor at
+    ``new_cursor`` on success or call :func:`rewind_notify_cursor` if delivery
+    failed before any terminal unsubscribe removed the row.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread_id or ""),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+        new_cursor, events = unseen_events_for_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            kinds=kinds,
+        )
+        if not events:
+            return old_cursor, old_cursor, []
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+        )
+        return old_cursor, new_cursor, events
+
+
 def advance_notify_cursor(
     conn: sqlite3.Connection,
     *,
@@ -3776,6 +4709,35 @@ def advance_notify_cursor(
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
         )
+
+
+def rewind_notify_cursor(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    claimed_cursor: int,
+    old_cursor: int,
+) -> bool:
+    """Undo a notification claim when delivery fails.
+
+    The CAS guard only rewinds if no later notifier advanced the row after our
+    claim. This keeps retry behavior for transient send failures without
+    clobbering newer progress.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND last_event_id = ?",
+            (
+                int(old_cursor), task_id, platform, chat_id, thread_id or "",
+                int(claimed_cursor),
+            ),
+        )
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
@@ -3993,3 +4955,61 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the latest non-null ``task_runs.summary`` for ``task_id``.
+
+    The kanban-worker skill writes its handoff to ``task_runs.summary``
+    via ``complete_task(summary=...)``; ``tasks.result`` is left empty
+    unless the caller passes ``result=`` explicitly. Dashboards and CLI
+    "show" views need this value to surface what a worker actually did
+    — without it, ``tasks.result`` is NULL and the task looks like a
+    no-op even when the run completed.
+
+    Picks the most recent run by ``ended_at`` (falling back to ``id``
+    for ties or unfinished rows). Returns None if no run has a summary.
+    """
+    row = conn.execute(
+        "SELECT summary FROM task_runs "
+        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row["summary"] if row else None
+
+
+def latest_summaries(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, str]:
+    """Batch-fetch latest non-null summaries for a list of task ids.
+
+    Used by the dashboard board endpoint to attach ``latest_summary`` to
+    every card in a single SQL query, avoiding the N+1 pattern of
+    calling :func:`latest_summary` per task. Returns a dict mapping
+    ``task_id`` → summary string, omitting tasks with no summary.
+
+    Approach: a window function picks the newest non-null-summary row
+    per ``task_id``; works against SQLite ≥ 3.25 (default on every
+    supported platform).
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, summary FROM (
+            SELECT task_id, summary,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY task_id
+                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                   ) AS rn
+              FROM task_runs
+             WHERE task_id IN ({placeholders})
+               AND summary IS NOT NULL AND summary != ''
+        ) WHERE rn = 1
+        """,
+        ids,
+    ).fetchall()
+    return {r["task_id"]: r["summary"] for r in rows}

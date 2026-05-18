@@ -192,12 +192,18 @@ class TestTencentTokenhubCanonicalProvider:
 
 
 class TestTencentInOpenRouterAndNous:
-    """tencent/hy3-preview:free should appear in OpenRouter and Nous curated lists."""
+    """tencent/hy3-preview:free and tencent/hy3-preview should appear in OpenRouter and Nous curated lists."""
 
     def test_in_openrouter_fallback(self):
         from hermes_cli.models import OPENROUTER_MODELS
         ids = [mid for mid, _ in OPENROUTER_MODELS]
         assert "tencent/hy3-preview:free" in ids
+
+    def test_paid_in_openrouter_fallback(self):
+        """tencent/hy3-preview (paid, no :free suffix) should also be in OpenRouter list."""
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "tencent/hy3-preview" in ids
 
     def test_in_nous_provider_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
@@ -298,12 +304,20 @@ class TestTencentTokenhubURLMapping:
 
 
 class TestTencentTokenhubContextLength:
-    """hy3-preview context length is registered."""
+    """hy3-preview has a context-length entry registered.
 
-    def test_hy3_preview_context_length(self):
+    Asserting the relationship (registered + ≥ 4096) instead of a
+    specific value, per AGENTS.md "Don't write change-detector tests".
+    The previous version of this class pinned an exact integer that
+    broke whenever Tencent / OpenRouter bumped the published context
+    window (#22268).
+    """
+
+    def test_hy3_preview_has_registered_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 256000
+        assert isinstance(ctx, int)
+        assert ctx >= 4096, f"hy3-preview context length looks unset/wrong: {ctx}"
 
 
 # =============================================================================
@@ -420,7 +434,7 @@ class TestTencentTokenhubCLIDispatch:
 
 
 class TestTencentTokenhubModelCatalogJSON:
-    """Verify tencent/hy3-preview:free is present in the website model-catalog.json."""
+    """Verify tencent/hy3-preview:free and tencent/hy3-preview are present in the website model-catalog.json."""
 
     def test_in_model_catalog_json(self):
         catalog_path = os.path.join(
@@ -445,6 +459,7 @@ class TestTencentTokenhubModelCatalogJSON:
                 for model in provider_entry.get("models", []):
                     all_ids.add(model.get("id", ""))
         assert "tencent/hy3-preview:free" in all_ids
+        assert "tencent/hy3-preview" in all_ids
 
 
 # =============================================================================

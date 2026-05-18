@@ -204,6 +204,7 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert resp["result"]["status"] == "recording"
         assert captured["silence_threshold"] == 200
         assert captured["silence_duration"] == 3.0
+        assert captured["auto_restart"] is False
 
     # Round-12 Copilot review regression on #19835: ``bool`` is a subclass
     # of ``int``, so the naive ``isinstance(threshold, (int, float))``
@@ -232,6 +233,80 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert (
             captured["silence_duration"] == 3.0
         ), f"bool silence_duration leaked through for {bad_bool_cfg!r}"
+        assert captured["auto_restart"] is False
+
+
+def test_voice_record_stop_forces_transcription(monkeypatch):
+    captured: dict = {}
+
+    def fake_stop_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: None,
+            stop_continuous=fake_stop_continuous,
+        ),
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop",
+            "method": "voice.record",
+            "params": {"action": "stop"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert captured["force_transcribe"] is True
+
+
+def test_voice_record_stop_updates_event_session_id(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: True,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(server, "_voice_event_sid", "old-session")
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-stop-session",
+            "method": "voice.record",
+            "params": {"action": "stop", "session_id": "new-session"},
+        }
+    )
+
+    assert resp["result"]["status"] == "stopped"
+    assert server._voice_event_sid == "new-session"
+
+
+def test_voice_record_start_reports_busy_when_stop_is_in_progress(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=lambda **_kwargs: False,
+            stop_continuous=lambda **_kwargs: None,
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+
+    resp = server.dispatch(
+        {
+            "id": "voice-record-busy",
+            "method": "voice.record",
+            "params": {"action": "start"},
+        }
+    )
+
+    assert resp["result"]["status"] == "busy"
 
 
 def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
@@ -448,6 +523,24 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
         {"context": "resume", "name": "search_files", "role": "tool"},
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
+    ]
+
+
+def test_history_to_messages_renders_multimodal_content():
+    history = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look here"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        },
+        {"role": "assistant", "content": "saw it"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "look here\n[image]"},
+        {"role": "assistant", "text": "saw it"},
     ]
 
 
@@ -1770,13 +1863,15 @@ def test_config_set_personality_rejects_unknown_name(monkeypatch):
     assert "Unknown personality" in resp["error"]["message"]
 
 
-def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
+def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
+    agent = types.SimpleNamespace(
+        ephemeral_system_prompt=None, _cached_system_prompt="old"
+    )
     session = _session(
-        agent=types.SimpleNamespace(),
+        agent=agent,
         history=[{"role": "user", "text": "hi"}],
         history_version=4,
     )
-    new_agent = types.SimpleNamespace(model="x")
     emits = []
 
     server._sessions["sid"] = session
@@ -1786,12 +1881,8 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
         lambda cfg=None: {"helpful": "You are helpful."},
     )
     monkeypatch.setattr(
-        server, "_make_agent", lambda sid, key, session_id=None: new_agent
-    )
-    monkeypatch.setattr(
         server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")}
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(server, "_write_config_key", lambda path, value: None)
 
@@ -1803,11 +1894,19 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
         }
     )
 
-    assert resp["result"]["history_reset"] is True
-    assert resp["result"]["info"] == {"model": "x"}
-    assert session["history"] == []
+    assert resp["result"]["history_reset"] is False
+    assert resp["result"]["info"] == {"model": "?"}
+    # History is preserved with a pivot marker appended
+    assert len(session["history"]) == 2
+    assert session["history"][0] == {"role": "user", "text": "hi"}
+    assert session["history"][1]["role"] == "user"
+    assert "personality" in session["history"][1]["content"].lower()
+    assert "You are helpful." in session["history"][1]["content"]
     assert session["history_version"] == 5
-    assert ("session.info", "sid", {"model": "x"}) in emits
+    # Agent's system prompt was updated in-place; cached prompt untouched
+    assert agent.ephemeral_system_prompt == "You are helpful."
+    assert agent._cached_system_prompt == "old"
+    assert ("session.info", "sid", {"model": "?"}) in emits
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):
@@ -3528,6 +3627,100 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     mock_title.assert_not_called()
 
 
+def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
+    """When the backend fails with no visible response (e.g. invalid model slug
+    → provider 4xx), the TUI must surface result['error'] as visible text
+    instead of emitting a blank message.complete turn."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 0,
+                "completed": False,
+                "failed": True,
+                "error": "HTTP 400: invalid model id 'kimi-k2.6'",
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "error"
+    assert payload.get("text", "").startswith("Error:")
+    assert "kimi-k2.6" in payload.get("text", "")
+
+
+def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
+    """An empty final_response with NO backend error must stay empty — do not
+    synthesize an error string. Preserves the existing None/empty-sentinel
+    semantics owned by downstream handlers."""
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 1,
+                "completed": True,
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    # Status stays "complete" because no error flag was set
+    assert payload.get("status") == "complete"
+    # Text stays empty — we did NOT fabricate an "Error:" string
+    text = payload.get("text", "")
+    assert text in {"", None}, f"expected empty text, got {text!r}"
+
+
 # ── session.most_recent ──────────────────────────────────────────────
 
 
@@ -4456,3 +4649,158 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+def test_notification_poller_delivers_completion(monkeypatch):
+    """Poller picks up completion events and triggers agent turns."""
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent())
+    server._sessions["sid_poll"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    # Clear queue
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    process_registry._completion_consumed.discard("proc_poller_test")
+
+    stop = threading.Event()
+
+    # Put event on queue, then immediately signal stop so the poller
+    # runs exactly one iteration.
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_poller_test",
+        "command": "echo hello",
+        "exit_code": 0,
+        "output": "hello",
+    })
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_poll", sess)
+
+        # Should have emitted a status.update with kind=process
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) >= 1
+        assert status_calls[0][2]["kind"] == "process"
+
+        # Should have triggered an agent turn
+        assert len(turns) == 1
+        assert "[IMPORTANT: Background process proc_poller_test completed" in turns[0]
+    finally:
+        server._sessions.pop("sid_poll", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_skips_consumed(monkeypatch):
+    """Already-consumed completions are not dispatched by the poller."""
+    from tools.process_registry import process_registry
+
+    turns = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {"final_response": "ok", "messages": []}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    sess = _session(agent=_Agent())
+    server._sessions["sid_skip"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry._completion_consumed.add("proc_already_done")
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_already_done",
+        "command": "echo x",
+        "exit_code": 0,
+        "output": "x",
+    })
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_skip", sess)
+        assert len(turns) == 0
+    finally:
+        server._sessions.pop("sid_skip", None)
+        process_registry._completion_consumed.discard("proc_already_done")
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_requeues_when_busy(monkeypatch):
+    """When the agent is busy, the poller requeues the event."""
+    from tools.process_registry import process_registry
+
+    emitted = []
+
+    sess = _session(running=True)  # agent is busy
+    server._sessions["sid_busy"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    process_registry._completion_consumed.discard("proc_busy_test")
+
+    evt = {
+        "type": "completion",
+        "session_id": "proc_busy_test",
+        "command": "make build",
+        "exit_code": 0,
+        "output": "ok",
+    }
+    process_registry.completion_queue.put(evt)
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_busy", sess)
+
+        # Status update was emitted (user sees it)
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 1
+
+        # Event was requeued (agent was busy, no turn triggered)
+        assert not process_registry.completion_queue.empty()
+        requeued = process_registry.completion_queue.get_nowait()
+        assert requeued["session_id"] == "proc_busy_test"
+    finally:
+        server._sessions.pop("sid_busy", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()

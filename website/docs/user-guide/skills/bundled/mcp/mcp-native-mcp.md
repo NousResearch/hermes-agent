@@ -19,6 +19,7 @@ MCP client: connect servers, register tools (stdio/HTTP).
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `MCP`, `Tools`, `Integrations` |
 | Related skills | [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 

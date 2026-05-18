@@ -302,3 +302,192 @@ def test_strip_none_returns_zero():
     tools, stripped = strip_pattern_and_format(None)
     assert tools is None
     assert stripped == 0
+
+
+
+def test_strip_responses_format_strips_format_keyword():
+    """Responses-format:  keyword should be stripped."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        {
+            "name": "get_event",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ts": {"type": "string", "format": "date-time"},
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1, f"Expected 1 format stripped, got {stripped}"
+    assert "format" not in result[0]["parameters"]["properties"]["ts"], "format should be stripped"
+    assert result[0]["parameters"]["properties"]["ts"]["type"] == "string", "type should be preserved"
+
+
+def test_top_level_allof_stripped_for_codex_backend_compat():
+    """OpenAI Codex backend rejects top-level allOf/oneOf/anyOf/enum/not."""
+    tools = [_tool("memory", {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["add", "replace"]},
+            "content": {"type": "string"},
+        },
+        "required": ["action"],
+        "allOf": [
+            {
+                "if": {"properties": {"action": {"const": "add"}}, "required": ["action"]},
+                "then": {"required": ["content"]},
+            },
+        ],
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert "allOf" not in params
+    # Properties and required survive.
+    assert params["required"] == ["action"]
+    assert "content" in params["properties"]
+
+
+def test_top_level_oneof_anyof_enum_not_stripped():
+    """All five forbidden top-level combinators are dropped."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+        "oneOf": [{"required": ["x"]}],
+        "anyOf": [{"required": ["x"]}],
+        "enum": ["bogus-top-level"],
+        "not": {"required": ["y"]},
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    for key in ("oneOf", "anyOf", "enum", "not"):
+        assert key not in params, f"{key} should be stripped from top level"
+
+
+def test_nested_allof_preserved():
+    """Combinators inside a property's schema are preserved (only top is strict)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "config": {
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "allOf": [{"required": ["mode"]}],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    nested = out[0]["function"]["parameters"]["properties"]["config"]
+    assert "allOf" in nested
+    assert nested["allOf"] == [{"required": ["mode"]}]
+
+
+def test_strip_responses_format_tools():
+    """strip_pattern_and_format should handle Responses-format tools (no function wrapper)."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    # Responses-format: {"name": "...", "parameters": {...}, "type": "function"}
+    tools = [
+        {
+            "name": "mcp_firecrawl_search",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "includeDomains": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$"
+                        }
+                    }
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 1, f"Expected 1 pattern stripped, got {stripped}"
+    
+    # Verify pattern keyword was removed from includeDomains
+    domains = result[0]["parameters"]["properties"]["includeDomains"]["items"]
+    assert "pattern" not in domains, f"pattern should be stripped: {domains}"
+    assert domains["type"] == "string", "type should be preserved"
+
+
+def test_strip_responses_idempotent():
+    """Second call on already-stripped Responses-format tools should return 0."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        {
+            "name": "search_files",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"}  # This is a property named pattern, NOT schema keyword
+                }
+            }
+        }
+    ]
+
+    # Pass 1 - property named 'pattern' should NOT be stripped
+    result, first = strip_pattern_and_format(tools)
+    assert first == 0, f"Expected 0 stripped (property pattern preserved), got {first}"
+    assert "pattern" in result[0]["parameters"]["properties"], "property named pattern should survive"
+    
+    # Pass 2 - idempotent
+    _, second = strip_pattern_and_format(tools)
+    assert second == 0, f"Expected 0 on second pass, got {second}"
+
+
+def test_strip_responses_mixed_formats():
+    """Mixed list of OpenAI-format and Responses-format tools should both be sanitized."""
+    from tools.schema_sanitizer import strip_pattern_and_format
+
+    tools = [
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "pattern": "^[a-z]+$"}
+                    }
+                }
+            }
+        },
+        # Responses-format: {"name": "...", "parameters": {...}}
+        {
+            "name": "get_time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tz": {"type": "string", "format": "date-time"}
+                }
+            },
+            "type": "function"
+        }
+    ]
+
+    result, stripped = strip_pattern_and_format(tools)
+    assert stripped == 2, f"Expected 2 stripped (1 pattern + 1 format), got {stripped}"
+
+    # OpenAI-format tool: pattern stripped from parameters
+    openai_params = result[0]["function"]["parameters"]["properties"]["query"]
+    assert "pattern" not in openai_params, f"pattern should be stripped: {openai_params}"
+
+    # Responses-format tool: format stripped
+    resp_params = result[1]["parameters"]["properties"]["tz"]
+    assert "format" not in resp_params, f"format should be stripped: {resp_params}"
+
+    # Verify structure preserved
+    assert result[0]["function"]["parameters"]["type"] == "object"
+    assert result[1]["parameters"]["type"] == "object"

@@ -63,8 +63,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
-| `example-dashboard` | dashboard example | Reference dashboard plugin for [Extending the Dashboard](./extending-the-dashboard.md) |
-| `strike-freedom-cockpit` | dashboard skin | Sample custom dashboard skin |
+| `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
 
@@ -122,22 +121,14 @@ Traces Hermes turns, LLM calls, and tool invocations to [Langfuse](https://langf
 
 The plugin is fail-open: no SDK installed, no credentials, or a transient Langfuse error — all turn into a silent no-op in the hook. The agent loop is never impacted.
 
-**Setup (interactive — recommended):**
-
-```bash
-hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
-```
-
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
-
-**Setup (manual):**
+**Setup:**
 
 ```bash
 pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Or check the box in the interactive `hermes plugins` UI. Then put the credentials in `~/.hermes/.env`:
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...

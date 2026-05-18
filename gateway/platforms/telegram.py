@@ -560,9 +560,10 @@ class TelegramAdapter(BasePlatformAdapter):
         Supergroup/forum topics use ``message_thread_id``. True Bot API Direct
         Messages topics can opt in with explicit ``direct_messages_topic_id``
         metadata. Hermes-created private-chat topic lanes are marked with
-        ``telegram_dm_topic_reply_fallback`` and must send the private topic
-        thread id together with a reply anchor. Live testing showed that either
-        parameter alone can render outside the visible lane.
+        ``telegram_dm_topic_reply_fallback``. Live replies send the private
+        topic thread id together with a reply anchor; synthetic/resumed sends
+        without an anchor use ``direct_messages_topic_id`` when metadata has it.
+        ``message_thread_id`` alone can render outside the visible lane.
 
         When ``reply_to_mode`` is ``"off"``, the reply anchor is suppressed for
         DM topic fallback sends while preserving the ``message_thread_id`` so
@@ -574,6 +575,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
+                direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+                if direct_topic_id is not None:
+                    return {
+                        "message_thread_id": None,
+                        "direct_messages_topic_id": int(direct_topic_id),
+                    }
                 return {}
             return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)

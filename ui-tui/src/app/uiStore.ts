@@ -4,7 +4,11 @@ import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
+import {
+  DEFAULT_INDICATOR_STYLE,
+  DEFAULT_STATUS_BAR_SEGMENTS,
+  type UiState
+} from './interfaces.js'
 
 const buildUiState = (): UiState => ({
   bgTasks: new Set(),
@@ -23,6 +27,7 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
+  statusBarSegments: DEFAULT_STATUS_BAR_SEGMENTS,
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO

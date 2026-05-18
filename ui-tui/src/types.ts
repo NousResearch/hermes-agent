@@ -166,11 +166,13 @@ export interface Usage {
   context_max?: number
   context_percent?: number
   context_used?: number
+  account_usage_status?: string
   cost_status?: string
   cost_usd?: number
   input: number
   output: number
   reasoning?: number
+  rate_limit_status?: string
   total: number
 }
 

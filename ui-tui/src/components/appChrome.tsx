@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle } from '../app/interfaces.js'
+import type { IndicatorStyle, StatusBarSegment } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
@@ -224,15 +224,27 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
-const effortLabel = (effort?: string) => {
+export const effortLabel = (effort?: string) => {
   const value = String(effort ?? '')
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  if (!value || value === 'normal' || value === 'default') {
+    return ''
+  }
+
+  if (value === 'medium') {
+    return 'med'
+  }
+
+  if (value === 'minimal') {
+    return 'min'
+  }
+
+  return value
 }
 
-const shortModelLabel = (model: string) =>
+export const shortModelLabel = (model: string) =>
   model
     .split('/')
     .pop()!
@@ -242,8 +254,13 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+export const modelLabel = (model: string, effort?: string, fast?: boolean) => {
+  const base = shortModelLabel(model)
+  const effortSuffix = effortLabel(effort)
+  const speedSuffix = fast ? ' fast' : ''
+
+  return `${base}${effortSuffix ? `@${effortSuffix}` : ''}${speedSuffix}`
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -283,6 +300,7 @@ export function StatusRule({
   bgCount,
   sessionStartedAt,
   showCost,
+  statusBarSegments,
   turnStartedAt,
   voiceLabel,
   t
@@ -296,56 +314,105 @@ export function StatusRule({
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const bar = usage.context_max ? ctxBar(pct) : ''
+  const contextBarLabel = usage.context_max ? ctxBar(pct) : ''
+  const contextPercentLabel = usage.context_max && pct != null ? `${pct}%` : ''
+  const accountUsageLabel = usage.account_usage_status?.trim()
+  const rateLimitLabel = usage.rate_limit_status?.trim()
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const statusPieces: ReactNode[] = []
+  let previousVisibleSegment: StatusBarSegment | null = null
+
+  const appendSegment = (segment: StatusBarSegment, node: ReactNode, color = t.color.statusFg, joiner = ' │ ') => {
+    const prefix = statusPieces.length === 0 ? '' : joiner
+
+    statusPieces.push(
+      <Text key={`${segment}-${statusPieces.length}`} color={color}>
+        {prefix}
+        {node}
+      </Text>
+    )
+    previousVisibleSegment = segment
+  }
+
+  for (const segment of statusBarSegments) {
+    switch (segment) {
+      case 'account_usage':
+        if (accountUsageLabel) {
+          appendSegment(segment, accountUsageLabel)
+        }
+        break
+      case 'bg_tasks':
+        if (bgCount > 0) {
+          appendSegment(segment, `${bgCount} bg`)
+        }
+        break
+      case 'compressions':
+        if (typeof usage.compressions === 'number' && usage.compressions > 0) {
+          appendSegment(
+            segment,
+            <Text color={usage.compressions >= 10 ? t.color.statusCritical : usage.compressions >= 5 ? t.color.statusWarn : t.color.statusFg}>
+              cmp {usage.compressions}
+            </Text>
+          )
+        }
+        break
+      case 'context_bar':
+        if (contextBarLabel) {
+          appendSegment(segment, `[${contextBarLabel}]`, barColor)
+        }
+        break
+      case 'context_percent':
+        if (contextPercentLabel) {
+          appendSegment(segment, contextPercentLabel, barColor, previousVisibleSegment === 'context_bar' ? ' ' : ' │ ')
+        }
+        break
+      case 'context_tokens':
+        if (ctxLabel) {
+          appendSegment(segment, ctxLabel)
+        }
+        break
+      case 'cost':
+        if (showCost && typeof usage.cost_usd === 'number') {
+          appendSegment(segment, `$${usage.cost_usd.toFixed(4)}`)
+        }
+        break
+      case 'indicator':
+        appendSegment(segment, busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : status, statusColor)
+        break
+      case 'model':
+        appendSegment(segment, modelLabel(model, modelReasoningEffort, modelFast))
+        break
+      case 'rate_limit':
+        if (rateLimitLabel) {
+          appendSegment(segment, rateLimitLabel)
+        }
+        break
+      case 'session_duration':
+        if (sessionStartedAt) {
+          appendSegment(segment, <SessionDuration startedAt={sessionStartedAt} />)
+        }
+        break
+      case 'subagents':
+        statusPieces.push(<SpawnHud key={`${segment}-${statusPieces.length}`} t={t} />)
+        break
+      case 'voice':
+        if (voiceLabel) {
+          appendSegment(
+            segment,
+            voiceLabel,
+            voiceLabel.startsWith('●') ? t.color.statusCritical : voiceLabel.startsWith('◉') ? t.color.statusWarn : t.color.statusFg
+          )
+        }
+        break
+    }
+  }
 
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{status}</Text>
-          )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-            </Text>
-          ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : null}
-          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-                cmp {usage.compressions}
-              </Text>
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
-            <Text
-              color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
-              }
-            >
-              {' │ '}
-              {voiceLabel}
-            </Text>
-          ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
+          {statusPieces}
         </Text>
       </Box>
 
@@ -464,6 +531,7 @@ interface StatusRuleProps {
   sessionStartedAt?: null | number
   showCost: boolean
   status: string
+  statusBarSegments: readonly StatusBarSegment[]
   statusColor: string
   t: Theme
   turnStartedAt?: null | number

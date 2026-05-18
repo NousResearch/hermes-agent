@@ -17,9 +17,12 @@ import { asRpcResult } from '../lib/rpc.js'
 import {
   type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
+  DEFAULT_STATUS_BAR_SEGMENTS,
   INDICATOR_STYLES,
   type IndicatorStyle,
-  type StatusBarMode
+  STATUS_BAR_SEGMENTS,
+  type StatusBarMode,
+  type StatusBarSegment
 } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
@@ -56,6 +59,10 @@ export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
 }
 
 const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLES)
+const STATUS_BAR_SEGMENT_SET: ReadonlySet<StatusBarSegment> = new Set(STATUS_BAR_SEGMENTS)
+const LEGACY_STATUS_BAR_SEGMENTS: Readonly<Record<string, readonly StatusBarSegment[]>> = {
+  context: ['context_tokens', 'context_bar', 'context_percent']
+}
 
 export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   if (typeof raw !== 'string') {
@@ -65,6 +72,33 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   const v = raw.trim().toLowerCase() as IndicatorStyle
 
   return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
+}
+
+export const normalizeStatusBarSegments = (raw: unknown): readonly StatusBarSegment[] => {
+  if (!Array.isArray(raw)) {
+    return DEFAULT_STATUS_BAR_SEGMENTS
+  }
+
+  const out: StatusBarSegment[] = []
+  const seen = new Set<StatusBarSegment>()
+
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      continue
+    }
+
+    const rawSegment = item.trim().toLowerCase()
+    const segments = LEGACY_STATUS_BAR_SEGMENTS[rawSegment] ?? [rawSegment as StatusBarSegment]
+
+    for (const segment of segments) {
+      if (STATUS_BAR_SEGMENT_SET.has(segment) && !seen.has(segment)) {
+        seen.add(segment)
+        out.push(segment)
+      }
+    }
+  }
+
+  return out
 }
 
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
@@ -147,6 +181,7 @@ export const applyDisplay = (
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
+    statusBarSegments: normalizeStatusBarSegments(d.tui_statusbar_segments),
     streaming: d.streaming !== false
   })
 }

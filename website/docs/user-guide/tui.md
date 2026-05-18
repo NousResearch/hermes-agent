@@ -158,6 +158,25 @@ The status line also shows:
 
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
 - **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
+- **Configurable segments** — choose the left-side status pieces and order with `display.tui_statusbar_segments`. Unknown segment names are ignored so newer configs remain safe on older clients. The context display is split into `context_tokens`, `context_bar`, and `context_percent`; omit `context_bar` to keep the percentage without the visual meter. The legacy `context` segment expands to all three context pieces.
+
+```yaml
+display:
+  tui_statusbar_segments:
+    - indicator
+    - model
+    - context_tokens
+    - context_bar      # omit to hide only the [████░░] meter
+    - context_percent
+    - account_usage
+    - session_duration
+    - compressions
+    - subagents
+    - voice
+    - bg_tasks
+    - rate_limit
+    - cost
+```
 
 ## Configuration
 

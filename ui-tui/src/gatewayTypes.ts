@@ -66,6 +66,7 @@ export interface ConfigDisplayConfig {
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
+  tui_statusbar_segments?: unknown
   // Forward-compat: backend may send styles this client doesn't know yet —
   // `normalizeIndicatorStyle` falls back to 'kaomoji' for those — but the
   // wire type is documented as `string` so consumers don't get a false
@@ -168,11 +169,13 @@ export interface SessionUsageResponse {
   context_max?: number
   context_percent?: number
   context_used?: number
+  account_usage_status?: string
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
   input?: number
   model?: string
   output?: number
+  rate_limit_status?: string
   total?: number
 }
 

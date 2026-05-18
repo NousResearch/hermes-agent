@@ -28,6 +28,24 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export const STATUS_BAR_SEGMENTS = [
+  'indicator',
+  'model',
+  'context_tokens',
+  'context_bar',
+  'context_percent',
+  'account_usage',
+  'session_duration',
+  'compressions',
+  'subagents',
+  'voice',
+  'bg_tasks',
+  'rate_limit',
+  'cost'
+] as const
+export type StatusBarSegment = (typeof STATUS_BAR_SEGMENTS)[number]
+export const DEFAULT_STATUS_BAR_SEGMENTS: readonly StatusBarSegment[] = STATUS_BAR_SEGMENTS
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 // Single source of truth for indicator style names.  Union type is
@@ -112,6 +130,7 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  statusBarSegments: readonly StatusBarSegment[]
   streaming: boolean
   theme: Theme
   usage: Usage

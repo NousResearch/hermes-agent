@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
+import { DEFAULT_STATUS_BAR_SEGMENTS } from '../app/interfaces.js'
 import {
   applyDisplay,
   hydrateFullConfig,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  normalizeStatusBarSegments
 } from '../app/useConfigSync.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
@@ -151,6 +153,50 @@ describe('applyDisplay', () => {
 
     applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
+  })
+
+  it('threads display.tui_statusbar_segments into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            tui_statusbar_segments: ['indicator', 'model', 'unknown', 'cost', 'model']
+          }
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().statusBarSegments).toEqual(['indicator', 'model', 'cost'])
+  })
+})
+
+describe('normalizeStatusBarSegments', () => {
+  it('defaults missing or malformed values to the built-in segment order', () => {
+    expect(normalizeStatusBarSegments(undefined)).toEqual(DEFAULT_STATUS_BAR_SEGMENTS)
+    expect(normalizeStatusBarSegments(null)).toEqual(DEFAULT_STATUS_BAR_SEGMENTS)
+    expect(normalizeStatusBarSegments('model')).toEqual(DEFAULT_STATUS_BAR_SEGMENTS)
+  })
+
+  it('trims, lowercases, filters unknown values, expands legacy context, and de-duplicates', () => {
+    expect(normalizeStatusBarSegments([' Model ', 'context', 'bogus', 'MODEL', 7, 'cost'])).toEqual([
+      'model',
+      'context_tokens',
+      'context_bar',
+      'context_percent',
+      'cost'
+    ])
+  })
+
+  it('allows hiding only the context bar while retaining context tokens and percent', () => {
+    expect(normalizeStatusBarSegments(['context_tokens', 'context_percent'])).toEqual(['context_tokens', 'context_percent'])
+  })
+
+  it('allows an empty segment list to hide the configurable left side', () => {
+    expect(normalizeStatusBarSegments([])).toEqual([])
+    expect(normalizeStatusBarSegments(['bogus'])).toEqual([])
   })
 })
 

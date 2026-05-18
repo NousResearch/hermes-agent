@@ -54,17 +54,20 @@ const capHistory = (items: Msg[]): Msg[] => {
   return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
 }
 
-const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
+const statusColorOf = (
+  status: string,
+  t: { error: string; muted: string; statusCritical: string; statusGood: string; statusWarn: string }
+) => {
   if (status === 'ready') {
-    return t.ok
+    return t.statusGood
   }
 
   if (status.startsWith('error')) {
-    return t.error
+    return t.statusCritical
   }
 
   if (status === 'interrupted') {
-    return t.warn
+    return t.statusWarn
   }
 
   return t.muted

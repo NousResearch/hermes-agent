@@ -263,10 +263,25 @@ def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
     }
 
 
+def _call_function_field(call: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``call["function"]`` when it is a dict, else ``{}``.
+
+    Some legacy session rows store the field as a bare string (the tool
+    name) instead of the OpenAI ``{"name": ..., "arguments": ...}``
+    object.  ``call.get("function") or {}`` only filters out falsy values,
+    so a truthy non-dict like ``"memory"`` would slip through and cause
+    ``fn.get(...)`` to raise — aborting the whole scan instead of just
+    under-counting this one call.  This helper makes the guard
+    consistent across every reader.
+    """
+    fn = call.get("function")
+    return fn if isinstance(fn, dict) else {}
+
+
 def _tool_name_from_call(call: Any) -> Optional[str]:
     if not isinstance(call, dict):
         return None
-    fn = call.get("function") or {}
+    fn = _call_function_field(call)
     return call.get("name") or fn.get("name")
 
 
@@ -287,7 +302,7 @@ def _tool_arguments_from_call(call: Any) -> Dict[str, Any]:
     """
     if not isinstance(call, dict):
         return {}
-    fn = call.get("function") or {}
+    fn = _call_function_field(call)
     raw = call.get("arguments")
     if raw is None:
         raw = fn.get("arguments")

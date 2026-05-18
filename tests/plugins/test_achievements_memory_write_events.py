@@ -250,3 +250,50 @@ def test_tool_arguments_helper_handles_all_shapes(plugin_api):
     assert h({}) == {}
     assert h(None) == {}
     assert h("not a dict") == {}
+
+
+# ---------------------------------------------------------------------------
+# Defensive parsing: non-dict ``function`` field must not abort the scan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_function_field", [
+    "memory",                       # legacy string-only shape
+    42,                             # accidentally an int (model adapter bug)
+    ["memory", {"action": "add"}],  # list — saw this in one corrupted DB
+    True,                           # truthy but not a dict
+])
+def test_helpers_tolerate_non_dict_function_field(plugin_api, bad_function_field):
+    """Both helpers must short-circuit when ``call["function"]`` isn't a dict.
+
+    Regression for the Copilot review on PR #26936: ``call.get("function")
+    or {}`` only filters out *falsy* values, so a truthy non-dict (string,
+    int, list, bool) used to crash ``fn.get(...)`` and abort the entire
+    session scan instead of just under-counting the malformed call.
+    """
+    call = {"name": "memory", "function": bad_function_field, "arguments": {"action": "add"}}
+    # Neither helper may raise — both must degrade gracefully.
+    assert plugin_api._tool_name_from_call(call) == "memory"
+    # Top-level ``arguments`` is still honoured even though ``function`` is junk.
+    assert plugin_api._tool_arguments_from_call(call) == {"action": "add"}
+
+
+def test_analyze_messages_does_not_abort_on_corrupt_function_field(plugin_api):
+    """A single malformed call must not zero out the whole session's stats."""
+    msgs = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"name": "memory", "function": "memory", "arguments": {"action": "add"}},
+                _memory_call("add"),
+            ],
+        },
+    ]
+    # Pre-fix this raised AttributeError on ``"memory".get("arguments")``;
+    # post-fix the malformed call is parsed via the top-level ``arguments``
+    # and counted, and the well-formed call counts too.
+    snap = plugin_api.analyze_messages("s", "t", msgs)
+    assert snap["memory_events"] == 2
+    assert snap["memory_write_events"] == 2
+
+

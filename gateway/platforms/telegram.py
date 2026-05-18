@@ -2814,6 +2814,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+                    count = 0
+
+                # Resume the typing indicator — paused when the approval was
+                # sent (gateway/run.py).  The text /approve and /deny paths
+                # call resume_typing_for_chat here too; without it, typing
+                # stays paused for the rest of the turn after an inline
+                # button click.
+                if count and query_chat_id is not None:
+                    self.resume_typing_for_chat(str(query_chat_id))
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---

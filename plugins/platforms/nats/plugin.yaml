@@ -1,0 +1,45 @@
+name: nats-platform
+label: NATS
+kind: platform
+version: 1.0.0
+description: >
+  NATS Agent Protocol (v0.3) gateway adapter for Hermes Agent.
+  Registers a synadia_ai.agents.AgentService at the subject
+  agents.prompt.<agent>.<owner>.<session_name> and routes inbound NATS
+  prompts through the gateway's MessageEvent pipeline. Authentication is
+  handled at the NATS server layer (NKey / JWT / TLS) — the transport
+  authenticates the caller, so the adapter trusts every delivered message.
+author: Synadia Communications, Inc.
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: HERMES_NATS_OWNER
+    description: "Owner token — the 4th segment of the NATS subject (e.g. your GitHub handle)"
+    prompt: "Owner"
+    password: false
+  - name: HERMES_NATS_SESSION_NAME
+    description: "Session name — the 5th segment of the NATS subject; one AgentService = one session"
+    prompt: "Session name"
+    password: false
+optional_env:
+  - name: NATS_URL
+    description: "NATS server URL (e.g. nats://demo.nats.io). Mutually exclusive with NATS_CONTEXT — exactly one is required at the application layer (enforced by validate_config)."
+    prompt: "NATS server URL"
+    password: false
+  - name: NATS_CONTEXT
+    description: "Name of an existing NATS CLI context to use for connection options. Mutually exclusive with NATS_URL — exactly one is required at the application layer (enforced by validate_config)."
+    prompt: "NATS context name"
+    password: false
+  - name: HERMES_NATS_AGENT
+    description: "Agent token — the 3rd segment of the NATS subject (default: hermes)"
+    prompt: "Agent name"
+    password: false
+  - name: NATS_ALLOWED_USERS
+    description: "Comma-separated list of NATS-authenticated user identities allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: NATS_ALLOW_ALL_USERS
+    description: "Allow any NATS-authenticated caller to talk to the bot (the transport already authenticates the user)"
+    prompt: "Allow all users? (true/false)"
+    password: false

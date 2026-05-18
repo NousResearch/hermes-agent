@@ -130,15 +130,6 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
 
-    def test_from_me_prefix_strips_command_text(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, self_command_prefix="hermes,h")
-        assert adapter._strip_self_command_prefix("Hermes: what time is it?") == "what time is it?"
-        assert adapter._strip_self_command_prefix("h status") == "status"
-
-    def test_from_me_prefix_ignores_unprefixed_text(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, self_command_prefix="hermes")
-        assert adapter._strip_self_command_prefix("ordinary note to myself") is None
-
 
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):

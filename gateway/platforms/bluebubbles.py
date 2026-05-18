@@ -124,14 +124,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
-        prefix_raw = extra.get("self_command_prefix") or os.getenv(
-            "BLUEBUBBLES_SELF_COMMAND_PREFIX", ""
-        )
-        self.self_command_prefixes = [
-            item.strip().lower()
-            for item in str(prefix_raw).split(",")
-            if item.strip()
-        ]
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -157,27 +149,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         res = await self.client.post(self._api_url(path), json=payload)
         res.raise_for_status()
         return res.json()
-
-    def _strip_self_command_prefix(self, text: str) -> Optional[str]:
-        """Return command text for an allowed from-me self message.
-
-        BlueBubbles marks messages from the Mac/iCloud identity as from-me.
-        Normally those must be ignored so Hermes does not process its own
-        replies and loop forever. A configured prefix lets users intentionally
-        drive Hermes from a self-chat while still dropping ordinary outbound
-        messages.
-        """
-        raw = text or ""
-        lowered = raw.lstrip().lower()
-        for prefix in self.self_command_prefixes:
-            if lowered == prefix:
-                return ""
-            for sep in (" ", ":", "：", ","):
-                marker = f"{prefix}{sep}"
-                if lowered.startswith(marker):
-                    stripped = raw.lstrip()[len(marker):].strip()
-                    return stripped
-        return None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -832,24 +803,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.Response(text="ok")
 
         record = self._extract_payload_record(payload) or {}
-        text = (
-            self._value(
-                record.get("text"), record.get("message"), record.get("body")
-            )
-            or ""
-        )
         is_from_me = bool(
             record.get("isFromMe")
             or record.get("fromMe")
             or record.get("is_from_me")
         )
         if is_from_me:
-            self_text = self._strip_self_command_prefix(text)
-            if self_text is None:
-                return web.Response(text="ok")
-            text = self_text
-            if not text:
-                return web.Response(text="ok")
+            return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -858,6 +818,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        text = (
+            self._value(
+                record.get("text"), record.get("message"), record.get("body")
+            )
+            or ""
+        )
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []

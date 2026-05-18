@@ -793,6 +793,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
+        try:
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+        except Exception:
+            pass
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
@@ -925,6 +931,12 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            try:
+                from hermes_cli.plugins import _ensure_plugins_discovered
+
+                _ensure_plugins_discovered()
+            except Exception:
+                pass
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -1177,6 +1189,12 @@ async def web_crawl_tool(
         # dispatches through agent.web_search_registry. The crawl response
         # shape — {"results": [{"url", "title", "content", ...}]} — is then
         # post-processed by the shared LLM-summarization path below.
+        try:
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+        except Exception:
+            pass
         from agent.web_search_registry import (
             get_active_crawl_provider,
             get_provider as _wsp_get_provider,

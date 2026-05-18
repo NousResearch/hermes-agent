@@ -341,8 +341,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
         # Track active assistant thread status indicators so stop_typing can
-        # clear them (chat_id → thread_ts).
-        self._active_status_threads: Dict[str, str] = {}
+        # clear them without cross-thread collisions in the same channel.
+        # Keyed by (chat_id, thread_ts).
+        self._active_status_threads: Dict[Tuple[str, str], str] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -807,7 +808,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
-                await self.stop_typing(chat_id)
+                await self.stop_typing(chat_id, metadata={"thread_ts": thread_ts})
 
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
@@ -899,6 +900,41 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    def _status_thread_ts_from_metadata(self, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Return the Slack thread ts from adapter metadata."""
+        if not metadata:
+            return None
+        thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+        if thread_ts is None:
+            return None
+        return str(thread_ts)
+
+    def _pop_active_status_thread(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Pop the tracked status thread for a chat.
+
+        Prefer an exact (chat_id, thread_ts) match when metadata identifies the
+        thread. If metadata is absent, fall back to the sole tracked thread in
+        that chat so old call sites keep working.
+        """
+        thread_ts = self._status_thread_ts_from_metadata(metadata)
+        if thread_ts:
+            key = (chat_id, thread_ts)
+            if key in self._active_status_threads:
+                self._active_status_threads.pop(key, None)
+                return thread_ts
+            return None
+
+        matches = [key for key in self._active_status_threads if key[0] == chat_id]
+        if len(matches) != 1:
+            return None
+        _, only_thread_ts = matches[0]
+        self._active_status_threads.pop(matches[0], None)
+        return only_thread_ts
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 
@@ -909,14 +945,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return
 
-        thread_ts = None
-        if metadata:
-            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
-
+        thread_ts = self._status_thread_ts_from_metadata(metadata)
         if not thread_ts:
             return  # Can only set status in a thread context
 
-        self._active_status_threads[chat_id] = thread_ts
+        self._active_status_threads[(chat_id, thread_ts)] = thread_ts
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -932,7 +965,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Clear the assistant thread status indicator."""
         if not self._app:
             return
-        thread_ts = self._active_status_threads.pop(chat_id, None)
+        thread_ts = self._pop_active_status_thread(chat_id, metadata=metadata)
         if not thread_ts:
             return
         try:

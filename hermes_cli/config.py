@@ -1191,16 +1191,13 @@ DEFAULT_CONFIG = {
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
         # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
+        # writes via skill_manage (create/edit/patch). Enabled by default
+        # because skills are durable instructions that future sessions may
+        # load automatically; a dangerous verdict surfaces as a tool error
+        # to the agent, which can retry with the flagged content removed.
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
-        "guard_agent_created": False,
+        "guard_agent_created": True,
     },
 
     # Curator — background skill maintenance.

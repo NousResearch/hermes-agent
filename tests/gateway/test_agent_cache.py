@@ -276,7 +276,6 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
-
     def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
         """Non-Honcho gateways must not read/parse honcho.json on every message."""
         from gateway.run import GatewayRunner
@@ -380,6 +379,48 @@ class TestExtractCacheBustingConfig:
 
         assert third == first
         assert parse_calls == [config_path, config_path]
+
+    def test_extract_includes_soul_md_fingerprint(self, tmp_path, monkeypatch):
+        import gateway.run as gateway_run
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+        before = GatewayRunner._extract_cache_busting_config({})
+        (tmp_path / "SOUL.md").write_text("updated gateway persona", encoding="utf-8")
+        after = GatewayRunner._extract_cache_busting_config({})
+
+        assert before["identity.soul_md"] == {"exists": False}
+        assert after["identity.soul_md"]["exists"] is True
+        assert after["identity.soul_md"]["size"] == len("updated gateway persona")
+        assert before["identity.soul_md"] != after["identity.soul_md"]
+
+    def test_soul_md_fingerprint_change_busts_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            ["telegram"],
+            "",
+            cache_keys={"identity.soul_md": {"exists": False}},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            ["telegram"],
+            "",
+            cache_keys={
+                "identity.soul_md": {
+                    "exists": True,
+                    "mtime_ns": 123,
+                    "size": 22,
+                }
+            },
+        )
+
+        assert sig_before != sig_after
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the

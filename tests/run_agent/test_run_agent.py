@@ -5215,6 +5215,81 @@ class TestGpt5ApiModeRouting:
 class TestSystemPromptStability:
     """Verify that the system prompt stays stable across turns for cache hits."""
 
+    def test_stored_prompt_marked_stale_when_soul_changed(self):
+        from agent.conversation_loop import _stored_system_prompt_stale_for_soul
+
+        agent = SimpleNamespace(load_soul_identity=False, skip_context_files=False)
+
+        with patch(
+            "run_agent.load_soul_md",
+            return_value="current SOUL with Feishu bot open_ids",
+        ):
+            assert (
+                _stored_system_prompt_stale_for_soul(agent, "old SOUL without mapping")
+                is True
+            )
+
+    def test_stored_prompt_not_stale_when_current_soul_present(self):
+        from agent.conversation_loop import _stored_system_prompt_stale_for_soul
+
+        agent = SimpleNamespace(load_soul_identity=False, skip_context_files=False)
+        stored = "current SOUL with Feishu bot open_ids\n\nOther system prompt sections"
+
+        with patch(
+            "run_agent.load_soul_md",
+            return_value="current SOUL with Feishu bot open_ids",
+        ):
+            assert _stored_system_prompt_stale_for_soul(agent, stored) is False
+
+    def test_stored_prompt_marked_stale_when_soul_removed(self):
+        from agent.conversation_loop import _stored_system_prompt_stale_for_soul
+
+        agent = SimpleNamespace(load_soul_identity=False, skip_context_files=False)
+
+        with patch("run_agent.load_soul_md", return_value=None):
+            assert (
+                _stored_system_prompt_stale_for_soul(
+                    agent,
+                    "custom SOUL that used to be loaded\n\nOther system prompt sections",
+                )
+                is True
+            )
+
+    def test_stored_prompt_soul_check_respects_skip_context_files(self):
+        from agent.conversation_loop import _stored_system_prompt_stale_for_soul
+
+        agent = SimpleNamespace(load_soul_identity=False, skip_context_files=True)
+
+        with patch("run_agent.load_soul_md", return_value="current SOUL") as load_soul:
+            assert _stored_system_prompt_stale_for_soul(agent, "old SOUL") is False
+
+        load_soul.assert_not_called()
+
+    def test_stale_soul_prompt_rebuilds_without_session_start_hook(self, agent):
+        from agent.conversation_loop import _restore_or_build_system_prompt
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"system_prompt": "old SOUL rules"}
+        agent._session_db = mock_db
+        agent._cached_system_prompt = None
+        agent.load_soul_identity = True
+        agent._build_system_prompt = MagicMock(return_value="current SOUL rules")
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        with patch("run_agent.load_soul_md", return_value="current SOUL rules"):
+            with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+                _restore_or_build_system_prompt(agent, None, history)
+
+        assert agent._cached_system_prompt == "current SOUL rules"
+        mock_db.update_system_prompt.assert_called_once_with(
+            agent.session_id,
+            "current SOUL rules",
+        )
+        invoke_hook.assert_not_called()
+
     def test_stored_prompt_reused_for_continuing_session(self, agent):
         """When conversation_history is non-empty and session DB has a stored
         prompt, it should be reused instead of rebuilding from disk."""

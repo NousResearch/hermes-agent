@@ -12535,7 +12535,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             out.update(cls._empty_honcho_cache_busting_config())
 
+        out["identity.soul_md"] = cls._soul_md_cache_key()
         return out
+
+    @staticmethod
+    def _soul_md_cache_key() -> dict:
+        """Return a compact fingerprint for the active profile's SOUL.md.
+
+        Gateway agents freeze their system prompt for prompt-cache reuse. That
+        is great for latency, but it means editing a profile's SOUL.md would
+        otherwise keep using the old identity/rules until a manual reset or
+        unrelated cache eviction. Include cheap filesystem metadata in the
+        agent signature so persona/rule edits take effect on the next message.
+        """
+        soul_path = _hermes_home / "SOUL.md"
+        try:
+            stat = soul_path.stat()
+        except OSError:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "mtime_ns": getattr(
+                stat,
+                "st_mtime_ns",
+                int(stat.st_mtime * 1_000_000_000),
+            ),
+            "size": stat.st_size,
+        }
 
     @staticmethod
     def _agent_config_signature(

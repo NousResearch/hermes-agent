@@ -1942,7 +1942,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_ext_from_data(data: bytes) -> str:
         """Guess file extension from magic bytes."""
-        if data[:9] == b"#!SILK_V3" or data[:5] == b"#!SILK":
+        if data[:9] == b"#!SILK_V3" or data[:6] == b"#!SILK":
             return ".silk"
         if data[:2] == b"\x02!":
             return ".silk"
@@ -1962,7 +1962,7 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _looks_like_silk(data: bytes) -> bool:
         """Check if bytes look like a SILK audio file."""
-        return data[:4] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
+        return data[:6] == b"#!SILK" or data[:2] == b"\x02!" or data[:9] == b"#!SILK_V3"
 
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert audio file to WAV using the pilk library.

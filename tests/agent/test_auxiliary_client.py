@@ -1183,6 +1183,45 @@ class TestAuxiliaryFallbackLayering:
             explicit_api_key="fallback-key",
         )
 
+
+    def test_configured_fallback_chain_uses_base_url_api_key_entry(self, monkeypatch):
+        """A fallback_chain entry with endpoint overrides resolves and is returned."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_config = {
+            "fallback_chain": [
+                {
+                    "provider": "custom",
+                    "model": "fallback-model",
+                    "base_url": "https://fallback.example/v1",
+                    "api_key": "fallback-key",
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: task_config,
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "fallback-model")) as resolver:
+            client, model, label = _try_configured_fallback_chain(
+                "vision",
+                failed_provider="primary-provider",
+                reason="rate limit",
+            )
+
+        assert client is fake_client
+        assert model == "fallback-model"
+        assert label == "fallback_chain[0](custom)"
+        resolver.assert_called_once_with(
+            provider="custom",
+            model="fallback-model",
+            explicit_base_url="https://fallback.example/v1",
+            explicit_api_key="fallback-key",
+        )
+
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

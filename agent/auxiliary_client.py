@@ -2725,11 +2725,9 @@ def _resolve_single_provider(
     Uses the existing provider resolution infrastructure where possible.
     """
     # Reuse resolve_provider_client which handles provider→client mapping.
-    # NOTE: resolve_provider_client names these explicit_base_url /
-    # explicit_api_key. Passing base_url / api_key raises TypeError, which is
-    # swallowed by _try_configured_fallback_chain and makes configured
-    # auxiliary fallback_chain entries silently no-op.
-    client, resolved_model = resolve_provider_client(
+    # NOTE: resolve_provider_client names these endpoint overrides explicit_*;
+    # using the public fallback_chain field names here regresses #27555.
+    client, _resolved_model = resolve_provider_client(
         provider=provider,
         model=model,
         explicit_base_url=base_url,

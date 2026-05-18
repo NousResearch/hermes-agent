@@ -159,8 +159,8 @@ google = [
   "google-auth-httplib2==0.3.1",
 ]
 nats = [
-  "synadia-ai-agents>=0.6,<1",
-  "synadia-ai-agent-service>=0.2,<1",
+  "synadia-ai-agents>=0.7,<1",
+  "synadia-ai-agent-service>=0.3,<1",
   # nats-py imports nkeys lazily for JWT/.creds auth (NGS, NSC-issued users).
   # It is NOT a hard dependency of nats-py, so declare it explicitly.
   "nkeys>=0.2,<1",

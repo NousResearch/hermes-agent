@@ -1395,6 +1395,16 @@ class _IncomingHandler(
         self._adapter = adapter
         self._loop = loop
 
+    def pre_start(self) -> None:
+        """No-op pre-start hook required by dingtalk-stream SDK.
+
+        The SDK calls ``pre_start()`` on every registered handler before
+        opening the WebSocket connection.  Without this method, the SDK
+        raises ``AttributeError: '_IncomingHandler' object has no
+        attribute 'pre_start'`` and kills the stream connection.
+        """
+        return
+
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.
 

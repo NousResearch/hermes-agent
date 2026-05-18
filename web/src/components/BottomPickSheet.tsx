@@ -22,6 +22,7 @@ const SHEET_TRANSITION_MS = 280;
  * Drag the header/handle downward to dismiss (skipped when reduced motion is on).
  */
 export function BottomPickSheet({
+  backdropDismissLabel = "Dismiss",
   children,
   onClose,
   open,
@@ -152,7 +153,7 @@ export function BottomPickSheet({
     <div className="fixed inset-0 z-[200] flex flex-col justify-end">
       <button
         type="button"
-        aria-label="Dismiss"
+        aria-label={backdropDismissLabel}
         className={cn(
           "absolute inset-0 bg-black/55 backdrop-blur-[2px]",
           "transition-opacity ease-out motion-reduce:transition-none",
@@ -163,7 +164,6 @@ export function BottomPickSheet({
       />
 
       <div
-        aria-hidden={!entered}
         aria-label={title}
         aria-modal="true"
         ref={sheetRef}
@@ -216,6 +216,7 @@ export function BottomPickSheet({
 }
 
 interface BottomPickSheetProps {
+  backdropDismissLabel?: string;
   children: ReactNode;
   onClose: () => void;
   open: boolean;

@@ -84,13 +84,20 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
       </Button>
 
       {useMobileSheet && (
-        <BottomPickSheet onClose={close} open={open} title={sheetTitle}>
-          <ThemeSwitcherOptions
-            availableThemes={availableThemes}
-            close={close}
-            setTheme={setTheme}
-            themeName={themeName}
-          />
+        <BottomPickSheet
+          backdropDismissLabel={t.common.close}
+          onClose={close}
+          open={open}
+          title={sheetTitle}
+        >
+          <div aria-label={sheetTitle} role="listbox">
+            <ThemeSwitcherOptions
+              availableThemes={availableThemes}
+              close={close}
+              setTheme={setTheme}
+              themeName={themeName}
+            />
+          </div>
         </BottomPickSheet>
       )}
 

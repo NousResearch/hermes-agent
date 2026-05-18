@@ -83,16 +83,19 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
 
       {useMobileSheet && (
         <BottomPickSheet
+          backdropDismissLabel={t.common.close}
           onClose={() => setOpen(false)}
           open={open}
           title={sheetTitle}
         >
-          <LanguageSwitcherOptions
-            allLocales={allLocales}
-            locale={locale}
-            setLocale={setLocale}
-            setOpen={setOpen}
-          />
+          <div aria-label={sheetTitle} role="listbox">
+            <LanguageSwitcherOptions
+              allLocales={allLocales}
+              locale={locale}
+              setLocale={setLocale}
+              setOpen={setOpen}
+            />
+          </div>
         </BottomPickSheet>
       )}
 

@@ -118,6 +118,17 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+_VALID_WEB_BACKENDS = {
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "exa",
+    "searxng",
+    "brave-free",
+    "ddgs",
+}
+
+
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _has_env(name: str) -> bool:
@@ -140,7 +151,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured in _VALID_WEB_BACKENDS:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -176,6 +187,32 @@ def _get_search_backend() -> str:
     (e.g. SearXNG for search + Firecrawl for extract).
     """
     return _get_capability_backend("search")
+
+
+def _get_search_fallback_backends(primary_backend: str) -> List[str]:
+    """Return configured fallback backends for ``web_search``.
+
+    Accepts either a YAML list or a comma-separated string in
+    ``web.search_fallbacks``. Returns normalized, de-duplicated backend names
+    and excludes the active primary backend.
+    """
+    cfg = _load_web_config()
+    raw = cfg.get("search_fallbacks", [])
+    if isinstance(raw, str):
+        candidates = [part.strip().lower() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        candidates = [str(part).strip().lower() for part in raw]
+    else:
+        return []
+
+    backends: List[str] = []
+    seen = {primary_backend}
+    for backend in candidates:
+        if not backend or backend in seen or backend not in _VALID_WEB_BACKENDS:
+            continue
+        seen.add(backend)
+        backends.append(backend)
+    return backends
 
 
 def _get_extract_backend() -> str:
@@ -805,8 +842,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             # configured backend isn't a registered search provider (typo,
             # uninstalled plugin, or capability mismatch).
             provider = get_active_search_provider()
+            backend = provider.name if provider is not None else backend
 
-        if provider is None:
+        fallback_backends = _get_search_fallback_backends(backend)
+        candidates: List[tuple[str, Any]] = []
+        seen_candidate_names = set()
+
+        if provider is not None and provider.supports_search():
+            candidates.append((backend or provider.name, provider))
+            seen_candidate_names.add(provider.name)
+
+        for fallback_backend in fallback_backends:
+            fallback_provider = _wsp_get_provider(fallback_backend)
+            if (
+                fallback_provider is None
+                or not fallback_provider.supports_search()
+                or fallback_provider.name in seen_candidate_names
+            ):
+                continue
+            candidates.append((fallback_backend, fallback_provider))
+            seen_candidate_names.add(fallback_provider.name)
+
+        if not candidates:
             response_data = {
                 "success": False,
                 "error": (
@@ -815,11 +872,50 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 ),
             }
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            backend_errors: List[str] = []
+            response_data = None
+            for index, (_candidate_backend, candidate_provider) in enumerate(candidates):
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    candidate_provider.name, query, limit,
+                )
+                try:
+                    candidate_response = candidate_provider.search(query, limit)
+                except Exception as exc:
+                    if len(candidates) == 1:
+                        raise
+                    error_text = f"{candidate_provider.name}: {exc}"
+                    backend_errors.append(error_text)
+                    logger.warning("web_search backend failed: %s", error_text)
+                    continue
+
+                if candidate_response.get("success") is True:
+                    response_data = candidate_response
+                    if index > 0:
+                        logger.info(
+                            "Web search fallback succeeded via %s (primary=%s)",
+                            candidate_provider.name,
+                            candidates[0][1].name,
+                        )
+                    break
+
+                if len(candidates) == 1:
+                    response_data = candidate_response
+                    break
+
+                error_text = str(candidate_response.get("error") or "search failed")
+                backend_errors.append(f"{candidate_provider.name}: {error_text}")
+                logger.warning(
+                    "web_search backend failed: %s: %s",
+                    candidate_provider.name,
+                    error_text,
+                )
+
+            if response_data is None:
+                response_data = {
+                    "success": False,
+                    "error": "Web search failed across backends: " + "; ".join(backend_errors[:3]),
+                }
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

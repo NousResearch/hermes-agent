@@ -9183,6 +9183,7 @@ class HermesCLI:
                     None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
+                    force=True,
                 )
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child

@@ -1134,3 +1134,131 @@ class TestModelToolsIntegration:
         assert "discord" not in names
         assert "discord_admin" not in names
         assert "discord_server" not in names
+
+
+# ---------------------------------------------------------------------------
+# Registry authorization: session scoping and requester permissions
+# ---------------------------------------------------------------------------
+
+class TestRegistrySessionAuthorization:
+    def _set_discord_context(self, monkeypatch):
+        values = {
+            "HERMES_SESSION_PLATFORM": "discord",
+            "HERMES_SESSION_CHAT_ID": "C_PUBLIC",
+            "HERMES_SESSION_USER_ID": "U_LOWPRIV",
+            "HERMES_SESSION_GUILD_ID": "G_PUBLIC",
+            "HERMES_SESSION_PARENT_CHAT_ID": "P_PUBLIC",
+        }
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+        tokens = None
+        try:
+            from gateway import session_context
+        except ImportError:
+            return tokens
+
+        tokens = session_context.set_session_vars(
+            platform=values["HERMES_SESSION_PLATFORM"],
+            chat_id=values["HERMES_SESSION_CHAT_ID"],
+            user_id=values["HERMES_SESSION_USER_ID"],
+            guild_id=values["HERMES_SESSION_GUILD_ID"],
+            parent_chat_id=values["HERMES_SESSION_PARENT_CHAT_ID"],
+        )
+        return tokens
+
+    def _clear_context(self, tokens):
+        if not tokens:
+            return
+        try:
+            from gateway import session_context
+        except ImportError:
+            return
+
+        session_context.clear_session_vars(tokens)
+
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_messages_rejects_channel_outside_current_context(self, mock_req, monkeypatch):
+        from tools.registry import registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        tokens = self._set_discord_context(monkeypatch)
+        try:
+            result = json.loads(registry.dispatch(
+                "discord", {"action": "fetch_messages", "channel_id": "C_PRIVATE"},
+            ))
+        finally:
+            self._clear_context(tokens)
+
+        assert "current channel" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_messages_allows_current_channel(self, mock_req, monkeypatch):
+        from tools.registry import registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = []
+        tokens = self._set_discord_context(monkeypatch)
+        try:
+            result = json.loads(registry.dispatch(
+                "discord", {"action": "fetch_messages", "channel_id": "C_PUBLIC"},
+            ))
+        finally:
+            self._clear_context(tokens)
+
+        assert result == {"messages": [], "count": 0}
+        mock_req.assert_called_once_with(
+            "GET", "/channels/C_PUBLIC/messages", "test-token", params={"limit": "50"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_add_role_rejects_other_guild_before_api_calls(self, mock_req, monkeypatch):
+        from tools.registry import registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        tokens = self._set_discord_context(monkeypatch)
+        try:
+            result = json.loads(registry.dispatch(
+                "discord_admin",
+                {
+                    "action": "add_role",
+                    "guild_id": "G_PRIVATE",
+                    "user_id": "U_TARGET",
+                    "role_id": "R_ADMIN",
+                },
+            ))
+        finally:
+            self._clear_context(tokens)
+
+        assert "current server" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_add_role_rejects_requester_without_manage_roles(self, mock_req, monkeypatch):
+        from tools.registry import registry
+
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"roles": ["R_MEMBER"]},
+            [
+                {"id": "G_PUBLIC", "permissions": "0", "position": 0},
+                {"id": "R_MEMBER", "permissions": "0", "position": 1},
+                {"id": "R_ADMIN", "permissions": "0", "position": 10},
+            ],
+        ]
+        tokens = self._set_discord_context(monkeypatch)
+        try:
+            result = json.loads(registry.dispatch(
+                "discord_admin",
+                {
+                    "action": "add_role",
+                    "guild_id": "G_PUBLIC",
+                    "user_id": "U_TARGET",
+                    "role_id": "R_ADMIN",
+                },
+            ))
+        finally:
+            self._clear_context(tokens)
+
+        assert "lacks the permissions" in result["error"]
+        assert mock_req.call_count == 2

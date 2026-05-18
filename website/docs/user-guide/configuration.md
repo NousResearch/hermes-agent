@@ -1160,6 +1160,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  delete_progress_messages: true   # Gateway: delete tool-progress bubbles after the response lands
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1253,6 +1254,22 @@ display:
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`delete_progress_messages` is gateway-only. When enabled (the default), the tool-progress bubble is deleted once the final response has been delivered — keeping the chat clean with only the assistant reply visible. Set to `false` to preserve the progress bubble above the response:
+
+```yaml
+display:
+  delete_progress_messages: false
+```
+
+Can also be scoped per-platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      delete_progress_messages: false   # keep progress visible on Telegram
+```
 
 ## Privacy
 

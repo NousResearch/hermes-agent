@@ -14885,6 +14885,10 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        delete_progress_messages = is_truthy_value(
+            resolve_display_setting(user_config, platform_key, "delete_progress_messages"),
+            default=True,
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -15092,6 +15096,13 @@ class GatewayRunner:
                                 progress_queue.get_nowait()
                             except Exception:
                                 break
+                        if delete_progress_messages and progress_msg_id and can_edit:
+                            try:
+                                _del = getattr(adapter, "delete_message", None)
+                                if _del is not None:
+                                    await _del(source.chat_id, progress_msg_id)
+                            except Exception:
+                                pass
                         return
 
                     raw = progress_queue.get_nowait()
@@ -15119,14 +15130,16 @@ class GatewayRunner:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                        # Content bubble just landed on the platform — close off
-                        # the current tool-progress bubble so the next tool
-                        # starts a fresh bubble below the content. Without this,
-                        # tool lines keep editing the ORIGINAL progress message
-                        # above the new content, making the chat appear out of
-                        # order. Mirrors GatewayStreamConsumer.on_segment_break
-                        # on the content side. (Issue: tool + content
-                        # linearization regression after PR #7885.)
+                        # Content bubble just landed on the platform — delete
+                        # the tool-progress bubble so it doesn't linger above
+                        # the response, then start fresh below the content.
+                        if delete_progress_messages and can_edit and progress_msg_id:
+                            try:
+                                _del = getattr(adapter, "delete_message", None)
+                                if _del is not None:
+                                    await _del(source.chat_id, progress_msg_id)
+                            except Exception:
+                                pass
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
@@ -15150,6 +15163,13 @@ class GatewayRunner:
                         continue
 
                     if not _run_still_current():
+                        if delete_progress_messages and progress_msg_id and can_edit:
+                            try:
+                                _del = getattr(adapter, "delete_message", None)
+                                if _del is not None:
+                                    await _del(source.chat_id, progress_msg_id)
+                            except Exception:
+                                pass
                         return
 
                     if can_edit and progress_msg_id is not None:
@@ -15214,7 +15234,17 @@ class GatewayRunner:
                         await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
 
                 except queue.Empty:
-                    await asyncio.sleep(0.3)
+                    try:
+                        await asyncio.sleep(0.3)
+                    except asyncio.CancelledError:
+                        if delete_progress_messages and progress_msg_id and can_edit:
+                            try:
+                                _del = getattr(adapter, "delete_message", None)
+                                if _del is not None:
+                                    await _del(source.chat_id, progress_msg_id)
+                            except Exception:
+                                pass
+                        return
                 except asyncio.CancelledError:
                     # Drain remaining queued messages
                     while not progress_queue.empty():
@@ -15225,17 +15255,13 @@ class GatewayRunner:
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                                # Content-bubble marker during drain: close off
-                                # the current progress bubble and start a fresh
-                                # one for any tool lines that arrived after.
-                                if can_edit and progress_lines and progress_msg_id:
-                                    _pending_text = "\n".join(progress_lines)
+                                # Content-bubble marker during drain: delete the
+                                # progress bubble (content already delivered).
+                                if delete_progress_messages and can_edit and progress_msg_id:
                                     try:
-                                        await adapter.edit_message(
-                                            chat_id=source.chat_id,
-                                            message_id=progress_msg_id,
-                                            content=_pending_text,
-                                        )
+                                        _del = getattr(adapter, "delete_message", None)
+                                        if _del is not None:
+                                            await _del(source.chat_id, progress_msg_id)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -15255,6 +15281,15 @@ class GatewayRunner:
                                 message_id=progress_msg_id,
                                 content=full_text,
                             )
+                        except Exception:
+                            pass
+                    # Delete the progress message so it doesn't persist as an
+                    # artifact in the chat after the run completes.
+                    if delete_progress_messages and progress_msg_id and can_edit:
+                        try:
+                            delete_fn = getattr(adapter, "delete_message", None)
+                            if delete_fn is not None:
+                                await delete_fn(source.chat_id, progress_msg_id)
                         except Exception:
                             pass
                     return

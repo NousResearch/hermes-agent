@@ -303,13 +303,16 @@ class TestTeamsMeetingPipeline:
                 MeetingArtifact(
                     artifact_type="recording",
                     artifact_id="rec-1",
-                    display_name="recording.mp4",
+                    display_name="../../nested/recording.mp4",
                     download_url="https://files.example/recording.mp4",
                 )
             ]
 
+        downloaded_targets = []
+
         async def _download(client, meeting_ref, recording, destination):
             target = Path(destination)
+            downloaded_targets.append(target)
             target.write_bytes(b"video-bytes")
             return {"path": str(target), "size_bytes": 11, "content_type": "video/mp4"}
 
@@ -375,6 +378,9 @@ class TestTeamsMeetingPipeline:
         assert job.selected_artifact_strategy == "recording_stt_fallback"
         assert job.summary_payload is not None
         assert job.summary_payload.summary == "Fallback summary"
+        assert downloaded_targets
+        assert downloaded_targets[0].name == "recording.mp4"
+        assert "nested" not in str(downloaded_targets[0])
         notion_record = store.get_sink_record("notion:meeting-456")
         teams_record = store.get_sink_record("teams:meeting-456")
         assert notion_record is not None

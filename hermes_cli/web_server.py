@@ -119,7 +119,20 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    # App registry read endpoints back the private Homebase /apps page.
+    # Keep public exemptions method-aware so POST/PUT/DELETE on an exact
+    # allowlisted path still hit the core dashboard session-token gate.
+    "/api/plugins/app-registry/schema",
+    "/api/plugins/app-registry/registry",
+    "/api/plugins/app-registry/stats",
 })
+# OPTIONS supports unauthenticated CORS/preflight probes.
+_PUBLIC_API_METHODS: frozenset = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _is_public_api_request(method: str, path: str) -> bool:
+    """True when an /api/ request is intentionally public and read-only."""
+    return method.upper() in _PUBLIC_API_METHODS and path in _PUBLIC_API_PATHS
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -235,9 +248,9 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require the session token on all /api/ routes except public read endpoints."""
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+    if path.startswith("/api/") and not _is_public_api_request(request.method, path):
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,

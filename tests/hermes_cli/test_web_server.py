@@ -324,9 +324,51 @@ class TestWebServerEndpoints:
         assert resp.status_code == 401
         resp = unauth_client.get("/api/config")
         assert resp.status_code == 401
-        # Public endpoints should still work
+        # Public read endpoints should still work.
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
+        # Public exemptions are method-aware: non-read methods still need auth,
+        # even when the path itself is on the public allowlist.
+        resp = unauth_client.post("/api/status")
+        assert resp.status_code == 401
+
+    def test_public_api_allowlist_is_method_aware(self):
+        """Only read methods bypass the dashboard session-token gate."""
+        from hermes_cli.web_server import _is_public_api_request
+
+        assert _is_public_api_request("GET", "/api/plugins/app-registry/schema")
+        assert _is_public_api_request("get", "/api/plugins/app-registry/schema")
+        assert _is_public_api_request("HEAD", "/api/plugins/app-registry/registry")
+        assert _is_public_api_request("OPTIONS", "/api/plugins/app-registry/stats")
+        assert not _is_public_api_request("POST", "/api/plugins/app-registry/registry")
+        assert not _is_public_api_request("PUT", "/api/plugins/app-registry/registry")
+        assert not _is_public_api_request("DELETE", "/api/plugins/app-registry/stats")
+        assert not _is_public_api_request("GET", "/api/plugins/app-registry/discover")
+
+    def test_app_registry_public_paths_are_read_only_through_middleware(self):
+        """The app-registry public paths bypass auth only for safe methods."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        app_registry_paths = [
+            "/api/plugins/app-registry/schema",
+            "/api/plugins/app-registry/registry",
+            "/api/plugins/app-registry/stats",
+        ]
+        for path in app_registry_paths:
+            # The plugin route may not be installed in an isolated test home, so
+            # 200/404/405 are all acceptable route-layer outcomes. 401 is not:
+            # read-style requests should pass the dashboard auth middleware.
+            assert unauth_client.get(path).status_code != 401
+            assert unauth_client.head(path).status_code != 401
+            assert unauth_client.options(path).status_code != 401
+
+            # Write-style requests to the same allowlisted paths must still be
+            # stopped by auth before any route handler can see them.
+            assert unauth_client.post(path).status_code == 401
+            assert unauth_client.put(path).status_code == 401
+            assert unauth_client.delete(path).status_code == 401
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""

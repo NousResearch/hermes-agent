@@ -448,7 +448,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_reassign.add_argument(
         "--reclaim", action="store_true",
-        help="Release any active claim before reassigning (required if task is running)",
+        help=(
+            "Release any active claim before reassigning (required if task is running). "
+            "Safe to call from inside the holding worker process — the dispatcher "
+            "now suppresses the kill signal on self-reclaim and the reassign is atomic."
+        ),
     )
     p_reassign.add_argument(
         "--reason", default=None,

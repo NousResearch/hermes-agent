@@ -163,6 +163,106 @@ class TestForkSession:
     def test_fork_nonexistent_returns_none(self, manager):
         assert manager.fork_session("bogus-id") is None
 
+    def test_fork_session_preserves_runtime_transport(self, tmp_path, monkeypatch):
+        runtime_choice = {"provider": "anthropic"}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or runtime_choice["provider"]
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": runtime_choice["provider"], "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            original = manager.create_session(cwd="/work")
+            runtime_choice["provider"] = "openrouter"
+            forked = manager.fork_session(original.session_id, cwd="/fork")
+
+        assert forked is not None
+        assert forked.agent.provider == "anthropic"
+        assert forked.agent.base_url == "https://anthropic.example/v1"
+        assert forked.agent.api_mode == "anthropic_messages"
+
+    def test_fork_session_preserves_toolsets_and_refreshes_tools(self, tmp_path, monkeypatch):
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": requested or "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=None,
+                tools=[],
+                valid_tool_names=set(),
+                _invalidate_system_prompt=MagicMock(),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+        fake_tools = [{"function": {"name": "mcp_demo_search"}}]
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            original = manager.create_session(cwd="/work")
+            original.agent.enabled_toolsets = ["hermes-acp", "mcp-demo"]
+            original.agent.disabled_toolsets = ["legacy"]
+
+            with patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
+                forked = manager.fork_session(original.session_id, cwd="/fork")
+
+        assert forked is not None
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["hermes-acp", "mcp-demo"],
+            disabled_toolsets=["legacy"],
+            quiet_mode=True,
+        )
+        assert forked.agent.enabled_toolsets == ["hermes-acp", "mcp-demo"]
+        assert forked.agent.disabled_toolsets == ["legacy"]
+        assert forked.agent.tools == fake_tools
+        assert forked.agent.valid_tool_names == {"mcp_demo_search"}
+        forked.agent._invalidate_system_prompt.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # list / cleanup / remove

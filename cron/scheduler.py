@@ -192,8 +192,14 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         _hermes_home = prior_override
         if override_token is not None:
             reset_hermes_home_override(override_token)
-        os.environ.clear()
-        os.environ.update(env_snapshot)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:

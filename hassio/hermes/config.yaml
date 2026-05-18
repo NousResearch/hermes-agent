@@ -1,5 +1,5 @@
 name: "Hermes Agent"
-version: "0.15.0"
+version: "0.15.1"
 slug: "hermes"
 description: "The self-improving AI agent by Nous Research"
 url: "https://github.com/NousResearch/hermes-agent"

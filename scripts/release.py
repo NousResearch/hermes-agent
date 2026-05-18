@@ -39,6 +39,10 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # bump touches both files atomically.
 ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
+# Home Assistant Add-on config
+HASSIO_CONFIG = REPO_ROOT / "hassio" / "hermes" / "config.yaml"
+HASSIO_DOCKERFILE = REPO_ROOT / "hassio" / "hermes" / "Dockerfile"
+
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
 # ──────────────────────────────────────────────────────────────────────
@@ -1141,6 +1145,17 @@ AUTHOR_MAP = {
 }
 
 
+def get_repo_url():
+    """Detect repository URL from git remote."""
+    url = git("remote", "get-url", "origin")
+    if url.endswith(".git"):
+        url = url[:-4]
+    # Convert SSH to HTTPS if needed
+    if url.startswith("git@github.com:"):
+        url = url.replace("git@github.com:", "https://github.com/")
+    return url or "https://github.com/NousResearch/hermes-agent"
+
+
 def git(*args, cwd=None):
     """Run a git command and return stdout."""
     result = subprocess.run(
@@ -1242,6 +1257,27 @@ def update_version_files(semver: str, calver_date: str):
     # Update ACP Registry manifest + npm launcher (must stay version-locked
     # with pyproject — enforced by tests/acp/test_registry_manifest.py).
     _update_acp_registry_versions(semver)
+
+    # Update HASSIO config
+    if HASSIO_CONFIG.exists():
+        content = HASSIO_CONFIG.read_text()
+        content = re.sub(
+            r'^version\s*:\s*"[^"]+"',
+            f'version: "{semver}"',
+            content,
+            flags=re.MULTILINE,
+        )
+        HASSIO_CONFIG.write_text(content)
+
+    # Update HASSIO Dockerfile
+    if HASSIO_DOCKERFILE.exists():
+        content = HASSIO_DOCKERFILE.read_text()
+        content = re.sub(
+            r'io.hass.version="[^"]+"',
+            f'io.hass.version="{semver}"',
+            content,
+        )
+        HASSIO_DOCKERFILE.write_text(content)
 
 
 def _update_acp_registry_versions(semver: str) -> None:
@@ -1590,6 +1626,9 @@ def main():
     else:
         new_version = current_version
 
+    # Detect repo URL
+    repo_url = get_repo_url()
+
     # Get previous tag
     prev_tag = get_last_tag()
     if not prev_tag and not args.first_release:
@@ -1620,6 +1659,7 @@ def main():
     # Generate changelog
     changelog = generate_changelog(
         commits, tag_name, new_version,
+        repo_url=repo_url,
         prev_tag=prev_tag,
         first_release=args.first_release,
     )
@@ -1640,11 +1680,23 @@ def main():
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
+            # Delete old release notes and create new ones
+            for f in REPO_ROOT.glob("RELEASE_v*.md"):
+                f.unlink()
+            release_note_file = REPO_ROOT / f"RELEASE_v{new_version}.md"
+            release_note_file.write_text(changelog, encoding="utf-8")
+            print(f"  ✓ Created {release_note_file.name}")
+
             # Commit version bump
             add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
             if ACP_REGISTRY_MANIFEST.exists():
                 add_files.append(str(ACP_REGISTRY_MANIFEST))
-            add_result = git_result("add", *add_files)
+            if HASSIO_CONFIG.exists():
+                add_files.append(str(HASSIO_CONFIG))
+            if HASSIO_DOCKERFILE.exists():
+                add_files.append(str(HASSIO_DOCKERFILE))
+            # Add all RELEASE_v*.md (should only be one now, and we want to stage the deletion of old ones)
+            add_result = git_result("add", *add_files, "RELEASE_v*.md")
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
                 return

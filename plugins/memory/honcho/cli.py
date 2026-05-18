@@ -624,6 +624,69 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     return results
 
 
+def _print_circuit_breaker_state() -> None:
+    """Render the Honcho circuit breaker state from its snapshot file.
+
+    The breaker writes ${HERMES_HOME}/honcho-circuit.json on every state
+    transition (see plugins/memory/honcho/circuit_breaker.py). Reading
+    the snapshot lets us surface "Honcho is currently being skipped"
+    without having to attach to the running agent. The snapshot reflects
+    the LAST transition by some process — if no agent ever ran in this
+    profile, the file may be missing entirely, which we render as
+    "closed" (the normal/healthy state).
+    """
+    snap_path = get_hermes_home() / "honcho-circuit.json"
+    state = "closed"
+    consecutive_failures = 0
+    cooldown_left = 0.0
+    last_error = ""
+    last_transition = ""
+    if snap_path.exists():
+        try:
+            data = json.loads(snap_path.read_text(encoding="utf-8"))
+            state = str(data.get("state") or "closed")
+            consecutive_failures = int(data.get("consecutive_failures") or 0)
+            last_error = str(data.get("last_error") or "")
+            last_transition_epoch = data.get("last_transition_epoch") or 0
+            if last_transition_epoch:
+                import time as _time
+                last_transition = _time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    _time.localtime(float(last_transition_epoch)),
+                )
+            # The snapshot was written when the breaker transitioned —
+            # estimate remaining cooldown from wall-clock delta, not the
+            # monotonic timestamps that don't survive across processes.
+            cooldown_s = float(data.get("cooldown_s") or 0.0)
+            if state == "open" and cooldown_s > 0 and last_transition_epoch:
+                import time as _time
+                elapsed = max(0.0, _time.time() - float(last_transition_epoch))
+                cooldown_left = max(0.0, cooldown_s - elapsed)
+                # If the cooldown has elapsed but no agent has run since,
+                # the snapshot still says "open". The next allow() call
+                # would flip it to half-open; surface that to the operator.
+                if cooldown_left == 0.0:
+                    state = "open (cooldown elapsed, will probe on next call)"
+        except (OSError, ValueError, TypeError):
+            # Corrupt / unreadable snapshot — treat as "no info available".
+            return
+
+    if state == "closed":
+        print(f"  Circuit:        closed (healthy)")
+        return
+
+    suffix = ""
+    if cooldown_left > 0:
+        suffix = f", cooldown {int(cooldown_left)}s left"
+    print(f"  Circuit:        {state}{suffix}")
+    if consecutive_failures:
+        print(f"    Failures:     {consecutive_failures} consecutive")
+    if last_error:
+        print(f"    Last error:   {last_error}")
+    if last_transition:
+        print(f"    Since:        {last_transition}")
+
+
 def cmd_status(args) -> None:
     """Show current Honcho config and connection status."""
     show_all = getattr(args, "all", False)
@@ -693,6 +756,8 @@ def cmd_status(args) -> None:
     print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
+
+    _print_circuit_breaker_state()
 
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
         print("\n  Connection... ", end="", flush=True)

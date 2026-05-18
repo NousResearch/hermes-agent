@@ -180,6 +180,21 @@ The handler registered at `agent.on_prompt(...)` is a one-liner that sends a sho
 
 Previously in Telegram (`gateway/platforms/telegram.py:910`), the connect() failure branch explicitly calls `_release_platform_lock()`. The NATS adapter instead routes both the success-disconnect path and the connect-failure path through a single `_teardown_handles()` helper. Reason: Phase 4 adds more handles (`_active_streams`, `stream_delta_callback`, keep-alive task) that also need cleanup in both paths — centralizing the teardown logic now means T4.x doesn't have to remember to wire cleanup into two places.
 
+### 2026-04-21 — Phase 3 — Shutdown event + in-flight handler tracking landed early (pre-Phase 4)
+
+Design doc §9 calls for "signal cancellation to in-flight `_on_prompt` handlers / await all outstanding pump / keep-alive / `_on_prompt` tasks" during shutdown. Phase 3's placeholder handler is a one-liner with no long-running work, so this was initially deferred to Phase 4. Review feedback: land the infrastructure now so Phase 4's handler body inherits the cancellation behavior for free instead of having to retrofit it.
+
+The machinery:
+- `self._shutdown_event: asyncio.Event` — set at the top of `_teardown_handles`, cleared at the top of `connect()`. Phase 4's streaming loop will `if self._shutdown_event.is_set(): break` between deltas.
+- `self._in_flight_handlers: set[asyncio.Task]` — `_on_prompt` registers its own task via `asyncio.current_task()` at entry and discards it in a `finally` block. `_teardown_handles` cancels every live task and `asyncio.gather(..., return_exceptions=True)`s them before `agent.stop()` runs.
+- `discard` (not `remove`) in the finally block: `_teardown_handles` may call `_in_flight_handlers.clear()` after gather returns, so the finally may find the task already gone.
+
+Tests cover: task registration/deregistration on normal completion, finally-block tolerance of a mid-handler `clear()` (regression guard for `remove` vs. `discard`), cancellation of a hanging handler during `disconnect()` bounded by `asyncio.wait_for`, shutdown event set-before-stop ordering, shutdown event cleared by a retry `connect()`.
+
+### 2026-04-21 — Phase 3 — Disconnect ordering test tightened with a side_effect call-order recorder
+
+The original `test_disconnect_after_successful_connect_tears_down_in_order` asserted `agent.stop.assert_awaited_once()` + `nc.close.assert_awaited_once()` but NOT their relative order — the name was aspirational. Tightened by attaching `side_effect=lambda: call_order.append("stop")` / `("close")` to each mock and asserting `call_order == ["stop", "close"]`. `mock.call_args_list` is per-mock, so cross-mock ordering genuinely requires a shared recorder; `MagicMock.attach_mock` is the other standard option but the side_effect approach is one line shorter.
+
 ---
 
 ## Task definitions reference

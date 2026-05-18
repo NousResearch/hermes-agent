@@ -18,10 +18,11 @@ attachments, and mid-stream queries, land in phases 4–6 (see
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 try:
     import natsagent
@@ -338,6 +339,20 @@ class NatsAdapter(BasePlatformAdapter):
         self._agent: Optional[Any] = None
         self._settings: Optional[NatsAdapterSettings] = None
 
+        # Shutdown signalling for in-flight prompt handlers. ``_on_prompt``
+        # registers its own task here via ``asyncio.current_task()`` so
+        # ``_teardown_handles`` can cancel-and-await every live invocation
+        # before ``agent.stop()`` deregisters the micro-service endpoint
+        # and ``nc.close()`` drops the connection. Phase 3's handler is a
+        # single ``await stream.send(...)`` so cancellation is cheap
+        # today, but Phase 4 hands long-running streaming work to
+        # ``_on_prompt`` and needs the machinery already in place. The
+        # ``Event`` itself is loop-agnostic in Python 3.10+ (binds lazily
+        # at first ``set()``/``wait()``) so constructing it in ``__init__``
+        # — which may run before any event loop exists — is safe.
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._in_flight_handlers: Set[asyncio.Task] = set()
+
         try:
             self._settings = NatsAdapterSettings.from_extra(config.extra or {})
         except NatsConfigError as exc:
@@ -405,6 +420,12 @@ class NatsAdapter(BasePlatformAdapter):
             return False
 
         try:
+            # Reset shutdown signalling for this attempt so Phase 4
+            # handlers that gate long-running work on
+            # ``self._shutdown_event`` start from a clean slate when a
+            # previous teardown set it.
+            self._shutdown_event.clear()
+
             connect_kwargs: Dict[str, Any] = {}
             if settings.servers is not None:
                 # natsagent.connect accepts list[str] directly; copy so the
@@ -473,13 +494,37 @@ class NatsAdapter(BasePlatformAdapter):
     async def _teardown_handles(self) -> None:
         """Shared cleanup for both connect-failure and disconnect paths.
 
-        Order matters: stop the agent before closing the underlying NATS
-        client so the heartbeat publisher has a live connection to emit
-        its final frame (§8 recommends agents emit a terminal heartbeat,
-        though the SDK currently just stops the task). Closing `nc` first
-        would surface a stream of "connection closed" warnings from the
-        heartbeat loop.
+        Order matters (design doc §9 "Shutdown"):
+
+          1. Signal shutdown + cancel in-flight ``_on_prompt`` tasks so
+             they unwind any awaits on the live NATS connection *before*
+             we deregister the service or drop the socket. Skipping this
+             surfaces ``CancelledError`` / "connection closed" noise from
+             handlers that were mid-``stream.send`` when shutdown fires.
+          2. ``agent.stop()`` — deregisters the micro service endpoint
+             and stops the heartbeat publisher. Runs while ``nc`` is
+             still open so the heartbeat task's final iteration can
+             cleanly bail out instead of racing the socket close.
+          3. ``nc.close()`` — drops the underlying NATS connection.
+          4. Release the scoped lock so the next gateway instance on
+             this host can register the same identity.
         """
+        # Step 1 — drain in-flight prompt handlers. Materialize the
+        # pending list first: ``cancel()`` schedules CancelledError at
+        # the task's next await point, and the handler's finally-block
+        # mutates ``_in_flight_handlers`` via ``discard()`` — iterating
+        # the live set would risk "set changed size during iteration".
+        self._shutdown_event.set()
+        pending = [t for t in self._in_flight_handlers if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            # return_exceptions=True so a CancelledError from one task
+            # doesn't prevent us from awaiting the others — teardown
+            # must be all-or-nothing-complete, never all-or-nothing-started.
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._in_flight_handlers.clear()
+
         # Phase 4 populates ``_active_streams``; clearing here is a cheap
         # guardrail against stale handles leaking across reconnects.
         self._active_streams.clear()
@@ -522,14 +567,30 @@ class NatsAdapter(BasePlatformAdapter):
         response, terminator follows) without the full MessageEvent
         pipeline yet.
 
-        Phase 4 replaces this with the real ``x-session`` extraction,
+        Registers the running task in ``self._in_flight_handlers`` so
+        :meth:`_teardown_handles` can cancel it on shutdown. The
+        registration lives on the handler (rather than on a wrapper
+        layer owned by the SDK) so Phase 4's long-running streaming
+        body inherits the behavior for free.
+
+        Phase 4 replaces the body with real ``x-session`` extraction,
         attachment decoding, MessageEvent construction, and streaming
         deltas — see T4.1 in ``docs/nats-gateway-progress.md``.
         """
-        await stream.send(
-            "[hermes] NATS adapter is online. Prompt routing lands in "
-            "Phase 4 (see docs/nats-gateway-progress.md)."
-        )
+        task = asyncio.current_task()
+        if task is not None:
+            self._in_flight_handlers.add(task)
+        try:
+            await stream.send(
+                "[hermes] NATS adapter is online. Prompt routing lands in "
+                "Phase 4 (see docs/nats-gateway-progress.md)."
+            )
+        finally:
+            if task is not None:
+                # ``discard`` (not ``remove``) — ``_teardown_handles``
+                # may have called ``clear()`` already if cancellation
+                # landed before this finally block ran.
+                self._in_flight_handlers.discard(task)
 
     # ------------------------------------------------------------------
     # Outbound — Phase 4 will wire ``send()`` into ``_active_streams``.

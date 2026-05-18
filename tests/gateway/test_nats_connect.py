@@ -24,6 +24,7 @@ real filesystem lock directory.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -240,6 +241,52 @@ class TestPromptHandlerStub:
         assert isinstance(payload, str)
         assert payload.strip()
 
+    @pytest.mark.asyncio
+    async def test_on_prompt_registers_and_deregisters_current_task(
+        self, mock_natsagent, lock_granted
+    ):
+        # The handler must register its own asyncio task in
+        # ``_in_flight_handlers`` before any await so _teardown_handles
+        # can cancel it mid-flight; the finally block must remove it on
+        # normal completion so the set doesn't leak references.
+        adapter = _build_adapter()
+        observed_in_flight: list = []
+        stream = MagicMock()
+
+        async def _peek_registration(_payload):
+            # During the send await, the current task should be tracked.
+            observed_in_flight.append(set(adapter._in_flight_handlers))
+
+        stream.send = AsyncMock(side_effect=_peek_registration)
+
+        await adapter._on_prompt(MagicMock(), stream)
+
+        # Observed mid-handler: exactly one task (this test's task).
+        assert len(observed_in_flight) == 1
+        assert len(observed_in_flight[0]) == 1
+        # After the handler returns, the set is clean.
+        assert adapter._in_flight_handlers == set()
+
+    @pytest.mark.asyncio
+    async def test_on_prompt_finally_survives_teardown_clear(
+        self, mock_natsagent, lock_granted
+    ):
+        # Teardown calls ``_in_flight_handlers.clear()`` after gather(),
+        # so the handler's finally block may find the set empty — using
+        # ``discard`` (not ``remove``) is what keeps the finally block
+        # from raising KeyError and masking the original CancelledError.
+        adapter = _build_adapter()
+        stream = MagicMock()
+
+        async def _clear_mid_send(_payload):
+            adapter._in_flight_handlers.clear()
+
+        stream.send = AsyncMock(side_effect=_clear_mid_send)
+
+        # Must not raise — the regression guard for ``remove`` vs.
+        # ``discard``.
+        await adapter._on_prompt(MagicMock(), stream)
+
 
 # ---------------------------------------------------------------------------
 # Fatal-after-init
@@ -387,8 +434,19 @@ class TestDisconnect:
         agent = mock_natsagent.Agent.return_value
         nc = mock_natsagent.connect.return_value
 
+        # Strict ordering: agent.stop() must run before nc.close() so
+        # the heartbeat loop can exit on a live connection instead of
+        # racing the socket close. Record the call order via side_effect
+        # lambdas rather than inspecting mock_calls — the latter only
+        # captures attribute access per-mock, so cross-mock ordering
+        # needs a shared recorder.
+        call_order: list[str] = []
+        agent.stop.side_effect = lambda: call_order.append("stop")
+        nc.close.side_effect = lambda: call_order.append("close")
+
         await adapter.disconnect()
 
+        assert call_order == ["stop", "close"]
         agent.stop.assert_awaited_once()
         nc.close.assert_awaited_once()
         assert adapter._agent is None
@@ -445,6 +503,84 @@ class TestDisconnect:
         assert adapter._agent is None
         assert adapter._nc is None
         assert lock_granted["releases"] == [("nats", "hermes:rene:gateway")]
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_in_flight_handlers(
+        self, mock_natsagent, lock_granted
+    ):
+        # A long-running handler parked on ``asyncio.sleep`` simulates
+        # Phase 4's streaming body awaiting the next model delta when
+        # gateway shutdown fires. Without cancellation, ``disconnect()``
+        # would block indefinitely.
+        adapter = _build_adapter()
+        await adapter.connect()
+
+        hang_started = asyncio.Event()
+
+        async def _hanging_handler():
+            hang_started.set()
+            try:
+                await asyncio.sleep(60)  # would outlast the test
+            except asyncio.CancelledError:
+                # Phase 4 handlers will do real cleanup here (flush
+                # partial response, emit error chunk). Phase 3's
+                # placeholder has nothing to clean up — just re-raise
+                # so the cancellation propagates into gather().
+                raise
+
+        task = asyncio.create_task(_hanging_handler())
+        adapter._in_flight_handlers.add(task)
+        await hang_started.wait()
+
+        # Bound the await so a regression would fail the test instead of
+        # hanging the whole suite.
+        await asyncio.wait_for(adapter.disconnect(), timeout=2.0)
+
+        assert task.cancelled()
+        assert adapter._in_flight_handlers == set()
+        # Teardown must still run the full sequence after cancellation —
+        # stop, close, release lock.
+        mock_natsagent.Agent.return_value.stop.assert_awaited_once()
+        mock_natsagent.connect.return_value.close.assert_awaited_once()
+        assert lock_granted["releases"] == [("nats", "hermes:rene:gateway")]
+
+    @pytest.mark.asyncio
+    async def test_disconnect_sets_shutdown_event_before_stop(
+        self, mock_natsagent, lock_granted
+    ):
+        # Phase 4 handlers will gate their streaming loops on
+        # ``self._shutdown_event`` — verify the event is set BEFORE the
+        # agent is stopped, so a handler checking the event between
+        # deltas sees the shutdown signal before the SDK deregisters
+        # the endpoint underneath it.
+        adapter = _build_adapter()
+        await adapter.connect()
+
+        observed: dict[str, bool] = {}
+
+        def _record_state():
+            observed["shutdown_event_set_at_stop"] = adapter._shutdown_event.is_set()
+
+        mock_natsagent.Agent.return_value.stop.side_effect = _record_state
+
+        await adapter.disconnect()
+
+        assert observed["shutdown_event_set_at_stop"] is True
+
+    @pytest.mark.asyncio
+    async def test_connect_clears_shutdown_event_on_retry(
+        self, mock_natsagent, lock_granted
+    ):
+        # After a prior teardown (connect failure or disconnect), the
+        # shutdown event is set. A retry must clear it so Phase 4's
+        # long-running handlers don't see the stale signal and bail out
+        # on their first await.
+        adapter = _build_adapter()
+        adapter._shutdown_event.set()
+
+        assert await adapter.connect() is True
+
+        assert adapter._shutdown_event.is_set() is False
 
 
 # ---------------------------------------------------------------------------

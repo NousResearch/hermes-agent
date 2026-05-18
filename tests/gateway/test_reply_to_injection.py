@@ -157,3 +157,31 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+@pytest.mark.asyncio
+async def test_lead_review_reply_gets_control_semantics_prefix():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="DUYỆT 1,2,3,4,5,6,7,8",
+        source=source,
+        reply_to_message_id="99",
+        reply_to_text=(
+            "Cronjob Response: Lead scout reviewer (agent)\n"
+            "(job_id: df9c23638494)\n"
+            "-------------\n"
+            "[OK] Đã review payload 21 candidates, giữ lại 5 lead."
+        ),
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith("[This is a lead-review control reply.")
+    assert '[Replying to: "Cronjob Response: Lead scout reviewer (agent)' in result
+    assert result.endswith("DUYỆT 1,2,3,4,5,6,7,8")

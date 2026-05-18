@@ -7128,6 +7128,25 @@ class GatewayRunner:
             reply_snippet = event.reply_to_text[:500]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+            # Lead-review reports use reply-as-command semantics. When the user
+            # replies to a reviewer report, we want the model to treat
+            # DUYỆT/LOẠI/CHI TIẾT as operational instructions for the quoted
+            # report, not as a request for a polite acknowledgement. This keeps
+            # the live Telegram reply path aligned with the cron report contract
+            # and avoids the common "confirm but do nothing" failure mode.
+            reply_snippet_upper = reply_snippet.upper()
+            if (
+                "JOB:" in reply_snippet_upper
+                or "CRONJOB RESPONSE: LEAD SCOUT REVIEWER" in reply_snippet_upper
+                or "LEAD SCOUT REVIEWER" in reply_snippet_upper
+            ):
+                message_text = (
+                    "[This is a lead-review control reply. Treat DUYỆT / LOẠI / CHI TIẾT as state-changing commands for the quoted report. "
+                    "Do not respond with mere acknowledgement. If the user DUYỆTs items, take the next concrete action for those items now (within available tools), "
+                    "then report what is currently doing, what is done, and what is waiting on PR / external response.]\n\n"
+                    f"{message_text}"
+                )
+
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async

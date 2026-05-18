@@ -893,11 +893,19 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     )
     _is_nous = "nousresearch" in agent._base_url_lower
     _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
-    _is_kimi = (
-        base_url_host_matches(agent.base_url, "api.kimi.com")
-        or base_url_host_matches(agent.base_url, "moonshot.ai")
-        or base_url_host_matches(agent.base_url, "moonshot.cn")
-    )
+    # Use agent helper when available so aggregator routes serving Moonshot
+    # inference (synthetic.new, OpenRouter, Together, …) are also flagged
+    # via is_moonshot_model() slug detection (#18742). Falls back to direct
+    # host-only detection for older agent objects.
+    _is_kimi_fn = getattr(agent, "_is_kimi_runtime", None)
+    if callable(_is_kimi_fn):
+        _is_kimi = _is_kimi_fn()
+    else:
+        _is_kimi = (
+            base_url_host_matches(agent.base_url, "api.kimi.com")
+            or base_url_host_matches(agent.base_url, "moonshot.ai")
+            or base_url_host_matches(agent.base_url, "moonshot.cn")
+        )
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
 

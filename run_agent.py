@@ -5495,6 +5495,30 @@ class AIAgent:
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _is_kimi_runtime(self) -> bool:
+        """Return True when the runtime is serving Moonshot/Kimi inference.
+
+        Direct routes are caught by host match. Aggregator routes
+        (synthetic.new, OpenRouter, Together, …) keep the aggregator's base
+        URL but still serve Moonshot inference for Kimi slugs, so we also
+        match by model name via ``is_moonshot_model()``.
+
+        Distinct from ``_needs_kimi_tool_reasoning()``: that helper guards a
+        signature-replay quirk on the Anthropic-shaped Kimi/Moonshot routes
+        only and intentionally does NOT match aggregator slugs.  This helper
+        gates the chat_completions Kimi defaults (max_tokens floor,
+        reasoning_effort hint) which Kimi K2.x needs on every route or
+        thinking-mode burns the entire token budget on hidden reasoning and
+        emits an empty visible response (#18742).
+        """
+        from agent.moonshot_schema import is_moonshot_model
+        return (
+            base_url_host_matches(self.base_url, "api.kimi.com")
+            or base_url_host_matches(self.base_url, "moonshot.ai")
+            or base_url_host_matches(self.base_url, "moonshot.cn")
+            or is_moonshot_model(self.model)
+        )
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

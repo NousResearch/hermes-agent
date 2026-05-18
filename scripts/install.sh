@@ -1996,6 +1996,8 @@ main() {
     maybe_start_gateway
 
     print_success
+
+    echo "git" > "$HERMES_HOME/.install_method"
 }
 
 if [ -n "$ENSURE_DEPS" ]; then

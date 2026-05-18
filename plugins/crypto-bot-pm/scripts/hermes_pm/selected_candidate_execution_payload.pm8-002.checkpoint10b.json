@@ -1,0 +1,37 @@
+{
+  "candidate_id": "pm8-002",
+  "candidate_title": "Propose issue-only PM backlog expansion model",
+  "constraints": {
+    "endpoint": "/api/v1/repos/preston/crypto_bot/issues",
+    "max_operations": 1,
+    "no_branch_writer": true,
+    "no_comments": true,
+    "no_financial_actions": true,
+    "no_labels": true,
+    "no_prs": true,
+    "no_projects": true,
+    "no_runners": true,
+    "no_runtime_actions": true,
+    "no_secret_access": true,
+    "no_workflows": true
+  },
+  "forbidden_payload_fields": [
+    "labels",
+    "assignees",
+    "milestone",
+    "due_date",
+    "project",
+    "comments",
+    "attachments"
+  ],
+  "gitea_base_url": "http://127.0.0.1:3005",
+  "issue_body": "Created by Hermes PM Checkpoint 11.\n\nThis issue was generated from selected backlog candidate pm8-002.\n\nScope is issue-only PM backlog modeling.\n\nNo labels, projects, comments, PRs, workflows, runners, deploys, runtime actions, branch-writer actions, financial actions, broker/trading actions, or secret access were approved.\n\nThe Operator should review whether this issue-only backlog model is the correct next PM governance step.",
+  "issue_title": "[Hermes PM] Propose issue-only PM backlog expansion model",
+  "operation_id": "fwop-001",
+  "operation_type": "create_issue",
+  "owner": "preston",
+  "project_id": "crypto_bot",
+  "repo": "crypto_bot",
+  "schema_version": "hermes.pm.selected_candidate_execution_payload.v1",
+  "stable_execution_payload_sha256": "4f338e0bc2ed24b9e4c46ac6327618010d5925552ba9f10cf346e1d435d66887"
+}

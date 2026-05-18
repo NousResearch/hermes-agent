@@ -1,0 +1,14 @@
+{
+  "schema_version": "hermes.pm.backlog_operator_review.v1",
+  "description": "Inactive example-only Operator review record for PM-10 selected-candidate approval-scope rehearsal.",
+  "selected_candidate_ids": [
+    "pm8-002"
+  ],
+  "decision": "request_future_write_plan",
+  "notes": "example only: request a future PM-11 exact create_issue write plan for pm8-002 after reviewing the PM-10 approval scope",
+  "not_active_approval": true,
+  "calls_gitea_write_api": false,
+  "mutation_executed": false,
+  "no_issue_created": true,
+  "no_secret_access": true
+}

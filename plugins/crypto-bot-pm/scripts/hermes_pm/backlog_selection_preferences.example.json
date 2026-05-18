@@ -1,0 +1,18 @@
+{
+  "schema_version": "hermes.pm.backlog_selection_preferences.v1",
+  "selected_candidate_ids": [],
+  "deferred_candidate_ids": [],
+  "rejected_candidate_ids": [],
+  "priority_bias": [
+    "pm_governance",
+    "plugin_reliability",
+    "read_only_observability"
+  ],
+  "forbidden_topics": [
+    "trading",
+    "broker",
+    "secrets",
+    "runtime",
+    "deploy"
+  ]
+}

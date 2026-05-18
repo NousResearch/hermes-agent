@@ -1,0 +1,20 @@
+{
+  "schema_version": "hermes.pm.managed_projects.v1",
+  "projects": [
+    {
+      "project_id": "crypto_bot",
+      "repo_path": "/Users/preston/robinhood/crypto_bot",
+      "gitea_remote": "http://127.0.0.1:3005/preston/crypto_bot.git",
+      "authority_profile": "trading-control-plane",
+      "default_mode": "read_only_pm",
+      "forbidden_surfaces": [
+        "broker",
+        "trading",
+        "secrets",
+        "runtime",
+        "deployment",
+        "live financial actions"
+      ]
+    }
+  ]
+}

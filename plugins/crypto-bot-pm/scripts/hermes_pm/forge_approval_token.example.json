@@ -1,0 +1,46 @@
+{
+  "schema_version": "hermes.pm.forge_approval_token.v1",
+  "approval_id": "example-not-active",
+  "operator": "example-operator",
+  "approved_at": "2026-05-01T00:00:00+00:00",
+  "expires_at": "2026-05-02T00:00:00+00:00",
+  "project_id": "crypto_bot",
+  "gitea_base_url": "http://127.0.0.1:3005",
+  "owner": "preston",
+  "repo": "crypto_bot",
+  "forge_write_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "approved_operation_ids": [
+    "fwop-001",
+    "fwop-002"
+  ],
+  "allowed_operation_types": [
+    "create_issue",
+    "create_label"
+  ],
+  "max_operations": 2,
+  "reason": "Example only. This is not active Operator approval.",
+  "constraints": {
+    "example_only": true,
+    "not_active_approval": true,
+    "exact_plan_sha256_required": true,
+    "exact_operation_ids_required": true,
+    "no_wildcards": true,
+    "does_not_execute": true,
+    "separate_future_checkpoint_required": true
+  },
+  "forbidden_operation_types": [
+    "deploy",
+    "financial",
+    "runtime_admin",
+    "secret",
+    "start_runner",
+    "trigger_workflow"
+  ],
+  "forbidden_authority_classes": [
+    "deploy",
+    "financial",
+    "runtime_admin",
+    "secret"
+  ],
+  "single_use_intent": true
+}

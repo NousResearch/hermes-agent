@@ -1,0 +1,14 @@
+{
+  "schema_version": "hermes.pm.task_intake.v1",
+  "project_id": "crypto_bot",
+  "title": "Draft a read-only Hermes PM status report",
+  "request": "Summarize current Hermes PM readiness, classify next work, and propose issue cards without mutating Gitea or starting CI.",
+  "requester": "operator",
+  "source": "telegram",
+  "constraints": [
+    "read-only first",
+    "no workflows",
+    "no runner startup",
+    "no broker, trading, runtime, deployment, or secret access"
+  ]
+}

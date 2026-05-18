@@ -1,0 +1,17 @@
+name: crypto-bot-pm
+version: 1.0.0
+description: "Hermes-owned PM bridge for the local crypto_bot managed project: read-only status, strategic-plan workstream evidence, proposal packets, Kanban evidence, and forge dry-run/capability maps used by the autonomous branch-local target loop."
+author: Hermes PM
+kind: standalone
+provides_tools:
+  - crypto_bot_pm_issue_lifecycle
+  - crypto_bot_pm_status
+  - crypto_bot_pm_kanban_packet
+  - crypto_bot_pm_backlog_expansion
+  - crypto_bot_pm_backlog_selection
+  - crypto_bot_pm_development_workstream
+  - crypto_bot_pm_development_slice
+  - crypto_bot_pm_candidate_approval_scope
+  - crypto_bot_pm_forge_plan
+  - crypto_bot_pm_forge_approval_packet
+  - crypto_bot_pm_capability_map

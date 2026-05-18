@@ -1,0 +1,17 @@
+name: crypto-bot-pm
+version: 1.0.0
+description: "Safe Hermes PM bridge for the local crypto_bot project: status, Issue #1 lifecycle, backlog expansion proposals, backlog selection packets, completion workstream packets, development slice packets, selected-candidate approval scopes, Kanban proposals, forge dry-run plans, approval packets, and read-only forge capability maps."
+author: Hermes PM
+kind: standalone
+provides_tools:
+  - crypto_bot_pm_issue_lifecycle
+  - crypto_bot_pm_status
+  - crypto_bot_pm_kanban_packet
+  - crypto_bot_pm_backlog_expansion
+  - crypto_bot_pm_backlog_selection
+  - crypto_bot_pm_development_workstream
+  - crypto_bot_pm_development_slice
+  - crypto_bot_pm_candidate_approval_scope
+  - crypto_bot_pm_forge_plan
+  - crypto_bot_pm_forge_approval_packet
+  - crypto_bot_pm_capability_map

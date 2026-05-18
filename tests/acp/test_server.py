@@ -24,6 +24,7 @@ from acp.schema import (
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
+    SessionModeState,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -51,6 +52,35 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
+
+
+@pytest.mark.asyncio
+async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+    resp = await agent.new_session(cwd="/tmp")
+
+    assert resp.config_options is None
+    assert isinstance(resp.modes, SessionModeState)
+    assert resp.modes.current_mode_id == "default"
+    assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
+        ("default", "Default"),
+        ("accept_edits", "Accept Edits"),
+        ("dont_ask", "Don't Ask"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+    resp = await agent.new_session(cwd="/tmp")
+    update = await agent.set_config_option(
+        "edit_approval_policy",
+        resp.session_id,
+        "workspace_session",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "mode", None) == "accept_edits"
 
 
 # ---------------------------------------------------------------------------
@@ -865,11 +895,11 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        resp = await agent.set_session_mode(mode_id="accept_edits", session_id=new_resp.session_id)
         state = agent.session_manager.get_session(new_resp.session_id)
 
         assert isinstance(resp, SetSessionModeResponse)
-        assert getattr(state, "mode", None) == "chat"
+        assert getattr(state, "mode", None) == "accept_edits"
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -878,7 +908,7 @@ class TestSessionConfiguration:
 
         mode_result = await router(
             "session/set_mode",
-            {"modeId": "chat", "sessionId": new_resp.session_id},
+            {"modeId": "accept_edits", "sessionId": new_resp.session_id},
             False,
         )
         config_result = await router(
@@ -892,7 +922,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result == {"configOptions": []}
+        assert config_result["configOptions"] == []
 
     @pytest.mark.asyncio
     async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):

@@ -48,7 +48,7 @@ class TestInstallCuaDriverUpgrade:
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
-                                                 if n in ("cua-driver", "curl") else None), \
+                                                 if n in {"cua-driver", "curl"} else None), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
              patch("subprocess.run"):
@@ -82,7 +82,7 @@ class TestInstallCuaDriverUpgrade:
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
-                                                 if n in ("cua-driver", "curl") else None), \
+                                                 if n in {"cua-driver", "curl"} else None), \
              patch.object(tools_config, "_run_cua_driver_installer") as runner, \
              patch("subprocess.run"):
             assert tools_config.install_cua_driver(upgrade=False) is True

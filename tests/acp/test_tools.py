@@ -2,6 +2,7 @@
 
 import pytest
 
+from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,
@@ -147,7 +148,7 @@ class TestBuildToolTitle:
 
 class TestBuildToolStart:
     def test_build_tool_start_for_patch(self):
-        """patch should produce a FileEditToolCallContent (diff)."""
+        """patch start should not duplicate the edit-approval diff."""
         args = {
             "path": "src/main.py",
             "old_string": "print('hello')",
@@ -156,24 +157,42 @@ class TestBuildToolStart:
         result = build_tool_start("tc-1", "patch", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "edit"
-        # The first content item should be a diff
         assert len(result.content) >= 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "src/main.py"
-        assert diff_item.new_text == "print('world')"
-        assert diff_item.old_text == "print('hello')"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "Approval prompt shows the diff" in item.content.text
+        assert "src/main.py" in item.content.text
 
     def test_build_tool_start_for_write_file(self):
-        """write_file should produce a FileEditToolCallContent (diff)."""
+        """write_file start should not duplicate the edit-approval diff."""
         args = {"path": "new_file.py", "content": "print('hello')"}
         result = build_tool_start("tc-w1", "write_file", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "edit"
         assert len(result.content) >= 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "new_file.py"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "Approval prompt shows the diff" in item.content.text
+        assert "new_file.py" in item.content.text
+
+    def test_auto_approved_edit_start_shows_diff_content(self):
+        """Auto-approved edit starts need the diff because no approval card exists."""
+        args = {"path": "/tmp/acp.txt", "old_string": "old", "new_string": "new"}
+        result = build_tool_start(
+            "tc-auto-edit",
+            "patch",
+            args,
+            edit_diff=EditProposal("patch", "/tmp/acp.txt", "old\n", "new\n", args),
+        )
+
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "edit"
+        assert len(result.content) == 1
+        item = result.content[0]
+        assert isinstance(item, FileEditToolCallContent)
+        assert item.path == "/tmp/acp.txt"
+        assert item.old_text == "old\n"
+        assert item.new_text == "new\n"
 
     def test_build_tool_start_for_terminal(self):
         """terminal should produce text content with the command."""
@@ -205,6 +224,16 @@ class TestBuildToolStart:
         assert result.title == "extract: https://example.com/docs"
         assert result.kind == "fetch"
         assert result.content is None
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_browser_navigate(self):
+        """browser_navigate should emit a polished start event."""
+        args = {"url": "https://x.com"}
+        result = build_tool_start("tc-browser-start", "browser_navigate", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.title == "navigate: https://x.com"
+        assert result.kind == "fetch"
+        assert result.content[0].content.text == '{\n  "url": "https://x.com"\n}'
         assert result.raw_input is None
 
     def test_build_tool_start_for_search(self):
@@ -442,8 +471,8 @@ class TestBuildToolComplete:
         assert len(display_text) < 6000
         assert "truncated" in display_text
 
-    def test_build_tool_complete_for_patch_uses_diff_blocks(self):
-        """Completed patch calls should keep structured diff content for Zed."""
+    def test_build_tool_complete_for_patch_summarizes_without_repeating_diff(self):
+        """Completed patch calls should not duplicate the edit-approval diff."""
         patch_result = (
             '{"success": true, "diff": "--- a/README.md\\n+++ b/README.md\\n@@ -1 +1,2 @@\\n old line\\n+new line\\n", '
             '"files_modified": ["README.md"]}'
@@ -451,18 +480,17 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-p1", "patch", patch_result)
         assert isinstance(result, ToolCallProgress)
         assert len(result.content) == 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == "README.md"
-        assert diff_item.old_text == "old line"
-        assert diff_item.new_text == "old line\nnew line"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "✅ patch completed" in item.content.text
+        assert "README.md" in item.content.text
 
     def test_build_tool_complete_for_patch_falls_back_to_text_when_no_diff(self):
         result = build_tool_complete("tc-p2", "patch", '{"success": true}')
         assert isinstance(result, ToolCallProgress)
         assert isinstance(result.content[0], ContentToolCallContent)
 
-    def test_build_tool_complete_for_write_file_uses_snapshot_diff(self, tmp_path):
+    def test_build_tool_complete_for_write_file_summarizes_without_repeating_diff(self, tmp_path):
         target = tmp_path / "diff-test.txt"
         snapshot = type("Snapshot", (), {"paths": [target], "before": {str(target): None}})()
         target.write_text("hello from hermes\n", encoding="utf-8")
@@ -476,11 +504,10 @@ class TestBuildToolComplete:
         )
         assert isinstance(result, ToolCallProgress)
         assert len(result.content) == 1
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path.endswith("diff-test.txt")
-        assert diff_item.old_text is None
-        assert diff_item.new_text == "hello from hermes"
+        item = result.content[0]
+        assert isinstance(item, ContentToolCallContent)
+        assert "✅ write_file completed" in item.content.text
+        assert "diff-test.txt" in item.content.text
 
 
 # ---------------------------------------------------------------------------

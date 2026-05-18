@@ -1396,7 +1396,7 @@ def _detect_light_mode() -> bool:
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
             if last.isdigit():
                 bg = int(last)
-                if bg in (7, 15):
+                if bg in {7, 15}:
                     result = True
                     _LIGHT_MODE_CACHE = result
                     return result
@@ -2412,6 +2412,7 @@ def _looks_like_slash_command(text: str) -> bool:
 
 from agent.skill_commands import (
     scan_skill_commands,
+    get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
 )
@@ -4250,7 +4251,13 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
-        if not isinstance(api_key, str) or not api_key:
+        # A callable api_key is a bearer-token provider (Azure Foundry
+        # Entra ID — ``azure_identity_adapter.build_token_provider``).
+        # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
+        # invokes it before every request. Skip the string-only validation
+        # and placeholder substitution for callables.
+        _is_callable_provider = callable(api_key) and not isinstance(api_key, str)
+        if not _is_callable_provider and (not isinstance(api_key, str) or not api_key):
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
             # no API key was found, use a placeholder so the OpenAI SDK
@@ -5722,7 +5729,15 @@ class HermesCLI:
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
-        api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
+        # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
+        # provider). Never invoke it; just identify the auth surface.
+        from agent.azure_identity_adapter import is_token_provider
+        if is_token_provider(self.api_key):
+            api_key_display = "Microsoft Entra ID"
+        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
+            api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+        else:
+            api_key_display = "Not set!"
         
         print()
         title = "(^_^) Configuration"
@@ -7706,7 +7721,7 @@ class HermesCLI:
             # google-gemini/gemini-cli#19332.
             _rest = cmd_original.split(None, 1)
             _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
-            if _args in ("--delete", "-d"):
+            if _args in {"--delete", "-d"}:
                 self._delete_session_on_exit = True
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
@@ -9657,12 +9672,18 @@ class HermesCLI:
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import reload_skills, get_skill_commands
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
+
+            # Sync cli.py's module-level _skill_commands so all consumers
+            # (help display, command dispatch, Tab-completion lambda) see the
+            # updated dict without needing to restart the session.
+            global _skill_commands
+            _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -12605,6 +12626,7 @@ class HermesCLI:
                     paste_dir.mkdir(parents=True, exist_ok=True)
                     paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                     paste_file.write_text(pasted_text, encoding="utf-8")
+                    logger.info("Collapsed paste #%d: %d lines, %d chars -> %s", _paste_counter[0], line_count + 1, len(pasted_text), paste_file)
                     placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                     prefix = ""
                     if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
@@ -12667,7 +12689,7 @@ class HermesCLI:
 
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
@@ -12772,6 +12794,7 @@ class HermesCLI:
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
+                logger.info("Collapsed paste #%d: %d lines, %d chars -> %s (fallback)", _paste_counter[0], line_count + 1, len(text), paste_file)
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
@@ -13834,7 +13857,7 @@ class HermesCLI:
             if _errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
             elif (
-                _errno in (errno.EINVAL, errno.EBADF)
+                _errno in {errno.EINVAL, errno.EBADF}
                 or "is not registered" in _msg
                 or "Bad file descriptor" in _msg
                 or "Invalid argument" in _msg

@@ -44,7 +44,6 @@ import queue
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading

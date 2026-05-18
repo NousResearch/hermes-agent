@@ -1,4 +1,32 @@
-"""Browser Use cloud browser provider."""
+"""Browser Use cloud browser provider — plugin form.
+
+Subclasses :class:`agent.browser_provider.BrowserProvider` (the plugin-facing
+ABC introduced in PR #25214). The legacy in-tree module
+``tools.browser_providers.browser_use`` was removed in the same PR; this file
+is now the canonical implementation.
+
+Browser Use is the only browser backend with dual auth: a direct
+``BROWSER_USE_API_KEY`` for self-billed users, or the managed Nous tool
+gateway (which Hermes uses to bill Browser Use sessions to a Nous
+subscription). The dispatch order — direct API key first, managed gateway
+second — preserves the pre-migration behaviour in
+``tools.browser_providers.browser_use.BrowserUseProvider._get_config_or_none``.
+
+Config keys this provider responds to::
+
+    browser:
+      cloud_provider: "browser-use"   # explicit selection
+    tool_gateway:
+      browser: "gateway"              # optional: prefer managed gateway
+                                      #   even when BROWSER_USE_API_KEY is set
+
+Auth env vars (one of)::
+
+    BROWSER_USE_API_KEY=...           # https://browser-use.com
+    # OR a managed Nous gateway entry (configured via 'hermes setup')
+"""
+
+from __future__ import annotations
 
 import logging
 import os
@@ -8,11 +36,14 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from tools.browser_providers.base import CloudBrowserProvider
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from agent.browser_provider import BrowserProvider
 
 logger = logging.getLogger(__name__)
+
+# Idempotency tracking for managed-mode session creation. The managed Nous
+# gateway returns 409 "already in progress" on retried POSTs; we forward the
+# original idempotency key so the gateway can deduplicate. Cleared on
+# success or terminal failure.
 _pending_create_keys: Dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 
@@ -38,6 +69,16 @@ def _clear_pending_create_key(task_id: str) -> None:
 
 
 def _should_preserve_pending_create_key(response: requests.Response) -> bool:
+    """Decide whether to keep the idempotency key after a failed create.
+
+    Preserve the key when the failure looks retryable (5xx) OR when the
+    gateway reports the original request is still in flight (409 "already
+    in progress") — in either case, retrying with the same key lets the
+    gateway deduplicate.
+
+    Drop the key on any other 4xx (auth failure, bad request, etc.) — those
+    won't succeed by being retried.
+    """
     if response.status_code >= 500:
         return True
 
@@ -60,13 +101,24 @@ def _should_preserve_pending_create_key(response: requests.Response) -> bool:
     return "already in progress" in message
 
 
-class BrowserUseProvider(CloudBrowserProvider):
-    """Browser Use (https://browser-use.com) cloud browser backend."""
+class BrowserUseBrowserProvider(BrowserProvider):
+    """Browser Use (https://browser-use.com) cloud browser backend.
 
-    def provider_name(self) -> str:
+    Dual auth: prefers a direct BROWSER_USE_API_KEY when set, falling back
+    to the managed Nous tool gateway when ``tool_gateway.browser`` config
+    routes through it. Setting ``tool_gateway.browser: gateway`` flips the
+    order so managed billing wins even when BROWSER_USE_API_KEY is present.
+    """
+
+    @property
+    def name(self) -> str:
+        return "browser-use"
+
+    @property
+    def display_name(self) -> str:
         return "Browser Use"
 
-    def is_configured(self) -> bool:
+    def is_available(self) -> bool:
         return self._get_config_or_none() is not None
 
     # ------------------------------------------------------------------
@@ -74,6 +126,14 @@ class BrowserUseProvider(CloudBrowserProvider):
     # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+        # Import here to avoid a hard dependency at module-import time —
+        # managed_tool_gateway pulls in the Nous auth stack which can be
+        # heavy and is not needed for direct-API-key users.
+        from tools.managed_tool_gateway import resolve_managed_tool_gateway
+        from tools.tool_backend_helpers import prefers_gateway
+
+        # Direct API key wins unless the user has explicitly opted into the
+        # managed Nous gateway via ``tool_gateway.browser: gateway``.
         api_key = os.environ.get("BROWSER_USE_API_KEY")
         if api_key and not prefers_gateway("browser"):
             return {
@@ -93,6 +153,8 @@ class BrowserUseProvider(CloudBrowserProvider):
         }
 
     def _get_config(self) -> Dict[str, Any]:
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+
         config = self._get_config_or_none()
         if config is None:
             message = (
@@ -111,11 +173,10 @@ class BrowserUseProvider(CloudBrowserProvider):
     # ------------------------------------------------------------------
 
     def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
-        headers = {
+        return {
             "Content-Type": "application/json",
             "X-Browser-Use-API-Key": config["api_key"],
         }
-        return headers
 
     def create_session(self, task_id: str) -> Dict[str, object]:
         config = self._get_config()
@@ -166,7 +227,9 @@ class BrowserUseProvider(CloudBrowserProvider):
         if managed_mode:
             _clear_pending_create_key(task_id)
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-        external_call_id = response.headers.get("x-external-call-id") if managed_mode else None
+        external_call_id = (
+            response.headers.get("x-external-call-id") if managed_mode else None
+        )
 
         logger.info("Created Browser Use session %s", session_name)
 
@@ -184,7 +247,9 @@ class BrowserUseProvider(CloudBrowserProvider):
         try:
             config = self._get_config()
         except ValueError:
-            logger.warning("Cannot close Browser Use session %s — missing credentials", session_id)
+            logger.warning(
+                "Cannot close Browser Use session %s — missing credentials", session_id
+            )
             return False
 
         try:
@@ -212,7 +277,10 @@ class BrowserUseProvider(CloudBrowserProvider):
     def emergency_cleanup(self, session_id: str) -> None:
         config = self._get_config_or_none()
         if config is None:
-            logger.warning("Cannot emergency-cleanup Browser Use session %s — missing credentials", session_id)
+            logger.warning(
+                "Cannot emergency-cleanup Browser Use session %s — missing credentials",
+                session_id,
+            )
             return
         try:
             requests.patch(
@@ -222,4 +290,21 @@ class BrowserUseProvider(CloudBrowserProvider):
                 timeout=5,
             )
         except Exception as e:
-            logger.debug("Emergency cleanup failed for Browser Use session %s: %s", session_id, e)
+            logger.debug(
+                "Emergency cleanup failed for Browser Use session %s: %s", session_id, e
+            )
+
+    def get_setup_schema(self) -> Dict[str, Any]:
+        return {
+            "name": "Browser Use",
+            "badge": "paid",
+            "tag": "Cloud browser with remote execution",
+            "env_vars": [
+                {
+                    "key": "BROWSER_USE_API_KEY",
+                    "prompt": "Browser Use API key",
+                    "url": "https://browser-use.com",
+                },
+            ],
+            "post_setup": "agent_browser",
+        }

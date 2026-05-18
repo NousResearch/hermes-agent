@@ -401,6 +401,23 @@ async def _redirect_handler(authorization_url: str) -> None:
     )
     print(msg, file=sys.stderr)
 
+    # On a remote SSH session the OAuth provider redirects to
+    # http://127.0.0.1:<port>/callback, which reaches the callback server on
+    # the *remote* machine — not the user's local machine where the browser
+    # opened.  Print a port-forward hint so the user knows to tunnel first.
+    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+        print(
+            f"  Remote session detected. The OAuth provider will redirect your browser to\n"
+            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"  which the callback listener on THIS machine is waiting on. If your browser\n"
+            f"  is on a different machine, forward the port first in a separate terminal:\n"
+            f"\n"
+            f"    ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"\n"
+            f"  Then open the URL above. See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+            file=sys.stderr,
+        )
+
     if _can_open_browser():
         try:
             opened = webbrowser.open(authorization_url)

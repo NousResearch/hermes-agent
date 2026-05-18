@@ -188,21 +188,42 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
+_NIX_UPDATE_MSG = "Update your Nix flake input and rebuild (e.g. nix flake update, nixos-rebuild, or home-manager switch)"
+
+
 def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
     if managed_system == "NixOS":
-        return "sudo nixos-rebuild switch"
+        return _NIX_UPDATE_MSG
     return None
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: 'nixos', 'homebrew', 'git', or 'pip'."""
+    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+
+    Resolution order:
+    1. Stamped ``~/.hermes/.install_method`` file (written by installers)
+    2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    3. Container detection (/.dockerenv, /run/.containerenv, cgroup)
+    4. .git directory presence -> 'git'
+    5. Fallback -> 'pip'
+    """
+    stamp = get_hermes_home() / ".install_method"
+    try:
+        method = stamp.read_text(encoding="utf-8").strip().lower()
+        if method:
+            return method
+    except OSError:
+        pass
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
+    from hermes_constants import is_container
+    if is_container():
+        return "docker"
     if project_root is None:
         project_root = Path(__file__).parent.parent.resolve()
     if (project_root / ".git").is_dir():
@@ -210,12 +231,24 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     return "pip"
 
 
+def stamp_install_method(method: str) -> None:
+    """Write the install method to ~/.hermes/.install_method."""
+    stamp = get_hermes_home() / ".install_method"
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(method + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def recommended_update_command_for_method(method: str) -> str:
-    """Return the update command for a given install method."""
+    """Return the update command or guidance for a given install method."""
     if method == "nixos":
-        return "sudo nixos-rebuild switch"
+        return _NIX_UPDATE_MSG
     if method == "homebrew":
         return "brew upgrade hermes-agent"
+    if method == "docker":
+        return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
         import shutil
         uv = shutil.which("uv")
@@ -871,15 +904,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
-        },
+        # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
+        # single-shape tool returns DB content directly). The old
+        # ``auxiliary.session_search.*`` block was removed here. Existing
+        # values in user config.yaml files are harmless leftovers and ignored.
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -923,6 +951,31 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,
+            "extra_body": {},
+        },
+        # Kanban decomposer — decomposes a triage task into a graph of
+        # child tasks routed to specialist profiles by description.
+        # Invoked by ``hermes kanban decompose`` and the kanban
+        # auto-decompose dispatcher tick. Returns a JSON task graph;
+        # uses more tokens than the specifier so allow more headroom.
+        "kanban_decomposer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+        },
+        # Profile describer — auto-generates a 1-2 sentence description
+        # of what a profile is good at. Invoked by
+        # ``hermes profile describe <name> --auto`` and the dashboard's
+        # auto-generate button. Short, cheap call.
+        "profile_describer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
             "extra_body": {},
         },
         # Curator — skill-usage review fork. Timeout is generous because the
@@ -1306,6 +1359,18 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
+        # When True, any uploaded file is cached to disk with mime
+        # application/octet-stream and the path is surfaced to the agent so it
+        # can use terminal/read_file/etc. against it. Default False preserves
+        # the historical allowlist behaviour.
+        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        "allow_any_attachment": False,
+        # Maximum bytes per attachment the gateway will cache. The whole file
+        # is held in memory while being written, so unlimited uploads carry a
+        # real memory cost. Default 32 MiB matches the historical hardcoded
+        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        "max_attachment_bytes": 33554432,
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1454,6 +1519,30 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
+        # the historical 2 MiB + one-backup behavior; long-running workers can
+        # raise these to keep more early failure evidence.
+        "worker_log_rotate_bytes": 2 * 1024 * 1024,
+        "worker_log_backup_count": 1,
+        # Profile that decomposes tasks in the Triage column. When unset,
+        # falls back to the default profile (the one `hermes` launches with
+        # no -p flag). Set this to a dedicated 'orchestrator' profile if you
+        # want decomposition to use a different model/skills from your main
+        # working profile.
+        "orchestrator_profile": "",
+        # Where a child task lands if the orchestrator can't match an
+        # assignee to any installed profile. When unset, falls back to the
+        # default profile. A task never ends up with assignee=None.
+        "default_assignee": "",
+        # When true, the kanban dispatcher auto-runs the decomposer on
+        # tasks that land in Triage (every dispatcher tick). When false,
+        # decomposition is manual via `hermes kanban decompose <id>` or
+        # the dashboard's Decompose button.
+        "auto_decompose": True,
+        # Max triage tasks to decompose per dispatcher tick. Prevents a
+        # large bulk-load of triage tasks from spending a burst of aux
+        # LLM calls in one tick. Excess tasks defer to the next tick.
+        "auto_decompose_per_tick": 3,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2902,6 +2991,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "discover_models",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2991,6 +3081,10 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    discover_models = entry.get("discover_models")
+    if isinstance(discover_models, bool):
+        normalized["discover_models"] = discover_models
 
     return normalized
 

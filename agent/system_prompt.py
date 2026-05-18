@@ -258,7 +258,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+    # Date-only (not minute-precision) so the system prompt is byte-stable
+    # for the full day.  Minute-precision changes invalidate prefix-cache KV
+    # on every rebuild path (compression boundary, fresh-agent gateway turns,
+    # session resume without a stored prompt).  The model can still query the
+    # exact wall-clock time via tools when it actually needs it.
+    # Credit: @iamfoz (PR #20451).
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

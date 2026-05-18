@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import time
 from pathlib import Path
@@ -746,6 +747,123 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
         )
         res = kb.dispatch_once(conn, dry_run=True)
     assert res.reclaimed == 1
+
+
+def test_dispatch_refuses_to_spawn_when_task_row_vanishes_mid_tick(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Dispatch-time orphan guard (kanban card t_398ca944).
+
+    Foreign process DELETEs the ``tasks`` row in the window between
+    ``claim_task`` (which CAS-flipped ``ready -> running``) and the
+    just-before-spawn re-check. The dispatcher must:
+
+      1. NOT call spawn_fn for the vanished task.
+      2. Close the just-created ``task_runs`` row as
+         ``status='released' / outcome='reclaimed'`` with the
+         documented summary.
+      3. Emit a ``task_events`` row of ``kind='reclaimed'`` with
+         ``payload.reason == 'task-row-missing-at-spawn'``.
+      4. Surface the id in ``DispatchResult.reclaimed_at_spawn``.
+
+    Sibling ``test_dispatch_spawn_failure_releases_claim`` covers the
+    OTHER race (spawn_fn raises). This case is distinct: the row is
+    gone before we ever ask the spawner, so we never fork at all.
+    """
+    spawns: list[str] = []
+    real_claim = kb.claim_task
+
+    def claim_then_delete(conn, task_id, **kwargs):
+        # Real claim flips status + writes task_runs row. Then we
+        # simulate the foreign DELETE before the dispatch loop's
+        # re-check runs.
+        task = real_claim(conn, task_id, **kwargs)
+        if task is not None:
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.commit()
+        return task
+
+    monkeypatch.setattr(kb, "claim_task", claim_then_delete)
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+        return 4242
+
+    with kb.connect() as conn:
+        good = kb.create_task(conn, title="survives", assignee="alice")
+        doomed = kb.create_task(conn, title="vanishes", assignee="bob")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    # Spawn loop iterates ready tasks in priority/created order. Both
+    # were monkeypatched, so BOTH get DELETEd between claim and the
+    # re-check. We assert on the structural shape, not the count: every
+    # claimed-then-vanished task must be reclaimed_at_spawn, none must
+    # be spawned.
+    assert spawns == [], (
+        f"spawn_fn was called for at least one vanished task: {spawns!r}"
+    )
+    assert set(res.reclaimed_at_spawn) == {good, doomed}, (
+        f"reclaimed_at_spawn={res.reclaimed_at_spawn!r}"
+    )
+    assert res.spawned == []
+
+    with kb.connect() as conn:
+        # task_runs row(s) must be closed with the documented values.
+        runs = conn.execute(
+            "SELECT task_id, status, outcome, summary, ended_at, "
+            "claim_lock, claim_expires, worker_pid "
+            "FROM task_runs ORDER BY id"
+        ).fetchall()
+        assert len(runs) == 2
+        for row in runs:
+            assert row["status"] == "released"
+            assert row["outcome"] == "reclaimed"
+            assert row["summary"] == "task row missing at spawn time"
+            assert row["ended_at"] is not None
+            assert row["claim_lock"] is None
+            assert row["claim_expires"] is None
+            assert row["worker_pid"] is None
+
+        # And a task_events 'reclaimed' row was written per task with
+        # the documented payload reason.
+        events = conn.execute(
+            "SELECT task_id, kind, payload FROM task_events "
+            "WHERE kind = 'reclaimed' ORDER BY id"
+        ).fetchall()
+        assert len(events) == 2
+        seen_task_ids = set()
+        for ev in events:
+            payload = json.loads(ev["payload"])
+            assert payload["reason"] == "task-row-missing-at-spawn"
+            assert payload["run_id"] is not None
+            seen_task_ids.add(ev["task_id"])
+        assert seen_task_ids == {good, doomed}
+
+
+def test_dispatch_normal_path_does_not_trigger_orphan_guard(
+    kanban_home, all_assignees_spawnable
+):
+    """Sanity check: when the tasks row stays put, reclaimed_at_spawn
+    is empty and the worker is spawned exactly once.
+
+    Guards against a regression where the spawn-time re-check
+    accidentally trips on healthy tasks (e.g. wrong column name, SQL
+    typo, missing commit visibility).
+    """
+    spawns: list[str] = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+        return 9999
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="happy path", assignee="alice")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert spawns == [t]
+    assert res.reclaimed_at_spawn == []
+    assert len(res.spawned) == 1
+    assert res.spawned[0][0] == t
 
 
 # ---------------------------------------------------------------------------

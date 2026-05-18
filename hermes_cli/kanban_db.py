@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -84,6 +85,9 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -3092,6 +3096,23 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    reclaimed_at_spawn: list[str] = field(default_factory=list)
+    """Task ids that were successfully claimed by ``claim_task`` but
+    whose ``tasks`` row vanished before we could fork the worker (i.e.
+    between the CAS that flipped ``ready -> running`` and the
+    just-before-spawn re-check). For each id we close the just-created
+    ``task_runs`` row with ``status='released' / outcome='reclaimed'``
+    and emit a ``task_events`` row of ``kind='reclaimed'`` with
+    ``payload={"reason": "task-row-missing-at-spawn"}``.
+
+    The Hermes codebase never DELETEs from ``tasks`` (only sets
+    ``status='archived'``), so a non-empty list here means a foreign
+    process touched the SQLite file directly. The dispatch-time guard
+    exists so that race burns ~zero LiteLLM tokens instead of spinning
+    up a full worker that finds nothing to do. See kanban card
+    ``t_398ca944`` for the forensic background (sibling ``t_44c9eb37``
+    handles the periodic reaper for orphan runs that slip through this
+    guard)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -3854,10 +3875,15 @@ def dispatch_once(
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
-         ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
-         return value (if any) is recorded as ``worker_pid`` so subsequent
-         ticks can detect crashes before the TTL expires.
+      4. For each ready task with an assignee, atomically claim, then
+         re-check the ``tasks`` row still exists (defense in depth
+         against foreign ``DELETE FROM tasks`` mid-dispatch — see card
+         ``t_398ca944``; on row-vanished we close the just-created
+         ``task_runs`` row as ``released/reclaimed`` and skip the
+         spawn instead of burning a worker boot), then call
+         ``spawn_fn(task, workspace_path, board) -> Optional[int]``.
+         The return value (if any) is recorded as ``worker_pid`` so
+         subsequent ticks can detect crashes before the TTL expires.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
@@ -3977,6 +4003,73 @@ def dispatch_once(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        # Defense in depth (card t_398ca944): re-check the tasks row
+        # exists right before we fork a worker subprocess. claim_task
+        # already proved the row existed during the CAS, but in the
+        # window between that commit and this read someone could
+        # ``DELETE FROM tasks WHERE id=?`` directly via sqlite3 — the
+        # codebase itself never does this (only ``UPDATE status=
+        # 'archived'``), but on 2026-05-18 a foreign process nuked 28
+        # rows mid-dispatch and the previous tick spawned 28 workers
+        # that burned ~4 minutes of LiteLLM tokens each before their
+        # ``kanban_show`` failed. Catch the race here so the cost of a
+        # vanished task is one extra SELECT, not a full agent boot.
+        still_exists = conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?", (claimed.id,),
+        ).fetchone()
+        if not still_exists:
+            now = int(time.time())
+            run_id = claimed.current_run_id
+            with write_txn(conn):
+                if run_id is not None:
+                    conn.execute(
+                        """
+                        UPDATE task_runs
+                           SET status        = 'released',
+                               outcome       = 'reclaimed',
+                               summary       = 'task row missing at spawn time',
+                               ended_at      = ?,
+                               claim_lock    = NULL,
+                               claim_expires = NULL,
+                               worker_pid    = NULL
+                         WHERE id = ?
+                           AND ended_at IS NULL
+                        """,
+                        (now, int(run_id)),
+                    )
+                # Emit a task_events row for audit. The owning tasks
+                # row is gone, so this is a soft orphan event (no FK
+                # is declared on task_events.task_id, so the INSERT
+                # succeeds). The sibling orphan-runs reaper
+                # (t_44c9eb37) explicitly does NOT emit events for
+                # this case because the row would be orphaned; at
+                # dispatch time we still emit one so an operator
+                # tailing ``task_events`` can correlate the SIGTERM
+                # window without grepping the dispatcher log.
+                payload = json.dumps(
+                    {
+                        "reason": "task-row-missing-at-spawn",
+                        "run_id": run_id,
+                        "assignee": claimed.assignee,
+                    },
+                    ensure_ascii=False,
+                )
+                conn.execute(
+                    "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (claimed.id, run_id, "reclaimed", payload, now),
+                )
+            result.reclaimed_at_spawn.append(claimed.id)
+            # WARNING so it lands in ~/.hermes/logs/errors.log via
+            # the standard handler chain (hermes_logging.setup_logging
+            # routes WARNING+ to errors.log).
+            _log.warning(
+                "kanban dispatcher: refusing to spawn worker for %s — "
+                "tasks row vanished between claim and spawn (run_id=%s); "
+                "closed run as reclaimed. Foreign DELETE FROM tasks suspected.",
+                claimed.id, run_id,
+            )
             continue
         try:
             workspace = resolve_workspace(claimed, board=board)

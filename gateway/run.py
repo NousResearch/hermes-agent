@@ -6607,14 +6607,37 @@ class GatewayRunner:
                 return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
+            # #24362 — ``/new all`` resets every topic session in the
+            # current group chat.  Without a tailored confirmation message
+            # the user sees the single-session prompt ("discards the
+            # current conversation history") and would have no way to
+            # tell apart the bulk wipe from a normal /new.  We detect the
+            # bulk token here (same matcher as the handler, see
+            # _is_bulk_reset_token) and surface a distinct detail string
+            # so the confirm dialog accurately describes the scope.
+            _raw_args = event.get_command_args() if event else ""
+            if (
+                self._is_bulk_reset_token(_raw_args)
+                and self._chat_type_is_group_like(source.chat_type)
+            ):
+                _confirm_title = "/new all"
+                _confirm_detail = (
+                    "This resets EVERY topic/thread session in the current "
+                    "group chat that you can reset, not just this one. Use "
+                    "this after a model/provider switch to keep all topics "
+                    "consistent."
+                )
+            else:
+                _confirm_title = "/new"
+                _confirm_detail = (
+                    "This starts a fresh session and discards the current "
+                    "conversation history."
+                )
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="new",
-                title="/new",
-                detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
-                ),
+                title=_confirm_title,
+                detail=_confirm_detail,
                 execute=_do_reset,
             )
 
@@ -8340,10 +8363,133 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    # Reserved tokens that, when passed as the ``/new`` / ``/reset`` argument,
+    # switch the handler from "reset this session" to "reset every topic
+    # session in this group chat" (#24362).  Kept case-insensitive so users
+    # don't have to remember the exact spelling.  ``*`` is included as a
+    # power-user alias mirroring the shell glob.  Anyone who legitimately
+    # wants a session *titled* "all" can pick a different one-word title
+    # (e.g. ``/new all-hands``) — the bulk-reset semantics deliberately win
+    # over title-setting because the feature request explicitly asked for
+    # ``/new all`` as the slash spelling.
+    _BULK_RESET_ARG_TOKENS = frozenset({"all", "*"})
+
+    @staticmethod
+    def _is_bulk_reset_token(raw_arg: str) -> bool:
+        """Return True iff ``raw_arg`` requests a bulk topic reset.
+
+        Centralised so the dispatch confirmation site and the actual
+        handler use the same matcher (otherwise ``/new ALL`` would confirm
+        as a per-session reset and then surprise the user with a bulk
+        wipe).
+        """
+        return raw_arg.strip().lower() in GatewayRunner._BULK_RESET_ARG_TOKENS
+
+    @staticmethod
+    def _chat_type_is_group_like(chat_type: Optional[str]) -> bool:
+        """Return True for chat types where ``/new all`` is meaningful.
+
+        DMs only ever have one ``(chat_id, thread_id)`` session per user;
+        bulk reset is a no-op there and worse — if we let it run, a stray
+        ``/new all`` could quietly reset a user's private session because
+        they typed it in the wrong place.  We restrict bulk reset to
+        anything that is NOT a DM/private chat: groups, supergroups,
+        Telegram forum topics, Discord/Slack threads, channels.
+        """
+        normalized = (chat_type or "").strip().lower()
+        return normalized not in {"", "dm", "private"}
+
+    def _collect_topic_session_keys_for_bulk_reset(
+        self, source: SessionSource
+    ) -> List[str]:
+        """Return all session keys eligible for ``/new all`` from ``source``.
+
+        Used by the bulk-reset path of ``_handle_reset_command`` (#24362).
+
+        Filter rules (every entry must satisfy ALL of these):
+
+          1. ``entry.platform == source.platform`` — never cross platforms
+             (a stray Slack session with the same chat_id must not be
+             touched by a Telegram ``/new all``).
+          2. ``entry.chat_type`` is group-like (see
+             :meth:`_chat_type_is_group_like`).  We deliberately skip DMs
+             even if their chat_id collides — the feature is about
+             Telegram forum topics / group threads, not private chats.
+          3. ``entry.origin and entry.origin.chat_id == source.chat_id`` —
+             same parent group/channel.
+          4. Per-user scoping safety net: when the entry was created with
+             a ``user_id`` AND that ``user_id`` differs from
+             ``source.user_id``, skip it.  This protects per-user-thread
+             mode (``thread_sessions_per_user: true``) — user A typing
+             ``/new all`` must never wipe user B's threads.  Shared-thread
+             entries (no per-user isolation) are reset normally because
+             that's the entire point of the feature request.
+
+        DM-issued bulk reset returns an empty list — the caller handles
+        the user-facing "not in a group" message.
+        """
+        if not self._chat_type_is_group_like(source.chat_type):
+            return []
+
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return []
+        entries = getattr(store, "_entries", None)
+        if not isinstance(entries, dict):
+            return []
+
+        source_chat_id = source.chat_id
+        if not source_chat_id:
+            # No chat_id → we cannot identify siblings.  Bail out instead
+            # of accidentally matching every group entry on this platform.
+            return []
+        source_user_id = source.user_id
+
+        keys: List[str] = []
+        for key, entry in entries.items():
+            entry_platform = getattr(entry, "platform", None)
+            if entry_platform != source.platform:
+                continue
+            if not self._chat_type_is_group_like(getattr(entry, "chat_type", None)):
+                continue
+            origin = getattr(entry, "origin", None)
+            if origin is None or getattr(origin, "chat_id", None) != source_chat_id:
+                continue
+            entry_user_id = getattr(origin, "user_id", None)
+            if (
+                entry_user_id
+                and source_user_id
+                and entry_user_id != source_user_id
+            ):
+                # Per-user scoped entry belonging to someone else: skip.
+                continue
+            keys.append(key)
+        return keys
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
+        """Handle /new or /reset command.
+
+        Two modes:
+          * Default — reset the single session that issued the command
+            (historical behaviour, used by every prior caller).
+          * Bulk (``/new all`` or ``/reset all``) — reset every topic
+            session in the same group chat that the caller is entitled
+            to reset.  See :meth:`_collect_topic_session_keys_for_bulk_reset`
+            for the eligibility rules.  Feature #24362.
+        """
         source = event.source
-        
+
+        # Bulk path: detect ``/new all`` BEFORE the title-setting logic
+        # below consumes the raw argument.  Restricted to group-like chats
+        # so a DM ``/new all`` falls through to "fresh session titled all"
+        # (which is the only sensible interpretation in a DM — there are
+        # no sibling topic sessions to reset there).
+        _raw_args = event.get_command_args().strip()
+        if self._is_bulk_reset_token(_raw_args) and self._chat_type_is_group_like(
+            source.chat_type
+        ):
+            return await self._handle_reset_command_bulk(event)
+
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
@@ -8487,6 +8633,271 @@ class GatewayRunner:
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
+
+    def _reset_single_topic_session_for_bulk(
+        self, session_key: str
+    ) -> Optional["SessionEntry"]:
+        """Reset one sibling topic session in-place during ``/new all``.
+
+        Performs the same conversation-boundary teardown that the
+        single-session path does (cache eviction, queued-event drop,
+        env passthrough / credential clearing, session_id rotation,
+        per-session override and security-state cleanup, Telegram topic
+        rebinding) but without the user-facing reply, slash confirmation,
+        or run-generation invalidation messages — those belong to the
+        caller (#24362).
+
+        Returns the freshly-created :class:`SessionEntry`, or ``None`` if
+        the key no longer exists in the store (e.g. it was pruned in the
+        microseconds since we collected sibling keys).
+        """
+        # Invalidate any in-flight run generation token so a racing
+        # response never lands in the freshly-rotated session.
+        try:
+            self._invalidate_session_run_generation(
+                session_key, reason="session_reset_bulk"
+            )
+        except Exception:
+            logger.debug(
+                "bulk-reset: invalidate_run_generation failed for %s",
+                session_key,
+                exc_info=True,
+            )
+
+        # Close tool resources on the cached agent (terminals, browser
+        # daemons, background processes) BEFORE evicting from cache.
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            try:
+                with _cache_lock:
+                    _cached = self._agent_cache.get(session_key)
+                    _old_agent = (
+                        _cached[0]
+                        if isinstance(_cached, tuple)
+                        else _cached
+                        if _cached
+                        else None
+                    )
+                if _old_agent is not None:
+                    self._cleanup_agent_resources(_old_agent)
+            except Exception:
+                logger.debug(
+                    "bulk-reset: agent-cache cleanup failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        try:
+            self._evict_cached_agent(session_key)
+        except Exception:
+            logger.debug(
+                "bulk-reset: evict_cached_agent failed for %s",
+                session_key,
+                exc_info=True,
+            )
+
+        # Drop any /queue overflow attached to this sibling — it's stale
+        # by definition once we rotate the session_id.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
+
+        # NOTE: env_passthrough / credential_files are process-global, so
+        # we clear them once in the caller (not per-sibling).
+
+        try:
+            new_entry = self.session_store.reset_session(session_key)
+        except Exception:
+            logger.exception(
+                "bulk-reset: session_store.reset_session failed for %s",
+                session_key,
+            )
+            return None
+
+        # Per-session overrides and approval state — must follow each
+        # sibling's session_id rotation, not just the caller's session.
+        try:
+            self._session_model_overrides.pop(session_key, None)
+        except Exception:
+            pass
+        try:
+            self._set_session_reasoning_override(session_key, None)
+        except Exception:
+            pass
+        if hasattr(self, "_pending_model_notes"):
+            try:
+                self._pending_model_notes.pop(session_key, None)
+            except Exception:
+                pass
+        try:
+            self._clear_session_boundary_security_state(session_key)
+        except Exception:
+            logger.debug(
+                "bulk-reset: clear_session_boundary_security_state failed for %s",
+                session_key,
+                exc_info=True,
+            )
+
+        # Telegram topic-lane rebinding: each sibling has its own
+        # (chat_id, thread_id) tuple stored on entry.origin, so we
+        # rebind per sibling.  Without this the binding still points at
+        # the old session and the next message in that topic would
+        # silently switch back.
+        if new_entry is not None and getattr(new_entry, "origin", None) is not None:
+            try:
+                if self._is_telegram_topic_lane(new_entry.origin):
+                    self._record_telegram_topic_binding(new_entry.origin, new_entry)
+            except Exception:
+                logger.debug(
+                    "bulk-reset: telegram topic rebind failed for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        return new_entry
+
+    async def _handle_reset_command_bulk(
+        self, event: MessageEvent
+    ) -> Union[str, EphemeralReply]:
+        """Handle ``/new all`` / ``/reset all`` — bulk reset every sibling
+        topic session in the current group chat (#24362).
+
+        Reply policy: a single acknowledgement is sent back to the topic
+        that issued the command, summarising how many sibling sessions
+        were reset.  Per-topic acks are intentionally NOT emitted — they
+        would race the user's next message in each topic and create
+        notification spam in groups with many threads.
+
+        Caller-side teardown order matches the single-session reset:
+          1. Collect eligible sibling keys.
+          2. Clear process-global state (env passthrough, credential
+             files) ONCE — it's not per-session.
+          3. Reset each sibling via :meth:`_reset_single_topic_session_for_bulk`.
+          4. Fire session-end / session-reset hooks per sibling.
+          5. Send a single summary acknowledgement.
+        """
+        source = event.source
+
+        sibling_keys = self._collect_topic_session_keys_for_bulk_reset(source)
+        if not sibling_keys:
+            # No sessions to reset (e.g. user issued ``/new all`` in a
+            # freshly-joined group with no recorded topic sessions yet).
+            # Fall back to a friendly notice — DON'T silently no-op.
+            return EphemeralReply(t("gateway.reset.bulk_empty"))
+
+        # Process-global resources only need to be cleared once.
+        try:
+            from tools.env_passthrough import clear_env_passthrough
+            clear_env_passthrough()
+        except Exception:
+            pass
+        try:
+            from tools.credential_files import clear_credential_files
+            clear_credential_files()
+        except Exception:
+            pass
+
+        # Snapshot the pre-reset entries so we can fire session:end with
+        # accurate session_ids AFTER reset_session() has rotated them.
+        store = self.session_store
+        old_session_ids: Dict[str, Optional[str]] = {}
+        old_origins: Dict[str, Optional[SessionSource]] = {}
+        for key in sibling_keys:
+            existing = store._entries.get(key) if hasattr(store, "_entries") else None
+            old_session_ids[key] = (
+                getattr(existing, "session_id", None) if existing else None
+            )
+            old_origins[key] = (
+                getattr(existing, "origin", None) if existing else None
+            )
+
+        reset_count = 0
+        failed_keys: List[str] = []
+        for key in sibling_keys:
+            new_entry = self._reset_single_topic_session_for_bulk(key)
+            if new_entry is None:
+                failed_keys.append(key)
+                continue
+            reset_count += 1
+
+            # Fire plugin + hook events per sibling so plugins (e.g.
+            # compress, transcript exporters) see a clean session
+            # boundary for each topic — matching the single-session path.
+            _src_for_hook = old_origins.get(key) or source
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_finalize",
+                    session_id=old_session_ids.get(key),
+                    platform=(
+                        _src_for_hook.platform.value
+                        if _src_for_hook.platform
+                        else ""
+                    ),
+                )
+            except Exception:
+                pass
+
+            try:
+                await self.hooks.emit("session:end", {
+                    "platform": (
+                        _src_for_hook.platform.value
+                        if _src_for_hook.platform
+                        else ""
+                    ),
+                    "user_id": _src_for_hook.user_id,
+                    "session_key": key,
+                })
+                await self.hooks.emit("session:reset", {
+                    "platform": (
+                        _src_for_hook.platform.value
+                        if _src_for_hook.platform
+                        else ""
+                    ),
+                    "user_id": _src_for_hook.user_id,
+                    "session_key": key,
+                })
+            except Exception:
+                logger.debug(
+                    "bulk-reset: hook emit failed for %s",
+                    key,
+                    exc_info=True,
+                )
+
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_reset",
+                    session_id=new_entry.session_id,
+                    platform=(
+                        _src_for_hook.platform.value
+                        if _src_for_hook.platform
+                        else ""
+                    ),
+                )
+            except Exception:
+                pass
+
+        # User-facing summary.  Plural / singular split keeps the
+        # message grammatical without an explicit pluralisation library.
+        if reset_count == 0:
+            return EphemeralReply(t("gateway.reset.bulk_all_failed"))
+        if reset_count == 1:
+            header = t("gateway.reset.bulk_header_one")
+        else:
+            header = t("gateway.reset.bulk_header_many", count=reset_count)
+
+        try:
+            from hermes_cli.tips import get_random_tip
+            tip_line = t("gateway.reset.tip", tip=get_random_tip())
+        except Exception:
+            tip_line = ""
+
+        if failed_keys:
+            warn_line = t(
+                "gateway.reset.bulk_partial_failure",
+                failed=len(failed_keys),
+            )
+            return EphemeralReply(f"{header}\n{warn_line}{tip_line}")
+        return EphemeralReply(f"{header}{tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""

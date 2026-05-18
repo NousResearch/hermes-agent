@@ -176,8 +176,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 | Command | Description |
 |---------|-------------|
-| `/new` | Start a new conversation. |
-| `/reset` | Reset conversation history. |
+| `/new [title]` | Start a new conversation. With a one-word title (e.g. `/new website-redesign`) the fresh session is created with that title set. In a group/forum chat, `/new all` (or `/reset all`, `/new *`) bulk-resets **every topic session** the caller can reset — handy after a model or provider switch so all threads start from the same baseline. See [Bulk topic reset (`/new all`)](#bulk-topic-reset-new-all). |
+| `/reset [title \| all]` | Alias of `/new` — same single-session and `/reset all` bulk semantics. |
 | `/status` | Show session info. |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), auto-detect (`/model custom`), and user-defined aliases (`/model fav`, `/model grok` — see [Custom model aliases](#custom-model-aliases)). Use `--global` to persist the change to config.yaml. **Note:** `/model` can only switch between already-configured providers. To add a new provider or set up API keys, use `hermes model` from your terminal (outside the chat session). |
@@ -221,3 +221,30 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
 - `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
+
+## Bulk topic reset (`/new all`)
+
+In a Telegram group with [forum topics](/docs/user-guide/messaging/telegram#private-chat-topics-bot-api-94) (or a Discord/Slack channel with threads) each topic has its own independent Hermes session. After switching models or providers — e.g. `/model anthropic:claude-sonnet-5` — only the **current** topic's session sees the new defaults; the rest still hold whichever model was active when they were last touched.
+
+`/new all` resets every topic session in the current group at once, so all threads start from the same baseline.
+
+```text
+You (in topic "Website"):  /new all
+Hermes:                     ✨ Reset 5 topic sessions in this group.
+```
+
+**Aliases:** `/reset all`, `/new *`. Token matching is case-insensitive (`/new ALL`, `/new All`, etc.).
+
+**Scope rules:**
+
+- **Same group only.** Only sessions in the current group/channel (`chat_id`) are touched. Other groups, DMs, and other platforms are untouched.
+- **Cross-user safety.** When `thread_sessions_per_user: true` is set, your `/new all` only resets _your own_ per-user threads — it cannot wipe another user's threads.
+- **Shared threads** (the default `thread_sessions_per_user: false`) are reset for everyone — that's the point of the feature.
+- **DMs** fall through to the normal `/new <title>` behaviour. `/new all` in a DM creates a fresh session titled `"all"`, which is the only sensible interpretation there.
+
+**Confirmation.** When `approvals.destructive_slash_confirm` is enabled (the default), the gateway prompts you to confirm before running the reset. The prompt for `/new all` uses a tailored detail string so you aren't blindsided by the wider blast radius:
+
+> This resets EVERY topic/thread session in the current group chat that you can reset, not just this one. Use this after a model/provider switch to keep all topics consistent.
+
+This addresses feature request [#24362](https://github.com/NousResearch/hermes-agent/issues/24362).
+

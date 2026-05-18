@@ -677,6 +677,7 @@ def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
     allow_stream: bool = False,
+    is_xai_responses: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -756,6 +757,13 @@ def _preflight_codex_api_kwargs(
         "store": False,
     }
     if normalized_tools is not None:
+        # xAI's Responses endpoint rejects string enum values containing "/"
+        # (e.g. "application/json", "*/*") with an opaque "Invalid arguments
+        # passed to the model." SSE error frame. The Brave Search MCP ships
+        # tools with such enums on its `accept` header parameter.
+        if is_xai_responses:
+            from tools.schema_sanitizer import strip_xai_incompatible_enum_values
+            strip_xai_incompatible_enum_values(normalized_tools)
         normalized["tools"] = normalized_tools
 
     # Pass through reasoning config

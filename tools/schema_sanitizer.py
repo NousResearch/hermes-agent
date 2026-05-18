@@ -380,3 +380,87 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+# =============================================================================
+# xAI Responses — strip enum values containing "/"
+# =============================================================================
+
+
+def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], int]:
+    """Drop string ``enum`` values containing ``/`` from tool parameter schemas.
+
+    xAI's ``/v1/responses`` schema validator rejects any tool whose parameter
+    schema contains a string enum value with a ``/`` character (e.g.
+    ``"application/json"``, ``"*/*"``, ``"text/plain"``). When the request is
+    submitted, the server returns HTTP 200 with a single SSE ``event: error``
+    frame whose ``message`` is the opaque ``"Invalid arguments passed to the
+    model."``, then closes the stream. This aborts every agent turn.
+
+    The most common offender is the official Brave Search MCP server, which
+    advertises HTTP-header parameters such as
+    ``{"accept": {"type": "string", "enum": ["application/json", "*/*"]}}``
+    on its ``brave_llm_context`` and ``brave_place_search`` tools. Other
+    Responses-compatible backends (OpenAI Codex, Anthropic-via-OpenAI) accept
+    these enums, so the strip is gated by the caller on the xAI path only.
+
+    These enums describe HTTP plumbing the model has no business emitting as
+    a function-call argument, so removing them is safe — but the property
+    keeps its ``"type": "string"`` typing so any free-form value the model
+    does emit still validates.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list, mutated in place.
+
+    Returns:
+        ``(tools, stripped_count)`` — same list reference plus a count of how
+        many slash-containing enum values were removed.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            enum_values = node.get("enum")
+            if isinstance(enum_values, list):
+                kept = [v for v in enum_values if not (isinstance(v, str) and "/" in v)]
+                if len(kept) != len(enum_values):
+                    stripped += len(enum_values) - len(kept)
+                    if kept:
+                        node["enum"] = kept
+                    else:
+                        node.pop("enum", None)
+            for value in list(node.values()):
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+
+        # Responses-format: {"name": "...", "parameters": {...}}
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+
+    if stripped:
+        logger.info(
+            "schema_sanitizer: stripped %d slash-containing enum value(s) "
+            "from tool schemas (xAI Responses compatibility)",
+            stripped,
+        )
+    return tools, stripped

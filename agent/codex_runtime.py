@@ -337,7 +337,15 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     active_client = client or agent._ensure_primary_openai_client(reason="codex_create_stream_fallback")
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
-    fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
+    is_xai_responses = (
+        agent.provider in {"xai", "xai-oauth"}
+        or getattr(agent, "_base_url_hostname", None) == "api.x.ai"
+    )
+    fallback_kwargs = agent._get_transport().preflight_kwargs(
+        fallback_kwargs,
+        allow_stream=True,
+        is_xai_responses=is_xai_responses,
+    )
     stream_or_response = active_client.responses.create(**fallback_kwargs)
 
     # Compatibility shim for mocks or providers that still return a concrete response.

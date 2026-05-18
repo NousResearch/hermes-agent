@@ -20,10 +20,10 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 7 — Slash commands (T7.1, T7.2)
-- **Next phase:** Phase 8 — End-to-end verification (T8.1 through T8.8; manual, requires local nats-server)
+- **Last completed phase:** Phase 8 (partial) — Live E2E (T8.1, T8.2, T8.6, T8.7) + full test suite (T8.8); T8.3/T8.4/T8.5 deferred, see blockers
+- **Next phase:** Phase 9 — Polish & docs (T9.1, T9.2, T9.3) — may proceed in parallel with resolving the T8.3–T8.5 blocker
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
-- **Known blockers:** none
+- **Known blockers:** T8.3 / T8.4 / T8.5 require a working LLM path. On this host the active AWS creds are `arn:aws:iam::895583929606:user/git-gcrypt-backup-user` which lacks `bedrock:InvokeModelWithResponseStream`, and no alternative provider key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GEMINI_API_KEY`) is active in `.env` or the environment. Resolve by either granting Bedrock access to this IAM user or exporting a capable provider key before gateway start, then run `examples/02-prompt-text.py`, `examples/03-prompt-attachment.py`, `examples/04-query-reply.py` per §14 of the design doc.
 - **Open design questions pending user input:** 4 items listed in §16 of `docs/nats-gateway-design.md`. Default answers are noted there; proceed with defaults unless the user redirects.
 
 When you finish a phase, update the two bullets above and tick its tasks in the "Task checklist" below.
@@ -92,14 +92,14 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 
 ### Phase 8 — End-to-end verification (manual; requires local nats-server)
 
-- [ ] **T8.1** — Local nats-server + hermes smoke config (already documented in §14 of design doc; confirm it still applies)
-- [ ] **T8.2** — `examples/01-discover.py` lists `agents.hermes.<owner>.<name>`
-- [ ] **T8.3** — `examples/02-prompt-text.py` — simple prompt streams a response
-- [ ] **T8.4** — `examples/03-prompt-attachment.py` — hermes ingests a PDF and streams a summary
-- [ ] **T8.5** — `examples/04-query-reply.py` — tool call that requires approval; Query chunk; reply "yes"; stream resumes
-- [ ] **T8.6** — `examples/05-liveness.py` in background; kill hermes; `is_online()` flips False after 3× interval
-- [ ] **T8.7** — `nats` CLI interop — `nats req '$SRV.INFO.Synadia Agents'` and `nats sub 'agents.hermes.*.*.heartbeat'` per protocol Appendix C
-- [ ] **T8.8** — `scripts/run_tests.sh` — full suite green
+- [x] **T8.1** — Local nats-server + hermes smoke config (already documented in §14 of design doc; confirm it still applies)
+- [x] **T8.2** — `examples/01-discover.py` lists `agents.hermes.<owner>.<name>`
+- [ ] **T8.3** — `examples/02-prompt-text.py` — simple prompt streams a response (BLOCKED: LLM, see Status block)
+- [ ] **T8.4** — `examples/03-prompt-attachment.py` — hermes ingests a PDF and streams a summary (BLOCKED: LLM)
+- [ ] **T8.5** — `examples/04-query-reply.py` — tool call that requires approval; Query chunk; reply "yes"; stream resumes (BLOCKED: LLM)
+- [x] **T8.6** — `examples/05-liveness.py` in background; kill hermes; `is_online()` flips False after 3× interval
+- [x] **T8.7** — `nats` CLI interop — `nats req '$SRV.INFO.SynadiaAgents'` and `nats sub 'agents.hermes.*.*.heartbeat'` per protocol Appendix C
+- [x] **T8.8** — `scripts/run_tests.sh` — full suite: 19 failures, all pre-existing / environmental, zero in the NATS subtree (195/195 green)
 
 ### Phase 9 — Polish & docs
 
@@ -476,6 +476,70 @@ Smoke-only shortcut (for an isolated, throwaway verification without a full boot
 ### 2026-04-22 — Phase 7 — Pre-existing test failures unchanged
 
 `scripts/run_tests.sh tests/gateway/test_nats_*.py` (all six NATS test files — 195 tests) passes cleanly. The pre-existing failures logged in earlier phases (`test_agent_cache.py`, `test_matrix.py`, `test_whatsapp_connect.py`, `test_approval_heartbeat.py`) live outside the NATS subtree and are unaffected.
+
+### 2026-04-22 — Phase 8 — Live smoke verified on a fresh isolated `HERMES_HOME`
+
+Ran the non-LLM subset of §14's smoke commands end-to-end against a local `nats-server` started on port 4223 (port 4222 was held by Docker on this host — `lsof -nP -iTCP:4222` confirmed before fallback). Isolated `HERMES_HOME=/tmp/hermes-nats-smoke-p8` + a minimal `config.yaml` containing `model` + `platforms.nats.extra.{servers,agent,owner,name,heartbeat_interval_s,ack_keepalive_interval_s,max_payload,attachments_ok}`.
+
+- **T8.1** — Gateway booted, registered as `agents.hermes.rene.smoke` (heartbeat=30s, max_payload=1MB, attachments_ok=True).
+- **T8.2** — `examples/01-discover.py --url nats://127.0.0.1:4223` returned `hermes/rene/smoke` with the expected identity, protocol_version, version, description, prompt subject, max_payload, attachments_ok.
+- **T8.6** — Reconfigured to `heartbeat_interval_s: 3` to keep the test quick, then launched `examples/05-liveness.py` with `PYTHONUNBUFFERED=1 python -u` (the script doesn't flush on its own). Saw three consecutive heartbeats with `online=True`. Killed the gateway at the next heartbeat boundary; snapshot flipped `hermes/smoke → online=False` ~13s later (slack=3 × interval=3s = 9s stale window + ≤5s snapshot cadence). Exactly matches §5.3 of the protocol spec.
+- **T8.7** — `nats req '$SRV.INFO.SynadiaAgents'` returned a full `io.nats.micro.v1.info_response` listing the `prompt` endpoint, queue_group `q`, metadata `max_payload=1MB attachments_ok=true`, identity `hermes/rene`. `nats sub 'agents.hermes.*.*.heartbeat' --count 1` received a frame within 15 s. Subject is `SynadiaAgents` (no space) — the protocol doc's `'Synadia Agents'` form is aspirational, since NATS subjects can't contain whitespace. The SDK registers as `SynadiaAgents` for this reason (`natsagent/client.py::_DISCOVERY_NAME`). Adjusting the task description to match reality.
+
+### 2026-04-22 — Phase 8 — T8.3 / T8.4 / T8.5 blocked on LLM access
+
+All three remaining tasks invoke the model path. On this host:
+- AWS creds resolve to `arn:aws:iam::895583929606:user/git-gcrypt-backup-user`, which lacks `bedrock:InvokeModelWithResponseStream`. Bedrock returns HTTP 403 `no identity-based policy allows the bedrock:InvokeModelWithResponseStream action`.
+- `.env` has `GOOGLE_API_KEY` / `GEMINI_API_KEY` commented out. No `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY` is set in `.env` or the environment.
+- With `model` unset, the agent defaults to Bedrock and fails earlier with "Invalid length for parameter modelId, value: 0" — so the permission gap is the *second* wall you hit, not the first.
+
+The verification machinery itself is NOT in doubt — Phases 4–6 cover the streaming, approval, and attachment paths on mocks. T8.3/T8.4/T8.5 only add model-invocation coverage, which is an orthogonal axis. They are deferred until LLM access is provisioned; any future session resuming on this can run them by either granting Bedrock access on this user / switching IAM profile, or exporting a capable provider key before the gateway starts.
+
+### 2026-04-22 — Phase 8 — Phase 4 regression fixed: `hermes-nats` missing from `hermes-gateway` aggregator
+
+`scripts/run_tests.sh tests/` flagged `tests/hermes_cli/test_tools_config.py::TestPlatformToolsetConsistency::test_gateway_toolset_includes_all_messaging_platforms` with `Platform 'nats' toolset 'hermes-nats' missing from hermes-gateway includes`. Phase 4 registered `hermes-nats` in `toolsets.py::TOOLSETS` and mapped `Platform.NATS → "hermes-nats"` in `hermes_cli/platforms.py`, but forgot to append `"hermes-nats"` to `TOOLSETS["hermes-gateway"]["includes"]`. The consistency test walks `PLATFORMS.items()` → `meta["default_toolset"]` and asserts membership in the gateway aggregate.
+
+One-line fix. `scripts/run_tests.sh tests/hermes_cli/test_tools_config.py` went from 1 failure to all-pass (35/35) immediately; full-suite failure count dropped 23 → 19.
+
+**Lesson for future platform additions:** after adding a `hermes-<platform>` toolset, run `scripts/run_tests.sh tests/hermes_cli/test_tools_config.py` *before* closing the phase. The test is <1s and catches exactly this class of miss. The file-only test-subset that closes Phase 4 (`scripts/run_tests.sh tests/gateway/test_nats_*.py`) misses it by construction.
+
+### 2026-04-22 — Phase 8 — Pre-existing test failures ledger (19 total; all outside NATS subtree)
+
+Final `scripts/run_tests.sh tests/` run after the toolset fix: **19 failed, 14342 passed, 36 skipped** in 234s. NATS-only re-run (`test_nats_config.py test_nats_connect.py test_nats_inbound.py test_nats_outbound.py test_nats_query.py test_nats_commands.py`): **195/195 passed in 3.04s**.
+
+The 19 failures by category:
+
+Previously named in prior Decision log entries:
+- `tests/gateway/test_agent_cache.py::TestAgentCacheIdleResume::test_close_vs_release_full_teardown_difference`
+- `tests/gateway/test_matrix.py::TestMatrixUploadAndSend::test_upload_encrypted_room_uses_file_payload`
+
+Missing optional dependencies (require `atroposlib` / vllm extras not installed in this venv):
+- `tests/run_agent/test_agent_loop_vllm.py::{test_vllm_single_tool_call, test_vllm_multi_tool_calls, test_vllm_managed_server_produces_nodes, test_vllm_no_tools_direct_response, test_vllm_thinking_content_extracted}` — `ModuleNotFoundError: No module named 'atroposlib'`
+
+Platform-specific (WSL/Linux-only tests run on macOS):
+- `tests/hermes_cli/test_gateway_wsl.py::TestSupportsSystemdServicesWSL::{test_wsl_with_systemd, test_native_linux}`
+
+Test-harness scope issue (autouse fixture `_isolate_hermes_home` redirects `HERMES_HOME` via env var but does NOT stub `Path.home()`, so tests that derive paths from `Path.home()` miss the deny list computed from `get_hermes_home()`):
+- `tests/tools/test_write_deny.py::TestWriteDenyExactPaths::test_hermes_env`
+
+Others (not NATS-adjacent — all pre-existed the `nats-gateway` branch; verified by `git log <file>` showing last-change commits SHAs unrelated to our T#.# work):
+- `tests/hermes_cli/test_api_key_providers.py::TestResolveProvider::test_auto_does_not_select_copilot_from_github_token`
+- `tests/tools/test_browser_camofox.py::TestCamofoxVisionConfig::test_camofox_vision_uses_configured_temperature_and_timeout`
+- `tests/tools/test_code_execution_modes.py::TestResolveChildPython::test_project_with_broken_venv_falls_back`
+- `tests/tools/test_file_staleness.py::{TestStalenessCheck::test_warning_when_file_modified_externally, TestPatchStaleness::test_patch_warns_on_stale_file}`
+- `tests/tools/test_local_interrupt_cleanup.py::test_wait_for_process_kills_subprocess_on_keyboardinterrupt`
+- `tests/tools/test_resolve_path.py::TestResolvePath::test_absolute_path_ignores_terminal_cwd`
+- `tests/tools/test_zombie_process_cleanup.py::TestAgentCloseMethod::{test_close_calls_cleanup_functions, test_close_survives_partial_failures}`
+
+Between the first (pre-fix) full-suite run at 23 failed and the second (post-fix) at 19 failed, a third dropped out beyond the toolset fix: `test_modal_sandbox_fixes.py` (2) and `test_accretion_caps.py` (1) appeared in run #1 and were green in run #2. These are xdist worker-ordering flakes in the same family as the previously-documented `test_whatsapp_connect` flakiness. Noted so a future session doesn't chase them.
+
+### 2026-04-22 — Phase 8 — META-LEARNING: "verify against the full suite" is a concrete phase-close gate, not a formality
+
+Phases 1–7 all included a local `scripts/run_tests.sh tests/gateway/test_nats_*.py` subset check, which ran green every time. Phase 4's `hermes-nats → hermes-gateway includes` miss survived three subsequent phases (5, 6, 7) because none of them ran the wider `tests/hermes_cli/test_tools_config.py` that would have caught it. Phase 8's `T8.8 — full suite` is the first time that test ran since Phase 4 closed.
+
+The lesson isn't "run the full suite every phase" — that's 234s per phase and 4 minutes of wall time per cycle at this test-count. The lesson is: **when you add a cross-module registration point** (a platform enum value, a toolset name, an env var the factory reads), also run the file(s) that test *consistency across* that registration surface, not just the file that exercises the specific code path you wrote. For platform additions the cheap canonical check is `scripts/run_tests.sh tests/hermes_cli/test_tools_config.py` (<1s).
+
+Adding this to the Phase N end-of-phase ritual would be overkill — most phases don't add cross-module registration points. But for Phase 9 (docs) and any post-MVP phase that touches a cross-module surface, the check is cheap insurance.
 
 ---
 

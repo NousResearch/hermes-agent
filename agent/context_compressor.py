@@ -586,6 +586,12 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        # When summary generation fails we now ABORT compression entirely
+        # and return the original messages unchanged instead of dropping
+        # the middle window with a static placeholder.  Callers inspect
+        # this flag to know "compression was attempted but aborted, freeze
+        # the chat until the user manually retries via /compress".
+        self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -1479,7 +1485,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1497,6 +1503,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 provided, the summariser will prioritise preserving information
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            force: If True, clear any active summary-failure cooldown before
+                running so a manual ``/compress`` can retry immediately after
+                an auto-compression abort.  Auto-compress callers pass False.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -1505,6 +1514,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
+        self._last_compress_aborted = False
+
+        # Manual /compress (force=True) bypasses the failure cooldown so the
+        # user can retry immediately after an auto-compress abort.  Without
+        # this, /compress would silently no-op for 30-60s after a failure.
+        if force and self._summary_failure_cooldown_until > 0.0:
+            self._summary_failure_cooldown_until = 0.0
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -1580,6 +1596,30 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+        # If summary generation failed, ABORT compression entirely.  Returning
+        # the original messages unchanged preserves the full conversation
+        # context.  Previously this branch dropped every middle message and
+        # replaced them with a static "summary unavailable" placeholder,
+        # which silently lost N turns of work whenever the aux LLM hiccuped.
+        # Auto-compress callers detect the no-op (post-compress length ==
+        # pre-compress length) and stop looping.  The next call to
+        # _generate_summary is gated by _summary_failure_cooldown_until, so
+        # we don't burn the aux model every turn.  Users can force a retry
+        # via /compress (which passes force=True to clear the cooldown).
+        if not summary:
+            n_skipped = compress_end - compress_start
+            self._last_summary_dropped_count = 0  # nothing actually dropped
+            self._last_summary_fallback_used = False
+            self._last_compress_aborted = True
+            if not self.quiet_mode:
+                logger.warning(
+                    "Summary generation failed — aborting compression. "
+                    "%d message(s) preserved unchanged. Conversation is "
+                    "frozen until the next /compress or /new.",
+                    n_skipped,
+                )
+            return messages
+
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
@@ -1593,22 +1633,6 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
                     )
             compressed.append(msg)
-
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
-        if not summary:
-            if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
-            self._last_summary_dropped_count = n_dropped
-            self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

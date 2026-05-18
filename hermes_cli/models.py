@@ -199,6 +199,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
+    "trustedrouter": [
+        "trustedrouter/auto",
+    ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
@@ -924,6 +927,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("trustedrouter",  "TrustedRouter.com",        "TrustedRouter.com (end-to-end encrypted OpenRouter-compatible router)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (AI-native cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
@@ -984,6 +988,11 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 
 
 _PROVIDER_ALIASES = {
+    "tr": "trustedrouter",
+    "trusted-router": "trustedrouter",
+    "trustedrouter.com": "trustedrouter",
+    "quillrouter": "trustedrouter",
+    "quill-router": "trustedrouter",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",

@@ -1,0 +1,5 @@
+name: trustedrouter-provider
+kind: model-provider
+version: 1.0.0
+description: TrustedRouter.com end-to-end encrypted OpenRouter-compatible LLM router
+author: Nous Research

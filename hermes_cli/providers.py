@@ -50,6 +50,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
+    "trustedrouter": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("TRUSTEDROUTER_API_KEY",),
+        base_url_override="https://api.quillrouter.com/v1",
+        base_url_env_var="TRUSTEDROUTER_BASE_URL",
+    ),
     "nous": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_device_code",
@@ -239,6 +246,11 @@ class ProviderDef:
 ALIASES: Dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
+    "tr": "trustedrouter",
+    "trusted-router": "trustedrouter",
+    "trustedrouter.com": "trustedrouter",
+    "quillrouter": "trustedrouter",
+    "quill-router": "trustedrouter",
 
     # zai
     "glm": "zai",
@@ -370,6 +382,7 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
+    "trustedrouter": "TrustedRouter.com",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",

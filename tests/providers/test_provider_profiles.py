@@ -16,6 +16,8 @@ class TestRegistry:
         assert get_provider_profile("moonshot").name == "kimi-coding"
         assert get_provider_profile("kimi-coding-cn").name == "kimi-coding-cn"
         assert get_provider_profile("or").name == "openrouter"
+        assert get_provider_profile("tr").name == "trustedrouter"
+        assert get_provider_profile("trusted-router").name == "trustedrouter"
         assert get_provider_profile("nous-portal").name == "nous"
         assert get_provider_profile("qwen").name == "qwen-oauth"
         assert get_provider_profile("qwen-portal").name == "qwen-oauth"
@@ -210,6 +212,34 @@ class TestOpenRouterProfile:
         )
         assert eb["reasoning"] == {"enabled": True, "effort": "high"}
         assert tl["extra_headers"]["x-grok-conv-id"] == "sess-123"
+
+
+class TestTrustedRouterProfile:
+    def test_profile_loads(self):
+        p = get_provider_profile("trustedrouter")
+        assert p is not None
+        assert p.name == "trustedrouter"
+        assert p.display_name == "TrustedRouter.com"
+        assert p.base_url == "https://api.quillrouter.com/v1"
+        assert p.env_vars == ("TRUSTEDROUTER_API_KEY", "TRUSTEDROUTER_BASE_URL")
+
+    def test_aliases(self):
+        assert get_provider_profile("trusted-router").name == "trustedrouter"
+        assert get_provider_profile("trustedrouter.com").name == "trustedrouter"
+        assert get_provider_profile("quillrouter").name == "trustedrouter"
+
+    def test_fallback_auto_model(self):
+        p = get_provider_profile("trustedrouter")
+        assert p.fallback_models == ("trustedrouter/auto",)
+
+    def test_reasoning_passthrough(self):
+        p = get_provider_profile("trustedrouter")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True,
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "high"}
+        assert tl == {}
 
 
 class TestNousProfile:

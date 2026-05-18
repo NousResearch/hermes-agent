@@ -43,6 +43,7 @@ class TestProviderRegistry:
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
+        ("trustedrouter", "TrustedRouter.com", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -112,6 +113,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
         assert pconfig.base_url_env_var == "GMI_BASE_URL"
 
+    def test_trustedrouter_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["trustedrouter"]
+        assert pconfig.api_key_env_vars == ("TRUSTEDROUTER_API_KEY",)
+        assert pconfig.base_url_env_var == "TRUSTEDROUTER_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.quillrouter.com/v1"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
@@ -129,6 +136,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["trustedrouter"].inference_base_url == "https://api.quillrouter.com/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -151,6 +159,7 @@ PROVIDER_ENV_VARS = (
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
+    "TRUSTEDROUTER_API_KEY", "TRUSTEDROUTER_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
@@ -222,6 +231,14 @@ class TestResolveProvider:
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
+
+    def test_explicit_trustedrouter(self):
+        assert resolve_provider("trustedrouter") == "trustedrouter"
+
+    def test_alias_trusted_router(self):
+        assert resolve_provider("trusted-router") == "trustedrouter"
+        assert resolve_provider("tr") == "trustedrouter"
+        assert resolve_provider("quillrouter") == "trustedrouter"
 
     def test_alias_kilo(self):
         assert resolve_provider("kilo") == "kilocode"
@@ -302,6 +319,10 @@ class TestResolveProvider:
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
         assert resolve_provider("auto") == "kilocode"
+
+    def test_auto_detects_trustedrouter_key(self, monkeypatch):
+        monkeypatch.setenv("TRUSTEDROUTER_API_KEY", "sk-tr-v1-test")
+        assert resolve_provider("auto") == "trustedrouter"
 
     def test_auto_detects_hf_token(self, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")

@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    metadata TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1058,6 +1059,71 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    # ── Session metadata CRUD ──────────────────────────────────────────
+    def set_session_metadata(
+        self, session_id: str, key: str, value: Any
+    ) -> None:
+        """Set a metadata key-value pair on a session.
+
+        The metadata dict is stored as JSON in the metadata column.
+        Setting the same key again overwrites; pass value=None to remove.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+            meta = {}
+            if row and row["metadata"]:
+                meta = json.loads(row["metadata"])
+            if value is not None:
+                meta[key] = value
+            else:
+                meta.pop(key, None)
+            conn.execute(
+                "UPDATE sessions SET metadata = ? WHERE id = ?",
+                (json.dumps(meta, ensure_ascii=False) if meta else None, session_id),
+            )
+        self._execute_write(_do)
+
+    def get_session_metadata(self, session_id: str) -> Dict[str, Any]:
+        """Get all metadata for a session as a dict. Returns {} if none."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT metadata FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        if row and row["metadata"]:
+            return json.loads(row["metadata"])
+        return {}
+
+    def search_sessions_by_metadata(
+        self, key: str, value: Any, source: Optional[str] = None, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Find sessions with a specific metadata key=value.
+
+        Args:
+            key: Metadata key to match.
+            value: Expected value (None = match sessions with this key set to any value).
+            source: Optional source filter (e.g. 'telegram', 'cli').
+            limit: Max results.
+        """
+        results: List[Dict[str, Any]] = []
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE metadata IS NOT NULL"
+                + (" AND source = ?" if source else ""),
+                (source,) if source else (),
+            )
+            for row in cursor.fetchmany(limit * 5):
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                if key in meta:
+                    if value is None or meta[key] == value:
+                        results.append(dict(row))
+                        if len(results) >= limit:
+                            break
+        return results
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.

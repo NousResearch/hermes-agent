@@ -570,7 +570,11 @@ SESSION_SEARCH_SCHEMA = {
         "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "
-        "keyword searches in parallel. Returns summaries of the top matching sessions."
+        "keyword searches in parallel. Returns summaries of the top matching sessions.\n"
+        "SESSION METADATA: Sessions can store project/topic tags that persist across restarts. "
+        "When you start a new session after a restart, use session_search to find the previous "
+        "session's context. You can also use memory.save to record what project you're working on "
+        "so it's available on the next session."
     ),
     "parameters": {
         "type": "object",

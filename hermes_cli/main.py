@@ -8234,6 +8234,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print("✓ Update complete!")
 
+        # Write restart handover status so the new gateway process can report
+        # what this update was about and what to follow up on.
+        try:
+            from hermes_cli.config import get_hermes_home
+            import json as _json
+
+            _status_file = get_hermes_home() / "cache" / "restart_status.json"
+            _status_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Detect version from git tags
+            _update_reason = "Hermes Agent update"
+            try:
+                _describe = subprocess.run(
+                    ["git", "describe", "--tags", "--abbrev=0"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True, text=True, timeout=5,
+                )
+                if _describe.returncode == 0 and _describe.stdout.strip():
+                    _update_reason = f"Hermes updated to {_describe.stdout.strip()}"
+            except Exception:
+                pass
+
+            _status = {
+                "reason": _update_reason,
+                "timestamp": datetime.now().isoformat(),
+            }
+            _status_file.write_text(_json.dumps(_status, ensure_ascii=False, indent=2))
+        except Exception as _exc:
+            logger.debug("Could not write restart status: %s", _exc)
+
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
         # have fired against a fresh skill library. Kept silent on steady

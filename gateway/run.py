@@ -13257,6 +13257,20 @@ class GatewayRunner:
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+
+                # Append restart handover status if present - written by
+                # hermes_cli.main._cmd_update_impl before gateway restart.
+                try:
+                    _status_path = _hermes_home / "cache" / "restart_status.json"
+                    if _status_path.exists():
+                        _status_data = json.loads(_status_path.read_text())
+                        _reason = _status_data.get("reason", "")
+                        if _reason:
+                            msg += f"\n\n📋 Update: {_reason}"
+                        _status_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",

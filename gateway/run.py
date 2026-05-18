@@ -16522,6 +16522,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _matrix_show_reasoning = bool(
             resolve_display_setting(user_config, platform_key, "show_reasoning", False)
         )
+        _MATRIX_TOOL_ACTIVITY_PREVIEW_CAP = 1000
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -16718,7 +16719,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verb_drops_preview,
                 )
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
+                _cap = (
+                    _pl
+                    if _pl > 0
+                    else (
+                        _MATRIX_TOOL_ACTIVITY_PREVIEW_CAP
+                        if source.platform == Platform.MATRIX
+                        else 40
+                    )
+                )
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
                 # Friendly labels: render a human-phrased line for built-in

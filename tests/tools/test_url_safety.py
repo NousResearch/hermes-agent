@@ -8,6 +8,7 @@ from tools.url_safety import (
     is_always_blocked_url,
     _is_blocked_ip,
     _global_allow_private_urls,
+    _global_allow_benchmark_ips,
     _reset_allow_private_cache,
 )
 
@@ -166,25 +167,32 @@ class TestIsSafeUrl:
             # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
-    def test_benchmark_ip_blocked_for_non_allowlisted_host(self):
+    def test_benchmark_ip_blocked_for_non_allowlisted_host(self, monkeypatch):
+        """198.18.x.x is blocked for non-trusted hostnames by default."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://example.com/file.jpg") is False
 
     def test_qq_multimedia_hostname_allowed_with_benchmark_ip(self):
+        """multimedia.nt.qq.com.cn bypasses IP-level blocking via allow_private_ip."""
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is True
 
-    def test_qq_multimedia_hostname_exception_is_exact_match(self):
+    def test_qq_multimedia_hostname_exception_is_exact_match(self, monkeypatch):
+        """Subdomains of multimedia.nt.qq.com.cn are NOT exempted."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
             assert is_safe_url("https://sub.multimedia.nt.qq.com.cn/download?id=123") is False
 
-    def test_qq_multimedia_hostname_exception_requires_https(self):
+    def test_qq_multimedia_hostname_exception_requires_https(self, monkeypatch):
+        """HTTP variant of multimedia.nt.qq.com.cn is NOT exempted."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("198.18.0.23", 0)),
         ]):
@@ -482,3 +490,147 @@ class TestIsAlwaysBlockedUrl:
         """security.allow_private_urls can NOT unblock cloud metadata."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_always_blocked_url("http://169.254.169.254/") is True
+
+
+class TestGlobalAllowBenchmarkIps:
+    """Tests for the security.allow_benchmark_ips config toggle."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        """Reset both toggle caches before and after each test."""
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_default_is_false(self, monkeypatch):
+        """Toggle defaults to False when no env var or config is set."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            assert _global_allow_benchmark_ips() is False
+
+    def test_env_var_true(self, monkeypatch):
+        """HERMES_ALLOW_BENCHMARK_IPS=true enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        assert _global_allow_benchmark_ips() is True
+
+    def test_env_var_1(self, monkeypatch):
+        """HERMES_ALLOW_BENCHMARK_IPS=1 enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "1")
+        assert _global_allow_benchmark_ips() is True
+
+    def test_env_var_yes(self, monkeypatch):
+        """HERMES_ALLOW_BENCHMARK_IPS=yes enables the toggle."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "yes")
+        assert _global_allow_benchmark_ips() is True
+
+    def test_env_var_false(self, monkeypatch):
+        """HERMES_ALLOW_BENCHMARK_IPS=false keeps it disabled."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "false")
+        assert _global_allow_benchmark_ips() is False
+
+    def test_config_security_section(self, monkeypatch):
+        """security.allow_benchmark_ips in config enables the toggle."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
+        cfg = {"security": {"allow_benchmark_ips": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_benchmark_ips() is True
+
+    def test_env_var_overrides_config(self, monkeypatch):
+        """Env var takes priority over config."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "false")
+        cfg = {"security": {"allow_benchmark_ips": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_benchmark_ips() is False
+
+    def test_result_is_cached(self, monkeypatch):
+        """Second call uses cached result, doesn't re-read config."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        assert _global_allow_benchmark_ips() is True
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "false")
+        assert _global_allow_benchmark_ips() is True  # still cached
+
+
+class TestBenchmarkIpIntegration:
+    """Integration tests: is_safe_url respects the benchmark-IP toggle."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_benchmark_ip_blocked_by_default(self, monkeypatch):
+        """198.18.x.x is blocked when allow_benchmark_ips is off."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={"security": {}}):
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.18.0.23", 0)),
+            ]):
+                assert is_safe_url("https://github.com/robots.txt") is False
+
+    def test_benchmark_ip_allowed_when_toggle_on(self, monkeypatch):
+        """198.18.x.x passes is_safe_url when allow_benchmark_ips is enabled."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("198.18.0.23", 0)),
+        ]):
+            assert is_safe_url("https://github.com/robots.txt") is True
+
+    def test_benchmark_ip_allowed_via_config(self, monkeypatch):
+        """allow_benchmark_ips via config.yaml also works."""
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
+        cfg = {"security": {"allow_benchmark_ips": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.18.255.255", 0)),
+            ]):
+                assert is_safe_url("https://pypi.org/") is True
+
+    def test_private_toggle_allows_benchmark_ip_too(self, monkeypatch):
+        """When allow_private_urls=true, _is_blocked_ip is never called (short-circuit),
+        so benchmark IPs pass as a side-effect.  This is fine — users who set
+        allow_private_urls=true have already opted out of SSRF protection for
+        all private ranges.  The dedicated allow_benchmark_ips toggle is the
+        correct choice for DNS-fake-IP environments without disabling SSRF entirely."""
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        monkeypatch.delenv("HERMES_ALLOW_BENCHMARK_IPS", raising=False)
+        cfg = {"security": {"allow_benchmark_ips": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.18.0.23", 0)),
+            ]):
+                assert is_safe_url("https://example.com/") is True
+
+    def test_public_url_still_allowed_with_toggle_on(self, monkeypatch):
+        """Benchmark toggle doesn't break normal public URLs."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("140.82.121.4", 0)),  # github.com real IP
+        ]):
+            assert is_safe_url("https://github.com/") is True
+
+    def test_allow_benchmark_does_not_bypass_private_ssrf(self, monkeypatch):
+        """allow_benchmark=true must NOT open access to private IPs (10.x, 192.168.x, etc.).
+        This was the logic bug reported in review: benchmark and private-IP toggles are
+        independent. Regression test for https://github.com/NousResearch/hermes-agent/pull/26064."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "false")
+        cfg = {"security": {"allow_benchmark_ips": True, "allow_private_urls": False}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            # Private IP must still be blocked even when benchmark toggle is on
+            for ip in ["10.0.0.1", "192.168.1.1", "172.16.0.1"]:
+                with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", (ip, 0))]):
+                    assert is_safe_url(f"https://{ip}/") is False, f"{ip} should still be blocked"
+
+    def test_allow_benchmark_only_affects_benchmark_range(self, monkeypatch):
+        """CGNAT (100.64.x.x) and link-local (169.254.x.x) remain blocked even with
+        allow_benchmark_ips=true — they are in _is_blocked_ip but outside _BENCHMARK_NETWORK."""
+        monkeypatch.setenv("HERMES_ALLOW_BENCHMARK_IPS", "true")
+        cfg = {"security": {"allow_benchmark_ips": True}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            # CGNAT — blocked (in _is_blocked_ip but not in _BENCHMARK_NETWORK)
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("100.64.0.1", 0))]):
+                assert is_safe_url("https://cgnat.example/") is False
+            # Link-local — blocked
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("169.254.169.254", 0))]):
+                assert is_safe_url("https://linklocal.example/") is False

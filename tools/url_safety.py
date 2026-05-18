@@ -69,6 +69,13 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 198.18.0.0/15 (Benchmark Testing Range, RFC 2544) — reserved for benchmark
+# testing of inter-network communications.  Used by DNS-based proxies / fake-IP
+# systems that redirect external domains to this range.  Not covered by
+# ipaddress.is_private or is_global.  Blocked by default; exempted only when
+# ``security.allow_benchmark_ips: true`` in config.yaml.
+_BENCHMARK_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -133,6 +140,54 @@ def _reset_allow_private_cache() -> None:
     global _allow_private_resolved, _cached_allow_private
     _allow_private_resolved = False
     _cached_allow_private = False
+    global _allow_benchmark_resolved, _cached_allow_benchmark
+    _allow_benchmark_resolved = False
+    _cached_allow_benchmark = False
+
+
+# Cached after first read so we don't hit the filesystem on every URL check.
+_allow_benchmark_resolved = False
+_cached_allow_benchmark: bool = False
+
+
+def _global_allow_benchmark_ips() -> bool:
+    """Return True when the user has opted into benchmark-IP resolution.
+
+    Checks (in priority order):
+    1. ``HERMES_ALLOW_BENCHMARK_IPS`` env var  (``true``/``1``/``yes``)
+    2. ``security.allow_benchmark_ips`` in config.yaml
+
+    Result is cached for the process lifetime.
+    """
+    global _allow_benchmark_resolved, _cached_allow_benchmark
+    if _allow_benchmark_resolved:
+        return _cached_allow_benchmark
+
+    _allow_benchmark_resolved = True
+    _cached_allow_benchmark = False  # safe default
+
+    # 1. Env var override (highest priority)
+    env_val = os.getenv("HERMES_ALLOW_BENCHMARK_IPS", "").strip().lower()
+    if env_val in {"true", "1", "yes"}:
+        _cached_allow_benchmark = True
+        return _cached_allow_benchmark
+    if env_val in {"false", "0", "no"}:
+        return _cached_allow_benchmark
+
+    # 2. Config file
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        sec = cfg.get("security", {})
+        if isinstance(sec, dict) and is_truthy_value(
+            sec.get("allow_benchmark_ips"), default=False
+        ):
+            _cached_allow_benchmark = True
+            return _cached_allow_benchmark
+    except Exception:
+        pass
+
+    return _cached_allow_benchmark
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -143,6 +198,9 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return True
     # CGNAT range not covered by is_private
     if ip in _CGNAT_NETWORK:
+        return True
+    # Benchmark range (198.18.0.0/15) — blocked unless user opted in
+    if ip in _BENCHMARK_NETWORK:
         return True
     return False
 
@@ -278,6 +336,7 @@ def is_safe_url(url: str) -> bool:
         allow_all_private = _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+        allow_benchmark = _global_allow_benchmark_ips()
 
         # Try to resolve and check IP
         try:
@@ -304,15 +363,26 @@ def is_safe_url(url: str) -> bool:
                 return False
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
+                if allow_benchmark and ip in _BENCHMARK_NETWORK:
+                    logger.debug(
+                        "Allowing benchmark-IP resolution (security.allow_benchmark_ips=true): %s",
+                        hostname,
+                    )
+                else:
+                    logger.warning(
+                        "Blocked request to private/internal address: %s -> %s",
+                        hostname, ip_str,
+                    )
+                    return False
 
         if allow_all_private:
             logger.debug(
                 "Allowing private/internal resolution (security.allow_private_urls=true): %s",
+                hostname,
+            )
+        elif allow_benchmark:
+            logger.debug(
+                "Allowing benchmark-IP resolution (security.allow_benchmark_ips=true): %s",
                 hostname,
             )
         elif allow_private_ip:

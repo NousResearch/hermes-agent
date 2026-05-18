@@ -354,6 +354,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
+    # Reset URL-safety benchmark-IP cache so that tests can reliably toggle
+    # HERMES_ALLOW_BENCHMARK_IPS via setenv/delenv without the module-level
+    # cache from a previous test leaking into the current one.
+    try:
+        from tools.url_safety import _reset_allow_private_cache
+
+        _reset_allow_private_cache()
+    except Exception:
+        pass
+
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.

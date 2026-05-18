@@ -15148,6 +15148,7 @@ class GatewayRunner:
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "threshold_tokens"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),

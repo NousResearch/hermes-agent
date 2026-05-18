@@ -1225,6 +1225,12 @@ def init_agent(
             compression_threshold = _model_cthresh
     except Exception:
         pass
+    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+    if compression_threshold_tokens is not None:
+        try:
+            compression_threshold_tokens = int(compression_threshold_tokens)
+        except (TypeError, ValueError):
+            compression_threshold_tokens = None
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -1460,6 +1466,18 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
 
+    # Apply absolute token threshold if configured — takes the lower of
+    # the ratio-based threshold and the absolute cap, so compression
+    # never fires later than the user's preferred token count.
+    if compression_threshold_tokens is not None and compression_threshold_tokens > 0:
+        _cc = agent.context_compressor
+        _abs_cap = min(compression_threshold_tokens, _cc.context_length)
+        if _abs_cap < _cc.threshold_tokens:
+            _cc.threshold_tokens = _abs_cap
+            # Keep threshold_percent in sync for future update_model() calls
+            if _cc.context_length:
+                _cc.threshold_percent = _abs_cap / _cc.context_length
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -1597,7 +1615,11 @@ def init_agent(
 
     if not agent.quiet_mode:
         if compression_enabled:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _cc = agent.context_compressor
+            _cap_note = ""
+            if compression_threshold_tokens is not None and compression_threshold_tokens > 0:
+                _cap_note = f" (capped at {compression_threshold_tokens:,} tokens)"
+            print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {_cc.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
 

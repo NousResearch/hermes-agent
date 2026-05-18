@@ -151,6 +151,49 @@ class TestFormatters:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
+    def test_macos_diagnostic_script_uses_native_probes(self):
+        script = sf._build_async_diagnostic_script("SIGTERM", 12345, "darwin")
+
+        assert "vm_stat" in script
+        assert "sysctl -n vm.loadavg" in script
+        assert "log show --last 5m" in script
+        assert "/proc/loadavg" not in script
+        assert "dmesg -T" not in script
+        assert "ps auxf --sort" not in script
+
+    def test_linux_diagnostic_script_keeps_linux_probes(self):
+        script = sf._build_async_diagnostic_script("SIGTERM", 12345, "linux")
+
+        assert "/proc/loadavg" in script
+        assert "dmesg -T" in script
+        assert "ps auxf --sort" in script
+        assert "vm_stat" not in script
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    def test_spawns_without_gnu_timeout_when_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        log_path = tmp_path / "diag.log"
+        captured = {}
+
+        class FakePopen:
+            pid = 4242
+
+            def __init__(self, command, **kwargs):
+                captured["command"] = command
+                captured["kwargs"] = kwargs
+
+        monkeypatch.setattr(sf.shutil, "which", lambda name: None)
+        monkeypatch.setattr(sf.subprocess, "Popen", FakePopen)
+
+        pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
+
+        assert pid == 4242
+        assert captured["command"][:2] == ["bash", "-c"]
+        assert captured["command"][3] == "hermes-shutdown-diag-watchdog"
+        assert captured["command"][-1] == "3"
+        assert "sleep \"$2\"; kill \"$child\"" in captured["command"][2]
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"

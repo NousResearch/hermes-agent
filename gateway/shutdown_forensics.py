@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -194,6 +196,59 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+def _build_async_diagnostic_script(signal_name: str, pid: int, platform: str) -> str:
+    """Build the detached shell diagnostic script for the current platform.
+
+    Keep this platform-aware: Linux has ``/proc``, ``ps auxf --sort`` and
+    often ``dmesg -T``/``journalctl``; macOS has none of those, but does have
+    ``ps -axo``, ``vm_stat``/``sysctl`` and unified logs via ``log show``.
+    The script is best-effort and every heavyweight probe is allowed to fail.
+    """
+    quoted_signal = shlex.quote(str(signal_name))
+    header = (
+        f"echo '=== shutdown diagnostic @ '{quoted_signal}' ==='; "
+        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+    )
+
+    if platform == "darwin":
+        return header + (
+            "echo '--- ps (top 60 by cpu) ---'; "
+            "ps -arcwwwxo pid,ppid,%cpu,%mem,stat,etime,command 2>/dev/null | head -60 "
+            "|| ps aux 2>/dev/null | head -60 || true; "
+            "echo '--- process ancestry/self snapshot ---'; "
+            f"ps -o pid,ppid,stat,etime,command -p {pid} 2>/dev/null || true; "
+            f"ps -o pid,ppid,stat,etime,command -p $(ps -o ppid= -p {pid} 2>/dev/null | tr -d ' ') 2>/dev/null || true; "
+            "echo '--- load average ---'; "
+            "sysctl -n vm.loadavg 2>/dev/null || uptime 2>/dev/null || true; "
+            "echo '--- vm_stat ---'; vm_stat 2>/dev/null | head -40 || true; "
+            "echo '--- memory pressure ---'; memory_pressure -Q 2>/dev/null || true; "
+            "echo '--- recent macOS log (launchd/termination/kill, last 5m) ---'; "
+            "log show --last 5m --style compact --predicate "
+            "'process == \"launchd\" OR eventMessage CONTAINS[c] \"kill\" OR eventMessage CONTAINS[c] \"SIGTERM\" OR eventMessage CONTAINS[c] \"terminated\" OR eventMessage CONTAINS[c] \"exited\"' "
+            "2>/dev/null | tail -40 || true; "
+            "echo '=== end ==='"
+        )
+
+    if platform.startswith("linux"):
+        return header + (
+            "echo '--- ps auxf (top 60 by cpu) ---'; "
+            "ps auxf --sort=-pcpu 2>/dev/null | head -60 || ps aux 2>/dev/null | head -60 || true; "
+            "echo '--- pstree of self ---'; "
+            f"pstree -plau {pid} 2>/dev/null | head -40 || true; "
+            "echo '--- /proc/loadavg ---'; "
+            "cat /proc/loadavg 2>/dev/null || true; "
+            "echo '--- recent dmesg/journal (oom/killed) ---'; "
+            "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
+
+    return header + (
+        "echo '--- ps snapshot ---'; ps aux 2>/dev/null | head -60 || true; "
+        "echo '--- load average ---'; uptime 2>/dev/null || true; "
+        "echo '=== end ==='"
+    )
+
+
 def spawn_async_diagnostic(
     log_path: Path,
     signal_name: str,
@@ -203,9 +258,10 @@ def spawn_async_diagnostic(
     """Fire-and-forget ``ps``-style snapshot written to ``log_path``.
 
     Runs as a detached subprocess so it can't block the asyncio event loop
-    or compete with platform teardown.  The subprocess uses its own
-    ``timeout`` so a wedged ``ps`` still self-cleans within
-    ``timeout_seconds``.
+    or compete with platform teardown.  When GNU ``timeout`` is available we
+    use it; otherwise a tiny bash watchdog kills the child script after
+    ``timeout_seconds``.  This matters on macOS, where ``timeout`` is not a
+    default system command.
 
     Returns the subprocess PID on success, ``None`` on failure.  Never
     raises.
@@ -226,19 +282,7 @@ def spawn_async_diagnostic(
     if sys.platform == "win32":
         return None
 
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
-    )
+    script = _build_async_diagnostic_script(signal_name, os.getpid(), sys.platform)
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -254,8 +298,26 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        command = ["bash", "-c", script]
+        timeout_bin = shutil.which("timeout")
+        if timeout_bin:
+            command = [timeout_bin, f"{timeout_seconds:.0f}", *command]
+        else:
+            command = [
+                "bash",
+                "-c",
+                (
+                    "bash -c \"$1\" & child=$!; "
+                    "(sleep \"$2\"; kill \"$child\" 2>/dev/null) & killer=$!; "
+                    "wait \"$child\"; status=$?; "
+                    "kill \"$killer\" 2>/dev/null || true; exit $status"
+                ),
+                "hermes-shutdown-diag-watchdog",
+                script,
+                f"{timeout_seconds:.0f}",
+            ]
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

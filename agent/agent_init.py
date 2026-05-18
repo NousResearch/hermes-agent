@@ -1241,6 +1241,37 @@ def init_agent(
                                     )
                     break
 
+    # Also read max_tokens from custom_providers per-model config.
+    # Mirrors the context_length lookup above — without this the constructor's
+    # max_tokens=None default leaves API calls falling back to 4096 even when
+    # the user configured a higher per-model max_tokens (issue #28046).
+    if agent.max_tokens is None and _custom_providers:
+        _mt_target = agent.base_url.rstrip("/") if agent.base_url else ""
+        for _cp_entry in _custom_providers:
+            if not isinstance(_cp_entry, dict):
+                continue
+            _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+            if _mt_target and _cp_url == _mt_target:
+                _cp_models = _cp_entry.get("models", {})
+                if isinstance(_cp_models, dict):
+                    _cp_model_cfg = _cp_models.get(agent.model, {})
+                    if isinstance(_cp_model_cfg, dict):
+                        _cp_mt = _cp_model_cfg.get("max_tokens")
+                        if _cp_mt is not None:
+                            try:
+                                _parsed_mt = int(_cp_mt)
+                                if _parsed_mt <= 0:
+                                    raise ValueError
+                                agent.max_tokens = _parsed_mt
+                            except (TypeError, ValueError):
+                                _ra().logger.warning(
+                                    "Invalid max_tokens for model %r in "
+                                    "custom_providers: %r — must be a positive "
+                                    "integer. Falling back to default.",
+                                    agent.model, _cp_mt,
+                                )
+                break
+
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length

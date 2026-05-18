@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -2189,6 +2190,33 @@ class TestPtyWebSocket:
                     break
 
             assert b"network-pty-ok" in buf
+
+    def test_ws_client_guard_allows_non_loopback_when_bound_to_network_host(self, monkeypatch):
+        """Unit-test the guard directly so TestClient's loopback peer cannot mask regressions."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is True
+
+    def test_ws_client_guard_rejects_non_loopback_when_bound_to_loopback(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "127.0.0.1",
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is False
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

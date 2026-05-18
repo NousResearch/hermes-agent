@@ -3319,8 +3319,8 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 
     Allows loopback clients by default. Non-loopback WebSocket clients are
     allowed only when the dashboard was explicitly started with the public-bind
-    opt-in (`--insecure`), which is the same gate required to bind the HTTP
-    dashboard off loopback.
+    opt-in (`--insecure`), which is still guarded by the dashboard session
+    token.
     """
     client_host = ws.client.host if ws.client else ""
     if not client_host:

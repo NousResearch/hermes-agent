@@ -1270,7 +1270,7 @@ def _ensure_tui_node() -> None:
         # built TUI bundle uses modern Node ESM features that crash on Node 18
         # with ``ERR_INVALID_ARG_TYPE: paths[0]``. Treat old system Node as
         # missing so node-bootstrap can put the managed Node on PATH.
-        return (major == 20 and minor >= 19) or major >= 22
+        return (major == 20 and minor >= 19) or (major == 22 and minor >= 12) or major > 22
 
     if _node_is_usable(shutil.which("node")) and shutil.which("npm"):
         return

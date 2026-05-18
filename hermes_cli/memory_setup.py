@@ -142,39 +142,41 @@ def _install_dependencies(provider_name: str) -> None:
                     print(f"    {install_cmd}")
 
 
-def _get_available_providers() -> list:
-    """Discover memory providers from plugins/memory/.
+def _setup_hint_from_manifest(name: str, desc: str) -> str:
+    """Return a setup hint without importing the provider module."""
+    try:
+        from plugins.memory import find_provider_dir
+        provider_dir = find_provider_dir(name)
+        yaml_file = provider_dir / "plugin.yaml" if provider_dir else None
+        if yaml_file and yaml_file.exists():
+            import yaml
+            with open(yaml_file, encoding="utf-8-sig") as f:
+                meta = yaml.safe_load(f) or {}
+            if meta.get("requires_env"):
+                return "requires API key"
+            if meta.get("pip_dependencies") or meta.get("external_dependencies"):
+                return "local"
+    except Exception:
+        pass
+    return desc or "installed"
 
-    Returns list of (name, description, provider_instance) tuples.
+
+def _get_available_providers() -> list:
+    """Discover memory providers without importing unselected user plugins.
+
+    Returns list of (name, description, provider_instance) tuples. The provider
+    instance is intentionally None; callers load only the explicitly selected
+    or active provider.
     """
     try:
-        from plugins.memory import discover_memory_providers, load_memory_provider
+        from plugins.memory import discover_memory_providers
         raw = discover_memory_providers()
     except Exception:
         raw = []
 
     results = []
-    for name, desc, available in raw:
-        try:
-            provider = load_memory_provider(name)
-            if not provider:
-                continue
-        except Exception:
-            continue
-
-        schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
-        has_secrets = any(f.get("secret") for f in schema)
-        has_non_secrets = any(not f.get("secret") for f in schema)
-        if has_secrets and has_non_secrets:
-            setup_hint = "API key / local"
-        elif has_secrets:
-            setup_hint = "requires API key"
-        elif not schema:
-            setup_hint = "no setup needed"
-        else:
-            setup_hint = "local"
-
-        results.append((name, setup_hint, provider))
+    for name, desc, _available in raw:
+        results.append((name, _setup_hint_from_manifest(name, desc), None))
     return results
 
 
@@ -188,9 +190,9 @@ def cmd_setup_provider(provider_name: str) -> None:
 
     providers = _get_available_providers()
     match = None
-    for name, desc, provider in providers:
+    for name, desc, _provider in providers:
         if name == provider_name:
-            match = (name, desc, provider)
+            match = (name, desc)
             break
 
     if not match:
@@ -198,9 +200,15 @@ def cmd_setup_provider(provider_name: str) -> None:
         print("  Run 'hermes memory setup' to see available providers.\n")
         return
 
-    name, _, provider = match
+    name, _ = match
 
     _install_dependencies(name)
+
+    from plugins.memory import load_memory_provider
+    provider = load_memory_provider(name)
+    if not provider:
+        print(f"\n  Memory provider '{name}' failed to load.\n")
+        return
 
     config = load_config()
     if not isinstance(config.get("memory"), dict):
@@ -250,10 +258,16 @@ def cmd_setup(args) -> None:
         print("  Saved to config.yaml\n")
         return
 
-    name, _, provider = providers[selected]
+    name, _, _provider = providers[selected]
 
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
+
+    from plugins.memory import load_memory_provider
+    provider = load_memory_provider(name)
+    if not provider:
+        print(f"\n  Memory provider '{name}' failed to load.\n")
+        return
 
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.
@@ -407,27 +421,31 @@ def cmd_status(args) -> None:
         found = any(name == provider_name for name, _, _ in providers)
         if found:
             print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
-                        if required_fields:
-                            print(f"  Missing:")
-                            for f in required_fields:
-                                env_var = f.get("env_var", "")
-                                url = f.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
+            try:
+                from plugins.memory import load_memory_provider
+                provider = load_memory_provider(provider_name)
+            except Exception:
+                provider = None
+            if provider and provider.is_available():
+                print(f"  Status:    available ✓")
+            elif provider:
+                print(f"  Status:    not available ✗")
+                schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                # Check all fields that have env_var (both secret and non-secret)
+                required_fields = [f for f in schema if f.get("env_var")]
+                if required_fields:
+                    print(f"  Missing:")
+                    for f in required_fields:
+                        env_var = f.get("env_var", "")
+                        url = f.get("url", "")
+                        is_set = bool(os.environ.get(env_var))
+                        mark = "✓" if is_set else "✗"
+                        line = f"    {mark} {env_var}"
+                        if url and not is_set:
+                            line += f"  → {url}"
+                        print(line)
+            else:
+                print(f"  Status:    failed to load ✗")
         else:
             print(f"\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")

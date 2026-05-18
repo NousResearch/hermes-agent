@@ -186,6 +186,56 @@ class TestIsSafeUrl:
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
 
+    def test_force_ipv4_patch_does_not_hide_private_ipv6_dns_answers(self):
+        """SSRF checks must inspect AAAA answers even when force_ipv4 is active."""
+        from hermes_constants import apply_ipv4_preference
+
+        def dual_stack_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if family == socket.AF_INET:
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("93.184.216.34", 80),
+                    )
+                ]
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("93.184.216.34", 80),
+                ),
+                (
+                    socket.AF_INET6,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("fd00::1234", 80, 0, 0),
+                ),
+            ]
+
+        original_getaddrinfo = socket.getaddrinfo
+        try:
+            socket.getaddrinfo = dual_stack_getaddrinfo
+            apply_ipv4_preference(force=True)
+
+            assert socket.getaddrinfo("dualstack-attacker.test", 443) == [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("93.184.216.34", 80),
+                )
+            ]
+            assert is_safe_url("https://dualstack-attacker.test/") is False
+        finally:
+            socket.getaddrinfo = original_getaddrinfo
+
 
 class TestIsBlockedIp:
     """Direct tests for the _is_blocked_ip helper."""

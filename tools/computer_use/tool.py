@@ -275,6 +275,7 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
                 "runtime before retrying."
             ),
         })
+
     summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)

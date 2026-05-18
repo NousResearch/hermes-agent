@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -524,9 +524,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'approval.request': {
+        const command = String(ev.payload.command ?? '')
         const description = String(ev.payload.description ?? 'dangerous command')
 
-        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        sys(`approval command · ${description}\n${command}`)
+        patchOverlayState({ approval: { command, description } })
         setStatus('approval needed')
 
         return

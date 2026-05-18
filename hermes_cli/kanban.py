@@ -150,6 +150,97 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     )
 
 
+def _assignee_policy_config() -> dict:
+    """Return Kanban assignee policy config, tolerating loader failures."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return {}
+    return (cfg.get("kanban", {}) or {}) if isinstance(cfg, dict) else {}
+
+
+def _assignee_policy_allows(target_profile: str) -> bool:
+    """Return True when the active profile may assign work to target_profile."""
+    from hermes_cli.profiles import get_active_profile_name, normalize_profile_name
+
+    target = normalize_profile_name(target_profile)
+    active = normalize_profile_name(get_active_profile_name())
+
+    # Preserve the historical local/operator workflow for the default root
+    # profile and custom HERMES_HOME deployments. Named profiles are isolated
+    # and must not enqueue arbitrary work into sibling profiles by default.
+    if active in {"default", "custom"}:
+        return True
+    if target == active:
+        return True
+
+    raw_allowed = _assignee_policy_config().get("allowed_assignees", ())
+    if isinstance(raw_allowed, str):
+        raw_allowed = [raw_allowed]
+    if not isinstance(raw_allowed, (list, tuple, set)):
+        return False
+
+    for entry in raw_allowed:
+        item = str(entry).strip()
+        if not item:
+            continue
+        if item == "*":
+            return True
+        if item.casefold() == "self" and target == active:
+            return True
+        try:
+            if normalize_profile_name(item) == target:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _validate_assignee_target(assignee: str | None) -> tuple[bool, str | None]:
+    """Validate whether the current profile may target assignee."""
+    if assignee is None:
+        return True, None
+    from hermes_cli.profiles import get_active_profile_name, normalize_profile_name
+
+    try:
+        target = normalize_profile_name(assignee)
+    except ValueError as exc:
+        return False, str(exc)
+    if _assignee_policy_allows(target):
+        return True, None
+    active = get_active_profile_name()
+    return (
+        False,
+        "profile "
+        f"{active!r} is not allowed to assign kanban tasks to {target!r}; "
+        "use this profile as the assignee or configure "
+        "kanban.allowed_assignees for explicit delegation",
+    )
+
+
+def _validate_task_log_access(task_id: str) -> tuple[bool, str | None]:
+    """Validate whether the current profile may read a task's worker log."""
+    from hermes_cli.profiles import get_active_profile_name
+
+    active = get_active_profile_name()
+    if active in {"default", "custom"}:
+        return True, None
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+    if task is None:
+        return True, None
+    # Use assignee if present, fall back to creator for unassigned tasks.
+    owner = task.assignee or task.created_by
+    if owner and _assignee_policy_allows(owner):
+        return True, None
+    return (
+        False,
+        f"profile {active!r} is not allowed to read worker logs for "
+        f"task {task_id} owned by {owner!r}",
+    )
+
 # ---------------------------------------------------------------------------
 # Argparse builder
 # ---------------------------------------------------------------------------
@@ -1046,6 +1137,10 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    ok, error = _validate_assignee_target(args.assignee)
+    if not ok:
+        print(f"kanban: {error}", file=sys.stderr)
+        return 2
     ws_kind, ws_path = _parse_workspace_flag(args.workspace)
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
@@ -1301,7 +1396,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_assign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    profile = (
+        None if args.profile.lower() in {"none", "-", "null"}
+        else args.profile
+    )
+    ok, error = _validate_assignee_target(profile)
+    if not ok:
+        print(f"kanban: {error}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
@@ -1328,7 +1430,14 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
-    profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    profile = (
+        None if args.profile.lower() in {"none", "-", "null"}
+        else args.profile
+    )
+    ok, error = _validate_assignee_target(profile)
+    if not ok:
+        print(f"kanban: {error}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,
@@ -1984,6 +2093,10 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
 
 
 def _cmd_log(args: argparse.Namespace) -> int:
+    ok, error = _validate_task_log_access(args.task_id)
+    if not ok:
+        print(f"kanban: {error}", file=sys.stderr)
+        return 2
     content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
     if content is None:
         print(f"(no log for {args.task_id} — task may not have spawned yet)",

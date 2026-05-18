@@ -707,6 +707,34 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return isinstance(error, OSError)
 
+    @staticmethod
+    def _looks_like_connect_timeout(error: Exception) -> bool:
+        """Return True when a Telegram TimedOut wraps a connect-timeout.
+
+        A plain Telegram TimedOut may mean the request reached Telegram and
+        should not be re-sent. A ConnectTimeout means the TCP connection was
+        never established, so retrying is safe and prevents silent drops.
+        """
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            text = str(cur).lower()
+            if "connecttimeout" in name or "connect timeout" in text or "connect timed out" in text:
+                return True
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+        return False
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -1708,10 +1736,15 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
-                        # TimedOut is also a subclass of NetworkError but
-                        # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
-                        if _TimedOut and isinstance(send_err, _TimedOut):
+                        # TimedOut is also a subclass of NetworkError. A
+                        # generic timeout may have reached Telegram, so don't
+                        # retry; a wrapped ConnectTimeout means no connection
+                        # was established, so retrying is safe.
+                        if (
+                            _TimedOut
+                            and isinstance(send_err, _TimedOut)
+                            and not self._looks_like_connect_timeout(send_err)
+                        ):
                             raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
@@ -1764,11 +1797,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                 )
                 return SendResult(success=False, error="message_too_long")
-            # TimedOut means the request may have reached Telegram —
+            # TimedOut usually means the request may have reached Telegram —
             # mark as non-retryable so _send_with_retry() doesn't re-send.
+            # Exception: wrapped ConnectTimeout, where no connection was
+            # established; retrying is safe and prevents silent drops.
             _to = locals().get("_TimedOut")
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(success=False, error=str(e), retryable=not is_timeout)
+            is_connect_timeout = self._looks_like_connect_timeout(e)
+            return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or not is_timeout))
 
     async def edit_message(
         self,

@@ -72,11 +72,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
-      # `uv lock --check` re-resolves the project from pyproject.toml and
+      # `uv lock --check`
       # compares the result to uv.lock, exiting non-zero if they disagree.
       # No network writes, no file modifications.
       #

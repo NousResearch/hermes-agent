@@ -722,6 +722,10 @@ def _try_resolve_fallback_provider() -> dict | None:
             cfg = _y.safe_load(_f) or {}
         fb = cfg.get("fallback_providers") or cfg.get("fallback_model")
         if not fb:
+            # Also check under model.fallback_providers (profile config format)
+            model_section = cfg.get("model") or {}
+            fb = model_section.get("fallback_providers") or model_section.get("fallback_model")
+        if not fb:
             return None
         # Normalize to list
         fb_list = fb if isinstance(fb, list) else [fb]
@@ -2544,6 +2548,10 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+                if not fb:
+                    # Also check under model.fallback_providers (profile config format)
+                    model_section = cfg.get("model") or {}
+                    fb = model_section.get("fallback_providers") or model_section.get("fallback_model") or None
                 if fb:
                     return fb
         except Exception:

@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import get_env_value, load_env
+from hermes_cli.config import load_env
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -28,7 +28,6 @@ from hermes_cli.auth import (
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _save_auth_store,
-    _save_provider_state,
     _store_provider_state,
     read_credential_pool,
     write_credential_pool,

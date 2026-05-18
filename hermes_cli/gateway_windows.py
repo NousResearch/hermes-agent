@@ -188,7 +188,7 @@ def _startup_dir() -> Path:
 
 def get_startup_entry_path() -> Path:
     _assert_windows()
-    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
 
 
 # ---------------------------------------------------------------------------
@@ -231,13 +231,16 @@ def _build_gateway_cmd_script(
 
 
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny .cmd that goes in the Startup folder. Just minimizes and chains."""
+    """VBS wrapper that launches the gateway script with zero visible windows.
+
+    Using VBS ``WScript.Shell.Run ..., 0`` is the only reliable way on Windows
+    to start a .cmd script with no console window at all.  The old ``start /min``
+    approach still showed a minimized taskbar flash.
+    """
+    escaped = str(script_path).replace('"', '""')
     lines = [
-        "@echo off",
-        f"rem {_TASK_DESCRIPTION}",
-        # ``start "" /min`` detaches with a minimized console window.
-        # ``/d /c`` on cmd.exe skips AUTORUN and runs the target script once.
-        f'start "" /min cmd.exe /d /c {_quote_cmd_script_arg(str(script_path))}',
+        'Set ws = CreateObject("WScript.Shell")',
+        f'ws.Run "{escaped}", 0, False',
     ]
     return "\r\n".join(lines) + "\r\n"
 

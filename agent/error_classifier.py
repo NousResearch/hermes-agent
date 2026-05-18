@@ -211,6 +211,8 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    "not available on the free tier",
+    "not available on the",
 ]
 
 # OpenRouter aggregator policy-block patterns.

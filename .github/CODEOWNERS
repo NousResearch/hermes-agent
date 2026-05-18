@@ -1,0 +1,58 @@
+# CODEOWNERS for hermes-agent
+# Default owners for everything in the repo.
+* @NousResearch/hermes-team
+
+# Core agent logic
+/run_agent.py @NousResearch/hermes-team
+/cli.py @NousResearch/hermes-team
+/model_tools.py @NousResearch/hermes-team
+/toolsets.py @NousResearch/hermes-team
+
+# Gateway (critical path — all platform adapters)
+/gateway/ @NousResearch/hermes-team
+
+# Tool implementations
+/tools/ @NousResearch/hermes-team
+
+# Plugin system
+/plugins/ @NousResearch/hermes-team
+
+# UI/TUI
+ui-tui/ @NousResearch/hermes-team
+/tui_gateway/ @NousResearch/hermes-team
+
+# CLI subcommands
+/hermes_cli/ @NousResearch/hermes-team
+
+# ACP adapter (IDE integrations)
+/acp_adapter/ @NousResearch/hermes-team
+
+# Cron scheduler
+/cron/ @NousResearch/hermes-team
+
+# Documentation
+/docs/ @NousResearch/hermes-team
+README.md @NousResearch/hermes-team
+SKILLS.md @NousResearch/hermes-agent
+
+# Skills directory (production AI agent skills)
+/skills/ @NousResearch/hermes-team
+
+# CI/CD workflows
+.github/workflows/ @NousResearch/hermes-team
+
+# Public site
+/site/ @NousResearch/hermes-team
+
+# Agent internals
+/agent/ @NousResearch/hermes-team
+
+# Environments (RL training)
+/environments/ @NousResearch/hermes-team
+
+# Test suite
+/tests/ @NousResearch/hermes-team
+
+# Root configuration files
+package.json @NousResearch/hermes-team
+tsconfig.json @NousResearch/hermes-team

@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "sync-assets": "node scripts/sync-assets.mjs",
+    "sync-assets": "node scripts/sync-assets.js",
     "predev": "npm run sync-assets",
     "prebuild": "npm run sync-assets",
     "dev": "vite",

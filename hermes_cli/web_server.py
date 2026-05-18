@@ -314,10 +314,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Memory provider plugin",
         "options": ["builtin", "honcho"],
     },
+    "model.openai_runtime": {
+        "type": "select",
+        "description": "OpenAI/Codex runtime path",
+        "options": ["auto", "codex_app_server"],
+    },
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
-        "options": ["ask", "yolo", "deny"],
+        "options": ["manual", "smart", "off"],
     },
     "context.engine": {
         "type": "select",

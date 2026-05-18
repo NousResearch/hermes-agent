@@ -86,3 +86,22 @@ class TestBundledBuildMacosAppsDiscovery:
             "macos_stop_app",
             "macos_test_project",
         ]
+
+    def test_plugin_skill_view_resolves_registered_skill(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_enabled_config(hermes_home, ["build-macos-apps"])
+
+        from hermes_cli import plugins as plugins_mod
+        from tools.skills_tool import skill_view
+
+        mgr = plugins_mod.PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        result = yaml.safe_load(skill_view("build-macos-apps:diagnose-build-failure"))
+
+        assert result["success"] is True
+        assert result["name"] == "build-macos-apps:diagnose-build-failure"
+        assert "macos_show_build_settings" in result["content"]

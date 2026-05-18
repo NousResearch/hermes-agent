@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -34,6 +35,13 @@ def _load_tools_module():
     assert spec.loader is not None
     spec.loader.exec_module(mod)
     return mod
+
+
+def _write_fake_executable(bin_dir: Path, name: str, body: str) -> Path:
+    path = bin_dir / name
+    path.write_text(body)
+    path.chmod(0o755)
+    return path
 
 
 @pytest.fixture
@@ -126,6 +134,31 @@ class TestListSchemes:
         assert result["success"] is False
         assert result["exit_code"] == 65
         assert result["output"]["highlights"]
+
+    def test_list_schemes_via_fake_xcodebuild_subprocess(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "WorkspaceRepo"
+        workspace = repo / "App.xcworkspace"
+        workspace.mkdir(parents=True)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_executable(
+            bin_dir,
+            "xcodebuild",
+            """#!/bin/sh
+if [ "$1" = "-list" ] && [ "$2" = "-json" ]; then
+  printf '%s' '{"project":{"name":"App","schemes":["App"],"targets":["App"],"configurations":["Debug"]}}'
+  exit 0
+fi
+echo "unexpected args" >&2
+exit 2
+""",
+        )
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        result = json.loads(tools_mod.handle_macos_list_schemes({"path": str(repo)}))
+
+        assert result["success"] is True
+        assert result["project"]["schemes"] == ["App"]
 
 
 class TestBuildProject:
@@ -359,6 +392,38 @@ class TestStopApp:
         assert result["success"] is True
         assert result["was_running"] is False
 
+    def test_stop_app_reports_failure_when_pkill_fallback_cannot_clear_process(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "StopFailRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        info_plist = bundle / "Contents" / "Info.plist"
+        info_plist.parent.mkdir(parents=True)
+        info_plist.write_bytes(
+            tools_mod.plistlib.dumps({"CFBundleIdentifier": "com.example.MyApp"})
+        )
+
+        commands = []
+        monkeypatch.setattr(tools_mod, "_pgrep_app", lambda app_name: [123])
+        states = [[123], [123]]
+        monkeypatch.setattr(
+            tools_mod,
+            "_wait_for_app_state",
+            lambda *args, **kwargs: states.pop(0),
+        )
+
+        def fake_run(command, capture_output, text, check):
+            commands.append(command)
+            return CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(tools_mod.subprocess, "run", fake_run)
+
+        result = json.loads(
+            tools_mod.handle_macos_stop_app({"path": str(repo), "app_name": "MyApp", "force": True})
+        )
+
+        assert result["success"] is False
+        assert result["remaining_pids"] == [123]
+        assert any(cmd[0] == "pkill" and cmd[1] == "-KILL" for cmd in commands)
+
 
 class TestReadRecentLogs:
     def test_reads_recent_logs_with_inferred_predicate(self, tools_mod, tmp_path, monkeypatch):
@@ -389,6 +454,37 @@ class TestReadRecentLogs:
         assert result["truncated"] is True
         assert result["lines"] == ["l2", "l3"]
         assert captured["command"][:2] == ["log", "show"]
+
+    def test_reads_recent_logs_via_fake_log_subprocess(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "LogsRepo"
+        bundle = repo / "DerivedData" / "Build" / "Products" / "Debug" / "MyApp.app"
+        info_plist = bundle / "Contents" / "Info.plist"
+        info_plist.parent.mkdir(parents=True)
+        info_plist.write_bytes(
+            tools_mod.plistlib.dumps({"CFBundleIdentifier": "com.example.MyApp"})
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_executable(
+            bin_dir,
+            "log",
+            """#!/bin/sh
+if [ "$1" = "show" ]; then
+  printf 'entry1\\nentry2\\n'
+  exit 0
+fi
+echo "unexpected args" >&2
+exit 2
+""",
+        )
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        result = json.loads(
+            tools_mod.handle_macos_read_recent_logs({"path": str(repo), "app_name": "MyApp"})
+        )
+
+        assert result["success"] is True
+        assert result["lines"] == ["entry1", "entry2"]
 
 
 class TestCollectCrashReports:
@@ -442,6 +538,41 @@ class TestShowBuildSettings:
         assert result["section_count"] == 1
         assert result["interesting"]["TARGET_NAME"] == "App"
         assert "BUILT_PRODUCTS_DIR" in result["interesting"]
+
+    def test_selects_requested_target_from_multi_section_output(self, tools_mod, tmp_path, monkeypatch):
+        repo = tmp_path / "SettingsRepo"
+        project = repo / "App.xcodeproj"
+        project.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            tools_mod,
+            "_run_xcodebuild",
+            lambda command, cwd, timeout_seconds: CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    "Build settings for action build and target CoreLib:\n"
+                    "    TARGET_NAME = CoreLib\n"
+                    "    PRODUCT_NAME = CoreLib\n"
+                    "Build settings for action build and target App:\n"
+                    "    TARGET_NAME = App\n"
+                    "    PRODUCT_NAME = App\n"
+                    "    BUILT_PRODUCTS_DIR = /tmp/DerivedData/Build/Products/Debug\n"
+                ),
+                stderr="",
+            ),
+        )
+
+        result = json.loads(
+            tools_mod.handle_macos_show_build_settings(
+                {"path": str(repo), "scheme": "App", "target_name": "App"}
+            )
+        )
+
+        assert result["success"] is True
+        assert result["section_count"] == 2
+        assert result["interesting"]["TARGET_NAME"] == "App"
+        assert result["selected_header"].endswith("target App:")
 
     def test_build_settings_requires_scheme(self, tools_mod, tmp_path):
         repo = tmp_path / "NoSettingsSchemeRepo"

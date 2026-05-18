@@ -3450,7 +3450,11 @@ def resolve_provider_client(
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
         # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).
         try:
-            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+            from agent.bedrock_adapter import (
+                has_aws_credentials,
+                resolve_bedrock_region,
+                resolve_aws_auth_env_var,
+            )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
@@ -3460,6 +3464,20 @@ def resolve_provider_client(
         if not has_aws_credentials():
             logger.debug("resolve_provider_client: bedrock requested but "
                          "no AWS credentials found")
+            return None, None
+
+        # AWS_BEARER_TOKEN_BEDROCK is a bearer token for Bedrock Identity-aware
+        # endpoints — it is NOT picked up by boto3's credential chain, so the
+        # AnthropicBedrock SDK (which relies on boto3) would fail with
+        # "could not resolve credentials from session".  Skip this path and let
+        # the auxiliary fallback chain find another provider (OpenRouter, Nous, etc.).
+        _auth_source = resolve_aws_auth_env_var() or ""
+        if _auth_source == "AWS_BEARER_TOKEN_BEDROCK":
+            logger.debug(
+                "resolve_provider_client: bedrock skipped for auxiliary tasks "
+                "(AWS_BEARER_TOKEN_BEDROCK is not supported by AnthropicBedrock SDK); "
+                "falling back to next provider in chain"
+            )
             return None, None
 
         region = resolve_bedrock_region()
@@ -3499,6 +3517,21 @@ def resolve_provider_client(
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
+def _is_bedrock_bearer_token_active() -> bool:
+    """Return True when AWS_BEARER_TOKEN_BEDROCK is the active credential source.
+
+    Used to detect the case where the user has configured
+    auxiliary.<task>.provider: bedrock but the AnthropicBedrock SDK cannot
+    be used (bearer token is not a boto3 credential).  In that case we fall
+    back to the auto-detection chain instead of surfacing a false-alarm warning.
+    """
+    try:
+        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        return resolve_aws_auth_env_var() == "AWS_BEARER_TOKEN_BEDROCK"
+    except Exception:
+        return False
+
+
 def get_text_auxiliary_client(
     task: str = "",
     *,
@@ -3514,8 +3547,23 @@ def get_text_auxiliary_client(
     (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    # When the configured provider is "bedrock" but the active credential is
+    # AWS_BEARER_TOKEN_BEDROCK (which boto3 cannot handle), fall through to
+    # the auto-detection chain rather than returning (None, None) and causing
+    # a spurious "provider unavailable" warning.
+    _effective_provider = provider
+    if (
+        _normalize_aux_provider(provider) == "bedrock"
+        and _is_bedrock_bearer_token_active()
+    ):
+        logger.debug(
+            "get_text_auxiliary_client: auxiliary.%s.provider=bedrock skipped "
+            "(AWS_BEARER_TOKEN_BEDROCK); using auto-detection fallback chain",
+            task or "?",
+        )
+        _effective_provider = "auto"
     return resolve_provider_client(
-        provider,
+        _effective_provider,
         model=model,
         explicit_base_url=base_url,
         explicit_api_key=api_key,
@@ -3532,8 +3580,20 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     Returns (None, None) when no provider is available.
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    # Same bearer-token fallback as get_text_auxiliary_client.
+    _effective_provider = provider
+    if (
+        _normalize_aux_provider(provider) == "bedrock"
+        and _is_bedrock_bearer_token_active()
+    ):
+        logger.debug(
+            "get_async_text_auxiliary_client: auxiliary.%s.provider=bedrock skipped "
+            "(AWS_BEARER_TOKEN_BEDROCK); using auto-detection fallback chain",
+            task or "?",
+        )
+        _effective_provider = "auto"
     return resolve_provider_client(
-        provider,
+        _effective_provider,
         model=model,
         async_mode=True,
         explicit_base_url=base_url,
@@ -4432,6 +4492,22 @@ def call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
+    # When the configured provider is "bedrock" but the active AWS credential
+    # is AWS_BEARER_TOKEN_BEDROCK, the AnthropicBedrock SDK (boto3-based) cannot
+    # resolve credentials from session → fall back to auto-detection chain.
+    if (
+        _normalize_aux_provider(resolved_provider) == "bedrock"
+        and not resolved_base_url
+        and not resolved_api_key
+        and _is_bedrock_bearer_token_active()
+    ):
+        logger.debug(
+            "call_llm: task=%s provider=bedrock skipped (AWS_BEARER_TOKEN_BEDROCK); "
+            "falling back to auto-detection chain",
+            task or "?",
+        )
+        resolved_provider = "auto"
+
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
@@ -4833,6 +4909,22 @@ async def async_call_llm(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
+
+    # When the configured provider is "bedrock" but the active AWS credential
+    # is AWS_BEARER_TOKEN_BEDROCK, the AnthropicBedrock SDK (boto3-based) cannot
+    # resolve credentials from session → fall back to auto-detection chain.
+    if (
+        _normalize_aux_provider(resolved_provider) == "bedrock"
+        and not resolved_base_url
+        and not resolved_api_key
+        and _is_bedrock_bearer_token_active()
+    ):
+        logger.debug(
+            "async_call_llm: task=%s provider=bedrock skipped (AWS_BEARER_TOKEN_BEDROCK); "
+            "falling back to auto-detection chain",
+            task or "?",
+        )
+        resolved_provider = "auto"
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(

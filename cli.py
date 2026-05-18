@@ -4935,14 +4935,14 @@ class HermesCLI:
         from tools.checkpoint_manager import format_checkpoint_list
 
         if not hasattr(self, 'agent') or not self.agent:
-            print("  No active agent session.")
+            _cprint("  No active agent session.")
             return
 
         mgr = self.agent._checkpoint_mgr
         if not mgr.enabled:
-            print("  Checkpoints are not enabled.")
-            print("  Enable with: hermes --checkpoints")
-            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            _cprint("  Checkpoints are not enabled.")
+            _cprint("  Enable with: hermes --checkpoints")
+            _cprint("  Or in config.yaml: checkpoints: { enabled: true }")
             return
 
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -4952,17 +4952,17 @@ class HermesCLI:
         if not args:
             # List checkpoints
             checkpoints = mgr.list_checkpoints(cwd)
-            print(format_checkpoint_list(checkpoints, cwd))
+            _cprint(format_checkpoint_list(checkpoints, cwd))
             return
 
         # Handle /rollback diff <N>
         if args[0].lower() == "diff":
             if len(args) < 2:
-                print("  Usage: /rollback diff <N>")
+                _cprint("  Usage: /rollback diff <N>")
                 return
             checkpoints = mgr.list_checkpoints(cwd)
             if not checkpoints:
-                print(f"  No checkpoints found for {cwd}")
+                _cprint(f"  No checkpoints found for {cwd}")
                 return
             target_hash = self._resolve_checkpoint_ref(args[1], checkpoints)
             if not target_hash:
@@ -4972,26 +4972,26 @@ class HermesCLI:
                 stat = result.get("stat", "")
                 diff = result.get("diff", "")
                 if not stat and not diff:
-                    print("  No changes since this checkpoint.")
+                    _cprint("  No changes since this checkpoint.")
                 else:
                     if stat:
-                        print(f"\n{stat}")
+                        _cprint(f"\n{stat}")
                     if diff:
                         # Limit diff output to avoid terminal flood
                         diff_lines = diff.splitlines()
                         if len(diff_lines) > 80:
-                            print("\n".join(diff_lines[:80]))
-                            print(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
+                            _cprint("\n".join(diff_lines[:80]))
+                            _cprint(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
                         else:
-                            print(f"\n{diff}")
+                            _cprint(f"\n{diff}")
             else:
-                print(f"  ❌ {result['error']}")
+                _cprint(f"  ❌ {result['error']}")
             return
 
         # Resolve checkpoint reference (number or hash)
         checkpoints = mgr.list_checkpoints(cwd)
         if not checkpoints:
-            print(f"  No checkpoints found for {cwd}")
+            _cprint(f"  No checkpoints found for {cwd}")
             return
 
         target_hash = self._resolve_checkpoint_ref(args[0], checkpoints)
@@ -5004,18 +5004,18 @@ class HermesCLI:
         result = mgr.restore(cwd, target_hash, file_path=file_path)
         if result["success"]:
             if file_path:
-                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+                _cprint(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
-                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
-            print("  A pre-rollback snapshot was saved automatically.")
+                _cprint(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            _cprint("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
             # matches the restored filesystem state
             if self.conversation_history:
                 self.undo_last()
-                print("  Chat turn undone to match restored file state.")
+                _cprint("  Chat turn undone to match restored file state.")
         else:
-            print(f"  ❌ {result['error']}")
+            _cprint(f"  ❌ {result['error']}")
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
         """Resolve a checkpoint number or hash to a full commit hash."""
@@ -5024,7 +5024,7 @@ class HermesCLI:
             if 0 <= idx < len(checkpoints):
                 return checkpoints[idx]["hash"]
             else:
-                print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+                _cprint(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
                 return None
         except ValueError:
             # Treat as a git hash
@@ -5643,9 +5643,9 @@ class HermesCLI:
 
         names = parts[2:]
         if not names:
-            print(f"(._.) Usage: /tools {subcommand} <name> [name ...]")
-            print(f"  Built-in toolset:  /tools {subcommand} web")
-            print(f"  MCP tool:          /tools {subcommand} github:create_issue")
+            _cprint(f"(._.) Usage: /tools {subcommand} <name> [name ...]")
+            _cprint(f"  Built-in toolset:  /tools {subcommand} web")
+            _cprint(f"  MCP tool:          /tools {subcommand} github:create_issue")
             return
 
         # Apply the change directly — the user typing the command is implicit
@@ -7941,7 +7941,7 @@ class HermesCLI:
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()
-            print(f"  Reloaded .env ({count} var(s) updated)")
+            _cprint(f"  Reloaded .env ({count} var(s) updated)")
         elif canonical == "reload-mcp":
             # Interactive reload: confirm first (unless the user has opted out).
             # The auto-reload path (file watcher) calls _reload_mcp directly
@@ -7958,10 +7958,10 @@ class HermesCLI:
                 mgr = get_plugin_manager()
                 plugins = mgr.list_plugins()
                 if not plugins:
-                    print("No plugins installed.")
-                    print(f"Drop plugin directories into {display_hermes_home()}/plugins/ to get started.")
+                    _cprint("No plugins installed.")
+                    _cprint(f"Drop plugin directories into {display_hermes_home()}/plugins/ to get started.")
                 else:
-                    print(f"Plugins ({len(plugins)}):")
+                    _cprint(f"Plugins ({len(plugins)}):")
                     for p in plugins:
                         status = "✓" if p["enabled"] else "✗"
                         version = f" v{p['version']}" if p["version"] else ""
@@ -7971,9 +7971,9 @@ class HermesCLI:
                         parts = [x for x in [tools, hooks, commands] if x]
                         detail = f" ({', '.join(parts)})" if parts else ""
                         error = f" — {p['error']}" if p["error"] else ""
-                        print(f"  {status} {p['name']}{version}{detail}{error}")
+                        _cprint(f"  {status} {p['name']}{version}{detail}{error}")
             except Exception as e:
-                print(f"Plugin system error: {e}")
+                _cprint(f"Plugin system error: {e}")
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
@@ -8322,24 +8322,24 @@ class HermesCLI:
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
             parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
             if parsed_cdp.scheme not in {"http", "https", "ws", "wss"}:
-                print()
-                print(
+                _cprint()
+                _cprint(
                     f"   ⚠ Unsupported browser url scheme: {parsed_cdp.scheme or '(missing)'} "
                     "(expected one of: http, https, ws, wss)"
                 )
-                print()
+                _cprint()
                 return
             try:
                 _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
             except ValueError:
-                print()
-                print(f"   ⚠ Invalid port in browser url: {cdp_url}")
-                print()
+                _cprint()
+                _cprint(f"   ⚠ Invalid port in browser url: {cdp_url}")
+                _cprint()
                 return
             if not parsed_cdp.hostname:
-                print()
-                print(f"   ⚠ Missing host in browser url: {cdp_url}")
-                print()
+                _cprint()
+                _cprint(f"   ⚠ Missing host in browser url: {cdp_url}")
+                _cprint()
                 return
             _host = parsed_cdp.hostname
             if parsed_cdp.path.startswith("/devtools/browser/"):
@@ -8359,7 +8359,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-            print()
+            _cprint()
 
             # Check if Chrome is already listening on the debug port
             import socket
@@ -8374,10 +8374,10 @@ class HermesCLI:
                 pass
 
             if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
+                _cprint(f"   ✓ Chrome is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch Chrome with remote debugging
-                print("   Chrome isn't running with remote debugging — attempting to launch...")
+                _cprint("   Chrome isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
                     # Wait for the port to come up
@@ -8392,26 +8392,26 @@ class HermesCLI:
                         except (OSError, socket.timeout):
                             time.sleep(0.5)
                     if _already_open:
-                        print(f"   ✓ Chrome launched and listening on port {_port}")
+                        _cprint(f"   ✓ Chrome launched and listening on port {_port}")
                     else:
-                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
-                        print("     Try again in a few seconds — the debug instance may still be starting")
+                        _cprint(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
+                        _cprint("     Try again in a few seconds — the debug instance may still be starting")
                 else:
-                    print("   ⚠ Could not auto-launch Chrome")
+                    _cprint("   ⚠ Could not auto-launch Chrome")
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch Chrome manually:")
-                        print(f"     {chrome_cmd}")
+                        _cprint(f"     Launch Chrome manually:")
+                        _cprint(f"     {chrome_cmd}")
                     else:
-                        print("     No Chrome/Chromium executable found in this environment")
+                        _cprint("     No Chrome/Chromium executable found in this environment")
             else:
-                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+                _cprint(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 
             if not _already_open:
-                print()
-                print("Browser not connected — start Chrome with remote debugging and retry /browser connect")
-                print()
+                _cprint()
+                _cprint("Browser not connected — start Chrome with remote debugging and retry /browser connect")
+                _cprint()
                 return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
@@ -8422,10 +8422,10 @@ class HermesCLI:
                 _ensure_cdp_supervisor("default")
             except Exception:
                 pass
-            print()
-            print("🌐 Browser connected to live Chrome via CDP")
-            print(f"   Endpoint: {cdp_url}")
-            print()
+            _cprint()
+            _cprint("🌐 Browser connected to live Chrome via CDP")
+            _cprint(f"   Endpoint: {cdp_url}")
+            _cprint()
 
             # Inject context message so the model knows
             if hasattr(self, '_pending_input'):
@@ -8448,10 +8448,10 @@ class HermesCLI:
                     cleanup_all_browsers()
                 except Exception:
                     pass
-                print()
-                print("🌐 Browser disconnected from live Chrome")
-                print("   Browser tools reverted to default mode (local headless or cloud provider)")
-                print()
+                _cprint()
+                _cprint("🌐 Browser disconnected from live Chrome")
+                _cprint("   Browser tools reverted to default mode (local headless or cloud provider)")
+                _cprint()
 
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(
@@ -8459,15 +8459,15 @@ class HermesCLI:
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
-                print()
-                print("Browser is not connected to live Chrome (already using default mode)")
-                print()
+                _cprint()
+                _cprint("Browser is not connected to live Chrome (already using default mode)")
+                _cprint()
 
         elif sub == "status":
-            print()
+            _cprint()
             if current:
-                print("🌐 Browser: connected to live Chrome via CDP")
-                print(f"   Endpoint: {current}")
+                _cprint("🌐 Browser: connected to live Chrome via CDP")
+                _cprint(f"   Endpoint: {current}")
 
                 _port = 9222
                 try:
@@ -8480,9 +8480,9 @@ class HermesCLI:
                     s.settimeout(1)
                     s.connect(("127.0.0.1", _port))
                     s.close()
-                    print("   Status: ✓ reachable")
+                    _cprint("   Status: ✓ reachable")
                 except (OSError, Exception):
-                    print("   Status: ⚠ not reachable (Chrome may not be running)")
+                    _cprint("   Status: ⚠ not reachable (Chrome may not be running)")
             else:
                 try:
                     from tools.browser_tool import _get_cloud_provider
@@ -8491,7 +8491,7 @@ class HermesCLI:
                     provider = None
 
                 if provider is not None:
-                    print(f"🌐 Browser: {provider.provider_name()} (cloud)")
+                    _cprint(f"🌐 Browser: {provider.provider_name()} (cloud)")
                 else:
                     # Show engine info for local mode
                     try:
@@ -8500,26 +8500,26 @@ class HermesCLI:
                     except Exception:
                         engine = "auto"
                     if engine == "lightpanda":
-                        print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
-                        print("   ⚡ Lightpanda: faster navigation, no screenshot support")
-                        print("   Automatic Chrome fallback for screenshots and failed commands")
+                        _cprint("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
+                        _cprint("   ⚡ Lightpanda: faster navigation, no screenshot support")
+                        _cprint("   Automatic Chrome fallback for screenshots and failed commands")
                     elif engine == "chrome":
-                        print("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
+                        _cprint("🌐 Browser: local headless Chrome (agent-browser --engine chrome)")
                     else:
-                        print("🌐 Browser: local headless Chromium (agent-browser)")
-            print()
-            print("   /browser connect      — connect to your live Chrome")
-            print("   /browser disconnect   — revert to default")
-            print()
+                        _cprint("🌐 Browser: local headless Chromium (agent-browser)")
+            _cprint()
+            _cprint("   /browser connect      — connect to your live Chrome")
+            _cprint("   /browser disconnect   — revert to default")
+            _cprint()
 
         else:
-            print()
-            print("Usage: /browser connect|disconnect|status")
-            print()
-            print("   connect      Connect browser tools to your live Chrome session")
-            print("   disconnect   Revert to default browser backend")
-            print("   status       Show current browser mode")
-            print()
+            _cprint()
+            _cprint("Usage: /browser connect|disconnect|status")
+            _cprint()
+            _cprint("   connect      Connect browser tools to your live Chrome session")
+            _cprint("   disconnect   Revert to default browser backend")
+            _cprint("   status       Show current browser mode")
+            _cprint()
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

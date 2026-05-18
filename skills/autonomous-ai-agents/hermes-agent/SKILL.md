@@ -647,6 +647,9 @@ the `cronjob` tool, the `hermes cron` CLI (`list`, `add`, `edit`,
   job), `context_from` (chain job A's output into job B), `workdir`
   (run in a specific dir with its `AGENTS.md` / `CLAUDE.md` loaded),
   multi-platform delivery.
+  For script-backed cron jobs created through the `cronjob` tool, place the
+  script under `~/.hermes/scripts/` and pass only the relative filename
+  (`script="name.py"`). Absolute or `~`-relative script paths are rejected.
 - **Invariants:** 3-minute hard interrupt per run, `.tick.lock` file
   prevents duplicate ticks across processes, cron sessions pass
   `skip_memory=True` by default, and cron deliveries are framed with a

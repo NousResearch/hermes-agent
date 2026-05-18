@@ -1160,6 +1160,31 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
+    # Also defer if the credential pool for the primary provider reports
+    # all credentials still exhausted — avoids burning retries while the
+    # provider's own cooldown hasn't elapsed. Custom providers use named
+    # pool keys (``custom:<name>``), so compare against the canonical pool
+    # key rather than the generic runtime provider ``custom``.
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is not None:
+        primary_provider = str((agent._primary_runtime or {}).get("provider", "")).strip().lower()
+        primary_pool_provider = primary_provider
+        if primary_provider == "custom":
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                primary_pool_provider = (
+                    get_custom_provider_pool_key(
+                        str((agent._primary_runtime or {}).get("base_url") or "")
+                    )
+                    or primary_pool_provider
+                ).strip().lower()
+            except Exception:
+                primary_pool_provider = primary_provider
+        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+        if primary_pool_provider and pool_provider == primary_pool_provider and not pool.has_available():
+            return False
+
     rt = agent._primary_runtime
     try:
         # ── Core runtime state ──

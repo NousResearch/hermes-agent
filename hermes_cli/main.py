@@ -9602,8 +9602,60 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _cmd_dashboard_auth(args):
+    """Manage native dashboard authentication."""
+    import getpass
+
+    from hermes_cli.dashboard_auth import (
+        configure_dashboard_auth,
+        dashboard_auth_status,
+        disable_dashboard_auth,
+    )
+
+    action = getattr(args, "auth_action", None)
+    if action == "status":
+        status = dashboard_auth_status()
+        state = "enabled" if status["enabled"] else "disabled"
+        configured = "yes" if status["configured"] else "no"
+        print(f"Dashboard native auth: {state}")
+        print(f"Configured: {configured}")
+        if status.get("username"):
+            print(f"Username: {status['username']}")
+        return
+
+    if action == "disable":
+        disable_dashboard_auth()
+        print("Dashboard native auth disabled; password hash cleared.")
+        return
+
+    if action == "setup":
+        username = (getattr(args, "username", None) or "").strip()
+        while not username:
+            username = input("Dashboard username: ").strip()
+        password_env = getattr(args, "password_env", None)
+        if password_env:
+            password = os.environ.get(password_env, "")
+            if not password:
+                raise SystemExit(f"Environment variable {password_env!r} is empty or not set")
+        else:
+            password = getpass.getpass("Dashboard password: ")
+            confirm = getpass.getpass("Confirm dashboard password: ")
+            if password != confirm:
+                raise SystemExit("Dashboard passwords did not match")
+        configure_dashboard_auth(username=username, password=password)
+        print(f"Dashboard native auth enabled for user {username!r}.")
+        print("Restart any running dashboard process for the change to apply.")
+        return
+
+    raise SystemExit("Expected dashboard auth action: setup, status, or disable")
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    if getattr(args, "auth_action", None):
+        _cmd_dashboard_auth(args)
+        return
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -12342,6 +12394,41 @@ Examples:
         "--status",
         action="store_true",
         help="List running hermes dashboard processes and exit",
+    )
+    dashboard_auth_parser = dashboard_parser.add_subparsers(
+        dest="auth_action",
+        metavar="auth_action",
+        help="Manage native dashboard authentication",
+    )
+    dashboard_auth_setup_parser = dashboard_auth_parser.add_parser(
+        "auth",
+        help="Manage native dashboard authentication",
+        description="Enable, disable, or inspect native dashboard Basic Auth",
+    )
+    dashboard_auth_subparsers = dashboard_auth_setup_parser.add_subparsers(
+        dest="auth_action",
+        metavar="action",
+        required=True,
+    )
+    dashboard_auth_enable = dashboard_auth_subparsers.add_parser(
+        "setup",
+        help="Enable or rotate native dashboard auth",
+    )
+    dashboard_auth_enable.add_argument("--username", help="Dashboard username")
+    dashboard_auth_enable.add_argument(
+        "--password-env",
+        help=(
+            "Read the password from this environment variable instead of prompting. "
+            "Useful for automation without putting secrets in shell history."
+        ),
+    )
+    dashboard_auth_subparsers.add_parser(
+        "status",
+        help="Show native dashboard auth status without exposing the hash",
+    )
+    dashboard_auth_subparsers.add_parser(
+        "disable",
+        help="Disable native dashboard auth and clear the hash",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

@@ -194,10 +194,29 @@ dashboard:
     password_hash: "pbkdf2_sha256$..."
 ```
 
-Generate the hash with:
+Generate the hash manually with:
 
 ```bash
 python -c "from hermes_cli.web_server import hash_dashboard_password; print(hash_dashboard_password('your-password'))"
+```
+
+Or let Hermes prompt securely and write the hash for you:
+
+```bash
+hermes dashboard auth setup --username mauri
+hermes dashboard auth status
+hermes dashboard auth disable
+```
+
+For automation, avoid putting the password directly in shell history:
+
+```bash
+read -rs HERMES_DASHBOARD_PASSWORD
+export HERMES_DASHBOARD_PASSWORD
+hermes dashboard auth setup \
+  --username mauri \
+  --password-env HERMES_DASHBOARD_PASSWORD
+unset HERMES_DASHBOARD_PASSWORD
 ```
 
 Native dashboard auth protects the SPA, REST API, and dashboard WebSockets, but direct `0.0.0.0` exposure is still not the recommended deployment pattern. Use it as defense-in-depth behind Cloudflare Access, Tailscale, Caddy, or another trusted edge.

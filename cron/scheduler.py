@@ -35,7 +35,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_dir, get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -429,6 +429,62 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_DOCUMENT_EXTS = frozenset({
+    '.pdf', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.yaml', '.yml',
+    '.toml', '.ini', '.cfg', '.zip', '.docx', '.xlsx', '.pptx',
+})
+_CRON_MEDIA_EXTS = frozenset().union(_IMAGE_EXTS, _VIDEO_EXTS, _DOCUMENT_EXTS, {
+    '.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac',
+})
+_CRON_MEDIA_CACHE_DIRS = (
+    ("cache/audio", "audio_cache"),
+    ("cache/images", "image_cache"),
+    ("cache/videos", "video_cache"),
+    ("cache/documents", "document_cache"),
+    ("cache/screenshots", "browser_screenshots"),
+)
+
+
+def _is_safe_cron_media_path(media_path: str) -> bool:
+    """Return True for Hermes-generated MEDIA files that cron may attach.
+
+    Cron final responses are model-generated, so a MEDIA tag must not be able
+    to name arbitrary host files. Only existing files with expected attachment
+    extensions inside Hermes-controlled media cache directories are eligible.
+    """
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    if not path.is_file() or path.suffix.lower() not in _CRON_MEDIA_EXTS:
+        return False
+
+    for new_subpath, old_name in _CRON_MEDIA_CACHE_DIRS:
+        try:
+            cache_dir = get_hermes_dir(new_subpath, old_name).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        try:
+            path.relative_to(cache_dir)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _filter_cron_media_files(media_files: list, job: dict) -> list:
+    """Drop unsafe MEDIA paths before cron delivery opens or uploads them."""
+    safe_media = []
+    for media_path, is_voice in media_files:
+        if _is_safe_cron_media_path(media_path):
+            safe_media.append((media_path, is_voice))
+        else:
+            logger.warning(
+                "Job '%s': skipping unsafe MEDIA attachment path: %s",
+                job.get("id", "?"),
+                media_path,
+            )
+    return safe_media
 
 
 def _send_media_via_adapter(
@@ -526,6 +582,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_files = _filter_cron_media_files(media_files, job)
 
     try:
         config = load_gateway_config()

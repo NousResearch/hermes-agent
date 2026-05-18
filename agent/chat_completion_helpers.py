@@ -291,10 +291,17 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
         # Most commonly hit when MCP-derived tools carry JSON Schema validation
         # keywords through. Strip them before building kwargs. See #27197.
+        # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
+        # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
+        # the same opaque message; strip those enums too.
         if is_xai_responses:
             try:
-                from tools.schema_sanitizer import strip_pattern_and_format
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
+                tools_for_api, _ = strip_slash_enum(tools_for_api)
             except Exception as exc:
                 logger.warning(
                     "%s⚠️ Failed to sanitize tool schemas for xAI: %s",

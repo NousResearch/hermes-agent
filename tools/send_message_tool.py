@@ -533,16 +533,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
-    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from gateway.platforms.base import BasePlatformAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
-
-    # Telegram adapter import is optional (requires python-telegram-bot)
-    try:
-        from gateway.platforms.telegram import TelegramAdapter
-        _telegram_available = True
-    except ImportError:
-        _telegram_available = False
 
     # Feishu adapter import is optional (requires lark-oapi)
     try:
@@ -553,6 +546,18 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
+    if platform == Platform.TELEGRAM:
+        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        return await _send_telegram(
+            pconfig.token,
+            chat_id,
+            message,
+            media_files=media_files,
+            thread_id=thread_id,
+            disable_link_previews=disable_link_previews,
+            force_document=force_document,
+        )
+
     if platform == Platform.SLACK and message:
         try:
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
@@ -562,7 +567,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
@@ -581,33 +585,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
-    # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
-        _len_fn = utf16_len if platform == Platform.TELEGRAM else None
-        chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
+        chunks = BasePlatformAdapter.truncate_message(message, max_len)
     else:
         chunks = [message]
-
-    # --- Telegram: special handling for media attachments ---
-    if platform == Platform.TELEGRAM:
-        last_result = None
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _send_telegram(
-                pconfig.token,
-                chat_id,
-                chunk,
-                media_files=media_files if is_last else [],
-                thread_id=thread_id,
-                disable_link_previews=disable_link_previews,
-                force_document=force_document,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
 
     # --- Weixin: use the native one-shot adapter helper for text + media ---
     if platform == Platform.WEIXIN:
@@ -827,35 +809,48 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         warnings = []
 
         if formatted.strip():
-            try:
-                last_msg = await _send_telegram_message_with_retry(
-                    bot,
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
-                )
-            except Exception as md_error:
-                # Parse failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning(
-                        "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
-                        send_parse_mode,
-                        _sanitize_error_text(md_error),
-                    )
-                    if not _has_html:
-                        try:
-                            from gateway.platforms.telegram import _strip_mdv2
-                            plain = _strip_mdv2(formatted)
-                        except Exception:
-                            plain = message
-                    else:
-                        plain = message
+            from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+            text_chunks = BasePlatformAdapter.truncate_message(
+                formatted,
+                4096,
+                len_fn=utf16_len,
+            )
+
+            for chunk in text_chunks:
+                try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        chat_id=int_chat_id,
+                        text=chunk,
+                        parse_mode=send_parse_mode,
+                        **thread_kwargs,
                     )
-                else:
-                    raise
+                except Exception as md_error:
+                    # Parse failed, fall back to plain text per chunk.
+                    if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                        logger.warning(
+                            "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                            send_parse_mode,
+                            _sanitize_error_text(md_error),
+                        )
+                        if not _has_html:
+                            try:
+                                from gateway.platforms.telegram import _strip_mdv2
+                                plain = _strip_mdv2(chunk)
+                            except Exception:
+                                plain = chunk
+                        else:
+                            plain = chunk
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot,
+                            chat_id=int_chat_id,
+                            text=plain,
+                            parse_mode=None,
+                            **thread_kwargs,
+                        )
+                    else:
+                        raise
 
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

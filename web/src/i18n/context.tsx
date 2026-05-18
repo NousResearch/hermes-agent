@@ -38,25 +38,26 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 
 // Display metadata for the language picker — endonym (native name) so users
 // recognize their language even if they don't speak the current UI language,
-// plus a flag emoji for visual scanning.  Exposed as a constant so the
-// LanguageSwitcher and any future settings page can share the same list.
-export const LOCALE_META: Record<Locale, { name: string; flag: string }> = {
-  en: { name: "English", flag: "🇬🇧" },
-  zh: { name: "简体中文", flag: "🇨🇳" },
-  "zh-hant": { name: "繁體中文", flag: "🇹🇼" },
-  ja: { name: "日本語", flag: "🇯🇵" },
-  de: { name: "Deutsch", flag: "🇩🇪" },
-  es: { name: "Español", flag: "🇪🇸" },
-  fr: { name: "Français", flag: "🇫🇷" },
-  tr: { name: "Türkçe", flag: "🇹🇷" },
-  uk: { name: "Українська", flag: "🇺🇦" },
-  af: { name: "Afrikaans", flag: "🇿🇦" },
-  ko: { name: "한국어", flag: "🇰🇷" },
-  it: { name: "Italiano", flag: "🇮🇹" },
-  ga: { name: "Gaeilge", flag: "🇮🇪" },
-  pt: { name: "Português", flag: "🇵🇹" },
-  ru: { name: "Русский", flag: "🇷🇺" },
-  hu: { name: "Magyar", flag: "🇭🇺" },
+// plus a flag-icons sprite (ISO 3166-1 alpha-2) for visual scanning.
+// Exposed as a constant so the LanguageSwitcher and any future settings page
+// can share the same list.
+export const LOCALE_META: Record<Locale, { name: string; flagCountryCode: string }> = {
+  en: { name: "English", flagCountryCode: "gb" },
+  zh: { name: "简体中文", flagCountryCode: "cn" },
+  "zh-hant": { name: "繁體中文", flagCountryCode: "tw" },
+  ja: { name: "日本語", flagCountryCode: "jp" },
+  de: { name: "Deutsch", flagCountryCode: "de" },
+  es: { name: "Español", flagCountryCode: "es" },
+  fr: { name: "Français", flagCountryCode: "fr" },
+  tr: { name: "Türkçe", flagCountryCode: "tr" },
+  uk: { name: "Українська", flagCountryCode: "ua" },
+  af: { name: "Afrikaans", flagCountryCode: "za" },
+  ko: { name: "한국어", flagCountryCode: "kr" },
+  it: { name: "Italiano", flagCountryCode: "it" },
+  ga: { name: "Gaeilge", flagCountryCode: "ie" },
+  pt: { name: "Português", flagCountryCode: "pt" },
+  ru: { name: "Русский", flagCountryCode: "ru" },
+  hu: { name: "Magyar", flagCountryCode: "hu" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

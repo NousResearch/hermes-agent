@@ -17,6 +17,7 @@ import type {
   ThemeLayer,
   ThemeLayout,
   ThemeLayoutVariant,
+  ThemeListEntry,
   ThemePalette,
   ThemeTypography,
 } from "./types";
@@ -311,7 +312,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   /** All selectable themes (shown in the picker). Starts with just the
    *  built-ins; the API call below merges in user themes. */
-  const [availableThemes, setAvailableThemes] = useState<ThemeSummary[]>(() =>
+  const [availableThemes, setAvailableThemes] = useState<ThemeListEntry[]>(() =>
     Object.values(BUILTIN_THEMES).map((t) => ({
       name: t.name,
       label: t.label,
@@ -429,15 +430,8 @@ const ThemeContext = createContext<ThemeContextValue>({
 });
 
 interface ThemeContextValue {
-  availableThemes: ThemeSummary[];
+  availableThemes: ThemeListEntry[];
   setTheme: (name: string) => void;
   theme: DashboardTheme;
   themeName: string;
-}
-
-interface ThemeSummary {
-  description: string;
-  label: string;
-  name: string;
-  definition?: DashboardTheme;
 }

@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
@@ -16,6 +16,13 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
+    # -Commit and -Tag are higher-precedence variants of -Branch for users
+    # who need reproducible installs (desktop installer pinning, CI, release
+    # bundles).  When set, the repository stage clones $Branch (faster than
+    # cloning the full default-branch history) and then `git checkout`s the
+    # exact ref.  Precedence: Commit > Tag > Branch.
+    [string]$Commit = "",
+    [string]$Tag = "",
     [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
     [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
 
@@ -955,14 +962,36 @@ function Install-Repository {
         if ($repoValid) {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
+            # Wrap the entire fetch+checkout block in EAP=Continue so git's
+            # routine stderr output (e.g. 'From <url>' info lines emitted by
+            # `git fetch`) doesn't terminate the script under the global
+            # EAP=Stop.  We rely on $LASTEXITCODE for actual failures.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             try {
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false checkout $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                git -c windows.appendAtomically=false pull origin $Branch
-                if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                # Precedence: Commit > Tag > Branch.  Commit and Tag check
+                # out as detached HEAD intentionally -- they're meant to be
+                # reproducible pins, not branches the user pulls into.
+                if ($Commit) {
+                    # Make sure we have the commit locally (a tag-less commit
+                    # SHA isn't always reachable from any one branch fetch).
+                    git -c windows.appendAtomically=false fetch origin $Commit
+                    git -c windows.appendAtomically=false checkout --detach $Commit
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                } elseif ($Tag) {
+                    git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                    git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
+                } else {
+                    git -c windows.appendAtomically=false checkout $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
+                    git -c windows.appendAtomically=false pull origin $Branch
+                    if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
+                }
             } finally {
+                $ErrorActionPreference = $prevEAP
                 Pop-Location
             }
             $didUpdate = $true
@@ -1020,8 +1049,20 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Warn "Git clone failed -- downloading ZIP archive instead..."
             try {
-                $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
-                $zipPath = "$env:TEMP\hermes-agent-$Branch.zip"
+                # Pick the ZIP URL for the most-specific ref the caller asked
+                # for.  GitHub supports archive URLs for commits, tags, and
+                # branches; we honour Commit > Tag > Branch.
+                if ($Commit) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipLabel = $Commit
+                } elseif ($Tag) {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipLabel = $Tag
+                } else {
+                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipLabel = $Branch
+                }
+                $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
                 $extractPath = "$env:TEMP\hermes-agent-extract"
 
                 Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
@@ -1062,6 +1103,37 @@ function Install-Repository {
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+
+    # Post-clone pin: when a clone (or ZIP-fallback init) just landed us on
+    # $Branch's tip, honour the higher-precedence $Commit / $Tag by checking
+    # the exact ref out as a detached HEAD.  Skipped for the in-place update
+    # path (above) since that already routed via the same precedence.
+    if (-not $didUpdate) {
+        # Same EAP=Continue wrap as the update path -- git fetch's 'From <url>'
+        # info line goes to stderr and would terminate the script under the
+        # global EAP=Stop otherwise.  We check $LASTEXITCODE for real errors.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if ($Commit) {
+                Write-Info "Pinning to commit $Commit..."
+                git -c windows.appendAtomically=false fetch origin $Commit
+                git -c windows.appendAtomically=false checkout --detach $Commit
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout $Commit failed (exit $LASTEXITCODE)"
+                }
+            } elseif ($Tag) {
+                Write-Info "Pinning to tag $Tag..."
+                git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                if ($LASTEXITCODE -ne 0) {
+                    throw "git checkout tag $Tag failed (exit $LASTEXITCODE)"
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+    }
 
     # Ensure submodules are initialized and updated
     Write-Info "Initializing submodules..."

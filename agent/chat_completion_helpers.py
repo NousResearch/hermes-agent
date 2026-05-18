@@ -741,10 +741,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # (not substring) — see GHSA-76xc-57q6-vm5m.
         if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
             fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+        fb_api_mode_hint = (fb.get("api_mode") or "").strip() or None
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
             explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+            explicit_api_key=fb_api_key_hint,
+            api_mode=fb_api_mode_hint)
         if fb_client is None:
             logging.warning(
                 "Fallback to %s failed: provider not configured",
@@ -758,7 +760,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             pass
 
         # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        fb_api_mode = (fb.get("api_mode") or "").strip() or "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":

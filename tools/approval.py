@@ -217,6 +217,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    (r'\b(?:ba)?sh\s+-c\s*[\'"`][^\'"`\n]*\b(?:shutdown|reboot|halt|poweroff|init\s+[06]|telinit\s+[06]|systemctl\s+(?:poweroff|reboot|halt|kexec))\b', "shell -c system shutdown/reboot"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -266,6 +267,20 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+def _mask_quoted_literals_for_hardline(command: str) -> str:
+    """Mask quoted text before hardline matching when it is data, not code.
+
+    Hardline shutdown/reboot patterns anchor on command separators such as
+    pipes. A grep regex like ``grep -iE 'shutdown|reboot'`` contains a pipe
+    inside a quoted argument; treating that as shell syntax false-blocks safe
+    log inspection. Keep shell-eval forms unmasked so ``sh -c 'reboot'`` still
+    hits the blocklist.
+    """
+    if re.search(r'\b(?:ba)?sh\s+-c\s*[\'"`]', command, re.IGNORECASE):
+        return command
+    return re.sub(r"'[^']*'|\"[^\"]*\"", "''", command)
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
@@ -273,6 +288,7 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+    normalized = _mask_quoted_literals_for_hardline(normalized)
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)

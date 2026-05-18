@@ -173,7 +173,7 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
             return bool((get_minimax_oauth_auth_status() or {}).get("logged_in"))
         except Exception:
             return False
-    if normalized == "xai":
+    if normalized in {"xai", "xai / grok", "grok"}:
         try:
             from hermes_cli.auth import get_xai_oauth_auth_status
             return bool((get_xai_oauth_auth_status() or {}).get("logged_in"))
@@ -812,6 +812,10 @@ def run_doctor(args):
             if codex_status.get("error"):
                 check_info(codex_status["error"])
 
+        def _runtime_uses_provider(*provider_markers: str) -> bool:
+            active = (active_runtime_provider or "").strip().lower()
+            return any(marker in active for marker in provider_markers)
+
         gemini_status = get_gemini_oauth_auth_status()
         if gemini_status.get("logged_in"):
             email = gemini_status.get("email") or ""
@@ -823,15 +827,19 @@ def run_doctor(args):
                 pieces.append(f"project={project}")
             suffix = f" ({', '.join(pieces)})" if pieces else ""
             check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
+        elif _runtime_uses_provider("gemini", "google"):
             check_warn("Google Gemini OAuth", "(not logged in)")
+        else:
+            check_info("Google Gemini OAuth not logged in (optional; inactive provider)")
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):
             region = minimax_status.get("region", "global")
             check_ok("MiniMax OAuth", f"(logged in, region={region})")
-        else:
+        elif _runtime_uses_provider("minimax"):
             check_warn("MiniMax OAuth", "(not logged in)")
+        else:
+            check_info("MiniMax OAuth not logged in (optional; inactive provider)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 

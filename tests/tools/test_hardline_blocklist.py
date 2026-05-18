@@ -87,6 +87,8 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    "sh -c 'reboot'",
+    "bash -c \"shutdown -h now\"",
 ]
 
 
@@ -113,6 +115,7 @@ _HARDLINE_ALLOW = [
     "cat /dev/urandom | head -c 10",
     # Unrelated commands that happen to contain the trigger word
     "grep 'shutdown' logs.txt",
+    "tail -200 ~/.hermes/logs/gateway.log | grep -iE 'compress|shutdown|reboot|error'",
     "echo reboot",
     "echo '# init 0 in comment'",
     "cat rebooting.log",

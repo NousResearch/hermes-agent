@@ -348,6 +348,13 @@ class TestAttachmentExtraction:
         msg = {"content": "MEDIA: /a.png and MEDIA: /b.mp3"}
         assert len(_extract_attachments(msg)) == 2
 
+    def test_media_tag_strips_trailing_punctuation(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": "Please inspect MEDIA: /tmp/screenshot.png). Thanks"}
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {"type": "media", "path": "/tmp/screenshot.png"}
+
     def test_no_attachments(self):
         from mcp_serve import _extract_attachments
         assert _extract_attachments({"content": "plain text"}) == []

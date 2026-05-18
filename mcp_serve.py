@@ -178,7 +178,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
     if text:
         media_pattern = re.compile(r'MEDIA:\s*(\S+)')
         for match in media_pattern.finditer(text):
-            path = match.group(1)
+            path = match.group(1).rstrip(".,;:!?)]}\"'")
             attachments.append({"type": "media", "path": path})
 
     return attachments

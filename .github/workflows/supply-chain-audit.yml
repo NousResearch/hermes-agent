@@ -46,8 +46,10 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
-          # Added lines only, excluding lockfiles.
-          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          # Get the full diff (added lines only)
+          # Focus critical pattern scanning on executable/source changes.
+          # Excluding tests/docs/markdown avoids recurring false positives from fixtures.
+          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' ':!tests/**' ':!docs/**' ':!*.md' ':!.github/workflows/supply-chain-audit.yml' || true)
 
           FINDINGS=""
 

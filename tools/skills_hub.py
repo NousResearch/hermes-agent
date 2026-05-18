@@ -1212,20 +1212,28 @@ class SkillsShSource(SkillSource):
         for candidate in self._candidate_identifiers(canonical):
             bundle = self.github.fetch(candidate)
             if bundle:
-                bundle.source = "skills.sh"
-                bundle.identifier = self._wrap_identifier(canonical)
-                bundle.metadata.update(self._detail_to_metadata(canonical, detail))
+                self._finalize_fetched_bundle(bundle, canonical, detail, candidate)
                 return bundle
 
         resolved = self._discover_identifier(canonical, detail=detail)
         if resolved:
             bundle = self.github.fetch(resolved)
             if bundle:
-                bundle.source = "skills.sh"
-                bundle.identifier = self._wrap_identifier(canonical)
-                bundle.metadata.update(self._detail_to_metadata(canonical, detail))
+                self._finalize_fetched_bundle(bundle, canonical, detail, resolved)
                 return bundle
         return None
+
+    def _finalize_fetched_bundle(
+        self,
+        bundle: SkillBundle,
+        canonical: str,
+        detail: Optional[dict],
+        fetched_identifier: str,
+    ) -> None:
+        bundle.source = "skills.sh"
+        bundle.metadata.update(self._detail_to_metadata(canonical, detail))
+        bundle.metadata["resolved_github_identifier"] = fetched_identifier
+        bundle.identifier = self._wrap_identifier(canonical)
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         canonical = self._normalize_identifier(identifier)

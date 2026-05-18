@@ -124,21 +124,6 @@ def _nested_fixture(tmp_path: Path):
     (tmp_path / "tui_gateway/server.py").write_text("x")
 
 
-def test_fuzzy_at_does_not_invoke_git_for_completion(tmp_path, monkeypatch):
-    """Autocomplete is automatic UI work, so it must not run repo-local Git config."""
-    monkeypatch.chdir(tmp_path)
-    _nested_fixture(tmp_path)
-
-    def fail_git(*args, **kwargs):
-        raise AssertionError("complete.path must not invoke git")
-
-    monkeypatch.setattr(server.subprocess, "run", fail_git)
-
-    texts = [t for t, _, _ in _items("@appChrome")]
-
-    assert "@file:ui-tui/src/components/appChrome.tsx" in texts, texts
-
-
 def test_fuzzy_at_finds_file_without_directory_prefix(tmp_path, monkeypatch):
     """`@appChrome` — with no slash — should surface the nested file."""
     monkeypatch.chdir(tmp_path)
@@ -249,14 +234,29 @@ def test_fuzzy_caps_results(tmp_path, monkeypatch):
 
 
 def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
-    """When the gateway runs from a subdirectory, fuzzy completion paths
-    resolve under that cwd and do not include parent/sibling trees.
+    """When the gateway runs from a subdirectory of a git repo, fuzzy
+    completion paths must resolve under that cwd — not under the repo root.
+
+    Without this, `@appChrome` from inside `apps/web/` would suggest
+    `@file:apps/web/src/foo.tsx` but the agent (resolving from cwd) would
+    look for `apps/web/apps/web/src/foo.tsx` and fail. We translate every
+    `git ls-files` result back to a `relpath(root)` and drop anything
+    outside `root` so the completion contract stays "paths are cwd-relative".
     """
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+
     (tmp_path / "apps" / "web" / "src").mkdir(parents=True)
     (tmp_path / "apps" / "web" / "src" / "appChrome.tsx").write_text("x")
     (tmp_path / "apps" / "api" / "src").mkdir(parents=True)
     (tmp_path / "apps" / "api" / "src" / "server.ts").write_text("x")
     (tmp_path / "README.md").write_text("x")
+
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
 
     # Run from `apps/web/` — completions should be relative to here, and
     # files outside this subtree (apps/api, README.md at root) shouldn't

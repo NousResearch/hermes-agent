@@ -25,9 +25,9 @@ def _clean_passthrough():
 
 class TestSkillScopedPassthrough:
     def test_register_and_check(self):
-        assert not is_env_passthrough("CUSTOM_SKILL_API_KEY")
-        register_env_passthrough(["CUSTOM_SKILL_API_KEY"])
-        assert is_env_passthrough("CUSTOM_SKILL_API_KEY")
+        assert not is_env_passthrough("TENOR_API_KEY")
+        register_env_passthrough(["TENOR_API_KEY"])
+        assert is_env_passthrough("TENOR_API_KEY")
 
     def test_register_multiple(self):
         register_env_passthrough(["FOO_TOKEN", "BAR_SECRET"])
@@ -36,10 +36,10 @@ class TestSkillScopedPassthrough:
         assert not is_env_passthrough("OTHER_KEY")
 
     def test_clear(self):
-        register_env_passthrough(["CUSTOM_SKILL_API_KEY"])
-        assert is_env_passthrough("CUSTOM_SKILL_API_KEY")
+        register_env_passthrough(["TENOR_API_KEY"])
+        assert is_env_passthrough("TENOR_API_KEY")
         clear_env_passthrough()
-        assert not is_env_passthrough("CUSTOM_SKILL_API_KEY")
+        assert not is_env_passthrough("TENOR_API_KEY")
 
     def test_get_all(self):
         register_env_passthrough(["A_KEY", "B_TOKEN"])
@@ -132,17 +132,17 @@ class TestExecuteCodeIntegration:
         assert "HOME" in child_env
         assert "TENOR_API_KEY" not in child_env
 
-    def test_passthrough_allows_unmanaged_secret_through(self):
-        """Unmanaged secret-looking names should pass through when registered."""
+    def test_passthrough_allows_secret_through(self):
+        """TENOR_API_KEY should pass through when registered."""
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                               "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
 
-        register_env_passthrough(["CUSTOM_SKILL_API_KEY"])
+        register_env_passthrough(["TENOR_API_KEY"])
 
-        test_env = {"PATH": "/usr/bin", "CUSTOM_SKILL_API_KEY": "test123", "HOME": "/home/user"}
+        test_env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123", "HOME": "/home/user"}
         child_env = {}
         for k, v in test_env.items():
             if is_env_passthrough(k):
@@ -155,8 +155,8 @@ class TestExecuteCodeIntegration:
 
         assert "PATH" in child_env
         assert "HOME" in child_env
-        assert "CUSTOM_SKILL_API_KEY" in child_env
-        assert child_env["CUSTOM_SKILL_API_KEY"] == "test123"
+        assert "TENOR_API_KEY" in child_env
+        assert child_env["TENOR_API_KEY"] == "test123"
 
 
 class TestTerminalIntegration:
@@ -218,41 +218,14 @@ class TestTerminalIntegration:
         finally:
             os.environ.pop(blocked_var, None)
 
-    def test_unmanaged_skill_var_still_registerable(self):
-        """Caller-owned skill vars outside Hermes' managed secret set can
-        still pass through when explicitly registered."""
+    def test_non_hermes_api_key_still_registerable(self):
+        """Third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
+        Hermes provider credentials and must still pass through — skills
+        that legitimately wrap third-party APIs must keep working."""
+        # TENOR_API_KEY is a real example — used by the gif-search skill
+        register_env_passthrough(["TENOR_API_KEY"])
+        assert is_env_passthrough("TENOR_API_KEY")
+
+        # Arbitrary skill-specific var
         register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
         assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")
-
-        register_env_passthrough(["UNMANAGED_THIRD_PARTY_API_KEY"])
-        assert is_env_passthrough("UNMANAGED_THIRD_PARTY_API_KEY")
-
-    @pytest.mark.parametrize("managed_secret", [
-        "NOTION_API_KEY",
-        "LINEAR_API_KEY",
-        "AIRTABLE_API_KEY",
-        "TENOR_API_KEY",
-    ])
-    def test_managed_skill_api_keys_are_blocklisted(self, managed_secret):
-        from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-
-        assert managed_secret in _HERMES_PROVIDER_ENV_BLOCKLIST
-        register_env_passthrough([managed_secret])
-        assert not is_env_passthrough(managed_secret)
-
-    def test_config_passthrough_cannot_override_managed_secret(self, tmp_path, monkeypatch):
-        config = {"terminal": {"env_passthrough": ["NOTION_API_KEY", "CUSTOM_ALLOWED"]}}
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("NOTION_API_KEY")
-        assert is_env_passthrough("CUSTOM_ALLOWED")
-
-    def test_make_run_env_blocks_managed_skill_secret(self, monkeypatch):
-        from tools.environments.local import _make_run_env
-
-        monkeypatch.setenv("NOTION_API_KEY", "secret_value")
-        register_env_passthrough(["NOTION_API_KEY"])
-        assert "NOTION_API_KEY" not in _make_run_env({})

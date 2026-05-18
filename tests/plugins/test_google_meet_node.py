@@ -389,7 +389,7 @@ def test_server_handle_request_say_enqueues_when_active(tmp_path, monkeypatch):
     out = tmp_path / "meet-out"
     out.mkdir()
     monkeypatch.setattr(pm, "_read_active",
-                        lambda: {"pid": 1, "meeting_id": "m", "out_dir": str(out), "mode": "realtime"})
+                        lambda: {"pid": 1, "meeting_id": "m", "out_dir": str(out)})
 
     s = NodeServer(token_path=tmp_path / "t.json")
     tok = s.ensure_token()
@@ -397,7 +397,7 @@ def test_server_handle_request_say_enqueues_when_active(tmp_path, monkeypatch):
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
     assert resp["payload"]["ok"] is True
-    assert "enqueued_id" in resp["payload"]
+    assert resp["payload"]["enqueued"] is True
     q = (out / "say_queue.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(q) == 1
     assert json.loads(q[0])["text"] == "hello"
@@ -415,8 +415,8 @@ def test_server_handle_request_say_without_active_still_ok(tmp_path, monkeypatch
     req = protocol.make_request("say", tok, {"text": "hi"})
     resp = asyncio.run(s._handle_request(req))
     assert resp["type"] == "response"
-    assert resp["payload"]["ok"] is False
-    assert "no active meeting" in resp["payload"]["reason"]
+    assert resp["payload"]["ok"] is True
+    assert resp["payload"]["enqueued"] is False
 
 
 def test_server_handle_request_wraps_pm_exceptions(tmp_path, monkeypatch):
@@ -673,51 +673,3 @@ def test_cli_status_reports_client_error(capsys, monkeypatch):
     data = json.loads(capsys.readouterr().out.strip())
     assert data["ok"] is False
     assert "connection refused" in data["error"]
-
-
-def test_server_forwards_session_id_to_control_operations(tmp_path, monkeypatch):
-    from plugins.google_meet.node.server import NodeServer
-    from plugins.google_meet.node import protocol
-    from plugins.google_meet import process_manager as pm
-
-    captured = {}
-
-    def fake_status(*, session_id=None):
-        captured["status"] = session_id
-        return {"ok": True}
-
-    def fake_transcript(last=None, *, session_id=None):
-        captured["transcript"] = session_id
-        return {"ok": True}
-
-    def fake_enqueue_say(text, *, session_id=None):
-        captured["say"] = session_id
-        return {"ok": True}
-
-    def fake_stop(*, reason="requested", session_id=None):
-        captured["stop"] = session_id
-        return {"ok": True}
-
-    monkeypatch.setattr(pm, "status", fake_status)
-    monkeypatch.setattr(pm, "transcript", fake_transcript)
-    monkeypatch.setattr(pm, "enqueue_say", fake_enqueue_say)
-    monkeypatch.setattr(pm, "stop", fake_stop)
-
-    s = NodeServer(token_path=tmp_path / "t.json")
-    tok = s.ensure_token()
-    for req_type, payload in (
-        ("status", {"session_id": "session-a"}),
-        ("transcript", {"last": 1, "session_id": "session-a"}),
-        ("say", {"text": "hello", "session_id": "session-a"}),
-        ("stop", {"session_id": "session-a"}),
-    ):
-        req = protocol.make_request(req_type, tok, payload)
-        resp = asyncio.run(s._handle_request(req))
-        assert resp["type"] == "response"
-
-    assert captured == {
-        "status": "session-a",
-        "transcript": "session-a",
-        "say": "session-a",
-        "stop": "session-a",
-    }

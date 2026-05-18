@@ -64,24 +64,6 @@ class TestPreNavigationSsrf:
         assert result["success"] is False
         assert "private or internal address" in result["error"]
 
-    def test_remote_cdp_override_blocks_private_url_by_default(
-        self, monkeypatch, _common_patches
-    ):
-        """Remote CDP overrides enforce cloud-mode SSRF without cloud config."""
-        monkeypatch.setattr(
-            browser_tool,
-            "_get_cdp_override",
-            lambda: "wss://cdp.example/devtools/browser/abc",
-        )
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
-
-        result = json.loads(browser_tool.browser_navigate(self.PRIVATE_URL))
-
-        assert result["success"] is False
-        assert "private or internal address" in result["error"]
-
     def test_cloud_allows_private_url_when_setting_true(self, monkeypatch, _common_patches):
         """Private URLs pass in cloud mode when allow_private_urls is True."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
@@ -190,11 +172,6 @@ class TestIsLocalBackend:
     def test_camofox_is_local(self, monkeypatch):
         """Camofox mode counts as a local backend."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: True)
-        monkeypatch.setattr(
-            browser_tool,
-            "_get_cdp_override",
-            lambda: "wss://cdp.example/devtools/browser/abc",
-        )
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "anything")
 
         assert browser_tool._is_local_backend() is True
@@ -202,7 +179,6 @@ class TestIsLocalBackend:
     def test_no_cloud_provider_is_local(self, monkeypatch):
         """No cloud provider configured → local backend."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
 
         assert browser_tool._is_local_backend() is True
@@ -210,32 +186,7 @@ class TestIsLocalBackend:
     def test_cloud_provider_is_not_local(self, monkeypatch):
         """Cloud provider configured and not Camofox → NOT local."""
         monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: "")
         monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: "bb")
-
-        assert browser_tool._is_local_backend() is False
-
-    def test_loopback_cdp_override_is_local(self, monkeypatch):
-        """Loopback CDP overrides still represent a local browser."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(
-            browser_tool,
-            "_get_cdp_override",
-            lambda: "ws://127.0.0.1:9222/devtools/browser/abc",
-        )
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-
-        assert browser_tool._is_local_backend() is True
-
-    def test_remote_cdp_override_is_not_local(self, monkeypatch):
-        """Hosted/public CDP overrides must keep cloud SSRF protections."""
-        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(
-            browser_tool,
-            "_get_cdp_override",
-            lambda: "wss://cdp.example/devtools/browser/abc",
-        )
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
 
         assert browser_tool._is_local_backend() is False
 
@@ -285,36 +236,6 @@ class TestPostRedirectSsrf:
 
         assert result["success"] is False
         assert "redirect landed on a private/internal address" in result["error"]
-
-    def test_remote_cdp_override_blocks_redirect_to_private(
-        self, monkeypatch, _common_patches
-    ):
-        """Remote CDP overrides also enforce post-redirect SSRF checks."""
-        commands = []
-        monkeypatch.setattr(
-            browser_tool,
-            "_get_cdp_override",
-            lambda: "wss://cdp.example/devtools/browser/abc",
-        )
-        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
-        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(
-            browser_tool, "_is_safe_url", lambda url: "192.168" not in url,
-        )
-
-        def fake_run(task_id, command, args=None, **kwargs):
-            commands.append((command, args or []))
-            if args == ["about:blank"]:
-                return _make_browser_result(url="about:blank")
-            return _make_browser_result(url=self.PRIVATE_FINAL_URL)
-
-        monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run)
-
-        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
-
-        assert result["success"] is False
-        assert "redirect landed on a private/internal address" in result["error"]
-        assert ("open", ["about:blank"]) in commands
 
     def test_cloud_allows_redirect_to_private_when_setting_true(self, monkeypatch, _common_patches):
         """Redirects to private addresses pass in cloud mode with allow_private_urls."""

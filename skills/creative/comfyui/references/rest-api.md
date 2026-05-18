@@ -11,8 +11,8 @@ auth/path differences.**
 | Base URL | `http://127.0.0.1:8188` | `https://cloud.comfy.org` |
 | API path prefix | none (`/prompt`, `/view`, …) | `/api/...` (`/api/prompt`, `/api/view`, …) |
 | Auth | none (or bearer token if configured) | `X-API-Key` header |
-| WebSocket | `ws://host:port/ws?clientId={uuid}` | Authenticated URL; prefer `scripts/ws_monitor.py`, which redacts the token in logs |
-| `/api/view` response | direct bytes | 302 redirect → signed URL (follow without forwarding auth headers) |
+| WebSocket | `ws://host:port/ws?clientId={uuid}` | `wss://cloud.comfy.org/ws?clientId={uuid}&token={API_KEY}` |
+| `/api/view` response | direct bytes | 302 redirect → signed URL (use `curl -L`) |
 
 The skill scripts route URLs automatically via `_common.resolve_url()`.
 
@@ -129,12 +129,10 @@ checking `completed`, because both can be true for failed runs.
 curl -s "http://127.0.0.1:8188/view?filename=ComfyUI_00001_.png&subfolder=&type=output" \
   -o output.png
 
-# Cloud (302 → signed URL; do not forward X-API-Key to the signed URL host)
-location=$(curl -sS -D - -o /dev/null \
-  "https://cloud.comfy.org/api/view?filename=...&type=output" \
+# Cloud (302 → signed URL; -L follows; STRIP X-API-Key for the second hop)
+curl -L "https://cloud.comfy.org/api/view?filename=...&type=output" \
   -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
-  | awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}')
-curl -sS "$location" -o output.png
+  -o output.png
 ```
 
 The skill's `run_workflow.py` strips `X-API-Key` automatically on the
@@ -148,8 +146,8 @@ Connect for real-time execution events.
 # Local
 wscat -c "ws://127.0.0.1:8188/ws?clientId=MY-UUID"
 
-# Cloud — prefer the helper because it redacts the token-bearing URL in logs
-python3 scripts/ws_monitor.py --host https://cloud.comfy.org --api-key "$COMFY_CLOUD_API_KEY"
+# Cloud
+wscat -c "wss://cloud.comfy.org/ws?clientId=MY-UUID&token=$COMFY_CLOUD_API_KEY"
 ```
 
 **Note:** on Cloud the `clientId` is currently ignored — all messages for a

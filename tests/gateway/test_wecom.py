@@ -353,53 +353,6 @@ class TestMediaHelpers:
         with pytest.raises(ValueError, match="placeholder was not replaced"):
             await adapter._load_outbound_media("<path>")
 
-    @pytest.mark.asyncio
-    async def test_load_outbound_media_blocks_sensitive_local_paths(self, tmp_path, monkeypatch):
-        from gateway.platforms.wecom import WeComAdapter
-
-        home = tmp_path / "home"
-        ssh_dir = home / ".ssh"
-        ssh_dir.mkdir(parents=True)
-        private_key = ssh_dir / "id_ed25519"
-        private_key.write_text("secret-key", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        with pytest.raises(ValueError, match="Blocked sensitive local media path"):
-            await adapter._load_outbound_media(str(private_key))
-
-    @pytest.mark.asyncio
-    async def test_load_outbound_media_blocks_hermes_credentials(self, tmp_path, monkeypatch):
-        from gateway.platforms.wecom import WeComAdapter
-
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        config_file = hermes_home / "config.yaml"
-        config_file.write_text(
-            "platforms:\n  wecom:\n    secret: token\n", encoding="utf-8"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        with pytest.raises(ValueError, match="Blocked sensitive local media path"):
-            await adapter._load_outbound_media(str(config_file))
-
-    @pytest.mark.asyncio
-    async def test_load_outbound_media_allows_regular_local_file(self, tmp_path):
-        from gateway.platforms.wecom import WeComAdapter
-
-        report = tmp_path / "report.txt"
-        report.write_text("safe report", encoding="utf-8")
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        data, content_type, name = await adapter._load_outbound_media(str(report))
-
-        assert data == b"safe report"
-        assert content_type == "text/plain"
-        assert name == "report.txt"
-
 
 class TestMediaUpload:
     @pytest.mark.asyncio
@@ -448,51 +401,6 @@ class TestMediaUpload:
         assert calls[1][1]["chunk_index"] == 0
         assert calls[2][1]["chunk_index"] == 1
         assert calls[3][1]["chunk_index"] == 2
-
-    @pytest.mark.asyncio
-    @patch("tools.url_safety.is_safe_url", return_value=True)
-    async def test_download_remote_bytes_installs_redirect_guard(self, _mock_safe, monkeypatch):
-        from gateway.platforms.base import _ssrf_redirect_guard
-        import gateway.platforms.wecom as wecom_module
-        from gateway.platforms.wecom import WeComAdapter
-
-        captured = {}
-
-        class FakeResponse:
-            headers = {"content-length": "3"}
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return None
-
-            def raise_for_status(self):
-                return None
-
-            async def aiter_bytes(self):
-                yield b"abc"
-
-        class FakeClient:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-            def stream(self, method, url, headers=None):
-                return FakeResponse()
-
-            async def aclose(self):
-                return None
-
-        monkeypatch.setattr(wecom_module.httpx, "AsyncClient", FakeClient)
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
-
-        data, _headers = await adapter._download_remote_bytes(
-            "https://example.com/file.bin", max_bytes=4
-        )
-
-        assert data == b"abc"
-        assert captured["follow_redirects"] is True
-        assert captured["event_hooks"] == {"response": [_ssrf_redirect_guard]}
 
     @pytest.mark.asyncio
     @patch("tools.url_safety.is_safe_url", return_value=True)

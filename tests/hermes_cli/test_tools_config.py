@@ -74,6 +74,38 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_get_platform_tools_qqbot_honors_legacy_qq_config():
+    legacy_config = {"platform_toolsets": {"qq": ["web", "no_mcp"]}}
+    migrated_config = {"platform_toolsets": {"qqbot": ["web", "no_mcp"]}}
+
+    legacy_enabled = _get_platform_tools(
+        legacy_config, "qqbot", include_default_mcp_servers=False
+    )
+    migrated_enabled = _get_platform_tools(
+        migrated_config, "qqbot", include_default_mcp_servers=False
+    )
+
+    assert legacy_enabled == migrated_enabled
+    assert "web" in legacy_enabled
+    assert "terminal" not in legacy_enabled
+    assert "file" not in legacy_enabled
+    assert "code_execution" not in legacy_enabled
+
+
+def test_get_platform_tools_qqbot_prefers_canonical_config_over_legacy_qq():
+    config = {
+        "platform_toolsets": {
+            "qq": ["terminal", "no_mcp"],
+            "qqbot": ["web", "no_mcp"],
+        }
+    }
+
+    enabled = _get_platform_tools(config, "qqbot", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "terminal" not in enabled
+
+
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
@@ -81,17 +113,6 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
     assert "messaging" in enabled
-
-
-def test_get_platform_tools_webhook_defaults_to_no_tools():
-    """Webhook payloads are provider-authenticated but still untrusted prompt input."""
-    assert _get_platform_tools({}, "webhook", include_default_mcp_servers=False) == set()
-
-
-def test_get_platform_tools_webhook_allows_explicit_opt_in():
-    config = {"platform_toolsets": {"webhook": ["terminal"]}}
-
-    assert _get_platform_tools(config, "webhook", include_default_mcp_servers=False) == {"terminal"}
 
 
 def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
@@ -929,7 +950,6 @@ def test_discord_toolsets_in_configurable_toolsets():
 def test_discord_toolsets_in_default_off():
     assert "discord" in _DEFAULT_OFF_TOOLSETS
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
-    assert "computer_use" in _DEFAULT_OFF_TOOLSETS
 
 
 def test_discord_toolsets_not_available_on_other_platforms():

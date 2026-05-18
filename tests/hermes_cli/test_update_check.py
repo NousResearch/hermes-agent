@@ -92,45 +92,6 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     assert mock_run.call_count >= 1
 
 
-def test_check_via_rev_runs_git_with_safe_cwd_and_config(monkeypatch):
-    """Nix revision checks must not inherit Git config from the user's CWD."""
-    import hermes_cli.banner as banner
-
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return MagicMock(returncode=0, stdout="abc123 refs/heads/main\n")
-
-    monkeypatch.setenv("GIT_DIR", "/tmp/attacker/.git")
-    monkeypatch.setenv("GIT_WORK_TREE", "/tmp/attacker")
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "protocol.ext.allow")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "always")
-    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'protocol.ext.allow'='always'")
-
-    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
-        result = banner._check_via_rev("abc123")
-
-    assert result == 0
-    args, kwargs = calls[0]
-    command = args[0]
-    assert command[:5] == [
-        "git",
-        "-c",
-        "protocol.allow=never",
-        "-c",
-        "protocol.https.allow=always",
-    ]
-    assert kwargs["cwd"] == os.path.abspath(os.sep)
-    assert kwargs["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
-    assert kwargs["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
-    assert "GIT_DIR" not in kwargs["env"]
-    assert "GIT_WORK_TREE" not in kwargs["env"]
-    assert "GIT_CONFIG_COUNT" not in kwargs["env"]
-    assert "GIT_CONFIG_PARAMETERS" not in kwargs["env"]
-
-
 def test_prefetch_non_blocking():
     """prefetch_update_check() should return immediately without blocking."""
     import hermes_cli.banner as banner

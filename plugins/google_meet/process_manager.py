@@ -1,9 +1,9 @@
 """Subprocess lifecycle manager for the google_meet bot.
 
-Single active meeting at a time. Stores the running pid + out_dir in
-``$HERMES_HOME/workspace/meetings/.active.json`` with the owning session id
-so tool calls across turns can find the bot without exposing session-owned
-meetings to other sessions.
+Single active meeting at a time. Stores the running pid + out_dir in a
+session-scoped state file under ``$HERMES_HOME/workspace/meetings/.active.json``
+so tool calls across turns can find the bot, and ``on_session_end`` can clean
+it up.
 
 The bot runs as a detached subprocess — we don't hold file descriptors open,
 so the parent agent loop can't block on it. We communicate via files only.
@@ -69,20 +69,6 @@ def _clear_active() -> None:
         pass
 
 
-def _session_mismatch(active: Dict[str, Any], session_id: Optional[str]) -> bool:
-    """Return True when another session accesses a session-owned meeting."""
-    owner = str(active.get("session_id") or "").strip()
-    caller = str(session_id or "").strip()
-    return bool(owner and owner != caller)
-
-
-def _session_denied() -> Dict[str, Any]:
-    return {
-        "ok": False,
-        "reason": "active meeting belongs to a different Hermes session",
-    }
-
-
 def _pid_alive(pid: int) -> bool:
     # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — it
     # routes through GenerateConsoleCtrlEvent and can kill the target.
@@ -130,9 +116,7 @@ def start(
 
     existing = _read_active()
     if existing and _pid_alive(int(existing.get("pid", 0))):
-        if _session_mismatch(existing, session_id):
-            return _session_denied()
-        stop(reason="replaced by new meet_join", session_id=session_id)
+        stop(reason="replaced by new meet_join")
 
     meeting_id = _meeting_id_from_url(url)
     out = out_dir or (_root() / meeting_id)
@@ -203,13 +187,11 @@ def start(
     return {"ok": True, **record}
 
 
-def status(*, session_id: Optional[str] = None) -> Dict[str, Any]:
+def status() -> Dict[str, Any]:
     """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
-    if _session_mismatch(active, session_id):
-        return _session_denied()
 
     pid = int(active.get("pid", 0))
     alive = _pid_alive(pid) if pid else False
@@ -234,17 +216,11 @@ def status(*, session_id: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
-def transcript(
-    last: Optional[int] = None,
-    *,
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
+def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     """Read the current transcript file. Returns ok=False if none exists."""
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
-    if _session_mismatch(active, session_id):
-        return _session_denied()
 
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
     if not tp.is_file():
@@ -267,7 +243,7 @@ def transcript(
     }
 
 
-def enqueue_say(text: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
+def enqueue_say(text: str) -> Dict[str, Any]:
     """Append a ``say`` request to the active bot's JSONL queue.
 
     Returns ``{"ok": False, "reason": ...}`` when no meeting is active or
@@ -284,8 +260,6 @@ def enqueue_say(text: str, *, session_id: Optional[str] = None) -> Dict[str, Any
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
-    if _session_mismatch(active, session_id):
-        return _session_denied()
     if active.get("mode") != "realtime":
         return {
             "ok": False,
@@ -311,11 +285,7 @@ def enqueue_say(text: str, *, session_id: Optional[str] = None) -> Dict[str, Any
     }
 
 
-def stop(
-    *,
-    reason: str = "requested",
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
+def stop(*, reason: str = "requested") -> Dict[str, Any]:
     """Signal the active bot to leave cleanly, then clear the active pointer.
 
     Sends SIGTERM and waits up to 10s for the bot to exit. Falls back to
@@ -324,8 +294,6 @@ def stop(
     active = _read_active()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
-    if _session_mismatch(active, session_id):
-        return _session_denied()
 
     pid = int(active.get("pid", 0))
     out_dir = active.get("out_dir")

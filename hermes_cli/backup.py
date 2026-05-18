@@ -17,7 +17,6 @@ import sys
 import tempfile
 import time
 import zipfile
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,49 +61,8 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
-_PRIVATE_DIR_MODE = 0o700
-_PRIVATE_FILE_MODE = 0o600
-
-
-def _chmod_private(path: Path, mode: int) -> None:
-    """Best-effort chmod for sensitive Hermes backup/import artifacts."""
-    try:
-        os.chmod(path, mode)
-    except (OSError, NotImplementedError):
-        pass
-
-
-def _ensure_private_dir(path: Path, root: Optional[Path] = None) -> None:
-    """Create a directory and tighten it plus any ancestors under ``root``."""
-    path.mkdir(parents=True, exist_ok=True)
-    root = root or path
-    _chmod_private(root, _PRIVATE_DIR_MODE)
-
-    try:
-        rel_parts = path.resolve().relative_to(root.resolve()).parts
-    except (OSError, ValueError):
-        _chmod_private(path, _PRIVATE_DIR_MODE)
-        return
-
-    current = root
-    for part in rel_parts:
-        current = current / part
-        _chmod_private(current, _PRIVATE_DIR_MODE)
-
-
-@contextmanager
-def _open_private_zip_writer(out_path: Path):
-    """Open ``out_path`` for zip writing with owner-only permissions."""
-    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_FILE_MODE)
-    try:
-        _chmod_private(out_path, _PRIVATE_FILE_MODE)
-        with os.fdopen(fd, "wb") as raw:
-            fd = -1
-            with zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-                yield zf
-    finally:
-        if fd != -1:
-            os.close(fd)
+# zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -239,7 +197,7 @@ def run_backup(args) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with _open_private_zip_writer(out_path) as zf:
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
@@ -397,7 +355,7 @@ def run_import(args) -> None:
 
         # Extract
         print(f"\nImporting {file_count} files ...")
-        _ensure_private_dir(hermes_root)
+        hermes_root.mkdir(parents=True, exist_ok=True)
 
         errors = []
         restored = 0
@@ -423,10 +381,11 @@ def run_import(args) -> None:
                 continue
 
             try:
-                _ensure_private_dir(target.parent, root=hermes_root)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
-                _chmod_private(target, _PRIVATE_FILE_MODE)
+                if target.name in _SECRET_FILE_NAMES:
+                    os.chmod(target, 0o600)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")
@@ -786,7 +745,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         return None
 
     try:
-        with _open_private_zip_writer(out_path) as zf:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":

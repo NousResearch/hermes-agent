@@ -231,7 +231,6 @@ class QQAdapter(BasePlatformAdapter):
         self._interaction_callback: Optional[
             Callable[[InteractionEvent], Awaitable[None]]
         ] = None
-        self._interaction_authorizer: Optional[Callable[[Any], bool]] = None
 
         # Default interaction dispatcher: routes approval-button clicks to
         # tools.approval.resolve_gateway_approval() and update-prompt clicks
@@ -884,75 +883,6 @@ class QQAdapter(BasePlatformAdapter):
         """
         self._interaction_callback = callback
 
-    def set_interaction_authorizer(
-        self,
-        authorizer: Optional[Callable[[Any], bool]],
-    ) -> None:
-        """Register the gateway authorization check for QQ button clicks."""
-        self._interaction_authorizer = authorizer
-
-    def _interaction_source(self, event: InteractionEvent) -> Optional[Any]:
-        """Build a SessionSource-like object for an interaction operator."""
-        if event.scene == "c2c":
-            user_id = event.operator_openid
-            if not user_id:
-                return None
-            return self.build_source(
-                chat_id=event.user_openid or user_id,
-                user_id=user_id,
-                chat_type="dm",
-            )
-        if event.scene == "group":
-            if not event.group_openid or not event.operator_openid:
-                return None
-            return self.build_source(
-                chat_id=event.group_openid,
-                user_id=event.operator_openid,
-                chat_type="group",
-            )
-        if event.scene == "guild":
-            user_id = event.operator_openid
-            chat_id = event.channel_id or event.guild_id
-            if not user_id or not chat_id:
-                return None
-            return self.build_source(
-                chat_id=chat_id,
-                user_id=user_id,
-                chat_type="group" if event.channel_id else "dm",
-                guild_id=event.guild_id or None,
-            )
-        return None
-
-    def _is_interaction_authorized(self, event: InteractionEvent) -> bool:
-        """Return whether the QQ button operator may perform sensitive actions."""
-        source = self._interaction_source(event)
-        if source is None:
-            logger.warning(
-                "[%s] Dropping interaction %s: missing operator/chat identity",
-                self._log_tag, event.id,
-            )
-            return False
-
-        if source.chat_type == "dm" and not self._is_dm_allowed(source.user_id or ""):
-            return False
-        if source.chat_type == "group":
-            # Use guild_id for ACL if available, matching _handle_guild_message
-            acl_id = getattr(source, "guild_id", None) or source.chat_id
-            if not self._is_group_allowed(acl_id, source.user_id or ""):
-                return False
-
-        authorizer = self._interaction_authorizer
-        if authorizer is None:
-            return True
-        try:
-            return bool(authorizer(source))
-        except Exception as exc:
-            logger.warning(
-                "[%s] Interaction authorization failed for %s: %s",
-                self._log_tag, event.operator_openid, exc,
-            )
-            return False
-
     async def _on_interaction(self, d: Any) -> None:
         """Handle an ``INTERACTION_CREATE`` event.
 
@@ -1073,14 +1003,6 @@ class QQAdapter(BasePlatformAdapter):
         """
         button_data = event.button_data
         if not button_data:
-            return
-
-        if not self._is_interaction_authorized(event):
-            logger.warning(
-                "[%s] Unauthorized QQ interaction dropped: "
-                "scene=%s operator=%s button=%r",
-                self._log_tag, event.scene, event.operator_openid, button_data,
-            )
             return
 
         approval = parse_approval_button_data(button_data)

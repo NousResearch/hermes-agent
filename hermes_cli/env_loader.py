@@ -16,26 +16,6 @@ from utils import atomic_replace
 # tokens must be preserved exactly, not lossy-normalized.
 _SANITIZED_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN")
 
-# Environment variables that affect host-side process routing must only come
-# from the inherited process environment. In Nix container mode, HERMES_HOME/.env
-# is writable by the containerized Hermes user, so letting dotenv set these would
-# allow container-controlled files to influence host execution.
-_PROTECTED_DOTENV_KEYS = frozenset({
-    "HERMES_CONTAINER_MODE_FILE",
-    "HERMES_DEV",
-    "HERMES_MANAGED",
-    "HERMES_HOME",
-})
-
-
-def _restore_protected_dotenv_keys(original_values: dict[str, str | None]) -> None:
-    """Undo dotenv changes to host-control environment variables."""
-    for key, original_value in original_values.items():
-        if original_value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = original_value
-
 
 def should_sanitize_non_ascii_credential(key: str) -> bool:
     """Return True for outbound credentials that are safe to ASCII-strip."""
@@ -107,14 +87,10 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
-    protected_values = {key: os.environ.get(key) for key in _PROTECTED_DOTENV_KEYS}
     try:
-        try:
-            load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
-    finally:
-        _restore_protected_dotenv_keys(protected_values)
+        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

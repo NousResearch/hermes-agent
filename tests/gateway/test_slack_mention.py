@@ -455,28 +455,6 @@ def test_explicit_platforms_slack_enabled_false_wins_over_env_token(monkeypatch,
     assert "_enabled_explicit" not in slack_config.extra
 
 
-def test_legacy_gateway_json_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
-    import json
-
-    from gateway.config import load_gateway_config
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "gateway.json").write_text(
-        json.dumps({"platforms": {"slack": {"enabled": False}}}),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-
-    config = load_gateway_config()
-
-    slack_config = config.platforms[Platform.SLACK]
-    assert slack_config.enabled is False
-    assert slack_config.token == "xoxb-test"
-    assert "_enabled_explicit" not in slack_config.extra
-
 def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     from gateway.config import load_gateway_config
 

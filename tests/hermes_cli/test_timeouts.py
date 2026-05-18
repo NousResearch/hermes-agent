@@ -132,13 +132,8 @@ def test_invalid_stale_timeout_values_return_none(monkeypatch, tmp_path):
 
 def test_anthropic_adapter_honors_timeout_kwarg():
     """build_anthropic_client(timeout=X) overrides the 900s default read timeout."""
-    import pytest
-    try:
-        import anthropic as _anthropic  # noqa: F401
-    except (ImportError, Exception) as exc:
-        # Skip if the SDK or any of its compiled dependencies (e.g. jiter) are
-        # not properly installed in this environment.
-        pytest.skip(f"anthropic not available: {exc}")
+    pytest = __import__("pytest")
+    anthropic = pytest.importorskip("anthropic")  # skip if optional SDK missing
     from agent.anthropic_adapter import build_anthropic_client
 
     c_default = build_anthropic_client("sk-ant-dummy", None)

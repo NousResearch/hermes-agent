@@ -13,7 +13,6 @@ This module provides:
 """
 
 import copy
-import json
 import logging
 import os
 import platform
@@ -1191,13 +1190,16 @@ DEFAULT_CONFIG = {
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
         # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch). Enabled by default
-        # because skills are durable instructions that future sessions may
-        # load automatically; a dangerous verdict surfaces as a tool error
-        # to the agent, which can retry with the flagged content removed.
+        # writes via skill_manage (create/edit/patch).  Off by default
+        # because the agent can already execute the same code paths via
+        # terminal() with no gate, so the scan adds friction (blocks
+        # skills that mention risky keywords in prose) without meaningful
+        # security.  Turn on if you want the belt-and-suspenders — a
+        # dangerous verdict will then surface as a tool error to the
+        # agent, which can retry with the flagged content removed.
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
-        "guard_agent_created": True,
+        "guard_agent_created": False,
     },
 
     # Curator — background skill maintenance.
@@ -1403,11 +1405,10 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
-        # Named profiles may assign tasks only to themselves by default. Add
-        # explicit profile names here (or "*" for trusted operator profiles)
-        # to permit cross-profile delegation from that profile's Kanban CLI /
-        # gateway surface. The default root profile keeps operator semantics.
-        "allowed_assignees": [],
+        # Cross-profile dispatch policy for profile-global kanban tools.
+        # Example: {"techlead": ["researcher", "coder"]}. Dispatcher-spawned
+        # workers keep their existing task-scoped fan-out behavior.
+        "allowed_assignees": {},
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2139,9 +2140,10 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
-    # These are managed secrets: they can be saved/reloaded by Hermes, but
-    # subprocess sandboxes must not inherit them implicitly or via skill
-    # env_passthrough registration.
+    # These use category="skill" (distinct from "tool") so the sandbox
+    # env blocklist in tools/environments/local.py does NOT rewrite them —
+    # skills legitimately need these passed through to curl via
+    # tools/env_passthrough.py when the user's skill calls out.
     "NOTION_API_KEY": {
         "description": "Notion integration token (used by the `notion` skill)",
         "prompt": "Notion API key",
@@ -4077,89 +4079,6 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
         node = node[key]
     return node
 
-
-TERMINAL_CONFIG_ENV_MAP = {
-    "backend": "TERMINAL_ENV",
-    "env_type": "TERMINAL_ENV",
-    "cwd": "TERMINAL_CWD",
-    "timeout": "TERMINAL_TIMEOUT",
-    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-    "docker_image": "TERMINAL_DOCKER_IMAGE",
-    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-    "docker_env": "TERMINAL_DOCKER_ENV",
-    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-    "modal_image": "TERMINAL_MODAL_IMAGE",
-    "modal_mode": "TERMINAL_MODAL_MODE",
-    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-    "ssh_host": "TERMINAL_SSH_HOST",
-    "ssh_user": "TERMINAL_SSH_USER",
-    "ssh_port": "TERMINAL_SSH_PORT",
-    "ssh_key": "TERMINAL_SSH_KEY",
-    "container_cpu": "TERMINAL_CONTAINER_CPU",
-    "container_memory": "TERMINAL_CONTAINER_MEMORY",
-    "container_disk": "TERMINAL_CONTAINER_DISK",
-    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-}
-
-
-def apply_terminal_config_env_bridge(config: Optional[Dict[str, Any]] = None) -> None:
-    """Bridge explicit ``terminal`` config.yaml settings to ``TERMINAL_*`` env vars.
-
-    ``terminal_tool`` intentionally reads backend settings from environment
-    variables.  Non-classic entry points (TUI, ACP, direct ``run_agent`` imports)
-    must still honor config.yaml without importing the heavyweight classic CLI.
-    Only values explicitly present in config.yaml are bridged, and explicit
-    terminal config remains authoritative over stale ``.env`` values.
-    """
-    if config is None and os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
-        return
-
-    try:
-        raw_config = read_raw_config() if config is None else config
-        raw_config = _expand_env_vars(raw_config)
-    except Exception:
-        logger.debug("Failed to read terminal config for env bridge", exc_info=True)
-        return
-
-    terminal_config = (
-        raw_config.get("terminal", {}) if isinstance(raw_config, dict) else {}
-    )
-    if not isinstance(terminal_config, dict) or not terminal_config:
-        return
-
-    terminal_config = dict(terminal_config)
-    if "backend" in terminal_config:
-        terminal_config["env_type"] = terminal_config["backend"]
-
-    env_type = (
-        str(terminal_config.get("env_type", os.getenv("TERMINAL_ENV", "local"))).strip()
-        or "local"
-    )
-    cwd_placeholders = {".", "auto", "cwd"}
-    if "cwd" in terminal_config:
-        cwd = terminal_config["cwd"]
-        if str(cwd) in cwd_placeholders:
-            if env_type == "local":
-                terminal_config["cwd"] = os.getcwd()
-            else:
-                terminal_config.pop("cwd", None)
-        elif isinstance(cwd, str):
-            terminal_config["cwd"] = os.path.expanduser(cwd)
-
-    for config_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
-        if config_key not in terminal_config:
-            continue
-        value = terminal_config[config_key]
-        if isinstance(value, (list, dict)):
-            os.environ[env_var] = json.dumps(value)
-        else:
-            os.environ[env_var] = str(value)
 
 
 def read_raw_config() -> Dict[str, Any]:

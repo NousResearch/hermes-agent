@@ -233,12 +233,7 @@ def _err(msg: str, **extra) -> str:
     return _json({"success": False, "error": msg, **extra})
 
 
-def _session_kw(session_id: Any) -> Dict[str, Any]:
-    return {"session_id": session_id} if session_id else {}
-
-
 def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
-    session_id = _kw.get("session_id")
     url = (args.get("url") or "").strip()
     if not url:
         return _err("url is required")
@@ -261,7 +256,6 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
                 duration=str(args.get("duration")) if args.get("duration") else None,
                 headed=bool(args.get("headed", False)),
                 mode=mode,
-                **_session_kw(session_id),
             )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
@@ -280,29 +274,26 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         mode=mode,
-        **_session_kw(session_id),
     )
     return _json({"success": bool(res.get("ok")), **res})
 
 
 def handle_meet_status(args: Dict[str, Any], **_kw) -> str:
-    session_id = _kw.get("session_id")
     try:
         client, node_name = _resolve_node_client(args.get("node"))
     except RuntimeError as e:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.status(**_session_kw(session_id))
+            res = client.status()
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node status failed: {e}", node=node_name)
-    res = pm.status(**_session_kw(session_id))
+    res = pm.status()
     return _json({"success": bool(res.get("ok")), **res})
 
 
 def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
-    session_id = _kw.get("session_id")
     last = args.get("last")
     try:
         last_i = int(last) if last is not None else None
@@ -316,32 +307,30 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.transcript(last=last_i, **_session_kw(session_id))
+            res = client.transcript(last=last_i)
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node transcript failed: {e}", node=node_name)
-    res = pm.transcript(last=last_i, **_session_kw(session_id))
+    res = pm.transcript(last=last_i)
     return _json({"success": bool(res.get("ok")), **res})
 
 
 def handle_meet_leave(args: Dict[str, Any], **_kw) -> str:
-    session_id = _kw.get("session_id")
     try:
         client, node_name = _resolve_node_client(args.get("node"))
     except RuntimeError as e:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.stop(**_session_kw(session_id))
+            res = client.stop()
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node stop failed: {e}", node=node_name)
-    res = pm.stop(reason="agent called meet_leave", **_session_kw(session_id))
+    res = pm.stop(reason="agent called meet_leave")
     return _json({"success": bool(res.get("ok")), **res})
 
 
 def handle_meet_say(args: Dict[str, Any], **_kw) -> str:
-    session_id = _kw.get("session_id")
     text = (args.get("text") or "").strip()
     if not text:
         return _err("text is required")
@@ -351,9 +340,9 @@ def handle_meet_say(args: Dict[str, Any], **_kw) -> str:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.say(text, **_session_kw(session_id))
+            res = client.say(text)
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node say failed: {e}", node=node_name)
-    res = pm.enqueue_say(text, **_session_kw(session_id))
+    res = pm.enqueue_say(text)
     return _json({"success": bool(res.get("ok")), **res})

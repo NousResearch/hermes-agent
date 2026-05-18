@@ -104,18 +104,6 @@ class TestApplyIPv4Preference:
         assert call_families == [socket.AF_INET, 0]
         assert result[0][0] == socket.AF_INET6
 
-    def test_patch_exposes_original_getaddrinfo_for_security_checks(self):
-        """Security validation can recover unfiltered DNS answers."""
-        from hermes_constants import apply_ipv4_preference
-
-        def mock_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-            return [(family, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
-
-        socket.getaddrinfo = mock_getaddrinfo
-        apply_ipv4_preference(force=True)
-
-        assert socket.getaddrinfo._hermes_original_getaddrinfo is mock_getaddrinfo
-
 
 class TestConfigDefault:
     """Verify network section exists in DEFAULT_CONFIG."""

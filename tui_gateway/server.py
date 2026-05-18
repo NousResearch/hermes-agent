@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli.config import apply_terminal_config_env_bridge
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
@@ -33,7 +32,6 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
-apply_terminal_config_env_bridge()
 
 
 # ── Panic logger ─────────────────────────────────────────────────────
@@ -182,6 +180,13 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
+def _trusted_python_src_root() -> str:
+    """Return the trusted Hermes root for internal ``python -m`` subprocesses."""
+    return os.environ.get("HERMES_PYTHON_SRC_ROOT") or str(
+        Path(__file__).resolve().parent.parent
+    )
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
@@ -208,7 +213,7 @@ class _SlashWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_trusted_python_src_root(),
             env=os.environ.copy(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
@@ -3213,6 +3218,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
             else:
+                # If auto-compression fired inside run_conversation(), agent.session_id
+                # may have rotated. Sync session_key before downstream title/goal/finalize
+                # handling uses it. Preserve pending_title (user intent) so it can be
+                # applied to the continuation. Restart slash worker so subsequent
+                # worker-backed commands (/title etc.) target the live session.
+                # Fix for #20001.
+                _sync_session_key_after_compress(
+                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                )
+
                 raw = str(result)
                 status = "complete"
 
@@ -4457,28 +4472,12 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
-            cmd = qc.get("command", "")
-            try:
-                from tools.approval import detect_dangerous_command
-
-                is_dangerous, _, desc = detect_dangerous_command(cmd)
-                if is_dangerous:
-                    return _err(
-                        rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-                    )
-            except ImportError:
-                return _err(
-                    rid, 5000, "internal error: tools.approval is unavailable for security validation."
-                )
-            from tools.environments.local import _sanitize_subprocess_env
-            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
-                cmd,
+                qc.get("command", ""),
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
@@ -4744,14 +4743,16 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
 
 def _list_repo_files(root: str) -> list[str]:
-    """Return file paths relative to ``root`` using a bounded filesystem walk.
+    """Return file paths relative to ``root``.
 
-    Completion runs automatically while the user types, so this helper avoids
-    invoking repository tools such as Git. Repository-local Git configuration can
-    execute commands (for example via ``core.fsmonitor``), which is unsafe for an
-    unapproved autocomplete path in an untrusted workspace. Results are cached
-    per-root for ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes do not repeatedly
-    walk the same tree.
+    Uses ``git ls-files`` from the repo top (resolved via
+    ``rev-parse --show-toplevel``) so the listing covers tracked + untracked
+    files anywhere in the repo, then converts each path back to be relative
+    to ``root``. Files outside ``root`` (parent directories of cwd, sibling
+    subtrees) are excluded so the picker stays scoped to what's reachable
+    from the gateway's cwd. Falls back to a bounded ``os.walk(root)`` when
+    ``root`` isn't inside a git repo. Result cached per-root for
+    ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes don't respawn git processes.
     """
     now = time.monotonic()
     with _fuzzy_cache_lock:
@@ -4760,26 +4761,68 @@ def _list_repo_files(root: str) -> list[str]:
             return cached[1]
 
     files: list[str] = []
-    # Skip vendor/build dirs + dot-dirs so the walk stays tractable. Dotfiles
-    # themselves survive — the ranker decides based on whether the query starts
-    # with `.`.
     try:
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")
-            ]
-            rel_dir = os.path.relpath(dirpath, root)
-            for f in filenames:
-                rel = f if rel_dir == "." else f"{rel_dir}/{f}"
-                files.append(rel.replace(os.sep, "/"))
+        top_result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            timeout=2.0,
+            check=False,
+        )
+        if top_result.returncode == 0:
+            top = top_result.stdout.decode("utf-8", "replace").strip()
+            list_result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    top,
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ],
+                capture_output=True,
+                timeout=2.0,
+                check=False,
+            )
+            if list_result.returncode == 0:
+                for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
+                    if not p:
+                        continue
+                    rel = os.path.relpath(os.path.join(top, p), root).replace(
+                        os.sep, "/"
+                    )
+                    # Skip parents/siblings of cwd — keep the picker scoped
+                    # to root-and-below, matching Cmd-P workspace semantics.
+                    if rel.startswith("../"):
+                        continue
+                    files.append(rel)
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    if not files:
+        # Fallback walk: skip vendor/build dirs + dot-dirs so the walk stays
+        # tractable. Dotfiles themselves survive — the ranker decides based
+        # on whether the query starts with `.`.
+        try:
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")
+                ]
+                rel_dir = os.path.relpath(dirpath, root)
+                for f in filenames:
+                    rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+                    files.append(rel.replace(os.sep, "/"))
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
                 if len(files) >= _FUZZY_CACHE_MAX_FILES:
                     break
-            if len(files) >= _FUZZY_CACHE_MAX_FILES:
-                break
-    except OSError:
-        pass
+        except OSError:
+            pass
 
     with _fuzzy_cache_lock:
         _fuzzy_cache[root] = (now, files)

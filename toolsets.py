@@ -134,6 +134,18 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "curator": {
+        "description": "Curator review tools for reading and managing Hermes skills only",
+        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "curator_readonly": {
+        "description": "Read-only curator review tools for dry-run reports",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -511,8 +523,8 @@ TOOLSETS = {
     },
 
     "hermes-webhook": {
-        "description": "Webhook toolset - receive and process external webhook events (no tools by default; opt in per platform)",
-        "tools": [],
+        "description": "Webhook toolset - receive and process external webhook events",
+        "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
 

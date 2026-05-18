@@ -220,8 +220,8 @@ class XsignBootstrapE2E(unittest.IsolatedAsyncioTestCase):
                     captured_recovery_key = new_recovery_key
                     logger.warning(
                         "Matrix: bootstrapped cross-signing for %s. "
-                        "Generated recovery key was captured by the test harness.",
-                        client.mxid,
+                        "SAVE THIS RECOVERY KEY: %s",
+                        client.mxid, new_recovery_key,
                     )
                 except Exception as exc:
                     logger.warning("Matrix: cross-signing bootstrap failed: %s", exc)

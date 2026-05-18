@@ -65,7 +65,6 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -104,46 +103,6 @@ ABSOLUTE_MAX_BYTES = FILE_MAX_BYTES
 UPLOAD_CHUNK_SIZE = 512 * 1024
 MAX_UPLOAD_CHUNKS = 100
 VOICE_SUPPORTED_MIMES = {"audio/amr"}
-SENSITIVE_LOCAL_MEDIA_HOME_FILES = (
-    Path(".ssh") / "authorized_keys",
-    Path(".ssh") / "id_rsa",
-    Path(".ssh") / "id_ed25519",
-    Path(".ssh") / "config",
-    Path(".bashrc"),
-    Path(".zshrc"),
-    Path(".profile"),
-    Path(".bash_profile"),
-    Path(".zprofile"),
-    Path(".netrc"),
-    Path(".pgpass"),
-    Path(".npmrc"),
-    Path(".pypirc"),
-)
-SENSITIVE_LOCAL_MEDIA_HOME_DIRS = (
-    Path(".ssh"),
-    Path(".aws"),
-    Path(".gnupg"),
-    Path(".kube"),
-    Path(".docker"),
-    Path(".azure"),
-    Path(".config") / "gh",
-)
-SENSITIVE_LOCAL_MEDIA_HERMES_FILES = (Path(".env"), Path("config.yaml"), Path("auth.json"))
-SENSITIVE_LOCAL_MEDIA_HERMES_DIRS = (Path("skills") / ".hub",)
-SENSITIVE_LOCAL_MEDIA_SYSTEM_FILES = (
-    Path("/etc/passwd"),
-    Path("/etc/shadow"),
-    Path("/etc/sudoers"),
-    Path("/var/run/docker.sock"),
-    Path("/run/docker.sock"),
-)
-SENSITIVE_LOCAL_MEDIA_SYSTEM_DIRS = (
-    Path("/proc"),
-    Path("/sys"),
-    Path("/dev"),
-    Path("/run/secrets"),
-    Path("/var/run/secrets"),
-)
 
 
 def check_wecom_requirements() -> bool:
@@ -252,10 +211,7 @@ class WeComAdapter(BasePlatformAdapter):
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
-                timeout=30.0,
-                follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]},
-                limits=platform_httpx_limits(),
+                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
             )
             await self._open_connection()
             self._mark_connected()
@@ -1095,11 +1051,7 @@ class WeComAdapter(BasePlatformAdapter):
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(
-            timeout=30.0,
-            follow_redirects=True,
-            event_hooks={"response": [_ssrf_redirect_guard]},
-        )
+        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         created_client = client is not self._http_client
         try:
             async with client.stream(
@@ -1136,37 +1088,6 @@ class WeComAdapter(BasePlatformAdapter):
         parsed = urlparse(str(media_source or ""))
         return parsed.scheme in {"http", "https"}
 
-    @staticmethod
-    def _assert_local_media_path_allowed(path: Path) -> None:
-        """Block credential and internal paths from implicit native media upload."""
-        resolved = path.expanduser().resolve()
-        home = Path(os.path.expanduser("~")).resolve()
-        try:
-            from hermes_constants import get_hermes_home
-            hermes_home = get_hermes_home().resolve()
-        except Exception:
-            hermes_home = (home / ".hermes").resolve()
-
-        blocked_exact = {home / rel for rel in SENSITIVE_LOCAL_MEDIA_HOME_FILES}
-        blocked_exact.update(hermes_home / rel for rel in SENSITIVE_LOCAL_MEDIA_HERMES_FILES)
-        blocked_exact.update(
-            sensitive_path.resolve() for sensitive_path in SENSITIVE_LOCAL_MEDIA_SYSTEM_FILES
-        )
-        if resolved in blocked_exact:
-            raise ValueError("Blocked sensitive local media path")
-
-        blocked_dirs = [home / rel for rel in SENSITIVE_LOCAL_MEDIA_HOME_DIRS]
-        blocked_dirs.extend(hermes_home / rel for rel in SENSITIVE_LOCAL_MEDIA_HERMES_DIRS)
-        blocked_dirs.extend(
-            sensitive_path.resolve() for sensitive_path in SENSITIVE_LOCAL_MEDIA_SYSTEM_DIRS
-        )
-        for blocked_dir in blocked_dirs:
-            try:
-                resolved.relative_to(blocked_dir)
-            except ValueError:
-                continue
-            raise ValueError("Blocked sensitive local media path")
-
     async def _load_outbound_media(
         self,
         media_source: str,
@@ -1192,9 +1113,7 @@ class WeComAdapter(BasePlatformAdapter):
             local_path = Path(source).expanduser()
 
         if not local_path.is_absolute():
-            local_path = Path.cwd() / local_path
-        local_path = local_path.resolve()
-        self._assert_local_media_path_allowed(local_path)
+            local_path = (Path.cwd() / local_path).resolve()
 
         if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")

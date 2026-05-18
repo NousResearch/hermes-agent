@@ -15,7 +15,6 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 import importlib
 import json
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -217,65 +216,6 @@ class TestTrackForgetQuick:
         dg.quick()
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
-
-    def test_quick_rejects_forged_tracked_path_outside_safe_roots(
-        self, _isolate_env, tmp_path
-    ):
-        dg = _load_lib()
-        outside = tmp_path / "outside-victim.txt"
-        outside.write_text("do not delete")
-        inside = _isolate_env / "test_inside.py"
-        inside.write_text("delete me")
-        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True)
-        tracked_file.write_text(json.dumps([
-            {
-                "path": str(outside),
-                "timestamp": old_timestamp,
-                "category": "temp",
-                "size": outside.stat().st_size,
-            },
-            {
-                "path": str(inside),
-                "timestamp": old_timestamp,
-                "category": "test",
-                "size": inside.stat().st_size,
-            },
-        ]))
-
-        summary = dg.quick()
-
-        assert summary["deleted"] == 1
-        assert outside.exists()
-        assert not inside.exists()
-        remaining = json.loads(tracked_file.read_text())
-        assert all(item["path"] != str(outside) for item in remaining)
-
-    def test_quick_rejects_symlink_tracked_entry(self, _isolate_env, tmp_path):
-        dg = _load_lib()
-        outside = tmp_path / "outside-target.txt"
-        outside.write_text("do not delete")
-        link = _isolate_env / "test_link.txt"
-        try:
-            link.symlink_to(outside)
-        except OSError:
-            pytest.skip("symlinks are not supported in this environment")
-        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True)
-        tracked_file.write_text(json.dumps([{
-            "path": str(link),
-            "timestamp": old_timestamp,
-            "category": "test",
-            "size": outside.stat().st_size,
-        }]))
-
-        summary = dg.quick()
-
-        assert summary["deleted"] == 0
-        assert outside.exists()
-        assert link.exists()
 
 
 class TestStatus:

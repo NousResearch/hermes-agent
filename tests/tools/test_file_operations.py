@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 from tools.file_operations import (
     _is_write_denied,
-    _v4a_write_denial_error,
     WRITE_DENIED_PATHS,
     WRITE_DENIED_PREFIXES,
     ReadResult,
@@ -61,70 +60,6 @@ class TestIsWriteDenied:
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
-    def test_v4a_write_denial_blocks_hermes_env_before_read(self):
-        from hermes_constants import get_hermes_home
-        from tools.patch_parser import parse_v4a_patch
-
-        protected = str(get_hermes_home() / ".env")
-        patch = f"""\
-*** Begin Patch
-*** Update File: {protected}
-@@ HERMES_API_KEY @@
--HERMES_API_TOKEN=does_not_match
-+HERMES_API_TOKEN=still_denied
-*** End Patch"""
-        operations, parse_error = parse_v4a_patch(patch)
-
-        assert parse_error is None
-        assert _v4a_write_denial_error(operations) == (
-            f"Patch denied: {protected} is a protected path"
-        )
-
-    def test_patch_v4a_redacts_validation_hint_errors(self, tmp_path):
-        target = tmp_path / "credentials.env"
-
-        class FakeFileOps:
-            patch_v4a = ShellFileOperations.patch_v4a
-
-            def read_file_raw(self, path):
-                assert path == str(target)
-                return ReadResult(
-                    content=(
-                        "# credentials\n"
-                        "OPENAI_API_KEY=sk-openai-SECRET-abcdef1234567890\n"
-                    )
-                )
-
-        patch = f"""\
-*** Begin Patch
-*** Update File: {target}
-@@ OPENAI_API_KEY @@
--OPENAI_API_TOKEN=does_not_match
-+OPENAI_API_TOKEN=replacement
-*** End Patch"""
-
-        result = FakeFileOps().patch_v4a(patch)
-
-        assert result.success is False
-        assert result.error is not None
-        assert "sk-openai-SECRET" not in result.error
-        assert "OPENAI_API_KEY=***" in result.error
-
-    def test_v4a_write_denial_checks_move_destination(self):
-        from hermes_constants import get_hermes_home
-        from tools.patch_parser import parse_v4a_patch
-
-        protected = str(get_hermes_home() / ".env")
-        patch = f"""\
-*** Begin Patch
-*** Move File: safe.txt -> {protected}
-*** End Patch"""
-        operations, parse_error = parse_v4a_patch(patch)
-
-        assert parse_error is None
-        assert _v4a_write_denial_error(operations) == (
-            f"Patch denied: {protected} is a protected path"
-        )
 
 
 # =========================================================================
@@ -519,6 +454,29 @@ class TestShellFileOpsWriteDenied:
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")
         assert result.error is not None
         assert "denied" in result.error.lower()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "~/.ssh/authorized_keys",
+            "~/.hermes/.env",
+            "~/.aws/credentials",
+            "/tmp/remote-home/.ssh/authorized_keys",
+        ],
+    )
+    def test_write_file_denies_remote_home_sensitive_paths(self, mock_env, path):
+        mock_env.execute.side_effect = lambda command, **kwargs: {
+            "output": "/tmp/remote-home\n" if command == "echo $HOME" else "",
+            "returncode": 0,
+        }
+        ops = ShellFileOperations(mock_env)
+
+        result = ops.write_file(path, "secret")
+
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+        executed_commands = [call.args[0] for call in mock_env.execute.call_args_list]
+        assert not any(command.startswith("cat >") for command in executed_commands)
 
     def test_patch_replace_denied_path(self, file_ops):
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")

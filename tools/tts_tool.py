@@ -477,26 +477,8 @@ def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
     return quote
 
 
-def _quote_windows_command_tts_placeholder(
-    value: str, quote_context: Optional[str]
-) -> str:
-    """Quote a placeholder value for cmd.exe shell parsing."""
-    escaped = (
-        value
-        .replace("^", "^^")
-        .replace('"', '^"')
-        .replace("%", "^%")
-        .replace("!", "^!")
-    )
-    if quote_context == '"':
-        return escaped
-    return f'"{escaped}"'
-
-
 def _quote_command_tts_placeholder(value: str, quote_context: Optional[str]) -> str:
     """Quote a placeholder value for its position in a shell command template."""
-    if os.name == "nt":
-        return _quote_windows_command_tts_placeholder(value, quote_context)
     if quote_context == "'":
         return value.replace("'", r"'\''")
     if quote_context == '"':
@@ -507,6 +489,8 @@ def _quote_command_tts_placeholder(value: str, quote_context: Optional[str]) -> 
             .replace("$", r"\$")
             .replace("`", r"\`")
         )
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
     return shlex.quote(value)
 
 

@@ -23,13 +23,26 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
-import anthropic as _anthropic_sdk
+
+# NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
+# ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
+# and the 3 usage sites (build_anthropic_client, build_anthropic_bedrock_client,
+# read_claude_code_credentials_from_keychain) are all on cold user-triggered
+# paths. Access via the `_get_anthropic_sdk()` accessor below, which caches
+# the module after the first call and returns None on ImportError.
+_anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
 
 
 def _get_anthropic_sdk():
-    """Return the eagerly imported ``anthropic`` SDK module."""
+    """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
+    global _anthropic_sdk
+    if _anthropic_sdk is ...:
+        try:
+            import anthropic as _sdk
+            _anthropic_sdk = _sdk
+        except ImportError:
+            _anthropic_sdk = None
     return _anthropic_sdk
-
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +581,13 @@ def build_anthropic_client(
 
     Returns an anthropic.Anthropic instance.
     """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Anthropic provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+
     normalize_proxy_env_vars()
 
     from httpx import Timeout
@@ -656,6 +676,12 @@ def build_anthropic_bedrock_client(region: str):
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Bedrock provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
     if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
         raise ImportError(
             "anthropic.AnthropicBedrock not available. "

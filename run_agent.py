@@ -2631,6 +2631,8 @@ class AIAgent:
         old_model = self.model
         old_provider = self.provider
 
+        # Previously we cleared self._config_context_length here, but the tests
+        # expect it to be preserved across model switches.
         # Only clear the per-config context_length override if it wasn't
         # explicitly set during initialization. If it's a dynamic override,
         # clear it so the new model's actual context window is resolved via

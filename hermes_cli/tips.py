@@ -458,8 +458,6 @@ TIPS = [
     'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
     'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
-    'auxiliary.session_search.max_concurrency bounds how many matched sessions are summarized in parallel (default 3).',
-    'auxiliary.session_search.extra_body forwards provider-specific OpenAI-compatible fields on summarization calls.',
 
     # --- Security ---
     'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.',

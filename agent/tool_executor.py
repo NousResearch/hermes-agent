@@ -622,6 +622,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     query=function_args.get("query", ""),
                     role_filter=function_args.get("role_filter"),
                     limit=function_args.get("limit", 3),
+                    session_id=function_args.get("session_id"),
+                    around_message_id=function_args.get("around_message_id"),
+                    window=function_args.get("window", 5),
+                    sort=function_args.get("sort"),
                     db=session_db,
                     current_session_id=agent.session_id,
                 )

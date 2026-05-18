@@ -152,7 +152,7 @@ Registered only when the agent is spawned by the kanban dispatcher (`HERMES_KANB
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search your long-term memory of past conversations. This is your recall -- every past session is searchable, and this tool summarizes what happened. USE THIS PROACTIVELY when: - The user says 'we did this before', 'remember when', 'last ti… | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Three shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), browse (no args). | — |
 
 ## `skills` toolset
 

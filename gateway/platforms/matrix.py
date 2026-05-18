@@ -107,6 +107,55 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+_MATRIX_BANG_COMMAND_RE = re.compile(
+    r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
+    re.DOTALL,
+)
+
+
+def _is_known_matrix_bang_command(name: str) -> bool:
+    """Return True when *name* is a Hermes command worth normalizing.
+
+    Matrix clients often reserve leading ``/`` for local client commands.
+    Hermes accepts ``!command`` as a Matrix-friendly alias, but only for
+    commands that the gateway can actually dispatch so ordinary exclamations
+    remain normal chat text.
+    """
+    if not name:
+        return False
+    candidates = {name.lower(), name.lower().replace("_", "-")}
+    try:
+        from hermes_cli.commands import is_gateway_known_command
+
+        if any(is_gateway_known_command(candidate) for candidate in candidates):
+            return True
+    except Exception:
+        pass
+
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        skill_commands = get_skill_commands() or {}
+        if any(candidate in skill_commands for candidate in candidates):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _normalize_matrix_bang_command(text: str) -> str:
+    """Convert Matrix ``!command`` aliases to normal Hermes ``/command`` text."""
+    if not text or not text.startswith("!"):
+        return text
+    match = _MATRIX_BANG_COMMAND_RE.match(text)
+    if not match:
+        return text
+    command = match.group(1).lower()
+    if not _is_known_matrix_bang_command(command):
+        return text
+    return f"/{command}{match.group(2) or ''}"
+
 
 @dataclass
 class _MatrixApprovalPrompt:
@@ -1747,8 +1796,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            is_command = body.startswith("/")
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned:
+                if not is_mentioned and not is_command:
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)",
@@ -1815,6 +1865,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        body = _normalize_matrix_bang_command(body)
 
         ctx = await self._resolve_message_context(
             room_id,
@@ -1851,7 +1902,7 @@ class MatrixAdapter(BasePlatformAdapter):
             body = "\n".join(stripped) if stripped else body
 
         msg_type = MessageType.TEXT
-        if body.startswith(("!", "/")):
+        if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
         msg_event = MessageEvent(

@@ -807,7 +807,9 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
-    PRIMARY KEY (parent_id, child_id)
+    PRIMARY KEY (parent_id, child_id),
+    FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (child_id)  REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_comments (
@@ -815,7 +817,8 @@ CREATE TABLE IF NOT EXISTS task_comments (
     task_id    TEXT NOT NULL,
     author     TEXT NOT NULL,
     body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_events (
@@ -824,7 +827,8 @@ CREATE TABLE IF NOT EXISTS task_events (
     run_id     INTEGER,
     kind       TEXT NOT NULL,
     payload    TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -853,7 +857,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 -- Subscription from a gateway source (platform + chat + thread) to a
@@ -1173,6 +1178,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # Card t_4c0bbdae acceptance (C): add ON DELETE CASCADE FKs on
+    # task_id child tables for legacy DBs created before the constraint
+    # was declared in SCHEMA_SQL. Without this, a manual
+    # ``DELETE FROM tasks WHERE id=…`` strands rows in task_runs /
+    # task_events / task_comments / task_links — the exact phantom-run
+    # incident that motivated this card. New DBs already have the
+    # constraint baked into SCHEMA_SQL; this brings old ones up to par
+    # so future hard-deletes (which we cannot prevent — they happen
+    # outside this codebase) cascade cleanly instead of leaving
+    # bookkeeping debris for the dispatcher to reap.
+    _migrate_add_task_fk_cascades(conn)
+
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
@@ -1190,6 +1207,217 @@ def write_txn(conn: sqlite3.Connection):
         raise
     else:
         conn.execute("COMMIT")
+
+
+def _tables_missing_task_fk(conn: sqlite3.Connection) -> set[str]:
+    """Return the subset of (task_links, task_comments, task_events,
+    task_runs) that do NOT yet have a cascade FK on the task_id
+    column(s) referencing ``tasks(id)``.
+
+    A table counts as "has the FK" only if ``PRAGMA foreign_key_list``
+    returns at least one row with ``table='tasks'`` and ``on_delete``
+    set to ``CASCADE``. Anything weaker (NO ACTION, RESTRICT) doesn't
+    protect against the phantom-run failure mode this migration
+    targets, so we'd still upgrade it.
+    """
+    candidates = {
+        # table_name -> tuple of column names that should FK to tasks(id)
+        "task_links":    ("parent_id", "child_id"),
+        "task_comments": ("task_id",),
+        "task_events":   ("task_id",),
+        "task_runs":     ("task_id",),
+    }
+    existing = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    out: set[str] = set()
+    for table, required_cols in candidates.items():
+        if table not in existing:
+            continue
+        fks = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        # PRAGMA foreign_key_list columns:
+        #   id | seq | table | from | to | on_update | on_delete | match
+        have = {
+            fk["from"]
+            for fk in fks
+            if fk["table"] == "tasks"
+            and (fk["to"] in ("id", None))
+            and (fk["on_delete"] or "").upper() == "CASCADE"
+        }
+        if not all(col in have for col in required_cols):
+            out.add(table)
+    return out
+
+
+def _migrate_add_task_fk_cascades(conn: sqlite3.Connection) -> None:
+    """Add ``FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE``
+    to the four child tables on legacy DBs that pre-date the constraint.
+
+    SQLite does not support ``ALTER TABLE ... ADD CONSTRAINT``, so the
+    only way to install a foreign key on an existing table is the
+    copy-rename dance documented at
+    https://www.sqlite.org/lang_altertable.html#otheralter (steps 1-12):
+
+    1. ``CREATE TABLE <new>`` with the new schema.
+    2. ``INSERT INTO <new> SELECT ... FROM <old>``.
+    3. ``DROP TABLE <old>``.
+    4. ``ALTER TABLE <new> RENAME TO <old>``.
+
+    We wrap the whole pass in ``PRAGMA foreign_keys=OFF`` (per SQLite
+    docs — required while restructuring a table involved in FK
+    constraints; otherwise the DROP step would refuse) and re-enable at
+    the end with a ``PRAGMA foreign_key_check`` sanity pass.
+
+    Idempotent: each table is inspected via ``PRAGMA foreign_key_list``
+    and skipped if the cascade FK is already present. Safe to re-run on
+    every connect — the inspect-and-skip path is O(table count) and
+    runs in microseconds when nothing needs to change.
+
+    Called once from :func:`_migrate_add_optional_columns` so opening a
+    legacy kanban DB transparently upgrades it.
+    """
+    needed = _tables_missing_task_fk(conn)
+    if not needed:
+        return
+
+    _log.warning(
+        "kanban: migrating legacy DB to add ON DELETE CASCADE FKs on "
+        "child tables (%s); this is a one-shot copy-rename and may "
+        "take a few seconds on large boards.",
+        ", ".join(sorted(needed)),
+    )
+
+    # PRAGMA foreign_keys=OFF must run OUTSIDE a transaction. The
+    # caller (``init_db`` / ``connect``) opens this on an autocommit
+    # connection (``isolation_level=None``), so we're fine to run the
+    # pragma here directly.
+    #
+    # NOTE: we deliberately do NOT wrap the per-table migrations in
+    # ``write_txn``. ``executescript`` issues an implicit COMMIT at the
+    # start and runs OUTSIDE the calling transaction (per SQLite docs),
+    # which would leave ``write_txn``'s closing COMMIT trying to commit
+    # a non-existent transaction (``cannot commit - no transaction is
+    # active``). Each ``executescript`` block below is therefore its
+    # own implicit transaction; on a failure the partial state stays
+    # but ``foreign_keys=ON`` at the end won't re-enable until the
+    # process recycles its connection, which is the safest possible
+    # failure mode (no partial drops leave child tables missing).
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        if "task_links" in needed:
+            conn.executescript(
+                """
+                CREATE TABLE task_links__new (
+                    parent_id  TEXT NOT NULL,
+                    child_id   TEXT NOT NULL,
+                    PRIMARY KEY (parent_id, child_id),
+                    FOREIGN KEY (parent_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY (child_id)  REFERENCES tasks(id) ON DELETE CASCADE
+                );
+                INSERT INTO task_links__new (parent_id, child_id)
+                    SELECT parent_id, child_id FROM task_links;
+                DROP TABLE task_links;
+                ALTER TABLE task_links__new RENAME TO task_links;
+                """
+            )
+        if "task_comments" in needed:
+            conn.executescript(
+                """
+                CREATE TABLE task_comments__new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    TEXT NOT NULL,
+                    author     TEXT NOT NULL,
+                    body       TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+                INSERT INTO task_comments__new (id, task_id, author, body, created_at)
+                    SELECT id, task_id, author, body, created_at FROM task_comments;
+                DROP TABLE task_comments;
+                ALTER TABLE task_comments__new RENAME TO task_comments;
+                """
+            )
+        if "task_events" in needed:
+            conn.executescript(
+                """
+                CREATE TABLE task_events__new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id    TEXT NOT NULL,
+                    run_id     INTEGER,
+                    kind       TEXT NOT NULL,
+                    payload    TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+                INSERT INTO task_events__new (id, task_id, run_id, kind, payload, created_at)
+                    SELECT id, task_id, run_id, kind, payload, created_at FROM task_events;
+                DROP TABLE task_events;
+                ALTER TABLE task_events__new RENAME TO task_events;
+                """
+            )
+        if "task_runs" in needed:
+            conn.executescript(
+                """
+                CREATE TABLE task_runs__new (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id             TEXT NOT NULL,
+                    profile             TEXT,
+                    step_key            TEXT,
+                    status              TEXT NOT NULL,
+                    claim_lock          TEXT,
+                    claim_expires       INTEGER,
+                    worker_pid          INTEGER,
+                    max_runtime_seconds INTEGER,
+                    last_heartbeat_at   INTEGER,
+                    started_at          INTEGER NOT NULL,
+                    ended_at            INTEGER,
+                    outcome             TEXT,
+                    summary             TEXT,
+                    metadata            TEXT,
+                    error               TEXT,
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+                INSERT INTO task_runs__new (
+                    id, task_id, profile, step_key, status,
+                    claim_lock, claim_expires, worker_pid,
+                    max_runtime_seconds, last_heartbeat_at,
+                    started_at, ended_at, outcome,
+                    summary, metadata, error
+                )
+                SELECT
+                    id, task_id, profile, step_key, status,
+                    claim_lock, claim_expires, worker_pid,
+                    max_runtime_seconds, last_heartbeat_at,
+                    started_at, ended_at, outcome,
+                    summary, metadata, error
+                FROM task_runs;
+                DROP TABLE task_runs;
+                ALTER TABLE task_runs__new RENAME TO task_runs;
+                """
+            )
+        # SQLite docs recommend a foreign_key_check after restructuring
+        # tables involved in FKs. Log violations as WARNING but don't
+        # raise — better to keep the DB usable and surface the bad
+        # rows for operator cleanup than to refuse to open it.  In
+        # practice the only way this fires is if a child row already
+        # points at a missing parent (i.e. the very phantom-run debris
+        # this migration is trying to make safe going forward); the
+        # sibling reaper / dispatch-time guard will clean those rows
+        # up on the next tick.
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            for v in violations:
+                _log.warning(
+                    "kanban: FK violation after cascade migration: "
+                    "table=%s rowid=%s parent=%s fkid=%s "
+                    "(orphan child row; will be reaped on next dispatcher tick)",
+                    v[0], v[1], v[2], v[3],
+                )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 # ---------------------------------------------------------------------------
@@ -4160,14 +4388,18 @@ def dispatch_once(
                         (now, int(run_id)),
                     )
                 # Emit a task_events row for audit. The owning tasks
-                # row is gone, so this is a soft orphan event (no FK
-                # is declared on task_events.task_id, so the INSERT
-                # succeeds). The sibling orphan-runs reaper
-                # (t_44c9eb37) explicitly does NOT emit events for
-                # this case because the row would be orphaned; at
-                # dispatch time we still emit one so an operator
-                # tailing ``task_events`` can correlate the SIGTERM
-                # window without grepping the dispatcher log.
+                # row is gone, so this is a soft orphan event. The
+                # sibling orphan-runs reaper (t_44c9eb37) explicitly
+                # does NOT emit events for this case because the row
+                # would be orphaned; at dispatch time we still TRY to
+                # emit one so an operator tailing ``task_events`` can
+                # correlate the SIGTERM window without grepping the
+                # dispatcher log — but with the new ON DELETE CASCADE
+                # FK on ``task_events.task_id`` (card t_4c0bbdae
+                # acceptance C) the INSERT raises IntegrityError when
+                # the parent row is gone. Catch + swallow: the
+                # WARNING log below is the durable audit signal, the
+                # task_events entry is best-effort.
                 payload = json.dumps(
                     {
                         "reason": "task-row-missing-at-spawn",
@@ -4176,11 +4408,17 @@ def dispatch_once(
                     },
                     ensure_ascii=False,
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (claimed.id, run_id, "reclaimed", payload, now),
-                )
+                try:
+                    conn.execute(
+                        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (claimed.id, run_id, "reclaimed", payload, now),
+                    )
+                except sqlite3.IntegrityError:
+                    # Cascade FK rejected the orphan event row; that's
+                    # fine — the WARNING log line below carries the
+                    # same information for operator triage.
+                    pass
             result.reclaimed_at_spawn.append(claimed.id)
             # WARNING so it lands in ~/.hermes/logs/errors.log via
             # the standard handler chain (hermes_logging.setup_logging

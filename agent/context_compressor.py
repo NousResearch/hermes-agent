@@ -147,6 +147,27 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _estimate_msg_tokens_for_budget(msg: Dict[str, Any]) -> int:
+    """Rough token estimate of one message for tail-budget walks.
+
+    Counts the content via ``_content_length_for_budget`` (which weights
+    image parts at ``_IMAGE_TOKEN_ESTIMATE`` rather than dropping them) and
+    then folds in the JSON-envelope cost of any ``tool_calls`` — ``id``,
+    ``type``, ``function.name``, and the dict-syntax overhead the prior
+    ``len(arguments)``-only path was missing. Assistant messages with
+    several tool_calls underestimated 2-15x without this (see #28053).
+    """
+    raw_content = msg.get("content") or ""
+    msg_tokens = _content_length_for_budget(raw_content) // _CHARS_PER_TOKEN + 10
+    for tc in msg.get("tool_calls") or []:
+        # ``str(tc)`` captures the full envelope for both dict-shaped and
+        # SDK-object tool_calls. ``arguments`` alone misses the ~30-50
+        # chars of metadata per tc, which is the dominant blind spot when
+        # an assistant turn fans out into multiple parallel tool calls.
+        msg_tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    return msg_tokens
+
+
 def _content_text_for_contains(content: Any) -> str:
     """Return a best-effort text view of message content.
 
@@ -774,13 +795,7 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                raw_content = msg.get("content") or ""
-                content_len = _content_length_for_budget(raw_content)
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                msg_tokens = _estimate_msg_tokens_for_budget(msg)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -1718,14 +1733,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = _estimate_msg_tokens_for_budget(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break

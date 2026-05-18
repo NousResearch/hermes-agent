@@ -1957,6 +1957,118 @@ class TestTokenBudgetTailProtection:
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
 
+    def test_tool_calls_envelope_counted_in_token_estimate(self, budget_compressor):
+        """_find_tail_cut_by_tokens must account for the full tool_call envelope
+        (id, type, function.name), not just len(arguments). Regression guard
+        for #28053.
+
+        Setup: 40 messages alternating ``assistant`` (3 short tool_calls each,
+        ``arguments="{}"``) and ``user`` (short text). Budget=200,
+        soft_ceiling=300.
+
+        With the buggy args-only count, each assistant message totalled
+        ~10 tokens (10 base + 3*(2/4)=0 per tc), so the walk backtracked
+        through ~30 messages before tripping the soft_ceiling — protecting
+        an oversized tail.  With the envelope cost folded in (each tc
+        envelope adds ~25 tokens), the walk trips much earlier and the
+        tail collapses to the few most-recent turns the budget can fit.
+        """
+        c = budget_compressor
+        c.tail_token_budget = 200  # soft_ceiling = 300
+
+        def tcs(prefix: str):
+            return [
+                {"id": f"call_{prefix}_{i}_abcdef0123456789",
+                 "type": "function",
+                 "function": {"name": "long_named_tool_function",
+                              "arguments": "{}"}}
+                for i in range(3)
+            ]
+
+        messages = [
+            {"role": "user", "content": "head1"},
+            {"role": "assistant", "content": "head2"},
+        ]
+        # 38 alternating turns
+        for i in range(19):
+            messages.append({"role": "assistant", "content": None,
+                             "tool_calls": tcs(f"a{i}")})
+            messages.append({"role": "user", "content": f"u{i}"})
+        head_end = 2
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        protected = len(messages) - cut
+        # With buggy estimation (each assistant ≈ 10 tokens), the walk
+        # protects ~25-30 messages before exhausting the soft_ceiling.
+        # With the fix (each assistant ≈ 85 tokens), it should protect
+        # closer to 5-10.  Asserting < 20 keeps the test stable against
+        # minor estimation drift while still failing on the original bug.
+        assert protected < 20, (
+            f"Walk protected {protected} tail messages — tool_calls "
+            "envelope is being underestimated, so the walk goes too "
+            "deep before hitting soft_ceiling."
+        )
+
+    def test_estimate_msg_tokens_envelope_counted(self):
+        """Direct unit test for the shared helper used by the two budget
+        walks.  Asserts the id/type/function.name envelope contributes
+        meaningfully — the old args-only count dropped these entirely.
+        """
+        from agent.context_compressor import _estimate_msg_tokens_for_budget
+
+        args_only = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"function": {"arguments": "{}"}}],
+        }
+        full_envelope = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_abc123def456_ghi789jkl012",
+                "type": "function",
+                "function": {"name": "web_search_with_options",
+                             "arguments": "{}"},
+            }],
+        }
+        diff = (
+            _estimate_msg_tokens_for_budget(full_envelope)
+            - _estimate_msg_tokens_for_budget(args_only)
+        )
+        # The added envelope is ~80 chars of JSON metadata → ≥ 15 tokens.
+        # The old args-only path would have produced diff == 0.
+        assert diff >= 15, (
+            f"Envelope diff was {diff} tokens — id/type/function.name "
+            "are not being counted."
+        )
+
+    def test_estimate_msg_tokens_handles_sdk_tool_calls(self):
+        """Helper must handle non-dict tool_calls (openai SDK objects)
+        without crashing or returning 0.  The prior args-only branch
+        silently skipped these via ``isinstance(tc, dict)``.
+        """
+        from agent.context_compressor import _estimate_msg_tokens_for_budget
+
+        class _FakeFn:
+            name = "web_search"
+            arguments = '{"query": "hello"}'
+
+        class _FakeTc:
+            id = "call_abc123"
+            type = "function"
+            function = _FakeFn()
+
+            def __str__(self) -> str:
+                return (
+                    f"ToolCall(id={self.id!r}, type={self.type!r}, "
+                    f"function=Fn(name={self.function.name!r}, "
+                    f"arguments={self.function.arguments!r}))"
+                )
+
+        msg = {"role": "assistant", "content": None,
+               "tool_calls": [_FakeTc()]}
+        # Just below 10 (the base overhead) would mean the tc was skipped.
+        assert _estimate_msg_tokens_for_budget(msg) > 10
+
     def test_generous_budget_protects_everything_floor_does_not_override(
         self, budget_compressor
     ):

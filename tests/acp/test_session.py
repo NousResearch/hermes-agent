@@ -211,7 +211,10 @@ class TestListAndCleanup:
 
         db = manager._get_db()
         messages = db.get_messages_as_conversation(state.session_id)
-        assert messages == [{"role": "user", "content": "original"}]
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "original"
+        assert isinstance(messages[0].get("timestamp"), (int, float))
 
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
@@ -501,6 +504,8 @@ class TestPersistence:
 
         restored = manager.get_session(state.session_id)
         assert restored is not None
+        msg = restored.history[0]
+        assert isinstance(msg.pop("timestamp", None), (int, float))
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

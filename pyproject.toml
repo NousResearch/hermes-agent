@@ -187,7 +187,9 @@ all = [
   # no native build path on Windows or modern macOS. With matrix in
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
-  # where the user is expected to have a toolchain available.
+  # where the user is expected to have a toolchain available. The Docker
+  # image ships `libolm-dev` so the lazy-install can build python-olm
+  # from source in the container.
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",

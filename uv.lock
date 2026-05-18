@@ -1632,6 +1632,7 @@ all = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "mcp" },
+    { name = "nkeys" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1640,6 +1641,8 @@ all = [
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "ruff" },
     { name = "simple-term-menu" },
+    { name = "synadia-ai-agent-service" },
+    { name = "synadia-ai-agents" },
     { name = "ty" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "youtube-transcript-api" },
@@ -1728,6 +1731,11 @@ messaging = [
 ]
 modal = [
     { name = "modal" },
+]
+nats = [
+    { name = "nkeys" },
+    { name = "synadia-ai-agent-service" },
+    { name = "synadia-ai-agents" },
 ]
 parallel-web = [
     { name = "parallel-web" },
@@ -1832,6 +1840,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["nats"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
@@ -1851,6 +1860,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.26.0" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
+    { name = "nkeys", marker = "extra == 'nats'", specifier = ">=0.2,<1" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
@@ -1881,6 +1891,8 @@ requires-dist = [
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.40.1" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
+    { name = "synadia-ai-agent-service", marker = "extra == 'nats'", specifier = ">=0.3,<1" },
+    { name = "synadia-ai-agents", marker = "extra == 'nats'", specifier = ">=0.7,<1" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
@@ -1888,7 +1900,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "nats", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2651,6 +2663,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nats-py"
+version = "2.14.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/f8/b956c4621ba88748ed707c52e69f95b7a50c8914e750edca59a5bef84a76/nats_py-2.14.0.tar.gz", hash = "sha256:4ed02cb8e3b55c68074a063aa2687087115d805d1513297da90cb2068fb07bed", size = 120751, upload-time = "2026-02-23T22:44:58.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f9/39/0e87753df1072254bac190b33ed34b264f28f6aa9bea0f01b7e818071756/nats_py-2.14.0-py3-none-any.whl", hash = "sha256:4116f5d2233ce16e63c3d5538fa40a5e207f75fcf42a741773929ddf1e29d19d", size = 82259, upload-time = "2026-02-23T22:45:00.152Z" },
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2658,6 +2679,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ec
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195, upload-time = "2024-01-21T14:25:17.223Z" },
 ]
+
+[[package]]
+name = "nkeys"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pynacl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/8d/d17254baea57fe4a7dd1ba89827d3cf0a21106988ec8971a46bfc5239b15/nkeys-0.2.1.tar.gz", hash = "sha256:3a201dcd203d8bb05ba2884d441b2c92918b2a537a10d324e73738887dde9da3", size = 10667, upload-time = "2024-09-11T06:32:09.03Z" }
 
 [[package]]
 name = "numpy"
@@ -4081,6 +4111,33 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "synadia-ai-agent-service"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nats-py" },
+    { name = "pydantic" },
+    { name = "synadia-ai-agents" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/ef/fe16db2dc1fa7d86c0d6cdc3f70ae1981eb73006077624e9bbd616210748/synadia_ai_agent_service-0.4.1.tar.gz", hash = "sha256:1562a89b26d8d1fb89f76b552dda950bce602ba8506c1aeef0e093e67ed96f9a", size = 85547, upload-time = "2026-05-12T10:20:05.596Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/5e/a840c57d58e7fff402628680a6a115814675d76de1cf75b6e5db239a42d4/synadia_ai_agent_service-0.4.1-py3-none-any.whl", hash = "sha256:5ad9c4d88866eb3fe34a3deea130618996b0fb2e5227114f9fa37998f8084bac", size = 20549, upload-time = "2026-05-12T10:20:03.736Z" },
+]
+
+[[package]]
+name = "synadia-ai-agents"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nats-py" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/86/601db1c6f0e68c01d8ea31056385a802b5f883d1d506122709284ea70c56/synadia_ai_agents-0.7.1.tar.gz", hash = "sha256:30e7ade4079f99d15948dd029b9011a4f7cb7d36ba484424dbb45269d06759eb", size = 140592, upload-time = "2026-05-12T10:19:45.96Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/35/9249ba4d561a38b6985f5bcd5053ce5a6f7c57f542f0a2b0e498d4657c50/synadia_ai_agents-0.7.1-py3-none-any.whl", hash = "sha256:f063c2b730d7f2198ef198a3e20e4a1fc1d76279069554a350eb5ea4a9164ae2", size = 52434, upload-time = "2026-05-12T10:19:44.171Z" },
 ]
 
 [[package]]

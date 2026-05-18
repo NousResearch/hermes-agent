@@ -181,7 +181,16 @@ def _extract_attachments(msg: dict) -> List[dict]:
             path = match.group(1)
             attachments.append({"type": "media", "path": path})
 
-    return attachments
+    # Preserve order while removing duplicate attachment entries.
+    deduped: List[dict] = []
+    seen = set()
+    for item in attachments:
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 # ---------------------------------------------------------------------------

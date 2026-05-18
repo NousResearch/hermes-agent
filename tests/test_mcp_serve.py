@@ -358,6 +358,16 @@ class TestAttachmentExtraction:
         att = _extract_attachments(msg)
         assert att[0]["type"] == "image"
 
+    def test_deduplicates_identical_attachments(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": [
+            {"type": "image_url", "image_url": {"url": "http://x.com/pic.jpg"}},
+            {"type": "image_url", "image_url": {"url": "http://x.com/pic.jpg"}},
+        ]}
+        att = _extract_attachments(msg)
+        assert len(att) == 1
+        assert att[0] == {"type": "image", "url": "http://x.com/pic.jpg"}
+
 
 # ---------------------------------------------------------------------------
 # 2. EVENT BRIDGE TESTS — queue, cursors, waiters, concurrency

@@ -43,7 +43,79 @@ jobs:
           source .venv/bin/activate
           uv pip install -e ".[all,dev]"
 
-      - name: Run tests
+      - name: Select PR-focused test targets
+        if: github.event_name == 'pull_request'
+        id: pr_tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import fnmatch
+          import os
+          import subprocess
+          from pathlib import Path
+
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+
+          diff = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}..{head}"],
+              text=True,
+          ).splitlines()
+
+          changed_tests = []
+          source_files = []
+          for path in diff:
+              p = Path(path)
+              if path.startswith("tests/") and path.endswith(".py"):
+                  changed_tests.append(path)
+                  continue
+              if (
+                  path.endswith(".py")
+                  and not path.startswith("tests/")
+                  and not path.startswith("docs/")
+              ):
+                  source_files.append(p)
+
+          test_files = [str(p).replace("\\", "/") for p in Path("tests").rglob("test_*.py")]
+          selected = set(changed_tests)
+          for src in source_files:
+              stem = src.stem
+              direct = f"tests/test_{stem}.py"
+              if Path(direct).exists():
+                  selected.add(direct)
+              for candidate in test_files:
+                  if fnmatch.fnmatch(candidate, f"tests/**/test_{stem}.py"):
+                      selected.add(candidate)
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as fh:
+              if selected:
+                  joined = " ".join(sorted(selected))
+                  fh.write(f"targets={joined}\n")
+                  fh.write("mode=targeted\n")
+              else:
+                  fh.write("targets=tests/test_mcp_serve.py\n")
+                  fh.write("mode=fallback\n")
+          PY
+
+      - name: Run tests (pull request: targeted)
+        if: github.event_name == 'pull_request'
+        run: |
+          source .venv/bin/activate
+          echo "PR test mode: ${{ steps.pr_tests.outputs.mode }}"
+          echo "Targets: ${{ steps.pr_tests.outputs.targets }}"
+          python -m pytest ${{ steps.pr_tests.outputs.targets }} -q --tb=short -n auto
+        env:
+          # Ensure tests don't accidentally call real APIs
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Run tests (push: full suite)
+        if: github.event_name != 'pull_request'
         run: |
           source .venv/bin/activate
           python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto

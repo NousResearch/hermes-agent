@@ -31,6 +31,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.signal_scorer import score_tool_output, smart_truncate_for_summarizer
 
 logger = logging.getLogger(__name__)
 
@@ -518,6 +519,7 @@ class ContextCompressor(ContextEngine):
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
+        signal_aware_pruning: bool = False,
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
@@ -534,6 +536,7 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.signal_aware_pruning = signal_aware_pruning
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -728,41 +731,46 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        # Pass 2: Replace old tool results with informative summaries
-        for i in range(prune_boundary):
-            msg = result[i]
-            if msg.get("role") != "tool":
-                continue
-            content = msg.get("content", "")
-            # Multimodal content (base64 screenshots etc.): strip the image
-            # payload — keep a lightweight text placeholder in its place.
-            # Without this, an old computer_use screenshot (~1MB base64 +
-            # ~1500 real tokens) survives every compression pass forever.
-            if isinstance(content, list):
-                stripped = _strip_image_parts_from_parts(content)
-                if stripped is not None:
-                    result[i] = {**msg, "content": stripped}
+        # Pass 2: Replace old tool results with summaries or keep high-signal outputs
+        if self.signal_aware_pruning:
+            pruned += self._signal_aware_prune_pass(
+                result, prune_boundary, call_id_to_tool
+            )
+        else:
+            for i in range(prune_boundary):
+                msg = result[i]
+                if msg.get("role") != "tool":
+                    continue
+                content = msg.get("content", "")
+                # Multimodal content (base64 screenshots etc.): strip the image
+                # payload — keep a lightweight text placeholder in its place.
+                # Without this, an old computer_use screenshot (~1MB base64 +
+                # ~1500 real tokens) survives every compression pass forever.
+                if isinstance(content, list):
+                    stripped = _strip_image_parts_from_parts(content)
+                    if stripped is not None:
+                        result[i] = {**msg, "content": stripped}
+                        pruned += 1
+                    continue
+                if isinstance(content, dict) and content.get("_multimodal"):
+                    summary = content.get("text_summary") or "[screenshot removed to save context]"
+                    result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
                     pruned += 1
-                continue
-            if isinstance(content, dict) and content.get("_multimodal"):
-                summary = content.get("text_summary") or "[screenshot removed to save context]"
-                result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
-                pruned += 1
-                continue
-            if not isinstance(content, str):
-                continue
-            if not content or content == _PRUNED_TOOL_PLACEHOLDER:
-                continue
-            # Skip already-deduplicated or previously-summarized results
-            if content.startswith("[Duplicate tool output"):
-                continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
-                call_id = msg.get("tool_call_id", "")
-                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-                summary = _summarize_tool_result(tool_name, tool_args, content)
-                result[i] = {**msg, "content": summary}
-                pruned += 1
+                    continue
+                if not isinstance(content, str):
+                    continue
+                if not content or content == _PRUNED_TOOL_PLACEHOLDER:
+                    continue
+                # Skip already-deduplicated or previously-summarized results
+                if content.startswith("[Duplicate tool output"):
+                    continue
+                # Only prune if the content is substantial (>200 chars)
+                if len(content) > 200:
+                    call_id = msg.get("tool_call_id", "")
+                    tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+                    summary = _summarize_tool_result(tool_name, tool_args, content)
+                    result[i] = {**msg, "content": summary}
+                    pruned += 1
 
         # Pass 3: Truncate large tool_call arguments in assistant messages
         # outside the protected tail. write_file with 50KB content, for
@@ -791,6 +799,93 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    def _signal_aware_prune_pass(
+        self,
+        result: List[Dict[str, Any]],
+        prune_boundary: int,
+        call_id_to_tool: Dict[str, tuple],
+    ) -> int:
+        """Signal-aware tool output pruning pass.
+
+        Scores each tool output in the pruning zone and applies a
+        differentiated action:
+
+        - **keep** (score >= 3):  leave the output untouched.  These are
+          errors, crashes, test failures, or decision-relevant output that
+          must survive compression.
+        - **summarize** (-2 < score < 3):  replace with a 1-line summary
+          using ``_summarize_tool_result()`` -- same as the stock behaviour.
+        - **prune** (score <= -2):  replace with a short placeholder
+          (e.g. ``[write_file] completed successfully``).  These are
+          success confirmations, empty results, or verbose output with no
+          actionable content.
+
+        Secrets (API keys, tokens, passwords) always score <= -5 and are
+        suppressed regardless of surrounding error context.
+
+        Returns the number of modified messages.
+        """
+        modified = 0
+
+        for i in range(prune_boundary):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+
+            content = msg.get("content", "")
+
+            # Multimodal content -- same as stock behaviour.
+            if isinstance(content, list):
+                stripped = _strip_image_parts_from_parts(content)
+                if stripped is not None:
+                    result[i] = {**msg, "content": stripped}
+                    modified += 1
+                continue
+            if isinstance(content, dict) and content.get("_multimodal"):
+                summary_text = content.get("text_summary") or "[screenshot removed to save context]"
+                result[i] = {**msg, "content": f"[screenshot removed] {summary_text[:200]}"}
+                modified += 1
+                continue
+            if not isinstance(content, str):
+                continue
+            if not content or content == _PRUNED_TOOL_PLACEHOLDER:
+                continue
+            if content.startswith("[Duplicate tool output"):
+                continue
+
+            # Skip very short content -- too small to benefit from pruning
+            # and may be a short but critical error message.
+            if len(content) <= 50:
+                continue
+
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+
+            s = score_tool_output(tool_name, content)
+
+            if s >= 3:
+                # High signal -- keep verbatim (errors, crashes, decisions)
+                if not self.quiet_mode:
+                    logger.debug(
+                        "Signal-aware pruning: keeping %s output at index %d (score=%d)",
+                        tool_name, i, s,
+                    )
+                continue  # leave unchanged
+            elif s <= -2:
+                # Low signal -- prune aggressively (success confirmations)
+                result[i] = {
+                    **msg,
+                    "content": f"[{tool_name}] completed successfully",
+                }
+                modified += 1
+            else:
+                # Neutral -- use the stock 1-line summary
+                summary = _summarize_tool_result(tool_name, tool_args, content)
+                result[i] = {**msg, "content": summary}
+                modified += 1
+
+        return modified
 
     # ------------------------------------------------------------------
     # Summarization

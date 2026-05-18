@@ -3207,8 +3207,11 @@ def systemd_restart(system: bool = False):
     else:
         _preflight_user_systemd()
     _require_service_installed("restart", system=system)
-    refresh_systemd_unit_if_needed(system=system)
+    # Under sudo/root, adopt the installed system unit's HERMES_HOME before
+    # deciding whether the unit is stale. Otherwise refresh can regenerate the
+    # unit from root/default config instead of the target gateway home.
     _sync_hermes_home_from_systemd_unit(system=system)
+    refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
     pid = get_running_pid() or _systemd_main_pid(system=system)

@@ -118,6 +118,46 @@ class TestSystemdServiceRefresh:
             ("wait", False, None),
         ]
 
+    def test_systemd_restart_syncs_unit_home_before_refresh_for_system_scope(self, monkeypatch):
+        """System restarts must adopt the installed unit's HERMES_HOME before
+        regenerating the unit; otherwise sudo/root context can bake root/default
+        config values into the system service definition.
+        """
+        order = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: True)
+        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_sync_hermes_home_from_systemd_unit",
+            lambda system=False: order.append("sync"),
+        )
+
+        def fake_refresh(system=False):
+            order.append("refresh")
+            assert order[:2] == ["sync", "refresh"]
+            return False
+
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", fake_refresh)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.systemd_restart(system=True)
+
+        assert order[:2] == ["sync", "refresh"]
+
     def test_systemd_stop_marks_running_gateway_as_planned_stop(self, monkeypatch):
         calls = []
         markers = []

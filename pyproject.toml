@@ -159,7 +159,8 @@ google = [
   "google-auth-httplib2==0.3.1",
 ]
 # NATS: natsagent is not yet published to PyPI. For now install the SDK from
-# source: `pip install -e ../nats-ai-pysdk`. Once published, `pip install
+# source: `pip install -e ../synadia-agents/client-sdk/python` (the SDK lives
+# in the synadia-ai/synadia-agents monorepo). Once published, `pip install
 # 'hermes-agent[nats]'` will resolve the PyPI package.
 nats = ["natsagent>=0.2.0,<1"]
 youtube = [

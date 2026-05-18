@@ -3,7 +3,7 @@
 **Status:** Draft (Phase 0 deliverable, pending review before any code changes)
 **Scope:** Add NATS as a new gateway channel in Hermes Agent so callers can prompt the agent over NATS — send text, send attachments, and receive token-streamed responses — using the **NATS Agent Protocol v0.2**.
 **Wire spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.2.0-draft).
-**Agent-side SDK:** `natsagent` at `../nats-ai-pysdk`.
+**Agent-side SDK:** `natsagent` at `../synadia-agents/client-sdk/python` (the SDK now lives inside the `synadia-ai/synadia-agents` monorepo; `client-sdk/python` is its subtree).
 
 Cross-references to the protocol spec are by section number (e.g. §5.6). Cross-references to the Hermes codebase use `file:line`.
 
@@ -552,7 +552,7 @@ Installation (one-time):
 
 ```bash
 source venv/bin/activate
-pip install -e ../nats-ai-pysdk       # while natsagent is not yet on PyPI
+pip install -e ../synadia-agents/client-sdk/python   # while natsagent is not yet on PyPI
 ```
 
 Local broker:
@@ -583,7 +583,7 @@ Start the gateway:
 hermes gateway
 ```
 
-Verify (from `../nats-ai-pysdk`):
+Verify (from `../synadia-agents/client-sdk/python`):
 
 ```bash
 uv run python examples/01-discover.py --url nats://127.0.0.1:4222
@@ -624,8 +624,8 @@ nats sub 'agents.hermes.*.*.heartbeat'
 | Session source + key           | `gateway/session.py`                                 | `SessionSource`, `build_session_key`                 |
 | Test mock pattern              | `tests/gateway/conftest.py::_ensure_telegram_mock`   | Mirror for `_ensure_natsagent_mock`                  |
 | CLI approval callback          | `hermes_cli/callbacks.py` (reference only)           | CLI-only; gateway uses its own notify bridge         |
-| SDK source                     | `../nats-ai-pysdk/src/natsagent/`                    | `agent.py`, `envelope.py`, `messages.py`, `connect.py` |
-| SDK examples                   | `../nats-ai-pysdk/examples/01..05-*.py`              | Smoke-test inputs (§14)                              |
+| SDK source                     | `../synadia-agents/client-sdk/python/src/natsagent/` | `agent.py`, `envelope.py`, `messages.py`, `connect.py` |
+| SDK examples                   | `../synadia-agents/client-sdk/python/examples/01..05-*.py` | Smoke-test inputs (§14)                        |
 | Protocol spec                  | `../nats-agent-sdk-docs/core-protocol.md`            | v0.2.0-draft                                         |
 
 ---
@@ -727,7 +727,7 @@ Design choices that ended up load-bearing:
 
 Design doc §3 flagged option (b) — peeking the SDK's `stream._request.data` to extract the session value before the SDK's `Envelope` decoder drops the field per `extra="ignore"`. It was shipped and stayed private-attribute-dependent through Phase 8. The failure mode is loud (AttributeError at handler entry) and confined (falls back to session default), which makes it a defensible MVP crutch rather than a landmine.
 
-The cleaner long-term fix was an upstream change to `nats-ai-pysdk` exposing the field on `Envelope`. That shipped; the crutch (`_extract_session` + `_extract_x_session`) was removed in the same pass that updated this doc. Filing as follow-up rather than a blocker turned out to be the right call.
+The cleaner long-term fix was an upstream change to the `natsagent` SDK exposing the field on `Envelope`. That shipped; the crutch (`_extract_session` + `_extract_x_session`) was removed in the same pass that updated this doc. Filing as follow-up rather than a blocker turned out to be the right call.
 
 ### 17.10 `entry_id` threading for parallel subagents fits under the "structural" umbrella
 

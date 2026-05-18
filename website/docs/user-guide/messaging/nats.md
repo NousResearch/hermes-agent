@@ -20,7 +20,7 @@ Use the NATS gateway when you want to reach Hermes programmatically from other s
 - The `natsagent` SDK. **Until it ships on PyPI, install from source:**
   ```bash
   source venv/bin/activate
-  uv pip install --python venv/bin/python -e ../nats-ai-pysdk
+  uv pip install --python venv/bin/python -e ../synadia-agents/client-sdk/python
   ```
   Without the SDK, the gateway logs `NATS: natsagent SDK not installed` at startup and does not register the adapter.
 - An LLM provider key in `~/.hermes/.env` (e.g. `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`). The `/help` and `/status` commands work without one, but actual prompts need a model.
@@ -109,10 +109,10 @@ One frame should arrive every `heartbeat_interval_s` seconds.
 
 ## Step 3: Send a Prompt
 
-The `nats-ai-pysdk` ships runnable examples. From the SDK repo:
+The `natsagent` SDK ships runnable examples. From the SDK repo:
 
 ```bash
-cd ../nats-ai-pysdk
+cd ../synadia-agents/client-sdk/python
 uv run python examples/02-prompt-text.py \
     --url nats://127.0.0.1:4222 \
     "what is 2+2? answer in one short sentence"
@@ -194,7 +194,7 @@ Cross-machine collisions are allowed — the NATS protocol explicitly permits mu
 ## Troubleshooting
 
 **Gateway startup: `NATS: natsagent SDK not installed`**
-The SDK isn't on PyPI yet. Install from source: `uv pip install --python venv/bin/python -e ../nats-ai-pysdk`.
+The SDK isn't on PyPI yet. Install from source: `uv pip install --python venv/bin/python -e ../synadia-agents/client-sdk/python`.
 
 **`ModuleNotFoundError: No module named 'natsagent'`**
 Same as above. Make sure you installed into the gateway's venv, not a global Python.
@@ -230,7 +230,7 @@ Each is a candidate for a future phase, not a bug.
 ## Reference
 
 - **Protocol spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.2.0-draft)
-- **Agent SDK:** `../nats-ai-pysdk` ([GitHub](https://github.com/synadia-io/nats-ai-pysdk))
+- **Agent SDK:** `../synadia-agents/client-sdk/python` (package `natsagent`; lives inside the [`synadia-ai/synadia-agents`](https://github.com/synadia-ai/synadia-agents) monorepo)
 - **Hermes adapter:** `gateway/platforms/nats.py`
 - **Design doc:** `docs/nats-gateway-design.md` — architectural reference, protocol↔adapter mapping, streaming model, failure modes
 - **Lessons learned:** `docs/nats-gateway-design.md` §17 — retrospective on surprises during Phases 1–8

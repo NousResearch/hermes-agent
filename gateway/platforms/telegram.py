@@ -2262,6 +2262,17 @@ class TelegramAdapter(BasePlatformAdapter):
             text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
 
+            if choices:
+                # Render full option text in the message body so mobile
+                # users can read long choices that would be truncated in
+                # inline button labels.  Buttons keep short numeric labels
+                # (1, 2, …, Other) to avoid Telegram truncation.
+                option_lines = "\n".join(
+                    f"{i + 1}. {_html.escape(str(c))}"
+                    for i, c in enumerate(choices)
+                )
+                text += f"\n\n{option_lines}"
+
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": text,
@@ -2271,15 +2282,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             if choices:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.  Button label is also capped (~64 chars in practice).
+                # short.
                 rows = []
-                for idx, choice in enumerate(choices):
-                    label = str(choice)
-                    if len(label) > 60:
-                        label = label[:57] + "..."
+                for idx in range(len(choices)):
                     rows.append([
                         InlineKeyboardButton(
-                            f"{idx + 1}. {label}",
+                            str(idx + 1),
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])

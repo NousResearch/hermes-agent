@@ -713,8 +713,11 @@ class _CodexCompletionsAdapter:
             try:
                 from tools.schema_sanitizer import strip_pattern_and_format
                 tools, _ = strip_pattern_and_format(list(tools))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
             converted = []
             for t in tools:
                 fn = t.get("function", {}) if isinstance(t, dict) else {}

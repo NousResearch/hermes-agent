@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from utils import atomic_replace
 
 
@@ -35,6 +35,75 @@ def _format_offending_chars(value: str, limit: int = 3) -> str:
             if len(seen) >= limit:
                 break
     return ", ".join(seen)
+
+
+def _shared_profile_env_key(key: str) -> bool:
+    """Return True for root .env keys safe to inherit into profile homes."""
+    # Provider/API credentials are shared. Platform runtime identity (bot
+    # tokens, home channels, allowlists) must stay profile-local; inheriting a
+    # root Telegram token makes planning/worker profiles collide with Nagatha.
+    return key.endswith("_API_KEY") or key in {
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "PARALLEL_API_KEY",
+    }
+
+
+def _dotenv_keys(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        return {str(k) for k, v in dotenv_values(path).items() if k and v is not None}
+    except Exception:
+        return set()
+
+
+def _discard_unshared_root_env(
+    *,
+    before: dict[str, str],
+    root_keys: set[str],
+    profile_keys: set[str],
+) -> None:
+    """Remove root .env values that profiles must not inherit."""
+    for key in root_keys - profile_keys:
+        if _shared_profile_env_key(key):
+            continue
+        if key in before:
+            os.environ[key] = before[key]
+        else:
+            os.environ.pop(key, None)
+
+
+def _is_placeholder_credential(value: str | None) -> bool:
+    """Return True for dummy credential values that should not override real keys."""
+    if value is None:
+        return False
+    stripped = value.strip().strip('"').strip("'")
+    if not stripped:
+        return True
+    return stripped.lower() in {"xxx", "...", "todo", "changeme", "[redacted]"} or len(stripped) < 10
+
+
+def _restore_credentials_overridden_by_placeholders(before: dict[str, str]) -> None:
+    """Undo profile .env placeholder credential overrides.
+
+    Some legacy profile .env files contain values like ``OPENROUTER_API_KEY=xxx``.
+    When profile homes overlay the canonical user env, those dummy values should
+    not erase a valid shared key already loaded from ~/.hermes/.env.
+    """
+    for key, previous in before.items():
+        current = os.environ.get(key)
+        if previous and not _is_placeholder_credential(previous) and _is_placeholder_credential(current):
+            os.environ[key] = previous
 
 
 def _sanitize_loaded_credentials() -> None:
@@ -154,19 +223,56 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes")).expanduser()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
+    # Profile homes live under ~/.hermes/profiles/<name>.  Load the canonical
+    # user env first so shared provider credentials (OPENROUTER_API_KEY, etc.)
+    # are available without copying secrets into every profile.  Then overlay
+    # the profile's own .env so bot tokens / profile-specific values still win.
+    root_home = Path.home() / ".hermes"
+    root_env = root_home / ".env"
+    env_paths: list[Path] = []
+    profile_home = False
+    try:
+        profile_home = home_path.resolve().is_relative_to((root_home / "profiles").resolve())
+        if profile_home:
+            env_paths.append(root_env)
+    except Exception:
+        pass
+    if user_env not in env_paths:
+        env_paths.append(user_env)
+
     # Fix corrupted .env files before python-dotenv parses them (#8908).
-    if user_env.exists():
-        _sanitize_env_file_if_needed(user_env)
+    for env_path in env_paths:
+        if env_path.exists():
+            _sanitize_env_file_if_needed(env_path)
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
-        loaded.append(user_env)
+    root_keys = _dotenv_keys(root_env) if profile_home else set()
+    profile_keys = _dotenv_keys(user_env) if profile_home else set()
+    before_root_env = dict(os.environ) if profile_home else {}
+
+    for i, env_path in enumerate(env_paths):
+        if env_path.exists():
+            previous_credentials = {
+                key: value
+                for key, value in os.environ.items()
+                if any(key.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES)
+            }
+            _load_dotenv_with_fallback(env_path, override=True)
+            if i > 0:
+                _restore_credentials_overridden_by_placeholders(previous_credentials)
+            loaded.append(env_path)
+
+    if profile_home:
+        _discard_unshared_root_env(
+            before=before_root_env,
+            root_keys=root_keys,
+            profile_keys=profile_keys,
+        )
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)

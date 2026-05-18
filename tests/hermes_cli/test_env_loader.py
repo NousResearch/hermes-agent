@@ -70,6 +70,52 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
+def test_profile_env_overlays_canonical_user_env(tmp_path, monkeypatch):
+    user_home = tmp_path / "user"
+    root_home = user_home / ".hermes"
+    profile_home = root_home / "profiles" / "skippy"
+    profile_home.mkdir(parents=True)
+    (root_home / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-or-v1-root-key\nTELEGRAM_BOT_TOKEN=root-token\n",
+        encoding="utf-8",
+    )
+    (profile_home / ".env").write_text(
+        "OPENROUTER_API_KEY=xxx\nTELEGRAM_BOT_TOKEN=profile-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=profile_home)
+
+    assert loaded == [root_home / ".env", profile_home / ".env"]
+    assert os.getenv("OPENROUTER_API_KEY") == "sk-or-v1-root-key"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "profile-token"
+
+
+def test_profile_env_does_not_inherit_root_bot_token(tmp_path, monkeypatch):
+    user_home = tmp_path / "user"
+    root_home = user_home / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (root_home / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-or-v1-root-key\nTELEGRAM_BOT_TOKEN=root-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=profile_home)
+
+    assert loaded == [root_home / ".env"]
+    assert os.getenv("OPENROUTER_API_KEY") == "sk-or-v1-root-key"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") is None
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

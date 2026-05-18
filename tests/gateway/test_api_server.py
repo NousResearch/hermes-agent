@@ -105,6 +105,29 @@ class TestResponseStore:
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
 
+    def test_delete_clears_conversation_mapping(self):
+        """Deleting a response also removes conversation mappings that reference it."""
+        store = ResponseStore(max_size=10)
+        store.put("resp_1", {"output": "hello"})
+        store.set_conversation("chat-a", "resp_1")
+        assert store.get_conversation("chat-a") == "resp_1"
+        store.delete("resp_1")
+        assert store.get_conversation("chat-a") is None
+
+    def test_eviction_clears_conversation_mapping(self):
+        """LRU eviction also removes conversation mappings for evicted responses."""
+        store = ResponseStore(max_size=2)
+        store.put("resp_1", {"output": "one"})
+        store.set_conversation("chat-a", "resp_1")
+        store.put("resp_2", {"output": "two"})
+        store.set_conversation("chat-b", "resp_2")
+        # Adding a 3rd should evict resp_1 and its conversation mapping
+        store.put("resp_3", {"output": "three"})
+        assert store.get("resp_1") is None
+        assert store.get_conversation("chat-a") is None
+        # resp_2 mapping should still be intact
+        assert store.get_conversation("chat-b") == "resp_2"
+
 
 # ---------------------------------------------------------------------------
 # _IdempotencyCache
@@ -422,7 +445,12 @@ class TestHealthEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
             assert resp.status == 200
+            assert resp.headers.get("Content-Security-Policy") == "default-src 'none'; frame-ancestors 'none'"
+            assert resp.headers.get("Permissions-Policy") == "camera=(), microphone=(), geolocation=()"
+            assert resp.headers.get("Strict-Transport-Security") == "max-age=31536000; includeSubDomains"
             assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("X-Frame-Options") == "DENY"
+            assert resp.headers.get("X-XSS-Protection") == "0"
             assert resp.headers.get("Referrer-Policy") == "no-referrer"
 
     @pytest.mark.asyncio
@@ -680,6 +708,37 @@ class TestChatCompletionsEndpoint:
                 assert "data: " in body
                 assert "[DONE]" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_string_false_returns_json_completion(self, adapter):
+        """Quoted false must not route chat completions into SSE mode."""
+        mock_result = {
+            "final_response": "Hello! How can I help you today?",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "stream": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            assert "text/event-stream" not in resp.headers.get("Content-Type", "")
+            data = await resp.json()
+            assert data["object"] == "chat.completion"
+            assert data["choices"][0]["message"]["content"] == mock_result["final_response"]
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
@@ -1633,6 +1692,31 @@ class TestResponsesEndpoint:
             assert adapter._response_store.get(data["id"]) is None
 
     @pytest.mark.asyncio
+    async def test_store_string_false_does_not_store(self, adapter):
+        """Quoted false must preserve ephemeral store=false semantics."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "store": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert adapter._response_store.get(data["id"]) is None
+
+    @pytest.mark.asyncio
     async def test_instructions_inherited_from_previous(self, adapter):
         """If no instructions provided, carry forward from previous response."""
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
@@ -1725,6 +1809,37 @@ class TestResponsesStreaming:
                 assert '"logprobs": []' in body
                 assert "Hello" in body
                 assert " world" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_string_false_returns_json_response(self, adapter):
+        """Quoted false must not route Responses API requests into SSE mode."""
+        mock_result = {
+            "final_response": "Paris is the capital of France.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "What is the capital of France?",
+                        "stream": "false",
+                    },
+                )
+
+            assert resp.status == 200
+            assert "text/event-stream" not in resp.headers.get("Content-Type", "")
+            data = await resp.json()
+            assert data["object"] == "response"
+            assert data["output"][0]["content"][0]["text"] == mock_result["final_response"]
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):
@@ -2869,6 +2984,45 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+    @pytest.mark.asyncio
+    async def test_conversation_reuse_after_eviction_no_404(self, adapter):
+        """After eviction clears a conversation mapping, reusing that name starts fresh (no 404)."""
+        adapter._response_store = ResponseStore(max_size=1)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                # Create conversation -> resp stored
+                resp1 = await cli.post("/v1/responses", json={
+                    "input": "hello",
+                    "conversation": "my-chat",
+                })
+                assert resp1.status == 200
+
+                # Evict by adding another response
+                mock_run.return_value = (
+                    {"final_response": "Other", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                await cli.post("/v1/responses", json={"input": "other"})
+
+                # Conversation mapping should have been cleaned by eviction
+                assert adapter._response_store.get_conversation("my-chat") is None
+
+                # Reuse conversation name — should start fresh, not 404
+                mock_run.return_value = (
+                    {"final_response": "Restarted", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp3 = await cli.post("/v1/responses", json={
+                    "input": "hello again",
+                    "conversation": "my-chat",
+                })
+                assert resp3.status == 200
 
 
 # ---------------------------------------------------------------------------

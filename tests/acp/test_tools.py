@@ -207,6 +207,16 @@ class TestBuildToolStart:
         assert result.content is None
         assert result.raw_input is None
 
+    def test_build_tool_start_for_browser_navigate(self):
+        """browser_navigate should emit a polished start event."""
+        args = {"url": "https://x.com"}
+        result = build_tool_start("tc-browser-start", "browser_navigate", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.title == "navigate: https://x.com"
+        assert result.kind == "fetch"
+        assert result.content[0].content.text == '{\n  "url": "https://x.com"\n}'
+        assert result.raw_input is None
+
     def test_build_tool_start_for_search(self):
         """search_files should include pattern in content."""
         args = {"pattern": "TODO", "target": "content"}

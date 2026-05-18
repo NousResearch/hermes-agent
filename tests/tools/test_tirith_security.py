@@ -334,6 +334,103 @@ class TestEnsureInstalled:
 
 
 # ---------------------------------------------------------------------------
+# Unsupported platform (Windows etc.) — silent fast-path everywhere
+# ---------------------------------------------------------------------------
+
+class TestUnsupportedPlatform:
+    """When _detect_target() returns None (no tirith binary for this OS+arch),
+    the entire subsystem must stay silent: no PATH probes, no download thread,
+    no disk failure marker, no spawn attempts, no CLI banner. Pattern-matching
+    guards still cover the gap; tirith content scanning is just absent."""
+
+    def test_is_platform_supported_true_on_linux_x86_64(self):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="x86_64"):
+            assert _tirith_mod.is_platform_supported() is True
+
+    def test_is_platform_supported_true_on_darwin_arm64(self):
+        with patch("tools.tirith_security.platform.system", return_value="Darwin"), \
+             patch("tools.tirith_security.platform.machine", return_value="arm64"):
+            assert _tirith_mod.is_platform_supported() is True
+
+    def test_is_platform_supported_false_on_windows(self):
+        with patch("tools.tirith_security.platform.system", return_value="Windows"), \
+             patch("tools.tirith_security.platform.machine", return_value="AMD64"):
+            assert _tirith_mod.is_platform_supported() is False
+
+    def test_is_platform_supported_false_on_unknown_arch(self):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="riscv64"):
+            assert _tirith_mod.is_platform_supported() is False
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_ensure_installed_unsupported_returns_none_no_thread(self, mock_cfg):
+        """Windows: don't start a background install thread, don't write a
+        failure marker — just cache the verdict and return None."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.threading.Thread") as MockThread, \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark, \
+             patch("tools.tirith_security.shutil.which") as mock_which:
+            result = ensure_installed()
+            assert result is None
+            MockThread.assert_not_called()
+            mock_mark.assert_not_called()
+            mock_which.assert_not_called()
+            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+            assert _tirith_mod._install_failure_reason == "unsupported_platform"
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_check_command_security_unsupported_allows_silently(self, mock_cfg):
+        """Windows: skip the resolver and spawn entirely — return allow with
+        an empty summary so callers can't accidentally surface 'tirith
+        unavailable' messaging to the user."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.subprocess.run") as mock_run, \
+             patch("tools.tirith_security._resolve_tirith_path") as mock_resolve:
+            result = check_command_security("rm -rf /")
+            assert result == {"action": "allow", "findings": [], "summary": ""}
+            mock_run.assert_not_called()
+            mock_resolve.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_resolve_path_unsupported_caches_failure_without_probing(self, mock_cfg):
+        """The per-command resolver must also short-circuit on Windows so
+        long-running gateways don't churn through `shutil.which` and disk
+        I/O for every scanned command."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.shutil.which") as mock_which:
+            result = _tirith_mod._resolve_tirith_path("tirith")
+            assert result == "tirith"
+            mock_which.assert_not_called()
+            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+            assert _tirith_mod._install_failure_reason == "unsupported_platform"
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_explicit_path_still_honored_on_unsupported_platform(self, mock_cfg):
+        """If a user explicitly configured a tirith_path (e.g. they built it
+        themselves under WSL), the unsupported-platform short-circuit must
+        NOT override that — explicit config wins."""
+        mock_cfg.return_value = {"tirith_enabled": True,
+                                 "tirith_path": "/opt/custom/tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True):
+            result = _tirith_mod._resolve_tirith_path("/opt/custom/tirith")
+            assert result == "/opt/custom/tirith"
+            assert _tirith_mod._resolved_path == "/opt/custom/tirith"
+
+
+# ---------------------------------------------------------------------------
 # Failed download caches the miss (Finding #1)
 # ---------------------------------------------------------------------------
 
@@ -1007,3 +1104,120 @@ class TestHermesHomeIsolation:
             expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Warn-once dedupe (issue: tirith spawn failed spamming on Windows)
+# ---------------------------------------------------------------------------
+
+class TestSpawnWarningDedup:
+    """When tirith isn't installed yet (background install in flight, or
+    install marked failed), every terminal command spammed an identical
+    ``tirith spawn failed: [WinError 2]`` warning to ``errors.log``. The
+    dedupe set in ``_warn_once`` collapses repeats by ``(exc class, errno)``
+    while still surfacing the first occurrence so users see the failure.
+    """
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_repeated_spawn_failure_logs_once(self, mock_cfg, mock_run, caplog):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        mock_run.side_effect = FileNotFoundError("[WinError 2]")
+        # Fresh dedupe state — clear any keys left by other tests.
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(15):
+                result = check_command_security("echo hi")
+                # Behavior must remain the same on every call —
+                # fail-open allow, with the exception captured in summary.
+                assert result["action"] == "allow"
+                assert "unavailable" in result["summary"]
+
+        spawn_warnings = [
+            rec for rec in caplog.records
+            if "tirith spawn failed" in rec.message
+        ]
+        assert len(spawn_warnings) == 1, (
+            f"expected exactly 1 spawn-failed warning across 15 commands, "
+            f"got {len(spawn_warnings)}: {[r.message for r in spawn_warnings]}"
+        )
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_distinct_exception_types_each_log_once(self, mock_cfg, mock_run, caplog):
+        """``FileNotFoundError`` and ``PermissionError`` are distinct
+        failure modes and each deserves its own first-occurrence log
+        line; the dedupe key includes the exception class."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            mock_run.side_effect = FileNotFoundError("[WinError 2]")
+            for _ in range(3):
+                check_command_security("a")
+            mock_run.side_effect = PermissionError("denied")
+            for _ in range(3):
+                check_command_security("b")
+
+        spawn_warnings = [
+            rec for rec in caplog.records
+            if "tirith spawn failed" in rec.message
+        ]
+        assert len(spawn_warnings) == 2, (
+            f"expected 2 distinct first-occurrence warnings, "
+            f"got {len(spawn_warnings)}"
+        )
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_repeated_timeout_logs_once(self, mock_cfg, mock_run, caplog):
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="tirith", timeout=5)
+        _tirith_mod._reset_spawn_warning_state()
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(10):
+                result = check_command_security("slow")
+                assert result["action"] == "allow"
+
+        timeout_warnings = [
+            rec for rec in caplog.records
+            if "tirith timed out" in rec.message
+        ]
+        assert len(timeout_warnings) == 1
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_path_none_logs_once(self, mock_cfg, caplog):
+        """``_resolve_tirith_path`` returning ``None`` (explicit path set
+        but resolver returned None — unusual) should not spam the log
+        either."""
+        mock_cfg.return_value = {
+            "tirith_enabled": True, "tirith_path": "tirith",
+            "tirith_timeout": 5, "tirith_fail_open": True,
+        }
+        _tirith_mod._reset_spawn_warning_state()
+
+        with patch(
+            "tools.tirith_security._resolve_tirith_path", return_value=None
+        ):
+            with caplog.at_level("WARNING", logger="tools.tirith_security"):
+                for _ in range(10):
+                    result = check_command_security("echo")
+                    assert result["action"] == "allow"
+                    assert "tirith path unavailable" in result["summary"]
+
+        none_warnings = [
+            rec for rec in caplog.records
+            if "tirith path resolved to None" in rec.message
+        ]
+        assert len(none_warnings) == 1

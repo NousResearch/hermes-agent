@@ -39,6 +39,7 @@ from cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
+FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -393,9 +394,53 @@ class TestWaylandSave:
             if "stdout" in kw and hasattr(kw["stdout"], "write"):
                 kw["stdout"].write(FAKE_BMP)
             return MagicMock(returncode=0)
+
+        def fake_convert(path):
+            assert path == dest
+            path.write_bytes(FAKE_PNG)
+            return True
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            with patch("hermes_cli.clipboard._convert_to_png", side_effect=fake_convert):
+                assert _wayland_save(dest) is True
+
+    def test_jpeg_extraction_converts_to_real_png(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(cmd, **kw):
+            if "--list-types" in cmd:
+                return MagicMock(stdout="image/jpeg\ntext/plain\n", returncode=0)
+            if "stdout" in kw and hasattr(kw["stdout"], "write"):
+                kw["stdout"].write(FAKE_JPEG)
+            return MagicMock(returncode=0)
+
+        def fake_convert(path):
+            assert path == dest
+            path.write_bytes(FAKE_PNG)
+            return True
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            with patch("hermes_cli.clipboard._convert_to_png", side_effect=fake_convert) as mock_convert:
+                assert _wayland_save(dest) is True
+
+        mock_convert.assert_called_once_with(dest)
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_non_png_conversion_failure_cleans_up(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(cmd, **kw):
+            if "--list-types" in cmd:
+                return MagicMock(stdout="image/jpeg\n", returncode=0)
+            if "stdout" in kw and hasattr(kw["stdout"], "write"):
+                kw["stdout"].write(FAKE_JPEG)
+            return MagicMock(returncode=0)
+
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             with patch("hermes_cli.clipboard._convert_to_png", return_value=True):
-                assert _wayland_save(dest) is True
+                assert _wayland_save(dest) is False
+
+        assert not dest.exists()
 
     def test_no_image_types(self, tmp_path):
         dest = tmp_path / "out.png"

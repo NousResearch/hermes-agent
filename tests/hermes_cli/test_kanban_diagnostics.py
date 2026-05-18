@@ -613,3 +613,127 @@ def test_stranded_in_ready_works_on_real_db_row(kanban_home):
         assert stranded[0].data["assignee"] == "ghost"
     finally:
         conn.close()
+
+
+
+# ---------------------------------------------------------------------------
+# triage_aux_unavailable rule — auto-decompose aware
+# ---------------------------------------------------------------------------
+
+
+def _triage_task():
+    return _task(id="t_triage1", status="triage")
+
+
+def test_triage_aux_unavailable_silent_without_config_context():
+    """Low-level callers passing no config dict should not see this rule."""
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [])
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_silent_when_main_model_visible():
+    """Default `provider: auto` falls back to the main model — no warning."""
+    config = {
+        "auxiliary": {},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_silent_when_decomposer_explicit():
+    """User explicitly configured decomposer → no warning, even without main."""
+    config = {
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "openrouter", "model": "qwen/qwen3"},
+        },
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_unavailable_fires_auto_decompose_on_no_fallback():
+    """auto_decompose=True, no decomposer, no main model → warn about decomposer."""
+    config = {
+        "auxiliary": {},
+        "kanban": {"auto_decompose": True},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
+    assert len(triage) == 1
+    d = triage[0]
+    assert d.severity == "warning"
+    assert "decomposer" in d.title.lower()
+    assert d.data["auto_decompose"] is True
+    assert d.data["primary_slot"] == "auxiliary.kanban_decomposer"
+    suggested = [a for a in d.actions if a.suggested]
+    assert suggested
+    assert "auxiliary.kanban_decomposer" in suggested[0].payload["command"]
+
+
+def test_triage_aux_unavailable_fires_auto_decompose_off_points_at_specifier():
+    """auto_decompose=False → primary is specifier, not decomposer."""
+    config = {
+        "auxiliary": {},
+        "kanban": {"auto_decompose": False},
+    }
+    diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
+    triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
+    assert len(triage) == 1
+    d = triage[0]
+    assert "specifier" in d.title.lower()
+    assert d.data["auto_decompose"] is False
+    assert d.data["primary_slot"] == "auxiliary.triage_specifier"
+    # And it should offer the manual specify command as an action
+    labels = [a.label for a in d.actions]
+    assert any("hermes kanban specify" in l for l in labels)
+
+
+def test_triage_aux_unavailable_skips_non_triage_tasks():
+    config = {"auxiliary": {}, "kanban": {"auto_decompose": True}}
+    task = _task(status="todo")
+    diags = kd.compute_task_diagnostics(task, [], [], config=config)
+    assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
+
+
+def test_triage_aux_status_recognises_auto_default_as_not_explicit():
+    """Default `provider: auto` with empty fields → not 'explicit'."""
+    status = kd.triage_aux_status({
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "auto", "model": ""},
+        },
+        "kanban": {},
+    })
+    assert status is not None
+    assert status["decomposer_explicit"] is False
+
+
+def test_triage_aux_status_recognises_explicit_model_only():
+    """Even with provider=auto, a non-empty model counts as explicit."""
+    status = kd.triage_aux_status({
+        "auxiliary": {
+            "kanban_decomposer": {"provider": "auto", "model": "qwen/qwen3"},
+        },
+        "kanban": {},
+    })
+    assert status is not None
+    assert status["decomposer_explicit"] is True
+
+
+def test_config_from_runtime_config_carries_aux_and_model():
+    cfg = kd.config_from_runtime_config({
+        "kanban": {"failure_limit": 5, "auto_decompose": False},
+        "auxiliary": {"kanban_decomposer": {"provider": "openrouter"}},
+        "model": {"provider": "openrouter", "default": "qwen/qwen3"},
+    })
+    assert cfg["failure_threshold"] == 5
+    assert cfg["kanban"]["auto_decompose"] is False
+    assert cfg["auxiliary"]["kanban_decomposer"]["provider"] == "openrouter"
+    assert cfg["model"]["default"] == "qwen/qwen3"
+
+
+def test_config_from_runtime_config_handles_empty_input():
+    assert kd.config_from_runtime_config(None) == {}
+    assert kd.config_from_runtime_config({}) == {}

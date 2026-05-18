@@ -1395,9 +1395,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_diagnostics as kd
     from hermes_cli.config import load_config
 
-    diag_config = kd.config_from_kanban_config(
-        (load_config().get("kanban") or {})
-    )
+    diag_config = kd.config_from_runtime_config(load_config())
 
     with kb.connect() as conn:
         # Either one-task mode or fleet mode.

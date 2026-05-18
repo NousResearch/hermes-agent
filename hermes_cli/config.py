@@ -764,6 +764,10 @@ DEFAULT_CONFIG = {
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "proactive": {
+            "enabled": False,         # opt-in: recommend idle/post-turn compression before preflight blocks
+            "next_turn_reserve_ratio": 0.20,  # reserve this fraction of total context for likely next-turn growth
+        },
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to

@@ -821,6 +821,13 @@ class AIAgent:
         from agent.conversation_compression import replay_compression_warning
         replay_compression_warning(self)
 
+    def _estimate_proactive_compression_pressure(self, messages: list, *, system_prompt: str = "") -> dict:
+        """Forwarder — see ``agent.conversation_compression.estimate_proactive_compression_pressure``."""
+        from agent.conversation_compression import estimate_proactive_compression_pressure
+        return estimate_proactive_compression_pressure(
+            self, messages, system_prompt=system_prompt,
+        )
+
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         if base_url is not None:

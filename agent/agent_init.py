@@ -1080,6 +1080,18 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    _proactive_cfg = _compression_cfg.get("proactive", {})
+    if not isinstance(_proactive_cfg, dict):
+        _proactive_cfg = {}
+    agent._proactive_compression_enabled = str(
+        _proactive_cfg.get("enabled", False)
+    ).lower() in {"true", "1", "yes"}
+    try:
+        agent._proactive_compression_next_turn_reserve_ratio = float(
+            _proactive_cfg.get("next_turn_reserve_ratio", 0.20)
+        )
+    except (TypeError, ValueError):
+        agent._proactive_compression_next_turn_reserve_ratio = 0.20
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of

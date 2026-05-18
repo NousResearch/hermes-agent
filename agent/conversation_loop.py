@@ -3914,6 +3914,15 @@ def run_conversation(
             last_reasoning = msg["reasoning"]
             break
 
+    try:
+        _proactive_pressure = agent._estimate_proactive_compression_pressure(
+            messages,
+            system_prompt=agent._cached_system_prompt or "",
+        )
+    except Exception as _proactive_err:
+        logger.debug("proactive compression pressure estimate failed: %s", _proactive_err)
+        _proactive_pressure = {"enabled": False, "should_compress": False}
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
@@ -3940,6 +3949,7 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        "proactive_compression": _proactive_pressure,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

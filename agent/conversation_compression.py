@@ -34,11 +34,72 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
+
+
+def _clamp_ratio(value: Any, *, default: float = 0.20) -> float:
+    """Parse a config ratio and clamp it to a conservative safe range."""
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        ratio = default
+    return max(0.0, min(ratio, 0.50))
+
+
+def estimate_proactive_compression_pressure(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+) -> Dict[str, Any]:
+    """Estimate whether a completed turn should be proactively compressed.
+
+    This is the common trigger math for post-turn / idle compression.  The
+    reserve is expressed as a percentage of the model's full context window,
+    not an absolute token count, so it scales with model choice:
+
+        projected = current_request_tokens + context_length * reserve_ratio
+
+    If the projection crosses the normal hard compression threshold, callers
+    may compress while the session is idle.  The existing preflight check still
+    remains the authoritative safety net for unusually large next prompts.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = int(getattr(compressor, "context_length", 0) or 0)
+    threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)
+    reserve_ratio = _clamp_ratio(
+        getattr(agent, "_proactive_compression_next_turn_reserve_ratio", 0.20)
+    )
+    reserve_tokens = int(context_length * reserve_ratio) if context_length else 0
+    current_tokens = estimate_request_tokens_rough(
+        messages or [],
+        system_prompt=system_prompt or "",
+        tools=getattr(agent, "tools", None) or None,
+    )
+    projected_tokens = current_tokens + reserve_tokens
+    enabled = bool(getattr(agent, "compression_enabled", True)) and bool(
+        getattr(agent, "_proactive_compression_enabled", False)
+    )
+    should_compress = bool(
+        enabled
+        and threshold_tokens > 0
+        and projected_tokens >= threshold_tokens
+    )
+
+    return {
+        "enabled": enabled,
+        "current_tokens": current_tokens,
+        "context_length": context_length,
+        "threshold_tokens": threshold_tokens,
+        "reserve_ratio": reserve_ratio,
+        "reserve_tokens": reserve_tokens,
+        "projected_tokens": projected_tokens,
+        "should_compress": should_compress,
+    }
 
 
 def check_compression_model_feasibility(agent: Any) -> None:

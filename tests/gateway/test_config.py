@@ -270,6 +270,25 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_bridges_telegram_command_menu_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  command_menu: quick_commands_only\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.TELEGRAM].extra["command_menu"]
+            == "quick_commands_only"
+        )
+
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

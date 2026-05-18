@@ -1507,11 +1507,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeDefault,
                     BotCommandScopeChat,
                 )
-                from hermes_cli.commands import telegram_menu_commands
+                from hermes_cli.commands import (
+                    telegram_menu_commands,
+                    telegram_quick_menu_commands,
+                )
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit (~4KB total).  Limit to 30 core commands
                 # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                if self.config.extra.get("command_menu") == "quick_commands_only":
+                    # Fetch quick_commands via the gateway runner reference if
+                    # available; otherwise fall back to PlatformConfig.extra.
+                    _qc = self.config.extra.get("quick_commands")
+                    if not isinstance(_qc, dict) or not _qc:
+                        _runner_ref = getattr(self, "_runner_ref", None)
+                        _runner = _runner_ref() if callable(_runner_ref) else None
+                        _gw_cfg = getattr(_runner, "config", None) if _runner else None
+                        _qc = getattr(_gw_cfg, "quick_commands", {}) or {}
+                    menu_commands, hidden_count = telegram_quick_menu_commands(
+                        _qc,
+                        max_commands=MAX_COMMANDS_PER_SCOPE,
+                    )
+                else:
+                    menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall

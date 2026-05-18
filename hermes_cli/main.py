@@ -9225,6 +9225,7 @@ def cmd_profile(args):
         include_soul_flag = bool(getattr(args, "include_soul", False))
         include_agents_flag = bool(getattr(args, "include_agents", False))
         tag_skills_flag = bool(getattr(args, "tag_skills", False))
+        skill_desc_flag = bool(getattr(args, "with_skill_descriptions", False))
 
         if all_flag:
             targets = _pd.list_describable_profiles(missing_only=True)
@@ -9243,6 +9244,7 @@ def cmd_profile(args):
                 include_soul=include_soul_flag,
                 include_agents=include_agents_flag,
                 tag_builtins=tag_skills_flag,
+                with_skill_descriptions=skill_desc_flag,
             )
             if outcome.ok:
                 ok_count += 1
@@ -12214,6 +12216,16 @@ Examples:
              "location for project-specific role information; this is the "
              "doc-correct way to feed lane signal to the describer. Off by "
              "default to preserve existing prompt shape.",
+    )
+    profile_describe.add_argument(
+        "--with-skill-descriptions",
+        dest="with_skill_descriptions",
+        action="store_true",
+        help="With --auto, include each skill's frontmatter description "
+             "alongside its name in the prompt. Helps the describer reason "
+             "about bespoke skills it has never seen before. Costs more "
+             "characters per skill so the per-prompt skill cap is tightened "
+             "automatically. Off by default.",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

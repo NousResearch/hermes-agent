@@ -462,3 +462,113 @@ def test_describer_caps_skill_list_and_keeps_user_skills(profile_env, monkeypatc
     builtin_count = user_text.count("[built-in]")
     assert builtin_count <= 20
     assert builtin_count > 0
+
+
+def test_describer_does_not_emit_skill_descriptions_by_default(profile_env, monkeypatch):
+    """Without the flag, a skill's frontmatter description must not appear."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "trading"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "binance-trading-ops").mkdir()
+    (skills_dir / "binance-trading-ops" / "SKILL.md").write_text(
+        "---\nname: binance-trading-ops\n"
+        "description: Execute Binance bucket strategy with risk monitoring\n---\nbody"
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")  # no flags
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    # Skill ID still appears, but not the description text.
+    assert "binance-trading-ops" in user_text
+    assert "Execute Binance bucket strategy" not in user_text
+
+
+def test_describer_emits_skill_descriptions_when_opt_in(profile_env, monkeypatch):
+    """with_skill_descriptions=True appends each skill's frontmatter description."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "trading"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "binance-trading-ops").mkdir()
+    (skills_dir / "binance-trading-ops" / "SKILL.md").write_text(
+        "---\nname: binance-trading-ops\n"
+        "description: Execute Binance bucket strategy with risk monitoring\n---\nbody"
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(
+            "myprof", with_skill_descriptions=True
+        )
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Execute Binance bucket strategy with risk monitoring" in user_text
+
+
+def test_describer_skill_descriptions_strip_quotes(profile_env, monkeypatch):
+    """Quoted description values get stripped and surfaced cleanly."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "trading"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "polymarket").mkdir()
+    (skills_dir / "polymarket" / "SKILL.md").write_text(
+        '---\nname: polymarket\n'
+        'description: "Query Polymarket: markets, prices, orderbooks."\n---\nbody'
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(
+            "myprof", with_skill_descriptions=True
+        )
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Query Polymarket: markets, prices, orderbooks." in user_text
+    # The wrapping quotes should not appear in the rendered line.
+    assert '"Query Polymarket' not in user_text
+
+
+def test_describer_skill_descriptions_handles_missing_frontmatter(profile_env, monkeypatch):
+    """A SKILL.md without frontmatter must not crash the run."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    skills_dir = profile_env / "skills" / "research"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "no-frontmatter").mkdir()
+    (skills_dir / "no-frontmatter" / "SKILL.md").write_text(
+        "# Just a body, no frontmatter at all."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(
+            "myprof", with_skill_descriptions=True
+        )
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    # Skill ID still appears even without a description to attach.
+    assert "research/no-frontmatter" in user_text

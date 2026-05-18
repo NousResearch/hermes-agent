@@ -53,6 +53,23 @@ logger = logging.getLogger(__name__)
 # is per-category — see _collect_skills.
 MAX_SKILLS_FOR_PROMPT = 60
 
+# Tighter cap when --with-skill-descriptions is on, because each skill
+# line carries the full description and costs roughly 5-10x more chars.
+MAX_SKILLS_WITH_DESC = 30
+
+# Per-skill description cap when --with-skill-descriptions is on. Skill
+# frontmatter descriptions are typically 50-200 chars; we trim to keep
+# the prompt bounded against pathological cases.
+MAX_SKILL_DESC_CHARS = 200
+
+# Frontmatter pattern: matches the leading YAML block delimited by ---
+# lines. We don't pull in PyYAML for this — descriptions are simple
+# scalars and a regex is reliable enough for the common cases (single
+# line, double-quoted, single-quoted, or YAML folded). If parsing fails
+# the loader returns an empty string and the skill ID is still emitted.
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+_DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
+
 # Cap on SOUL.md content fed when --include-soul is passed. SOUL.md is
 # meant to be small per Hermes docs, but we cap to be safe.
 MAX_SOUL_CHARS = 4000
@@ -223,12 +240,43 @@ def _builtin_skill_ids() -> set[str]:
     return out
 
 
+def _extract_skill_description(md_path: Path) -> str:
+    """Extract the ``description:`` field from a SKILL.md frontmatter block.
+
+    Returns an empty string when the file can't be read, has no frontmatter,
+    or no description field. Strips surrounding quotes and trims to
+    ``MAX_SKILL_DESC_CHARS``.
+    """
+    try:
+        # SKILL.md files are typically tiny; read at most 4 KB which covers
+        # any reasonable frontmatter without slurping huge skill bodies.
+        with md_path.open("r", errors="replace") as f:
+            head = f.read(4096)
+    except Exception:
+        return ""
+    fm_match = _FRONTMATTER_RE.match(head)
+    if not fm_match:
+        return ""
+    desc_match = _DESC_RE.search(fm_match.group(1))
+    if not desc_match:
+        return ""
+    desc = desc_match.group(1).strip()
+    # Strip surrounding quotes (single or double).
+    if len(desc) >= 2 and desc[0] in ("'", '"') and desc[-1] == desc[0]:
+        desc = desc[1:-1]
+    desc = desc.strip()
+    if len(desc) > MAX_SKILL_DESC_CHARS:
+        desc = desc[: MAX_SKILL_DESC_CHARS - 1] + "…"
+    return desc
+
+
 def _collect_skills(
     profile_dir: Path,
     *,
     classify_builtins: bool = False,
-) -> list[Tuple[str, bool]]:
-    """Return a stable, capped list of ``(skill_id, is_user_authored)`` tuples.
+    cap: Optional[int] = None,
+) -> list[Tuple[str, bool, Path]]:
+    """Return a stable, capped list of ``(skill_id, is_user_authored, md_path)`` tuples.
 
     Format: ``category/skill_name`` where category is the immediate
     subdir under ``skills/`` (e.g. ``devops``, ``research``). Skills
@@ -239,12 +287,21 @@ def _collect_skills(
     ``classify_builtins=False`` the boolean is always ``False`` and the
     cap is enforced via even sampling across the full sorted list rather
     than by biasing toward user-authored skills.
+
+    ``cap`` overrides ``MAX_SKILLS_FOR_PROMPT`` for callers that want to
+    include richer per-skill detail (e.g. description text) and need a
+    tighter cap to keep the prompt bounded.
+
+    The returned ``md_path`` is the path to the skill's ``SKILL.md``
+    file; callers can pass it to ``_extract_skill_description`` if they
+    want the frontmatter description.
     """
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return []
+    effective_cap = cap if cap is not None else MAX_SKILLS_FOR_PROMPT
     builtin = _builtin_skill_ids() if classify_builtins else set()
-    pairs: list[Tuple[str, bool]] = []
+    pairs: list[Tuple[str, bool, Path]] = []
     seen: set[str] = set()
     for md in skills_dir.rglob("SKILL.md"):
         path_str = str(md)
@@ -269,27 +326,27 @@ def _collect_skills(
         # is_user=False so callers don't accidentally emit [user]/[built-in]
         # tags. The flag is purely about how the prompt is shaped.
         is_user = (sid not in builtin) if classify_builtins else False
-        pairs.append((sid, is_user))
+        pairs.append((sid, is_user, md))
     pairs.sort(key=lambda p: p[0])
 
-    if len(pairs) <= MAX_SKILLS_FOR_PROMPT:
+    if len(pairs) <= effective_cap:
         return pairs
 
     if not classify_builtins:
         # Sample evenly across the sorted list — caller asked us not
         # to differentiate built-ins, so don't bias the sample either.
-        step = len(pairs) / MAX_SKILLS_FOR_PROMPT
-        return [pairs[int(i * step)] for i in range(MAX_SKILLS_FOR_PROMPT)]
+        step = len(pairs) / effective_cap
+        return [pairs[int(i * step)] for i in range(effective_cap)]
 
     # Classified path: prioritize user-authored skills, then sample built-ins.
     user_pairs = [p for p in pairs if p[1]]
     builtin_pairs = [p for p in pairs if not p[1]]
-    if len(user_pairs) >= MAX_SKILLS_FOR_PROMPT:
-        step = len(user_pairs) / MAX_SKILLS_FOR_PROMPT
-        return [user_pairs[int(i * step)] for i in range(MAX_SKILLS_FOR_PROMPT)]
-    remaining = MAX_SKILLS_FOR_PROMPT - len(user_pairs)
+    if len(user_pairs) >= effective_cap:
+        step = len(user_pairs) / effective_cap
+        return [user_pairs[int(i * step)] for i in range(effective_cap)]
+    remaining = effective_cap - len(user_pairs)
     if not builtin_pairs or remaining <= 0:
-        return user_pairs[:MAX_SKILLS_FOR_PROMPT]
+        return user_pairs[:effective_cap]
     step = max(1.0, len(builtin_pairs) / remaining)
     sampled_builtin = [
         builtin_pairs[int(i * step)] for i in range(remaining)
@@ -387,6 +444,7 @@ def describe_profile(
     tag_builtins: bool = False,
     include_soul: bool = False,
     include_agents: bool = False,
+    with_skill_descriptions: bool = False,
 ) -> DescribeOutcome:
     """Auto-generate a description for one profile.
 
@@ -416,6 +474,12 @@ def describe_profile(
     is the docs-blessed location for project-specific role information,
     but it's off by default to keep existing prompt shape unchanged for
     callers who don't pass the flag.
+
+    ``with_skill_descriptions`` (default False) appends each skill's
+    frontmatter ``description:`` field to its line in the prompt. Costs
+    roughly 5-10x more characters per skill so the per-prompt skill cap
+    is tightened to ``MAX_SKILLS_WITH_DESC`` when enabled. Helps the LLM
+    reason about bespoke skills it's never seen before.
     """
     canon = profiles_mod.normalize_profile_name(profile_name)
     if not profiles_mod.profile_exists(canon):
@@ -442,15 +506,27 @@ def describe_profile(
             "(use --overwrite to replace)",
         )
 
-    skill_pairs = _collect_skills(profile_dir, classify_builtins=tag_builtins)
+    # Pick a tighter cap when we'll be emitting per-skill descriptions
+    # so the prompt doesn't balloon.
+    skill_cap = MAX_SKILLS_WITH_DESC if with_skill_descriptions else MAX_SKILLS_FOR_PROMPT
+    skill_pairs = _collect_skills(
+        profile_dir,
+        classify_builtins=tag_builtins,
+        cap=skill_cap,
+    )
     if skill_pairs:
         skill_lines = []
-        for sid, is_user in skill_pairs:
+        for sid, is_user, md_path in skill_pairs:
             if tag_builtins:
                 tag = "[user] " if is_user else "[built-in] "
             else:
                 tag = ""
-            skill_lines.append(f"  - {tag}{sid}")
+            line = f"  - {tag}{sid}"
+            if with_skill_descriptions:
+                desc = _extract_skill_description(md_path)
+                if desc:
+                    line += f" — {desc}"
+            skill_lines.append(line)
         skill_list = "\n".join(skill_lines)
     else:
         skill_list = "  (no skills installed)"
@@ -458,9 +534,11 @@ def describe_profile(
         1 for _ in (profile_dir / "skills").rglob("SKILL.md")
         if "/.hub/" not in str(_) and "/.git/" not in str(_)
     ) if (profile_dir / "skills").is_dir() else 0
-    user_count = sum(1 for _, u in skill_pairs if u) if tag_builtins else 0
+    user_count = (
+        sum(1 for _, u, _md in skill_pairs if u) if tag_builtins else 0
+    )
     builtin_count = (
-        sum(1 for _, u in skill_pairs if not u) if tag_builtins else 0
+        sum(1 for _, u, _md in skill_pairs if not u) if tag_builtins else 0
     )
     # Format the count line conditionally so unclassified runs don't
     # emit a misleading "(0 user, 0 built-in)" suffix.

@@ -4297,6 +4297,44 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def _get_thread_root_message_id(self, thread_id: str) -> Optional[str]:
+        """Resolve the root message_id of a Feishu thread via SDK list API.
+
+        Returns the message_id of the thread root, or None on failure.
+        The root message is identified as the one whose ``root_id`` is
+        either absent or equal to its own ``message_id``.
+        """
+        try:
+            from lark_oapi.api.im.v1 import ListMessageRequest
+
+            request = (
+                ListMessageRequest.builder()
+                .container_id_type("thread")
+                .container_id(thread_id)
+                .page_size(20)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            if not response.success():
+                logger.warning(
+                    "[Feishu] Failed to list messages in thread %s: code=%s msg=%s",
+                    thread_id, getattr(response, "code", None), getattr(response, "msg", None),
+                )
+                return None
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            for msg in items:
+                mid = getattr(msg, "message_id", None)
+                root = getattr(msg, "root_id", None)
+                if mid and (not root or root == mid):
+                    return mid
+            # Fallback: use the first message if no clear root found
+            if items:
+                return getattr(items[0], "message_id", None)
+            return None
+        except Exception as exc:
+            logger.error("[Feishu] Error resolving thread root for %s: %s", thread_id, exc, exc_info=True)
+            return None
+
     async def _send_raw_message(
         self,
         *,
@@ -4320,18 +4358,22 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # For topic/thread messages: if we have a reply_to_message_id, use reply API.
+        # If we only have thread_id (no specific message to reply to), list messages
+        # in thread to find the root message_id, then use SDK reply with reply_in_thread=true.
         _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
+        if _thread_id and not effective_reply_to:
+            root_msg_id = await self._get_thread_root_message_id(_thread_id)
+            if not root_msg_id:
+                return SendResult(success=False, error="Failed to resolve thread root message_id")
+            body = self._build_reply_message_body(
                 content=payload,
+                msg_type=msg_type,
+                reply_in_thread=True,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_create_message_request("thread_id", body)
+            request = self._build_reply_message_request(root_msg_id, body)
+            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
         else:
             body = self._build_create_message_body(
                 receive_id=chat_id,

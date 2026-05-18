@@ -106,6 +106,39 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
+def test_normalize_usage_codex_responses_mode_accepts_chat_usage_shape():
+    """OpenAI-compatible gateways may route GPT/Codex-named models through
+    Chat Completions while Hermes has api_mode=codex_responses from model
+    heuristics or config. Token accounting should follow the response shape,
+    not blindly trust the configured request mode.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=123,
+        completion_tokens=45,
+        total_tokens=168,
+    )
+
+    normalized = normalize_usage(usage, provider="custom", api_mode="codex_responses")
+
+    assert normalized.input_tokens == 123
+    assert normalized.output_tokens == 45
+    assert normalized.total_tokens == 168
+
+
+def test_normalize_usage_codex_responses_mode_accepts_dict_chat_usage_shape():
+    usage = {
+        "prompt_tokens": 123,
+        "completion_tokens": 45,
+        "total_tokens": 168,
+    }
+
+    normalized = normalize_usage(usage, provider="custom", api_mode="codex_responses")
+
+    assert normalized.input_tokens == 123
+    assert normalized.output_tokens == 45
+    assert normalized.total_tokens == 168
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

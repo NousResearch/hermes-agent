@@ -83,6 +83,20 @@ class TestGetCustomProviderContextLength:
             is None
         )
 
+    def test_matches_slash_prefixed_model_alias(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/v1",
+                "models": {"gpt-5.5": {"context_length": 272_000}},
+            }
+        ]
+        assert (
+            get_custom_provider_context_length(
+                "azure/gpt-5.5", "https://example.invalid/v1", custom
+            )
+            == 272_000
+        )
+
     def test_returns_none_for_string_value(self):
         """'256K' string is not a valid int — skip silently.
 

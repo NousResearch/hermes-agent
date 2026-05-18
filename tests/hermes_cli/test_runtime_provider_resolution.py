@@ -1464,6 +1464,100 @@ def test_custom_provider_no_key_gets_placeholder(monkeypatch):
     assert resolved["base_url"] == "http://localhost:8080/v1"
 
 
+def test_named_custom_gpt5_provider_infers_responses_api(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "bifrost",
+                    "base_url": "https://bifrost.example.test/v1",
+                    "api_key": "sk-test",
+                    "model": "gpt-5.5",
+                }
+            ],
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:bifrost")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["model"] == "gpt-5.5"
+
+
+def test_named_custom_explicit_api_mode_wins_over_gpt5_inference(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "azure-openai-proxy",
+                    "base_url": "https://proxy.example.test/v1",
+                    "api_key": "sk-test",
+                    "model": "gpt-5.5",
+                    "api_mode": "chat_completions",
+                }
+            ],
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:azure-openai-proxy")
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_top_level_custom_gpt5_provider_infers_responses_api(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://bifrost.example.test/v1",
+                "api_key": "sk-test",
+                "default": "azure/gpt-5.5",
+            },
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://bifrost.example.test/v1"
+
+
+def test_top_level_custom_explicit_api_mode_wins_over_gpt5_inference(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "https://bifrost.example.test/v1",
+                "api_key": "sk-test",
+                "default": "azure/gpt-5.5",
+                "api_mode": "chat_completions",
+            },
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch):
     """When auto-detect picks Nous but credentials are revoked, fall through to OpenRouter."""
     from hermes_cli.auth import AuthError

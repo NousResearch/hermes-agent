@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "Még nincs mit tömöríteni (a teljes átirat még védett kontextus)."
     focus_line:            "Fókusz: \"{topic}\""
     summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression modell konfigurációját."
+    aborted:               "⚠️ Tömörítés megszakítva ({error}). Egyetlen üzenet sem lett eldobva — a beszélgetés változatlan. Futtass /compress parancsot az újrapróbálkozáshoz, /reset egy új munkamenethez, vagy ellenőrizd az auxiliary.compression modell konfigurációt."
     aux_failed:            "ℹ️ A beállított tömörítőmodell (`{model}`) hibát adott ({error}). A főmodellel helyreállítva — a kontextus érintetlen — de érdemes ellenőrizni az `auxiliary.compression.model` beállítást a config.yaml fájlban."
     failed:                "Tömörítés sikertelen: {error}"
 

@@ -46,6 +46,10 @@ def _make_adapter():
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = MagicMock()
     adapter._mention_patterns = []
+    adapter._dm_policy = "open"
+    adapter._allow_from = set()
+    adapter._group_policy = "open"
+    adapter._group_allow_from = set()
     return adapter
 
 
@@ -285,6 +289,41 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
+
+
+# ---------------------------------------------------------------------------
+# bridge event metadata
+# ---------------------------------------------------------------------------
+
+class TestBridgeEventMetadata:
+    """WhatsApp bridge metadata is preserved for downstream consumers."""
+
+    @pytest.mark.asyncio
+    async def test_quoted_reply_metadata_is_preserved_in_raw_message(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Tester",
+            "chatName": "Tester",
+            "isGroup": False,
+            "body": "approved",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "quotedMessageId": "outbound-msg",
+            "quotedParticipant": "99999999999@s.whatsapp.net",
+            "quotedRemoteJid": "15551234567@s.whatsapp.net",
+            "hasQuotedMessage": True,
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.raw_message["quotedMessageId"] == "outbound-msg"
+        assert event.raw_message["quotedParticipant"] == "99999999999@s.whatsapp.net"
+        assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
+        assert event.raw_message["hasQuotedMessage"] is True
 
 
 # ---------------------------------------------------------------------------

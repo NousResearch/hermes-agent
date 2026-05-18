@@ -1242,7 +1242,13 @@ _STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
-    """Convert a hex color like '#268bd2' to a true-color ANSI escape."""
+    """Convert a hex color like '#268bd2' to a true-color ANSI escape.
+
+    Auto-remaps known dark-mode-tuned colors to readable light-mode
+    equivalents when running on a light terminal (see
+    _maybe_remap_for_light_mode + _LIGHT_MODE_REMAP).
+    """
+    hex_color = _maybe_remap_for_light_mode(hex_color)
     try:
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
@@ -1251,6 +1257,250 @@ def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
         return f"\033[{prefix}38;2;{r};{g};{b}m"
     except (ValueError, IndexError):
         return _ACCENT_ANSI_DEFAULT if bold else "\033[38;2;184;134;11m"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Light/dark terminal mode detection.
+#
+# Mirrors ui-tui/src/theme.ts detectLightMode().  Used to decide whether
+# to remap "near-white" skin colors (e.g. #FFF8DC banner_text, #B8860B
+# banner_dim) to darker equivalents that are readable on a light
+# Terminal.app / iTerm2 background.
+#
+# Detection priority:
+#   1. HERMES_LIGHT / HERMES_TUI_LIGHT env (true/false) — explicit override
+#   2. HERMES_TUI_THEME=light|dark — explicit theme
+#   3. HERMES_TUI_BACKGROUND=#RRGGBB — explicit bg hint
+#   4. COLORFGBG env (set by xterm/Konsole/urxvt) — bg slot 7/15 = light
+#   5. OSC 11 query (\x1b]11;?\x1b\\) — ask the terminal directly
+#   6. Default: assume dark (matches the legacy Hermes assumption)
+#
+# Cached after first call so we don't query the terminal repeatedly.
+_LIGHT_MODE_CACHE: bool | None = None
+_TRUE_RE = re.compile(r"^(1|true|on|yes|y)$")
+_FALSE_RE = re.compile(r"^(0|false|off|no|n)$")
+_LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()  # Apple_Terminal doesn't reliably indicate; require explicit
+
+
+def _luminance_from_hex(hex_str: str) -> float | None:
+    s = (hex_str or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6 or not all(c in "0123456789abcdefABCDEF" for c in s):
+        return None
+    try:
+        r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except ValueError:
+        return None
+    # Rec.709 luma
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+
+
+def _query_osc11_background() -> str | None:
+    """Ask the terminal for its background color via OSC 11.
+
+    Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
+    within a few ms.  We wait up to 100ms total before giving up.
+    Returns "#RRGGBB" or None on timeout / non-tty.
+    """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    try:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+    except Exception:
+        return None
+    try:
+        try:
+            tty.setcbreak(fd)
+        except Exception:
+            return None
+        try:
+            sys.stdout.write("\x1b]11;?\x1b\\")
+            sys.stdout.flush()
+        except Exception:
+            return None
+        # Read up to ~50ms for the response
+        import select
+        deadline = time.monotonic() + 0.1
+        buf = b""
+        while time.monotonic() < deadline:
+            r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 64)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if b"\x1b\\" in buf or b"\x07" in buf:
+                break
+        # Parse: \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
+        m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)
+        if not m:
+            return None
+        # Each component is 1-4 hex digits — normalize to 8-bit
+        def norm(h: bytes) -> int:
+            v = int(h, 16)
+            # Scale to 0-255 based on hex length
+            bits = len(h) * 4
+            return (v * 255) // ((1 << bits) - 1) if bits else 0
+        r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
+        return f"#{r:02X}{g:02X}{b:02X}"
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSANOW, old)
+        except Exception:
+            pass
+
+
+def _detect_light_mode() -> bool:
+    global _LIGHT_MODE_CACHE
+    if _LIGHT_MODE_CACHE is not None:
+        return _LIGHT_MODE_CACHE
+    result = False
+    try:
+        # 1. Explicit env override
+        for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
+            v = (os.environ.get(var) or "").strip().lower()
+            if _TRUE_RE.match(v):
+                result = True
+                _LIGHT_MODE_CACHE = result
+                return result
+            if _FALSE_RE.match(v):
+                _LIGHT_MODE_CACHE = result
+                return result
+        # 2. Theme hint
+        theme = (os.environ.get("HERMES_TUI_THEME") or "").strip().lower()
+        if theme == "light":
+            result = True
+            _LIGHT_MODE_CACHE = result
+            return result
+        if theme == "dark":
+            _LIGHT_MODE_CACHE = result
+            return result
+        # 3. Explicit bg hex
+        bg_hint = os.environ.get("HERMES_TUI_BACKGROUND") or ""
+        bg_lum = _luminance_from_hex(bg_hint)
+        if bg_lum is not None:
+            result = bg_lum >= 0.5
+            _LIGHT_MODE_CACHE = result
+            return result
+        # 4. COLORFGBG (xterm/Konsole/urxvt)
+        cfgbg = (os.environ.get("COLORFGBG") or "").strip()
+        if cfgbg:
+            last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
+            if last.isdigit():
+                bg = int(last)
+                if bg in {7, 15}:
+                    result = True
+                    _LIGHT_MODE_CACHE = result
+                    return result
+                if 0 <= bg < 16:
+                    _LIGHT_MODE_CACHE = result
+                    return result
+        # 5. OSC 11 query (best-effort, only when stdin/stdout are TTY)
+        bg_color = _query_osc11_background()
+        if bg_color:
+            lum = _luminance_from_hex(bg_color)
+            if lum is not None:
+                result = lum >= 0.5
+                _LIGHT_MODE_CACHE = result
+                return result
+        # 6. TERM_PROGRAM allow-list (currently empty)
+        tp = (os.environ.get("TERM_PROGRAM") or "").strip()
+        if tp in _LIGHT_DEFAULT_TERM_PROGRAMS:
+            result = True
+    except Exception:
+        result = False
+    _LIGHT_MODE_CACHE = result
+    return result
+
+
+# Light-mode equivalents of skin colors that are unreadable on cream
+# Terminal.app backgrounds.  Used by _SkinAwareAnsi to remap colors
+# at resolution time when light mode is detected.
+#
+# IMPORTANT: only remap colors that are used as STANDALONE foregrounds
+# on the terminal's background.  Don't remap colors that are paired
+# with a dark bg (e.g. status bar text on bg:#1a1a2e) — those would
+# become invisible the OTHER direction (dark gray on dark navy).
+_LIGHT_MODE_REMAP: dict[str, str] = {
+    # Original (dark-mode) -> Light-mode replacement (darker, readable)
+    "#FFF8DC": "#1A1A1A",   # cornsilk -> near-black
+    "#FFD700": "#9A6B00",   # gold -> dark goldenrod (readable on cream)
+    "#FFBF00": "#8A5A00",   # amber -> dark amber
+    "#B8860B": "#5C4500",   # dark goldenrod -> deeper brown (more contrast)
+    "#DAA520": "#6B4F00",   # goldenrod -> dark olive
+    "#F1E6CF": "#1A1A1A",   # cream -> near-black
+    "#c9d1d9": "#24292F",   # github-light fg
+    "#EAF7FF": "#0F1B26",   # ice
+    "#F5F5F5": "#1A1A1A",
+    "#FFF0D4": "#1A1A1A",
+    "#CD7F32": "#8A4F1A",   # bronze -> darker bronze
+    "#FFEFB5": "#3A2A00",
+    # NOTE: skipping #C0C0C0/#888888/#555555/#8B8682 — those are
+    # status-bar foregrounds paired with dark navy bg, where dark
+    # remap values would become invisible.
+}
+
+
+def _maybe_remap_for_light_mode(hex_color: str) -> str:
+    """If we're in light mode, remap a dark-mode-tuned color to a
+    higher-contrast equivalent.  No-op in dark mode."""
+    if not _detect_light_mode():
+        return hex_color
+    if not hex_color or not hex_color.startswith("#"):
+        return hex_color
+    # Case-insensitive lookup
+    upper = hex_color.upper()
+    if upper in _LIGHT_MODE_REMAP_UPPER:
+        return _LIGHT_MODE_REMAP_UPPER[upper]
+    return hex_color
+
+
+# Pre-uppercased lookup table for case-insensitive remapping
+_LIGHT_MODE_REMAP_UPPER = {k.upper(): v for k, v in _LIGHT_MODE_REMAP.items()}
+
+
+def _install_skin_light_mode_hook() -> None:
+    """Wrap SkinConfig.get_color at import time so EVERY skin color read goes
+    through the light-mode remap.  Idempotent."""
+    try:
+        from hermes_cli.skin_engine import SkinConfig  # type: ignore[import]
+    except Exception:
+        return
+    if getattr(SkinConfig, "_hermes_light_mode_hook_installed", False):
+        return
+    _orig_get_color = SkinConfig.get_color
+
+    def _wrapped_get_color(self, key, fallback=""):
+        value = _orig_get_color(self, key, fallback)
+        try:
+            return _maybe_remap_for_light_mode(value)
+        except Exception:
+            return value
+
+    SkinConfig.get_color = _wrapped_get_color  # type: ignore[method-assign]
+    SkinConfig._hermes_light_mode_hook_installed = True  # type: ignore[attr-defined]
+
+
+_install_skin_light_mode_hook()
+
+
+# Prime the light-mode detection cache early (at module load) when
+# we're running interactively so OSC 11 happens before pt grabs the
+# tty.  Skip for non-tty contexts (subagents, gateway, tests).
+try:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        _detect_light_mode()
+except Exception:
+    pass
+
 
 
 class _SkinAwareAnsi:
@@ -1290,7 +1540,12 @@ class _SkinAwareAnsi:
 
 
 _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
-_DIM = _SkinAwareAnsi("banner_dim", "#B8860B")
+# Use ANSI dim+italic attributes (\x1b[2;3m) instead of a hardcoded
+# hex color so dim/thinking text inherits the terminal's default
+# foreground color and stays readable in both light and dark
+# Terminal.app modes.  Hardcoded skin colors like #B8860B
+# (dark goldenrod) become invisible against light cream backgrounds.
+_DIM = "\x1b[2;3m"
 
 
 def _accent_hex() -> str:
@@ -1415,9 +1670,6 @@ _OUTPUT_HISTORY_REPLAYING = False
 _OUTPUT_HISTORY_SUPPRESSED = False
 _OUTPUT_HISTORY_MAX_LINES = 200
 _OUTPUT_HISTORY = deque(maxlen=_OUTPUT_HISTORY_MAX_LINES)
-_ANSI_CONTROL_RE = re.compile(
-    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
-)
 
 
 def _coerce_output_history_limit(value) -> int:
@@ -1459,10 +1711,10 @@ def _record_output_history_entry(entry) -> None:
 def _record_output_history(text: str) -> None:
     if not _OUTPUT_HISTORY_ENABLED or _OUTPUT_HISTORY_REPLAYING or _OUTPUT_HISTORY_SUPPRESSED:
         return
-    clean = _ANSI_CONTROL_RE.sub("", str(text)).replace("\r", "").rstrip("\n")
-    if not clean:
+    normalized = str(text).replace("\r", "").rstrip("\n")
+    if not normalized:
         return
-    for line in clean.splitlines():
+    for line in normalized.splitlines():
         _record_output_history_entry(line)
 
 
@@ -1473,6 +1725,7 @@ def _replay_output_history() -> None:
         return
     _OUTPUT_HISTORY_REPLAYING = True
     try:
+        rendered_lines = []
         for entry in tuple(_OUTPUT_HISTORY):
             if callable(entry):
                 try:
@@ -1483,8 +1736,15 @@ def _replay_output_history() -> None:
                     lines = lines.splitlines()
             else:
                 lines = [entry]
-            for line in lines:
-                _pt_print(_PT_ANSI(str(line)))
+            rendered_lines.extend(str(line) for line in lines)
+        if rendered_lines:
+            # Replay after resize can contain hundreds of history lines. A
+            # per-line prompt_toolkit print forces one synchronous terminal I/O
+            # and redraw cycle per line, which users perceive as a waterfall of
+            # old output. Keep the existing history contents unchanged, but
+            # emit the replay as one ANSI payload so resize recovery does a
+            # single prompt_toolkit print/redraw.
+            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
     except Exception:
         pass
     finally:
@@ -1705,43 +1965,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
-def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [IMPORTANT: ...] message.
 
-    Handles both completion events (notify_on_complete) and watch pattern
-    match events from the unified completion_queue.
-    """
-    evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    # Default: completion event
-    _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
-    return (
-        f"[IMPORTANT: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
-        f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
-    )
 
 
 def _detect_file_drop(user_input: str) -> "dict | None":
@@ -2188,6 +2412,7 @@ def _looks_like_slash_command(text: str) -> bool:
 
 from agent.skill_commands import (
     scan_skill_commands,
+    get_skill_commands,
     build_skill_invocation_message,
     build_preloaded_skills_prompt,
 )
@@ -2600,6 +2825,11 @@ class HermesCLI:
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
         self._should_exit = False
+        # /exit --delete: when True, the current session's SQLite history and
+        # on-disk transcripts are deleted during shutdown. Set by
+        # process_command() when the user runs /exit --delete or /quit --delete.
+        # Ported from google-gemini/gemini-cli#19332.
+        self._delete_session_on_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
@@ -2639,6 +2869,12 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # When True, the input separator rules and the dynamic status bar are
+        # hidden until the next user input. Set by _recover_after_resize() so a
+        # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
+        # the terminal just reflowed into scrollback — the cause of duplicated
+        # bars / "blank line flooding" reports (#19280, #22976).
+        self._status_bar_suppressed_after_resize = False
         self._resize_recovery_lock = threading.Lock()
         self._resize_recovery_timer = None
         self._resize_recovery_pending = False
@@ -2703,9 +2939,36 @@ class HermesCLI:
             pass
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
-        """Recover a resized classic CLI without desynchronizing cursor state."""
-        self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True)
-        _replay_output_history()
+        """Recover a resized classic CLI without desynchronizing cursor state.
+
+        Unlike _force_full_redraw, we do NOT clear the physical screen or
+        scrollback here.  The startup banner and tool summary are printed
+        before prompt_toolkit owns the live chrome, so they live in normal
+        terminal scrollback.  Erasing the screen on SIGWINCH removes that
+        startup UI and ``_replay_output_history`` cannot reconstruct it
+        (the banner was never added to ``_OUTPUT_HISTORY``).
+
+        Instead we just reset prompt_toolkit's renderer cache so the next
+        incremental redraw starts from a clean slate, then let
+        ``original_on_resize`` recalculate layout for the new size.
+
+        We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
+        status bar and input separator rules stay hidden until the next user
+        input.  On column shrink the terminal reflows already-rendered status
+        bar rows into scrollback before prompt_toolkit can erase them; drawing
+        a fresh full-width bar immediately makes the old and new versions
+        look duplicated (#19280, #22976).  Clearing the suppression on the
+        next prompt restores the bar cleanly.
+        """
+        self._status_bar_suppressed_after_resize = True
+        try:
+            app.renderer.reset(leave_alternate_screen=False)
+        except Exception:
+            pass
+        try:
+            app.invalidate()
+        except Exception:
+            pass
         original_on_resize()
 
     def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
@@ -2851,7 +3114,18 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "active_background_tasks": 0,
         }
+
+        # Count live /background tasks. The dict entry is removed in the
+        # task thread's finally block, so len() reflects truly-running tasks.
+        # len() on a CPython dict is atomic; safe to read without a lock.
+        try:
+            bg_tasks = getattr(self, "_background_tasks", None)
+            if bg_tasks:
+                snapshot["active_background_tasks"] = len(bg_tasks)
+        except Exception:
+            pass
 
         if not agent:
             return snapshot
@@ -2940,10 +3214,36 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
         return width < 64
 
+    @staticmethod
+    def _scrollback_box_width(width: Optional[int] = None) -> int:
+        """Return the full viewport width for printed scrollback box rules.
+
+        Previously this clamped to ``max(32, min(width, 56))`` as a defense
+        against terminal-emulator reflow on column-shrink (#25975, salvaging
+        #24403).  That clamp made response/reasoning borders look stubby on
+        any modern wide terminal.  We now trust the prompt_toolkit
+        ``_output_screen_diff`` monkey-patch landed in #26137 (salvaging
+        #25981) to keep chrome out of scrollback in the first place, and
+        accept that an aggressive column-shrink may visually reflow already
+        printed Panel borders — that's a cosmetic artifact of stamped
+        scrollback history, not a live-render bug.
+
+        A small floor (32 cols) is kept so the box still renders on tiny
+        terminals without negative ``'─' * (w - 2)`` math.
+        """
+        if width is None:
+            try:
+                width = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                width = 80
+        return max(32, int(width or 80))
+
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Return the visible height for the top/bottom input separator rules."""
         if position not in {"top", "bottom"}:
             raise ValueError(f"Unknown input rule position: {position}")
+        if getattr(self, "_status_bar_suppressed_after_resize", False):
+            return 0
         if position == "top":
             return 1
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
@@ -3051,15 +3351,23 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                if yolo_active:
+                    text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
+                bg_count = snapshot.get("active_background_tasks", 0)
+                if bg_count:
+                    parts.append(f"▶ {bg_count}")
                 parts.append(duration_label)
+                if yolo_active:
+                    parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
@@ -3073,10 +3381,15 @@ class HermesCLI:
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
+            bg_count = snapshot.get("active_background_tasks", 0)
+            if bg_count:
+                parts.append(f"▶ {bg_count}")
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            if yolo_active:
+                parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -3093,6 +3406,7 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
 
             if width < 52:
                 frags = [
@@ -3100,13 +3414,17 @@ class HermesCLI:
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
                 ]
+                if yolo_active:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                frags.append(("class:status-bar", " "))
             else:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     compressions = snapshot.get("compressions", 0)
+                    bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -3116,11 +3434,17 @@ class HermesCLI:
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if bg_count:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
                     ])
+                    if yolo_active:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    frags.append(("class:status-bar", " "))
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -3131,6 +3455,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     compressions = snapshot.get("compressions", 0)
+                    bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
@@ -3144,6 +3469,9 @@ class HermesCLI:
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if bg_count:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
@@ -3153,6 +3481,9 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    if yolo_active:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -3453,7 +3784,7 @@ class HermesCLI:
         # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
@@ -3477,7 +3808,7 @@ class HermesCLI:
             if buf:
                 _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
@@ -3668,8 +3999,8 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
+            w = self._scrollback_box_width()
+            fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
@@ -3769,7 +4100,7 @@ class HermesCLI:
 
         # Close the response box
         if self._stream_box_opened:
-            w = shutil.get_terminal_size().columns
+            w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
@@ -3920,7 +4251,13 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
-        if not isinstance(api_key, str) or not api_key:
+        # A callable api_key is a bearer-token provider (Azure Foundry
+        # Entra ID — ``azure_identity_adapter.build_token_provider``).
+        # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
+        # invokes it before every request. Skip the string-only validation
+        # and placeholder substitution for callables.
+        _is_callable_provider = callable(api_key) and not isinstance(api_key, str)
+        if not _is_callable_provider and (not isinstance(api_key, str) or not api_key):
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
             # no API key was found, use a placeholder so the OpenAI SDK
@@ -4214,12 +4551,34 @@ class HermesCLI:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
             return False
     
+    def _show_security_advisories(self):
+        """Show a startup banner if any unacked security advisories match.
+
+        Renders a single bold-red box on stderr (so piped stdout remains
+        clean) listing the worst hit and pointing at ``hermes doctor``.
+        Banner-cache rate-limits this to once per 24h per advisory; full
+        remediation lives behind ``hermes doctor`` so the banner stays
+        small.
+        """
+        try:
+            from hermes_cli.security_advisories import (
+                detect_compromised,
+                startup_banner,
+            )
+            hits = detect_compromised()
+            banner = startup_banner(hits)
+            if banner:
+                # Print to stderr — keeps stdout clean for piped automation,
+                # and Rich's banner rendering already wrote to stdout above.
+                print(banner, file=sys.stderr, flush=True)
+        except Exception:
+            # Never let the security banner block startup. Failures are
+            # logged at DEBUG by the advisory module.
+            pass
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
-
-        # Get context length for display before branching so it remains
-        # available to the low-context warning logic in compact mode too.
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
@@ -5117,6 +5476,24 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
+
+        # Session recap — pure local compute summary of recent activity
+        # (turn counts, tools used, files touched, last ask, last reply).
+        # No LLM call, no prompt-cache impact. Inspired by Claude Code
+        # 2.1.114's /recap.
+        try:
+            from hermes_cli.session_recap import build_recap
+            recap = build_recap(
+                self.conversation_history or [],
+                session_title=title or None,
+                session_id=self.session_id,
+                platform="cli",
+            )
+            if recap:
+                lines.extend(["", recap])
+        except Exception as exc:  # defensive — don't let /status fail
+            logger.debug("build_recap failed in /status: %s", exc)
+
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
@@ -5352,7 +5729,15 @@ class HermesCLI:
             config_path = project_config_path
         config_status = "(loaded)" if config_path.exists() else "(not found)"
         
-        api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
+        # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
+        # provider). Never invoke it; just identify the auth surface.
+        from agent.azure_identity_adapter import is_token_provider
+        if is_token_provider(self.api_key):
+            api_key_display = "Microsoft Entra ID"
+        elif isinstance(self.api_key, str) and len(self.api_key) > 12:
+            api_key_display = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+        else:
+            api_key_display = "Not set!"
         
         print()
         title = "(^_^) Configuration"
@@ -5876,6 +6261,38 @@ class HermesCLI:
             )
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _handle_sessions_command(self, cmd_original: str) -> None:
+        """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
+
+        Without arguments, prints the same recent-sessions table that /resume
+        shows when called without a target, and tells the user how to resume.
+        With an explicit subcommand or target, delegates to the resume flow so
+        ``/sessions <id>`` and ``/resume <id>`` behave identically.
+
+        The TUI ships an interactive picker overlay for this command; the
+        classic CLI prints an inline list because there is no equivalent
+        overlay primitive here. Without this handler the canonical name
+        ``sessions`` falls through ``process_command``'s elif chain and
+        prints ``Unknown command: sessions`` even though the command is
+        registered in the central COMMAND_REGISTRY.
+        """
+        parts = cmd_original.split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        sub = arg.lower()
+
+        # Bare /sessions or /sessions list — show recent sessions inline.
+        if not arg or sub in {"list", "ls", "browse"}:
+            if not self._session_db:
+                from hermes_state import format_session_db_unavailable
+                _cprint(f"  {format_session_db_unavailable()}")
+                return
+            if not self._show_recent_sessions(reason="sessions"):
+                _cprint("  (._.) No previous sessions yet.")
+            return
+
+        # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
+        self._handle_resume_command(f"/resume {arg}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
@@ -6574,7 +6991,7 @@ class HermesCLI:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
+        from hermes_cli.model_switch import switch_model, parse_model_flags
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
@@ -6584,16 +7001,25 @@ class HermesCLI:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # Load providers for switch_model (picker path needs them below)
-        user_provs = None
-        custom_provs = None
+        # Single inventory context — replaces the inline config-slice the
+        # dashboard / TUI used to duplicate. Overlay live session state
+        # via with_overrides (truthy-only) so empty self.* attrs don't
+        # clobber disk config.
+        from hermes_cli.inventory import build_models_payload, load_picker_context
+
         try:
-            from hermes_cli.config import get_compatible_custom_providers, load_config
-            cfg = load_config()
-            user_provs = cfg.get("providers")
-            custom_provs = get_compatible_custom_providers(cfg)
+            ctx = load_picker_context().with_overrides(
+                current_provider=self.provider or "",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+            )
         except Exception:
-            pass
+            ctx = None
+
+        # switch_model() + _open_model_picker still need the raw provider
+        # dicts; ConfigContext is the canonical source for both.
+        user_provs = ctx.user_providers if ctx is not None else None
+        custom_provs = ctx.custom_providers if ctx is not None else None
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -6601,14 +7027,9 @@ class HermesCLI:
             provider_display = get_label(self.provider) if self.provider else "unknown"
 
             try:
-                providers = list_authenticated_providers(
-                    current_provider=self.provider or "",
-                    current_base_url=self.base_url or "",
-                    current_model=self.model or "",
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=50,
-                )
+                if ctx is None:
+                    raise RuntimeError("inventory context unavailable")
+                providers = build_models_payload(ctx, max_models=50)["providers"]
             except Exception:
                 providers = []
 
@@ -6733,6 +7154,46 @@ class HermesCLI:
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+    def _handle_codex_runtime(self, cmd_original: str) -> None:
+        """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
+
+        Usage:
+            /codex-runtime                       — show current state
+            /codex-runtime auto                  — Hermes default (chat_completions)
+            /codex-runtime codex_app_server      — hand turns to codex subprocess
+            /codex-runtime on / off              — synonyms for the above
+        """
+        from hermes_cli import codex_runtime_switch as crs
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        new_value, errors = crs.parse_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"❌ {err}")
+            return
+
+        # Load + persist via the existing config helpers
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            _cprint(f"❌ could not load config: {exc}")
+            return
+        cfg = load_config()
+
+        result = crs.apply(
+            cfg,
+            new_value,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        prefix = "✓" if result.success else "✗"
+        for line in result.message.splitlines():
+            _cprint(f"  {prefix} {line}" if line.startswith("openai_runtime")
+                    else f"    {line}")
+        if result.success and result.requires_new_session:
+            _cprint("    Tip: `/reset` starts a new session immediately.")
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
@@ -7255,6 +7716,16 @@ class HermesCLI:
         canonical = _cmd_def.name if _cmd_def else _base_word
         
         if canonical in {"quit", "exit"}:
+            # Parse --delete flag: /exit --delete also removes the current
+            # session's transcripts + SQLite history. Ported from
+            # google-gemini/gemini-cli#19332.
+            _rest = cmd_original.split(None, 1)
+            _args = (_rest[1] if len(_rest) > 1 else "").strip().lower()
+            if _args in {"--delete", "-d"}:
+                self._delete_session_on_exit = True
+            elif _args:
+                _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
+                return True
             return False
         elif canonical == "help":
             self.show_help()
@@ -7412,8 +7883,12 @@ class HermesCLI:
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "sessions":
+            self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "codex-runtime":
+            self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 
@@ -7561,6 +8036,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "subgoal":
+            self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -7578,6 +8055,8 @@ class HermesCLI:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # shell=True is intentional: quick_commands are user-defined
+                            # shell snippets from config.yaml — not agent/LLM controlled.
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
                                 text=True, timeout=30
@@ -7779,8 +8258,8 @@ class HermesCLI:
                         from hermes_cli.skin_engine import get_active_skin
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
-                        _resp_color = _skin.get_color("response_border", "#CD7F32")
-                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                        _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
@@ -7795,6 +8274,7 @@ class HermesCLI:
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
+                        width=self._scrollback_box_width(),
                     ))
                 else:
                     _cprint("  (No response generated)")
@@ -8157,6 +8637,81 @@ class HermesCLI:
         except Exception:
             pass
 
+    def _handle_subgoal_command(self, cmd: str) -> None:
+        """Dispatch /subgoal subcommands.
+
+        Forms:
+          /subgoal                              show current subgoals
+          /subgoal <text>                       append a criterion
+          /subgoal remove <n>                   drop subgoal n (1-based)
+          /subgoal clear                        wipe all subgoals
+
+        Subgoals are extra criteria the user adds mid-loop. They get
+        appended to both the judge prompt (verdict must consider them)
+        and the continuation prompt (agent sees them) on the next turn
+        boundary. No special kick — the running turn finishes, the next
+        judge call includes them.
+        """
+        parts = (cmd or "").strip().split(None, 2)
+        arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        if not mgr.has_goal():
+            _cprint(f"  {_DIM}No active goal. Set one with /goal <text>.{_RST}")
+            return
+
+        # No args → list current subgoals.
+        if not arg:
+            _cprint(f"  {mgr.status_line()}")
+            _cprint(f"  {mgr.render_subgoals()}")
+            return
+
+        tokens = arg.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if verb == "remove":
+            if not rest:
+                _cprint("  Usage: /subgoal remove <n>")
+                return
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                _cprint("  /subgoal remove: <n> must be an integer (1-based index).")
+                return
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except (IndexError, RuntimeError) as exc:
+                _cprint(f"  /subgoal remove: {exc}")
+                return
+            _cprint(f"  ✓ Removed subgoal {idx}: {removed}")
+            return
+
+        if verb == "clear":
+            try:
+                prev = mgr.clear_subgoals()
+            except RuntimeError as exc:
+                _cprint(f"  /subgoal clear: {exc}")
+                return
+            if prev:
+                _cprint(f"  ✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}.")
+            else:
+                _cprint(f"  {_DIM}No subgoals to clear.{_RST}")
+            return
+
+        # Otherwise — append the whole arg as a new subgoal.
+        try:
+            text = mgr.add_subgoal(arg)
+        except (ValueError, RuntimeError) as exc:
+            _cprint(f"  /subgoal: {exc}")
+            return
+        idx = len(mgr.state.subgoals) if mgr.state else 0
+        _cprint(f"  ✓ Added subgoal {idx}: {text}")
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
 
@@ -8183,10 +8738,36 @@ class HermesCLI:
 
         # If a real user message is already queued, don't inject a
         # continuation prompt on top — let the user's turn go first.
+        # Slash commands don't count as "real user messages" for this
+        # check: they're inspection/mutation (e.g. /subgoal added mid-
+        # run) and the process_loop dispatches them via process_command,
+        # not via chat(). If we treat a queued /subgoal as preempting,
+        # the goal loop silently stalls — we'd return here, then the
+        # slash command consumes its queue slot via process_command()
+        # which never re-fires the goal hook. Peek at all queued entries
+        # and only defer when there's a non-slash payload.
         try:
-            if getattr(self, "_pending_input", None) is not None \
-                    and not self._pending_input.empty():
-                return
+            pending = getattr(self, "_pending_input", None)
+            if pending is not None and not pending.empty():
+                has_real_message = False
+                try:
+                    # Queue.queue is the underlying deque — direct peek
+                    # without disturbing FIFO order.
+                    for entry in list(pending.queue):
+                        # Bundled payloads are (text, images) tuples;
+                        # unpack for inspection.
+                        if isinstance(entry, tuple) and entry:
+                            entry = entry[0]
+                        if isinstance(entry, str) and _looks_like_slash_command(entry):
+                            continue
+                        has_real_message = True
+                        break
+                except Exception:
+                    # Fallback: if we can't introspect the queue, behave
+                    # like the old check and defer to be safe.
+                    has_real_message = True
+                if has_real_message:
+                    return
         except Exception:
             pass
 
@@ -8279,7 +8860,8 @@ class HermesCLI:
 
         set_active_skin(new_skin)
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
-        _DIM.reset()     # Re-resolve dim/secondary ANSI color for the new skin
+        # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
+        # so it doesn't need re-resolving on skin switch.
         if save_config_value("display.skin", new_skin):
             print(f"  Skin set to: {new_skin} (saved)")
         else:
@@ -8601,6 +9183,7 @@ class HermesCLI:
                     None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
+                    force=True,
                 )
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child
@@ -8783,6 +9366,9 @@ class HermesCLI:
             elif parts[i] == "--source" and i + 1 < len(parts):
                 source = parts[i + 1]
                 i += 2
+            elif parts[i].isdigit():
+                days = int(parts[i])
+                i += 1
             else:
                 i += 1
 
@@ -9086,12 +9672,18 @@ class HermesCLI:
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import reload_skills, get_skill_commands
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
+
+            # Sync cli.py's module-level _skill_commands so all consumers
+            # (help display, command dispatch, Tab-completion lambda) see the
+            # updated dict without needing to restart the session.
+            global _skill_commands
+            _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -9173,7 +9765,7 @@ class HermesCLI:
 
         Updates the TUI spinner widget so the user can see what the agent
         is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        spinner and next response).
 
         On tool.started, records a monotonic timestamp so get_spinner_text()
         can show a live elapsed timer (the TUI poll loop already invalidates
@@ -9251,20 +9843,6 @@ class HermesCLI:
                 function_args if function_args is not None else {}
             )
             self._invalidate()
-
-        if not self._voice_mode:
-            return
-        if not function_name or function_name.startswith("_"):
-            return
-        try:
-            from tools.voice_mode import play_beep
-            threading.Thread(
-                target=play_beep,
-                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
@@ -9870,7 +10448,7 @@ class HermesCLI:
         import time as _time
 
         with self._approval_lock:
-            timeout = 60
+            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
             self._approval_state = {
@@ -10364,11 +10942,11 @@ class HermesCLI:
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self.console.width
+                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
                         label = " ⚕ Hermes "
                         if self.show_timestamps:
                             label = f"{label}{datetime.now().strftime('%H:%M')} "
-                        fill = w - 2 - len(label)
+                        fill = w - 2 - HermesCLI._status_bar_display_width(label)
                         _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
@@ -10649,7 +11227,7 @@ class HermesCLI:
             if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
-                    w = shutil.get_terminal_size().columns
+                    w = self._scrollback_box_width()
                     r_label = " Reasoning "
                     r_fill = w - 2 - len(r_label)
                     r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
@@ -10669,18 +11247,18 @@ class HermesCLI:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
-                    _resp_color = _skin.get_color("response_border", "#CD7F32")
-                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
                 except Exception:
                     label = "⚕ Hermes"
-                    _resp_color = "#CD7F32"
-                    _resp_text = "#FFF8DC"
+                    _resp_color = _maybe_remap_for_light_mode("#CD7F32")
+                    _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
-                    w = shutil.get_terminal_size().columns
+                    w = self._scrollback_box_width()
                     _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
@@ -10696,6 +11274,7 @@ class HermesCLI:
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
+                        width=self._scrollback_box_width(),
                     ))
 
 
@@ -10912,11 +11491,46 @@ class HermesCLI:
         return "".join(text for _, text in self._get_tui_prompt_fragments())
 
     def _build_tui_style_dict(self) -> dict[str, str]:
-        """Layer the active skin's prompt_toolkit colors over the base TUI style."""
+        """Layer the active skin's prompt_toolkit colors over the base TUI style.
+
+        Also rewrites any hex-color tokens in the resulting style strings
+        to their light-mode equivalents (via _LIGHT_MODE_REMAP) when the
+        terminal is detected as light.  This makes the chrome readable
+        on cream Terminal.app backgrounds without per-skin overrides.
+        """
         style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
         try:
             from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
             style_dict.update(get_prompt_toolkit_style_overrides())
+        except Exception:
+            pass
+        # Light-mode remap on the style strings.  Each value is a pt
+        # style string like "bg:#1a1a2e #C0C0C0 bold" — split on space,
+        # rewrite any "#XXX" tokens (including "bg:#XXX") through the
+        # light-mode remap, rejoin.
+        #
+        # CRITICAL: skip the remap entirely when a style string already
+        # specifies its own bg (e.g. status-bar / completion-menu styles
+        # with `bg:#1a1a2e ...`).  Those colors were tuned for that
+        # specific dark bg and remapping the FG to a dark equivalent
+        # would produce dark-on-dark (invisible).  The terminal's BG
+        # mode is irrelevant — what matters is the bg the style itself
+        # paints.
+        try:
+            if _detect_light_mode():
+                def _remap_value(v: str) -> str:
+                    if not v:
+                        return v
+                    tokens = v.split()
+                    has_explicit_bg = any(t.startswith("bg:") for t in tokens)
+                    if has_explicit_bg:
+                        # The style paints its own bg — leave its fg alone.
+                        return v
+                    return " ".join(
+                        _maybe_remap_for_light_mode(t) if t.startswith("#") else t
+                        for t in tokens
+                    )
+                style_dict = {k: _remap_value(v or "") for k, v in style_dict.items()}
         except Exception:
             pass
         return style_dict
@@ -11004,6 +11618,13 @@ class HermesCLI:
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        # Detect light/dark terminal mode now (before pt grabs the tty).
+        # Caches the result so subsequent _hex_to_ansi / style calls
+        # don't risk re-querying mid-render.
+        try:
+            _detect_light_mode()
+        except Exception:
+            pass
         # Push the entire TUI to the bottom of the terminal so the banner,
         # responses, and prompt all appear pinned to the bottom — empty
         # space stays above, not below.  This prints enough blank lines to
@@ -11016,10 +11637,9 @@ class HermesCLI:
             pass
 
         self.show_banner()
-
-        # One-line Honcho session indicator (TTY-only, not captured by agent).
-        # Only show when the user explicitly configured Honcho for Hermes
-        # (not auto-enabled from a stray HONCHO_API_KEY env var).
+        # Surface any active supply-chain security advisories right after the
+        # welcome banner. Quiet/single-query paths call this themselves.
+        self._show_security_advisories()
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -11196,11 +11816,13 @@ class HermesCLI:
 
         # Ensure tirith security scanner is available (downloads if needed).
         # Warn the user if tirith is enabled in config but not available,
-        # so they know command security scanning is degraded.
+        # so they know command security scanning is degraded.  Suppressed
+        # on platforms where tirith ships no binary (Windows etc.) — the
+        # user can't act on it and pattern-matching guards still run.
         try:
-            from tools.tirith_security import ensure_installed
+            from tools.tirith_security import ensure_installed, is_platform_supported
             tirith_path = ensure_installed(log_failures=False)
-            if tirith_path is None:
+            if tirith_path is None and is_platform_supported():
                 security_cfg = self.config.get("security", {}) or {}
                 tirith_enabled = security_cfg.get("tirith_enabled", True)
                 if tirith_enabled:
@@ -12004,6 +12626,7 @@ class HermesCLI:
                     paste_dir.mkdir(parents=True, exist_ok=True)
                     paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                     paste_file.write_text(pasted_text, encoding="utf-8")
+                    logger.info("Collapsed paste #%d: %d lines, %d chars -> %s", _paste_counter[0], line_count + 1, len(pasted_text), paste_file)
                     placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                     prefix = ""
                     if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
@@ -12066,7 +12689,7 @@ class HermesCLI:
 
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
@@ -12171,6 +12794,7 @@ class HermesCLI:
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
+                logger.info("Collapsed paste #%d: %d lines, %d chars -> %s (fallback)", _paste_counter[0], line_count + 1, len(text), paste_file)
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
@@ -12730,7 +13354,10 @@ class HermesCLI:
                 # guard against any future width mismatch.
                 wrap_lines=False,
             ),
-            filter=Condition(lambda: cli_ref._status_bar_visible),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
         )
 
         # Allow wrapper CLIs to register extra keybindings.
@@ -12765,11 +13392,16 @@ class HermesCLI:
         
         # Style for the application
         self._tui_style_base = {
-            'input-area': '#FFF8DC',
-            'placeholder': '#555555 italic',
-            'prompt': '#FFF8DC',
+            # Input area / prompt: empty style strings inherit the
+            # terminal's default foreground/background, so the typed
+            # text is readable in both light and dark Terminal.app
+            # color schemes.  (Hardcoding a near-white #FFF8DC made
+            # input invisible on light backgrounds.)
+            'input-area': '',
+            'placeholder': '#888888 italic',
+            'prompt': '',
             'prompt-working': '#888888 italic',
-            'hint': '#555555 italic',
+            'hint': '#888888 italic',
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-dim': 'bg:#1a1a2e #8B8682',
@@ -12777,6 +13409,7 @@ class HermesCLI:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
+            'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
@@ -12828,19 +13461,70 @@ class HermesCLI:
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
-        # the previously-rendered full-width rows (status bar, input rules)
-        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
-        # only cursor_up()s by the stored layout height, missing the extra
-        # rows created by reflow — leaving ghost duplicates visible.
+        # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
+        # to suppress the deliberate "reserve vertical space" scroll-up.
         #
-        # It's not just column-shrink: widening, row-shrinking, and
-        # multiplexer-driven SIGWINCH-less redraws (cmux / tmux tab switch)
-        # all produce the same class of drift, where the renderer's tracked
-        # _cursor_pos.y no longer matches terminal reality. The only reliable
-        # recovery is a full screen-clear (\x1b[2J\x1b[H) before the next
-        # redraw, so we force one on every resize rather than trying to
-        # compute the exact drift.
+        # Background: prompt_toolkit's renderer (renderer.py L232-242)
+        # explicitly moves the cursor to the bottom of the canvas after
+        # painting "to make sure the terminal scrolls up, even when the
+        # lower lines of the canvas just contain whitespace".  In
+        # non-fullscreen mode this scrolls chrome content (status bar,
+        # input rules) into terminal scrollback on every render.  When
+        # the terminal column-shrinks, the emulator reflows the previously
+        # rendered full-width rows into multiple narrower rows that get
+        # pushed up — leaving ghost duplicates AND polluting scrollback.
+        # Same issue as pt #29 (open since 2014), #1675, #1933.
+        #
+        # Surgical fix: wrap _output_screen_diff so that when its internal
+        # `if current_height > previous_screen.height` branch fires (the
+        # one that does the bottom-cursor-move), we make it fall through
+        # by inflating previous_screen.height first.
+        try:
+            import prompt_toolkit.renderer as _pt_renderer
+            from prompt_toolkit.renderer import _output_screen_diff as _orig_osd
+
+            if not getattr(_pt_renderer, "_hermes_osd_patched", False):
+                def _patched_output_screen_diff(
+                    app, output, screen, current_pos, color_depth,
+                    previous_screen, last_style, is_done, full_screen,
+                    attrs_for_style_string, style_string_has_style,
+                    size, previous_width,
+                ):
+                    """Wraps pt's _output_screen_diff to suppress the
+                    reserve-vertical-space scroll (renderer.py L232-242).
+
+                    Strategy: ONLY when previous_screen is non-None and
+                    its current height is genuinely smaller than the new
+                    screen's height, inflate it to match.  This prevents
+                    the bottom-cursor-move at L242 without changing any
+                    other code path's behavior.
+
+                    Critical: do NOT replace a None previous_screen with
+                    a fresh Screen() — that would skip the proper
+                    reset_attributes()+erase_down() at L178-185 which
+                    fires when previous_screen is None (first-paint /
+                    width-change).  Without that reset, ANSI styles
+                    leak between renders.
+                    """
+                    try:
+                        if previous_screen is not None and hasattr(previous_screen, "height"):
+                            if previous_screen.height < screen.height:
+                                previous_screen.height = screen.height
+                    except Exception:
+                        pass
+
+                    return _orig_osd(
+                        app, output, screen, current_pos, color_depth,
+                        previous_screen, last_style, is_done, full_screen,
+                        attrs_for_style_string, style_string_has_style,
+                        size, previous_width,
+                    )
+
+                _pt_renderer._output_screen_diff = _patched_output_screen_diff
+                _pt_renderer._hermes_osd_patched = True
+        except Exception:
+            pass
+
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
@@ -12882,22 +13566,18 @@ class HermesCLI:
                             # and watch pattern matches) while agent is idle.
                             try:
                                 from tools.process_registry import process_registry
-                                if not process_registry.completion_queue.empty():
-                                    evt = process_registry.completion_queue.get_nowait()
-                                    # Skip if the agent already consumed this via wait/poll/log
-                                    _evt_sid = evt.get("session_id", "")
-                                    if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                        pass  # already delivered via tool result
-                                    else:
-                                        _synth = _format_process_notification(evt)
-                                        if _synth:
-                                            self._pending_input.put(_synth)
+                                for _evt, _synth in process_registry.drain_notifications():
+                                    self._pending_input.put(_synth)
                             except Exception:
                                 pass
                         continue
                     
                     if not user_input:
                         continue
+
+                    # The user has typed and submitted something, so any
+                    # post-resize transient suppression should end here.
+                    self._status_bar_suppressed_after_resize = False
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
@@ -12995,15 +13675,8 @@ class HermesCLI:
                         # that arrived while the agent was running.
                         try:
                             from tools.process_registry import process_registry
-                            while not process_registry.completion_queue.empty():
-                                evt = process_registry.completion_queue.get_nowait()
-                                # Skip if the agent already consumed this via wait/poll/log
-                                _evt_sid = evt.get("session_id", "")
-                                if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                    continue  # already delivered via tool result
-                                _synth = _format_process_notification(evt)
-                                if _synth:
-                                    self._pending_input.put(_synth)
+                            for _evt, _synth in process_registry.drain_notifications():
+                                self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 
@@ -13135,6 +13808,30 @@ class HermesCLI:
             self._print_exit_summary()
             return
 
+        # On macOS with uv-managed Python, kqueue's selector cannot register
+        # fd 0, raising OSError(EINVAL) from kqueue.control() when prompt_toolkit
+        # calls loop.add_reader (#6393). Probe kqueue and, if it can't watch
+        # stdin, switch to a SelectSelector-backed event loop policy.
+        if sys.platform == "darwin":
+            try:
+                import selectors as _selectors
+                if hasattr(_selectors, "KqueueSelector"):
+                    _kq = _selectors.KqueueSelector()
+                    try:
+                        _kq.register(0, _selectors.EVENT_READ)
+                        _kq.unregister(0)
+                    finally:
+                        _kq.close()
+            except (OSError, ValueError, KeyError):
+                import asyncio as _aio_probe
+                import selectors as _selectors
+
+                class _SelectEventLoopPolicy(_aio_probe.DefaultEventLoopPolicy):
+                    def new_event_loop(self):
+                        return _aio_probe.SelectorEventLoop(_selectors.SelectSelector())
+
+                _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
+
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
@@ -13155,12 +13852,20 @@ class HermesCLI:
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
             # and I/O errors from broken stdout during interrupt (#13710).
-            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
+            _errno = getattr(_stdin_err, "errno", None) if isinstance(_stdin_err, OSError) else None
+            _msg = str(_stdin_err)
+            if _errno == errno.EIO:
                 pass  # suppress broken-stdout I/O errors on interrupt (#13710)
-            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            elif (
+                _errno in {errno.EINVAL, errno.EBADF}
+                or "is not registered" in _msg
+                or "Bad file descriptor" in _msg
+                or "Invalid argument" in _msg
+            ):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
-                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS)\n"
+                    "where kqueue cannot register fd 0.\n"
                     "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
                 )
             else:
@@ -13199,6 +13904,19 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+                # /exit --delete: also remove the current session's transcripts
+                # and SQLite history. Ported from google-gemini/gemini-cli#19332.
+                if getattr(self, '_delete_session_on_exit', False):
+                    try:
+                        from hermes_constants import get_hermes_home as _ghh
+                        _sessions_dir = _ghh() / "sessions"
+                        _sid = self.agent.session_id
+                        if self._session_db.delete_session(_sid, sessions_dir=_sessions_dir):
+                            _cprint(f"  {_DIM}✓ Session {_escape(_sid)} deleted{_RST}")
+                        else:
+                            _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")
+                    except (Exception, KeyboardInterrupt) as e:
+                        logger.debug("Could not delete session on exit: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when
@@ -13528,6 +14246,9 @@ def main(
             _query_label = query or ("[image attached]" if single_query_images else "")
             if _query_label:
                 cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+            # Surface security advisories before the agent runs — short
+            # banner, doesn't depend on the welcome banner being shown.
+            cli._show_security_advisories()
             cli.chat(query, images=single_query_images or None)
             cli._print_exit_summary()
         return

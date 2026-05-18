@@ -55,6 +55,7 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["maps", "blogwatcher"],
+                profile="default",
                 clear_skills=False,
             )
         )
@@ -63,6 +64,7 @@ class TestCronCommandLifecycle:
         assert updated["name"] == "Edited Job"
         assert updated["prompt"] == "Revised prompt"
         assert updated["schedule_display"] == "every 120m"
+        assert updated["profile"] == "default"
 
         cron_command(
             Namespace(
@@ -75,12 +77,14 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=None,
+                profile="",
                 clear_skills=True,
             )
         )
         cleared = get_job(job["id"])
         assert cleared["skills"] == []
         assert cleared["skill"] is None
+        assert cleared["profile"] is None
 
         out = capsys.readouterr().out
         assert "Updated job" in out
@@ -96,6 +100,7 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["blogwatcher", "maps"],
+                profile="default",
             )
         )
         out = capsys.readouterr().out
@@ -105,3 +110,4 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+        assert jobs[0]["profile"] == "default"

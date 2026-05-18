@@ -150,6 +150,10 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Set when the final response content was sent to the user via
+        # streaming, even if the final edit (cursor removal etc.)
+        # subsequently failed.
+        self._final_content_delivered = False
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -186,6 +190,12 @@ class GatewayStreamConsumer:
     def final_response_sent(self) -> bool:
         """True when the stream consumer delivered the final assistant reply."""
         return self._final_response_sent
+
+    @property
+    def final_content_delivered(self) -> bool:
+        """True when the final response content reached the user, even if
+        the subsequent cosmetic edit (cursor removal) failed."""
+        return self._final_content_delivered
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -455,6 +465,8 @@ class GatewayStreamConsumer:
                             # tool-progress edits or fallback-mode promotion (#10748)
                             # — that doesn't mean the final answer reached the user.
                             self._final_response_sent = chunks_delivered
+                            if chunks_delivered:
+                                self._final_content_delivered = True
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -505,6 +517,11 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    # Record that the final content reached the user even
+                    # if the cosmetic final edit below fails.
+                    if current_update_visible and self._accumulated:
+                        self._final_content_delivered = True
+
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the

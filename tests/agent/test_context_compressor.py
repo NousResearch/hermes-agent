@@ -65,16 +65,23 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None, so should use truncation fallback
+        # compressor has client=None and abort_on_summary_failure=False (default),
+        # so the LEGACY fallback path inserts a static "summary unavailable"
+        # placeholder and the middle window is dropped.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
         result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
         assert compressor.compression_count == 1
+        # Abort flag must NOT fire under the default config.
+        assert compressor._last_compress_aborted is False
+        assert compressor._last_summary_fallback_used is True
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
+        # Default config (abort_on_summary_failure=False) — fallback path
+        # increments the count even on summary failure.
         compressor.compress(msgs)
         assert compressor.compression_count == 1
         compressor.compress(msgs)
@@ -716,9 +723,10 @@ class TestAuxModelFallbackSurfacedToCallers:
 
 
 class TestSummaryFailureTrackingForGatewayWarning:
-    """When summary generation fails, the compressor must record dropped count
-    + fallback flag so gateway hygiene & /compress can surface a visible
-    warning instead of silently dropping context."""
+    """Default behavior (compression.abort_on_summary_failure=False):
+    summary-generation failure inserts a static fallback placeholder and
+    records dropped count + fallback flag so gateway hygiene & /compress
+    can surface a visible warning."""
 
     def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -735,15 +743,14 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "msg 7"},
         ]
 
-        # Simulate summary LLM call failing — covers the 404 / model-not-found
-        # case from issue (auxiliary compression model misconfigured).
         with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
             result = c.compress(msgs)
 
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
-        # Result must still be well-formed (fallback summary present).
+        # Default mode: abort flag must NOT fire.
+        assert c._last_compress_aborted is False
         assert any(
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
             for m in result
@@ -768,17 +775,103 @@ class TestSummaryFailureTrackingForGatewayWarning:
             {"role": "user", "content": "msg 7"},
         ]
 
-        # First call fails, second succeeds — flag must reset on second compress.
         with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
             c.compress(msgs)
         assert c._last_summary_fallback_used is True
 
-        # Reset cooldown to allow retry on second compress
         c._summary_failure_cooldown_until = 0.0
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             c.compress(msgs)
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
+
+
+class TestAbortOnSummaryFailure:
+    """Opt-in behavior (compression.abort_on_summary_failure=True):
+    summary-generation failure ABORTS compression entirely — returns the
+    original messages unchanged and sets _last_compress_aborted=True so
+    gateway hygiene & /compress can surface a visible warning."""
+
+    def _make_msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=True,
+            )
+
+    def test_compress_aborts_and_preserves_messages_on_summary_failure(self):
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+            result = c.compress(msgs)
+
+        assert c._last_compress_aborted is True
+        assert c._last_summary_error is not None
+        # No fallback inserted, no messages dropped
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+        # Original messages preserved byte-for-byte.
+        assert result == msgs
+        # No "Summary generation was unavailable" placeholder leaked in.
+        assert not any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_abort_flag_on_subsequent_success(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
+            c.compress(msgs)
+        assert c._last_compress_aborted is True
+
+        c._summary_failure_cooldown_until = 0.0
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            c.compress(msgs)
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+    def test_force_true_bypasses_failure_cooldown(self):
+        """Manual /compress passes force=True so it can retry immediately
+        after an auto-compress abort instead of waiting out the 30-60s
+        cooldown."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        c = self._make_compressor()
+        msgs = self._make_msgs()
+
+        import time as _time
+        c._summary_failure_cooldown_until = _time.monotonic() + 999.0
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs, force=True)
+
+        assert c._last_compress_aborted is False
+        assert c._summary_failure_cooldown_until == 0.0
+        assert len(result) < len(msgs)
 
 
 class TestSummaryPrefixNormalization:
@@ -991,9 +1084,12 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         # Last head message (index 2) is "user" → summary should be "assistant"
+        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
+        # the system prompt (always implicitly protected), yielding head [system,
+        # user, user] with last head = user.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1043,7 +1139,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
     def test_double_collision_merges_summary_into_tail(self):
@@ -1059,11 +1155,13 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         # Head: [system, user, assistant]  →  last head = assistant
         # Tail: [user, assistant, user]    →  first tail = user
         # summary_role="user" collides with tail, "assistant" collides with head → merge
+        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
+        # the system prompt (always implicitly protected).
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1082,7 +1180,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary text should be merged into the first tail message
@@ -1097,7 +1195,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
         msgs = [
             {"role": "system", "content": "system prompt"},
@@ -1133,13 +1231,15 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=2)
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant
         # summary_role="assistant" collides with tail, "user" collides with head → merge
+        # NOTE: protect_first_n=1 preserves 1 non-system message in addition to
+        # the system prompt (always implicitly protected).
         # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
+        # Need 8 messages: _min_for_compress = head(2) + 3 + 1 = 6, must have > 6.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1157,7 +1257,7 @@ class TestCompressWithClient:
         for i in range(1, len(result)):
             r1 = result[i - 1].get("role")
             r2 = result[i].get("role")
-            if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
+            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
         # The summary should be merged into the first tail message (assistant at index 5)
@@ -1291,6 +1391,92 @@ class TestSummaryTargetRatio:
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.protect_last_n == 20
+
+    def test_default_protect_first_n_is_3(self):
+        """Default protect_first_n is 3 (system + 3 extra non-system messages =
+        4 protected messages total when a system prompt is present). With the
+        new semantics, the constructor default is 3 — the system prompt is
+        always implicitly protected ON TOP OF protect_first_n non-system
+        messages.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.protect_first_n == 3
+
+    def test_protect_first_n_override(self):
+        """protect_first_n=0 should be honoured — for users who rely on rolling
+        compaction and want NOTHING pinned at head except the system prompt
+        (always implicitly protected)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=0)
+        assert c.protect_first_n == 0
+
+    def test_protect_first_n_0_preserves_only_system_prompt(self):
+        """End-to-end: when protect_first_n=0, compression should treat only
+        the system prompt as head.  All user/assistant messages between the
+        system prompt and the protected tail become summarization candidates.
+
+        This is the cleanest configuration for long-running rolling-compaction
+        sessions — no user/assistant turn gets pinned verbatim forever just
+        because it happened to be early in the session."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=0,
+                protect_last_n=2,
+            )
+        msgs = (
+            [{"role": "system", "content": "System prompt"}]
+            + [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+               for i in range(8)]
+        )
+        result = c.compress(msgs)
+        # System prompt (msg[0]) survives as head
+        assert result[0]["role"] == "system"
+        assert result[0]["content"].startswith("System prompt")
+        # The first user/assistant exchange (msg 0, msg 1) should NOT be pinned
+        # as head verbatim — those would have been summarized or absorbed.
+        # Under default protect_first_n=3, result[1..3] would be the literal
+        # "msg 0" / "msg 1" / "msg 2"; with protect_first_n=0 they aren't.
+        assert result[1].get("content") != "msg 0"
+        # Last 2 messages are tail-protected under protect_last_n=2
+        assert result[-1]["content"] == msgs[-1]["content"]
+
+    def test_protect_first_n_semantics_stable_without_system_prompt(self):
+        """Regression: gateway /compress handler strips the system prompt
+        before calling compress().  protect_first_n must mean the same thing
+        in both paths — "N non-system head messages" — so configuring
+        protect_first_n=0 preserves NOTHING at the head regardless of whether
+        the system prompt is in the messages list.
+
+        Bug this covers: under the old semantics, protect_first_n counted
+        literally from messages[0].  In the gateway path (no system prompt)
+        that meant protect_first_n=1 would pin the first user turn of the
+        session forever — a user-reported complaint that a week-old
+        resolved question kept getting reinserted into every compaction
+        summary."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=0,
+                protect_last_n=2,
+            )
+        # No system prompt — this is what the gateway passes to compress().
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+        head_size = c._protect_head_size(msgs)
+        # With no system prompt and protect_first_n=0 → head is empty.
+        # The first user message is NOT pinned as head.
+        assert head_size == 0
+
+        # And with protect_first_n=3 on the same no-system-prompt list →
+        # head size is 3 (the three earliest non-system messages).
+        c.protect_first_n = 3
+        assert c._protect_head_size(msgs) == 3
 
 
 class TestTokenBudgetTailProtection:

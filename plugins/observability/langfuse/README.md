@@ -5,20 +5,16 @@ you explicitly enable it.
 
 ## Enable
 
-Pick one:
-
 ```bash
-# Interactive: walks you through credentials + SDK install + enable
-hermes tools  # → Langfuse Observability
-
-# Manual
 pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
+Or check the box in the interactive `hermes plugins` UI.
+
 ## Required credentials
 
-Set these in `~/.hermes/.env` (or via `hermes tools`):
+Set these in `~/.hermes/.env`:
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...

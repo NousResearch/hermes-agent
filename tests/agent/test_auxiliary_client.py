@@ -2991,3 +2991,128 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestResolveSingleProvider:
+    """_resolve_single_provider passes explicit_base_url/explicit_api_key and
+    returns (client, resolved_model) so that callers can use the provider's
+    default model when the fallback_chain entry omits ``model``."""
+
+    def test_passes_explicit_kwargs_to_resolve_provider_client(self):
+        from agent.auxiliary_client import _resolve_single_provider
+
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "resolved-model")) as resolver:
+            client, model = _resolve_single_provider(
+                "custom",
+                model="explicit-model",
+                base_url="https://fb.example/v1",
+                api_key="fb-key",
+            )
+
+        resolver.assert_called_once_with(
+            provider="custom",
+            model="explicit-model",
+            explicit_base_url="https://fb.example/v1",
+            explicit_api_key="fb-key",
+        )
+        assert client is fake_client
+        assert model == "resolved-model"
+
+    def test_returns_resolved_model_when_entry_omits_model(self):
+        """Chain entry with no model should use the provider's resolved default."""
+        from agent.auxiliary_client import _resolve_single_provider
+
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "provider-default-model")):
+            client, model = _resolve_single_provider("openrouter")
+
+        assert client is fake_client
+        assert model == "provider-default-model"
+
+    def test_returns_none_client_and_none_model_when_unavailable(self):
+        from agent.auxiliary_client import _resolve_single_provider
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(None, None)):
+            client, model = _resolve_single_provider("openrouter")
+
+        assert client is None
+        assert model is None
+
+
+class TestConfiguredFallbackChain:
+    """_try_configured_fallback_chain uses the provider's resolved model when
+    the chain entry omits ``model``, and passes explicit_base_url/api_key."""
+
+    def test_uses_resolved_model_when_entry_has_no_model(self, monkeypatch):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_cfg = {"fallback_chain": [{"provider": "openrouter"}]}
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: task_cfg,
+        )
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "or-default-model")):
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "primary-provider"
+            )
+
+        assert client is fake_client
+        assert model == "or-default-model"
+        assert label == "fallback_chain[0](openrouter)"
+
+    def test_explicit_model_takes_precedence_over_resolved(self, monkeypatch):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_cfg = {
+            "fallback_chain": [
+                {"provider": "openrouter", "model": "openai/gpt-4o-mini"}
+            ]
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: task_cfg,
+        )
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "or-default-model")):
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "primary-provider"
+            )
+
+        assert client is fake_client
+        assert model == "openai/gpt-4o-mini"
+
+    def test_passes_explicit_base_url_and_api_key(self, monkeypatch):
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_cfg = {
+            "fallback_chain": [
+                {
+                    "provider": "custom",
+                    "model": "my-model",
+                    "base_url": "https://fb.example/v1",
+                    "api_key": "fb-key",
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: task_cfg,
+        )
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "my-model")) as resolver:
+            _try_configured_fallback_chain("vision", "gemini")
+
+        resolver.assert_called_once_with(
+            provider="custom",
+            model="my-model",
+            explicit_base_url="https://fb.example/v1",
+            explicit_api_key="fb-key",
+        )

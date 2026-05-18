@@ -857,6 +857,60 @@ class NatsAdapter(BasePlatformAdapter):
         return prompt_text, media_urls, media_types, message_type
 
     # ------------------------------------------------------------------
+    # Media annotation — §8.1
+    # ------------------------------------------------------------------
+
+    def _annotate_media_attachments(self, event: MessageEvent) -> MessageEvent:
+        """Prepend per-attachment notes to ``event.text`` so the agent sees them.
+
+        The gateway's default path (``GatewayRunner._handle_message``) calls
+        ``_enrich_message_with_vision`` / inlines text-document bytes before
+        the agent runs. NATS bypasses that path (§6.1 api_server-style
+        ownership), so we replicate the minimum needed here: a bracketed
+        note naming each cached path and pointing the agent at the
+        ``vision_analyze`` / file tools it already has via the
+        ``hermes-nats`` toolset.
+
+        Pre-analyzing inline (like ``_enrich_message_with_vision`` does) is
+        a richer UX but costs an extra LLM round-trip per image; the
+        note-only form is sufficient for §8.1 "agent receives the
+        attachment" and keeps the hot path out of the vision provider.
+        """
+        if not event.media_urls:
+            return event
+        notes: List[str] = []
+        for idx, path in enumerate(event.media_urls):
+            mtype = event.media_types[idx] if idx < len(event.media_types) else MessageType.DOCUMENT.value
+            if mtype == MessageType.PHOTO.value:
+                notes.append(
+                    f"[The user attached an image at {path}. "
+                    f"Call vision_analyze (image_url={path}) to examine it.]"
+                )
+            elif mtype == MessageType.VOICE.value or mtype == MessageType.AUDIO.value:
+                notes.append(
+                    f"[The user attached an audio file at {path}. "
+                    f"Use the transcription tool if you need its contents.]"
+                )
+            elif mtype == MessageType.VIDEO.value:
+                notes.append(
+                    f"[The user attached a video file at {path}.]"
+                )
+            else:
+                notes.append(
+                    f"[The user attached a document at {path}. "
+                    f"Use read_file (or the equivalent reader for its type) to inspect it.]"
+                )
+        prefix = "\n".join(notes)
+        enriched_text = f"{prefix}\n\n{event.text}" if event.text else prefix
+        return MessageEvent(
+            text=enriched_text,
+            message_type=event.message_type,
+            source=event.source,
+            media_urls=event.media_urls,
+            media_types=event.media_types,
+        )
+
+    # ------------------------------------------------------------------
     # Keep-alive — §6.4
     # ------------------------------------------------------------------
 
@@ -986,7 +1040,17 @@ class NatsAdapter(BasePlatformAdapter):
         reason, it still lands on the caller via ``_send_text``. When
         streaming is live, the same text has already arrived via the
         pump — we detect that and skip the duplicate publish.
+
+        ``event.media_urls`` is folded into the user message here (§8.1)
+        by annotating each cached attachment as an inline reference —
+        the agent then picks it up via ``vision_analyze`` / file-reading
+        tools rather than having us pre-analyze via
+        ``_enrich_message_with_vision`` the way ``GatewayRunner`` does.
+        Note-only injection is cheaper (no extra LLM round-trip) and
+        sidesteps the chicken-and-egg of the vision tool needing its
+        own configured provider before the primary prompt runs.
         """
+        event = self._annotate_media_attachments(event)
         loop = asyncio.get_running_loop()
         delta_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         streamed_anything = threading.Event()

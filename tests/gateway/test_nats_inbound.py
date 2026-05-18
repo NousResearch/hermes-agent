@@ -290,6 +290,107 @@ class TestUnpackEnvelope:
 
 
 # ---------------------------------------------------------------------------
+# _annotate_media_attachments — Phase 8 fix
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotateMediaAttachments:
+    """Regression: NATS adapter must fold ``media_urls`` into ``event.text``.
+
+    Phase 4 cached attachments into ``media_urls`` but ``_run_text_prompt``
+    only passed ``event.text`` to ``run_conversation``, so the agent never
+    saw them. Phase 8's live T8.4 smoke surfaced this — 03-prompt-attachment
+    got "I don't see an image" responses. Fixed by having
+    ``_run_text_prompt`` call ``_annotate_media_attachments`` which prepends
+    a per-attachment pointer to the cached path so the agent can dispatch
+    the right tool (``vision_analyze`` for images, file reads for docs).
+    """
+
+    def test_no_media_returns_event_unchanged(self):
+        adapter = _build_adapter()
+        src = MagicMock()
+        event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=src)
+        result = adapter._annotate_media_attachments(event)
+        assert result is event
+
+    def test_image_injects_vision_analyze_hint(self):
+        adapter = _build_adapter()
+        src = MagicMock()
+        event = MessageEvent(
+            text="describe this",
+            message_type=MessageType.PHOTO,
+            source=src,
+            media_urls=["/cache/img.png"],
+            media_types=[MessageType.PHOTO.value],
+        )
+        result = adapter._annotate_media_attachments(event)
+        assert "/cache/img.png" in result.text
+        assert "vision_analyze" in result.text
+        # Original user text must be preserved after the note.
+        assert "describe this" in result.text
+        # Media urls/types pass through unchanged for downstream code.
+        assert result.media_urls == ["/cache/img.png"]
+        assert result.media_types == [MessageType.PHOTO.value]
+        assert result.message_type is MessageType.PHOTO
+        assert result.source is src
+
+    def test_document_injects_read_file_hint(self):
+        adapter = _build_adapter()
+        event = MessageEvent(
+            text="summarize",
+            message_type=MessageType.DOCUMENT,
+            source=MagicMock(),
+            media_urls=["/cache/report.pdf"],
+            media_types=[MessageType.DOCUMENT.value],
+        )
+        result = adapter._annotate_media_attachments(event)
+        assert "/cache/report.pdf" in result.text
+        assert "read_file" in result.text
+        assert "summarize" in result.text
+
+    def test_audio_injects_transcription_hint(self):
+        adapter = _build_adapter()
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.AUDIO,
+            source=MagicMock(),
+            media_urls=["/cache/note.mp3"],
+            media_types=[MessageType.AUDIO.value],
+        )
+        result = adapter._annotate_media_attachments(event)
+        assert "/cache/note.mp3" in result.text
+        assert "transcription" in result.text.lower()
+
+    def test_empty_user_text_keeps_notes_only(self):
+        adapter = _build_adapter()
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            media_urls=["/cache/img.png"],
+            media_types=[MessageType.PHOTO.value],
+        )
+        result = adapter._annotate_media_attachments(event)
+        # No trailing blank lines from an absent user message.
+        assert not result.text.endswith("\n\n")
+
+    def test_multiple_attachments_each_get_their_own_note(self):
+        adapter = _build_adapter()
+        event = MessageEvent(
+            text="look",
+            message_type=MessageType.PHOTO,
+            source=MagicMock(),
+            media_urls=["/cache/a.png", "/cache/b.pdf"],
+            media_types=[MessageType.PHOTO.value, MessageType.DOCUMENT.value],
+        )
+        result = adapter._annotate_media_attachments(event)
+        assert "/cache/a.png" in result.text
+        assert "/cache/b.pdf" in result.text
+        assert "vision_analyze" in result.text  # for the png
+        assert "read_file" in result.text        # for the pdf
+
+
+# ---------------------------------------------------------------------------
 # _looks_like_command
 # ---------------------------------------------------------------------------
 

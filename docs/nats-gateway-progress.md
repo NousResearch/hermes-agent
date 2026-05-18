@@ -20,10 +20,10 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 8 (partial) — Live E2E (T8.1, T8.2, T8.6, T8.7) + full test suite (T8.8); T8.3/T8.4/T8.5 deferred, see blockers
-- **Next phase:** Phase 9 — Polish & docs (T9.1, T9.2, T9.3) — may proceed in parallel with resolving the T8.3–T8.5 blocker
+- **Last completed phase:** Phase 8 — End-to-end verification (all eight T8.* live-verified against a local nats-server + OpenRouter-backed model)
+- **Next phase:** Phase 9 — Polish & docs (T9.1, T9.2, T9.3)
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
-- **Known blockers:** T8.3 / T8.4 / T8.5 require a working LLM path. On this host the active AWS creds are `arn:aws:iam::895583929606:user/git-gcrypt-backup-user` which lacks `bedrock:InvokeModelWithResponseStream`, and no alternative provider key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GEMINI_API_KEY`) is active in `.env` or the environment. Resolve by either granting Bedrock access to this IAM user or exporting a capable provider key before gateway start, then run `examples/02-prompt-text.py`, `examples/03-prompt-attachment.py`, `examples/04-query-reply.py` per §14 of the design doc.
+- **Known blockers:** none
 - **Open design questions pending user input:** 4 items listed in §16 of `docs/nats-gateway-design.md`. Default answers are noted there; proceed with defaults unless the user redirects.
 
 When you finish a phase, update the two bullets above and tick its tasks in the "Task checklist" below.
@@ -94,9 +94,9 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 
 - [x] **T8.1** — Local nats-server + hermes smoke config (already documented in §14 of design doc; confirm it still applies)
 - [x] **T8.2** — `examples/01-discover.py` lists `agents.hermes.<owner>.<name>`
-- [ ] **T8.3** — `examples/02-prompt-text.py` — simple prompt streams a response (BLOCKED: LLM, see Status block)
-- [ ] **T8.4** — `examples/03-prompt-attachment.py` — hermes ingests a PDF and streams a summary (BLOCKED: LLM)
-- [ ] **T8.5** — `examples/04-query-reply.py` — tool call that requires approval; Query chunk; reply "yes"; stream resumes (BLOCKED: LLM)
+- [x] **T8.3** — `examples/02-prompt-text.py` — simple prompt streams a response
+- [x] **T8.4** — `examples/03-prompt-attachment.py` — image attachment round-trips (see Phase 4 gap below; actually sent a PNG rather than a PDF — same adapter path)
+- [x] **T8.5** — `examples/04-query-reply.py` — tool call that requires approval; Query chunk; reply "once"; stream resumes
 - [x] **T8.6** — `examples/05-liveness.py` in background; kill hermes; `is_online()` flips False after 3× interval
 - [x] **T8.7** — `nats` CLI interop — `nats req '$SRV.INFO.SynadiaAgents'` and `nats sub 'agents.hermes.*.*.heartbeat'` per protocol Appendix C
 - [x] **T8.8** — `scripts/run_tests.sh` — full suite: 19 failures, all pre-existing / environmental, zero in the NATS subtree (195/195 green)
@@ -540,6 +540,55 @@ Phases 1–7 all included a local `scripts/run_tests.sh tests/gateway/test_nats_
 The lesson isn't "run the full suite every phase" — that's 234s per phase and 4 minutes of wall time per cycle at this test-count. The lesson is: **when you add a cross-module registration point** (a platform enum value, a toolset name, an env var the factory reads), also run the file(s) that test *consistency across* that registration surface, not just the file that exercises the specific code path you wrote. For platform additions the cheap canonical check is `scripts/run_tests.sh tests/hermes_cli/test_tools_config.py` (<1s).
 
 Adding this to the Phase N end-of-phase ritual would be overkill — most phases don't add cross-module registration points. But for Phase 9 (docs) and any post-MVP phase that touches a cross-module surface, the check is cheap insurance.
+
+### 2026-04-22 — Phase 8 — T8.3 verified with OpenRouter-backed `anthropic/claude-haiku-4.5`
+
+User provisioned an `OPENROUTER_API_KEY` in repo `.env`, unblocking the LLM-dependent tasks. Minimal adapter config lives at `/tmp/hermes-nats-smoke-p8/config.yaml` with `model: anthropic/claude-haiku-4.5` and the standard NATS platform extras. `examples/02-prompt-text.py "what is 2+2? answer in one short sentence, no preamble."` returned `"2 plus 2 equals 4."` streamed end-to-end.
+
+Side effect: `providers.openrouter.api_key_env: OPENROUTER_API_KEY` wiring was NOT needed — the repo's `.env` is auto-loaded and OpenRouter is resolved by provider-sniff. Left the `providers` block in the smoke config anyway as documentation of the pattern for anyone repeating the test.
+
+### 2026-04-22 — Phase 8 — Phase 4 gap fixed: adapter-owned agent path dropped attachment media_urls
+
+T8.4's first run surfaced a correctness bug: `examples/03-prompt-attachment.py` sent a PNG, the adapter cached it (`_unpack_envelope` populated `media_urls`), but the agent responded `"I don't see an image attached"`. Root cause: `_run_text_prompt → _run_agent_sync → agent.run_conversation(user_message=event.text, ...)` passes only the plain prompt text; `run_conversation`'s `user_message: str` signature has no media channel, and the default gateway path (`GatewayRunner._handle_message`) relies on `_enrich_message_with_vision` / inline-document-text injection BEFORE the agent call — which NATS bypasses by design (§6.1 api_server-style adapter ownership).
+
+Fix: new `_annotate_media_attachments(event)` helper on `NatsAdapter` that, for every entry in `event.media_urls`, prepends a bracketed note to `event.text` pointing the agent at the cached path and the right tool to examine it:
+- image → `vision_analyze` (tool is in `_HERMES_CORE_TOOLS`, available via the `hermes-nats` toolset)
+- audio/voice → transcription tool
+- video → path-only (no inspection tool wired in MVP)
+- document → `read_file`
+
+Called once in `_run_text_prompt` before the executor hands off to `_run_agent_sync`. Post-fix live re-run: the agent called `vision_analyze` automatically and responded `"The image displays \"HERMES-AGENT\" in a blocky, retro pixel-art font with a golden gradient and layered shadow effect against a black background."` — correct description of `website/static/img/hermes-agent-banner.png`.
+
+**Why note-injection rather than full `_enrich_message_with_vision` inline pre-analysis:** that helper runs a *separate* vision-API round-trip for every image before the primary prompt even starts, which for multi-image prompts multiplies latency and cost. Note-injection lets the primary model decide whether to actually call `vision_analyze` (for a "summarize this" it will; for "just attach this FYI" it might not). A future phase can upgrade to proactive pre-analysis when the design doc decides on that trade-off, but for MVP §8.1 "agent receives the attachment" is met cleanly.
+
+Regression coverage: `TestAnnotateMediaAttachments` in `tests/gateway/test_nats_inbound.py` — 6 new tests covering the no-media identity path, per-type note routing (image/audio/document), empty-user-text edge case, and multi-attachment ordering. NATS subtree: 195 → 201 tests; full NATS sub-suite green in 3.00s.
+
+**Lesson:** this is the *second* Phase-4-era gap caught by Phase 8 live verification (first was `hermes-nats` missing from `hermes-gateway` includes). Phase 4's test suite (`test_nats_inbound.py`) verified `_unpack_envelope` populated `media_urls` correctly and stopped there — the fact that those urls then got dropped in the handoff to `run_conversation` was an integration gap not covered by the adapter's own unit tests. Future phases that do adapter-owned `AIAgent` construction should add an integration test asserting the constructed user_message actually contains the attachment-relevant hints, not just that `media_urls` is populated on the MessageEvent.
+
+### 2026-04-22 — Phase 8 — T8.5 verified: approval query round-trip via request_interaction
+
+`echo "once" | examples/04-query-reply.py "Please use the terminal tool to run: rm -rf /tmp/p8-test-dir-nonexistent-xyz. After it runs, just reply 'done' in one word."` drove the full Phase 6 approval pipeline end-to-end:
+
+1. Agent called `terminal` with `rm -rf /tmp/...`.
+2. `check_all_command_guards` matched the `recursive delete` pattern from `DANGEROUS_PATTERNS` and fired `_nats_approval_notify`.
+3. `dispatch_approval_via_request_interaction` scheduled `stream.ask(...)` on the adapter's event loop; a Query chunk carrying `"⚠️ Dangerous command requires approval: delete in root path\n\nCommand:\nrm -rf /tmp/p8-test-dir-nonexistent-xyz\n\nReply with: once | session | always | deny"` landed on the caller.
+4. Caller piped `once\n` to `input()`; `stream.reply("once")` → `resolve_gateway_approval(session_key, "once", entry_id=captured_entry_id)`.
+5. Agent thread unblocked from `entry.event.wait()`, `rm` executed (on a non-existent dir — no-op but enough to close the turn), and the agent streamed `"Done."` back.
+
+The `entry_id` contextvar capture introduced in Phase 6 for parallel subagents worked transparently for this single-subagent case (`captured_entry_id` was populated synchronously before the notify scheduled the coroutine; `resolve_gateway_approval` matched by id not FIFO). Confirmed via gateway log absence of any "falling back to FIFO" warnings.
+
+### 2026-04-22 — Phase 8 — Phase 8 closed
+
+All eight T8.* tasks are either live-verified or test-backed:
+- T8.1–T8.2, T8.6, T8.7: live-verified against a local nats-server (see the smoke-verification entry above).
+- T8.3–T8.5: live-verified against the same nats-server with OpenRouter model access.
+- T8.8: full suite at 19 pre-existing failures, all outside NATS subtree; NATS-only subtree 201/201 green.
+
+Phase 4 regressions caught and fixed during Phase 8:
+- `hermes-nats` missing from `hermes-gateway` toolset includes (toolsets.py one-liner).
+- `media_urls` dropped in adapter-owned agent path (new `_annotate_media_attachments` helper on NatsAdapter + 6 regression tests).
+
+Proceed to Phase 9 — Polish & docs.
 
 ---
 

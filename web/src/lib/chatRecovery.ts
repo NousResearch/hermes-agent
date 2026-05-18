@@ -14,13 +14,29 @@ function storage(): Storage | null {
   }
 }
 
+function setStorageItem(key: string, value: string): void {
+  try {
+    storage()?.setItem(key, value);
+  } catch {
+    // Storage can be disabled or quota-limited in some browser modes.
+  }
+}
+
+function removeStorageItem(key: string): void {
+  try {
+    storage()?.removeItem(key);
+  } catch {
+    // Storage can be disabled or quota-limited in some browser modes.
+  }
+}
+
 function validSessionId(sessionId: string | null | undefined): sessionId is string {
   return !!sessionId && SESSION_ID_RE.test(sessionId);
 }
 
 export function rememberChatSessionId(sessionId: string | null | undefined): void {
   if (!validSessionId(sessionId)) return;
-  storage()?.setItem(LAST_SESSION_KEY, sessionId);
+  setStorageItem(LAST_SESSION_KEY, sessionId);
 }
 
 export function getRememberedChatSessionId(): string | null {
@@ -32,13 +48,13 @@ export function requestChatRecoveryAfterAuthReload(
   sessionId?: string | null,
 ): void {
   rememberChatSessionId(sessionId);
-  storage()?.setItem(RECOVER_AFTER_AUTH_RELOAD_KEY, "1");
+  setStorageItem(RECOVER_AFTER_AUTH_RELOAD_KEY, "1");
 }
 
 export function consumeChatRecoveryAfterAuthReload(): boolean {
   const store = storage();
   if (!store?.getItem(RECOVER_AFTER_AUTH_RELOAD_KEY)) return false;
-  store.removeItem(RECOVER_AFTER_AUTH_RELOAD_KEY);
+  removeStorageItem(RECOVER_AFTER_AUTH_RELOAD_KEY);
   return true;
 }
 
@@ -60,7 +76,7 @@ export function scheduleDashboardAuthReload({
     return false;
   }
 
-  store?.setItem(AUTH_RELOAD_AT_KEY, String(now));
+  setStorageItem(AUTH_RELOAD_AT_KEY, String(now));
   window.setTimeout(() => window.location.reload(), Math.max(0, delayMs));
   return true;
 }

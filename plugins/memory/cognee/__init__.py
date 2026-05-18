@@ -94,6 +94,12 @@ def _clean_turn_text(text: str) -> str:
     return (text or "").strip()
 
 
+async def _cognee_setup() -> None:
+    """Run cognee.setup() to ensure internal databases are created."""
+    import cognee
+    await cognee.setup()
+
+
 async def _init_cognee_loop() -> None:
     """Warm up cognee on the background event loop so that asyncio locks
     (used by LadybugDB and cognee's pipeline runner) are created on the
@@ -195,6 +201,11 @@ class CogneeMemoryProvider(MemoryProvider):
         self._hermes_home = str(kwargs.get("hermes_home") or "")
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._initialized = True
+        # Ensure Cognee's internal databases are created (one-time init).
+        try:
+            run_async(_cognee_setup(), timeout=15.0)
+        except Exception:
+            logger.warning("Cognee database setup failed (non-fatal)", exc_info=True)
         # Warm up cognee on the background loop so asyncio locks
         # are created on the right event loop, not the agent's main loop.
         try:

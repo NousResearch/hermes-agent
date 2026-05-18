@@ -25,8 +25,8 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -38,6 +38,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    mod = _load_plugin_module()
     return mod.router
 
 
@@ -111,6 +117,66 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_board_column_orders_cards_newest_first_independent_of_priority(client):
+    """Dashboard board display order is newest-first, not scheduler priority order."""
+
+    oldest_high_priority = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "oldest high priority", "priority": 100},
+    ).json()["task"]
+    middle = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "middle", "priority": 50},
+    ).json()["task"]
+    newest_low_priority = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "newest low priority", "priority": 0},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET created_at = CASE id "
+            "WHEN ? THEN 100 "
+            "WHEN ? THEN 200 "
+            "WHEN ? THEN 300 "
+            "END WHERE id IN (?, ?, ?)",
+            (
+                oldest_high_priority["id"],
+                middle["id"],
+                newest_low_priority["id"],
+                oldest_high_priority["id"],
+                middle["id"],
+                newest_low_priority["id"],
+            ),
+        )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    ready = next(c for c in r.json()["columns"] if c["name"] == "ready")
+    assert [t["id"] for t in ready["tasks"]] == [
+        newest_low_priority["id"],
+        middle["id"],
+        oldest_high_priority["id"],
+    ]
+
+
+def test_dashboard_card_sort_puts_missing_created_at_at_end_stably():
+    mod = _load_plugin_module()
+    cards = [
+        {"id": "missing-a"},
+        {"id": "newest", "created_at": 30},
+        {"id": "missing-b", "created_at": None},
+        {"id": "oldest", "created_at": 10},
+    ]
+
+    mod._sort_cards_newest_first(cards)
+
+    assert [c["id"] for c in cards] == ["newest", "oldest", "missing-a", "missing-b"]
 
 
 def test_tenant_filter(client):

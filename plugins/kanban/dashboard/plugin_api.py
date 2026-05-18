@@ -137,6 +137,29 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+def _sort_cards_newest_first(tasks: list[dict]) -> None:
+    """Sort dashboard cards by creation time without affecting scheduler order.
+
+    ``kanban_db.list_tasks`` intentionally keeps the dispatcher/CLI priority
+    order (priority DESC, created_at ASC).  The dashboard board is a display
+    surface, so it applies its own per-column newest-first ordering here.
+    Python's sort is stable, which keeps the existing relative order for equal
+    timestamps and for legacy rows with no ``created_at``; missing timestamps
+    are grouped at the end.
+    """
+
+    def key(task: dict) -> tuple[int, int]:
+        created_at = task.get("created_at")
+        if created_at is None:
+            return (1, 0)
+        try:
+            return (0, -int(created_at))
+        except (TypeError, ValueError):
+            return (1, 0)
+
+    tasks.sort(key=key)
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
@@ -435,8 +458,11 @@ def get_board(
             col = t.status if t.status in columns else "todo"
             columns[col].append(d)
 
-        # Stable per-column ordering already applied by list_tasks
-        # (priority DESC, created_at ASC), keep as-is.
+        # Dashboard display order is intentionally separate from
+        # ``kanban_db.list_tasks`` / dispatcher ordering: cards inside each
+        # column are newest-first, with legacy rows missing ``created_at`` last.
+        for column_tasks in columns.values():
+            _sort_cards_newest_first(column_tasks)
 
         # List of known tenants for the UI filter dropdown.
         tenants = [

@@ -122,6 +122,45 @@ class TestRunConversationCodexPath:
             unregister_gateway_notify(session_key)
             reset_current_session_key(token)
 
+    def test_gateway_codex_callback_honors_smart_approval(self, monkeypatch):
+        """Codex app-server approvals should use smart mode before prompting
+        Telegram/Discord. Otherwise safe read-only execs prompt every time."""
+        from agent.codex_runtime import _resolve_codex_approval_callback
+        from tools import approval as approval_mod
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "test-codex-gateway-smart-approval"
+        prompted = {"value": False}
+
+        def notify(_data):
+            prompted["value"] = True
+
+        monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(
+            approval_mod, "_smart_approve", lambda _cmd, _desc: "approve"
+        )
+
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, notify)
+        try:
+            callback = _resolve_codex_approval_callback()
+            assert callback is not None
+            choice = callback(
+                "gh pr list --repo NousResearch/hermes-agent",
+                "Codex requests exec",
+                allow_permanent=False,
+            )
+            assert choice == "once"
+            assert prompted["value"] is False
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):

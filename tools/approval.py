@@ -606,6 +606,72 @@ def prompt_gateway_approval(
     session_key = get_current_session_key()
     all_keys = list(pattern_keys or [pattern_key])
 
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
+        return "once"
+
+    approval_mode = _get_approval_mode()
+    if approval_mode == "off":
+        return "once"
+
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning(
+            "Gateway external approval hardline block: %s (command: %s)",
+            hardline_desc,
+            command[:200],
+        )
+        _fire_approval_hook(
+            "post_approval_response",
+            command=command,
+            description=hardline_desc,
+            pattern_key=pattern_key,
+            pattern_keys=list(all_keys),
+            session_key=session_key,
+            surface="gateway",
+            choice="hardline_block",
+        )
+        return "deny"
+
+    if is_approved(session_key, pattern_key):
+        return "session"
+
+    if approval_mode == "smart":
+        verdict = _smart_approve(command, description)
+        if verdict == "approve":
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+                choice="smart_approved",
+            )
+            logger.debug(
+                "Smart approval: auto-approved external gateway request '%s' (%s)",
+                command[:60],
+                description,
+            )
+            return "once"
+        if verdict == "deny":
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+                choice="smart_denied",
+            )
+            logger.warning(
+                "Smart approval denied external gateway request '%s' (%s)",
+                command[:200],
+                description,
+            )
+            return "deny"
+
     with _lock:
         notify_cb = _gateway_notify_cbs.get(session_key)
 

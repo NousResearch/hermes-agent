@@ -125,16 +125,18 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, guild=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
+        guild=guild,
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
@@ -345,6 +347,27 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_bot_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(id=888)
+    guild = SimpleNamespace(id=777, me=SimpleNamespace(roles=[bot_role]))
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="<@&888> hello via role mention",
+        role_mentions=[bot_role],
+        guild=guild,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello via role mention"
 
 
 @pytest.mark.asyncio

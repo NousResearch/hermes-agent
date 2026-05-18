@@ -243,7 +243,28 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
     inp: dict[str, Any] = {}
     if args.title:
         inp["title"] = args.title
-    if args.description:
+    if args.description is not None:
+        # Safety: refuse to overwrite a description with an error-shaped or trivially-short payload
+        # unless --allow-truncate is set. This catches the classic shell antipattern where stage-1
+        # of a pipeline writes "FATAL: ..." to stdout (instead of stderr) on failure, and stage-2
+        # blindly uses that as the new description, silently replacing the entire issue body with
+        # the error string.
+        if not args.allow_truncate:
+            desc = args.description
+            looks_error = False
+            error_prefixes = ("FATAL", "Error:", "error:", "ERROR:", "Traceback", "Exception")
+            if any(desc.lstrip().startswith(p) for p in error_prefixes):
+                looks_error = True
+            # heuristic: a real description has either markdown, newlines, or substantial length
+            has_structure = ("\n" in desc) or ("#" in desc) or ("*" in desc) or ("- " in desc)
+            if (looks_error or (len(desc) < 200 and not has_structure)):
+                sys.stderr.write(
+                    f"REFUSED: description payload looks suspicious "
+                    f"({len(desc)} chars, error_shape={looks_error}, structured={has_structure}).\n"
+                    f"  preview: {desc[:120]!r}\n"
+                    f"  If this is intentional, pass --allow-truncate to bypass.\n"
+                )
+                sys.exit(2)
         inp["description"] = args.description
     if args.priority is not None:
         inp["priority"] = args.priority
@@ -255,7 +276,32 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
         success issue { identifier title url }
       }
     }"""
-    emit(gql(q, {"id": args.identifier, "input": inp}).get("issueUpdate"))
+    result = gql(q, {"id": args.identifier, "input": inp}).get("issueUpdate")
+
+    # Read-after-write sanity check for description updates: re-fetch the issue and confirm
+    # the description didn't shrink to a degenerate length. Doesn't gate the operation
+    # (mutation already succeeded), but emits a loud warning to stderr if it looks wrong.
+    if "description" in inp and not args.skip_verify:
+        verify_q = """query($id: String!) {
+          issue(id: $id) { description }
+        }"""
+        try:
+            current = (gql(verify_q, {"id": args.identifier}).get("issue") or {}).get("description") or ""
+            sent_len = len(inp["description"])
+            current_len = len(current)
+            # Flag if the persisted description is < 50% of what we sent (and below a soft floor),
+            # which catches both the FATAL-shaped wipe and any future API-side regressions.
+            if current_len < 100 or (sent_len > 0 and current_len < sent_len * 0.5):
+                sys.stderr.write(
+                    f"WARNING: post-write verify shows description may have been truncated.\n"
+                    f"  sent {sent_len} chars, persisted {current_len} chars.\n"
+                    f"  persisted preview: {current[:160]!r}\n"
+                    f"  Inspect the issue in the Linear UI and restore from history if needed.\n"
+                )
+        except Exception as e:
+            sys.stderr.write(f"NOTE: post-write verify failed ({e}); update itself succeeded.\n")
+
+    emit(result)
 
 
 def cmd_update_status(args: argparse.Namespace) -> None:
@@ -402,6 +448,17 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--title")
     ui.add_argument("--description")
     ui.add_argument("--priority", type=int, choices=[0, 1, 2, 3, 4])
+    ui.add_argument(
+        "--allow-truncate",
+        action="store_true",
+        help="Bypass the safety check that refuses error-shaped or trivially-short description payloads. "
+             "Only set when you genuinely want to replace the description with a short value.",
+    )
+    ui.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip the post-write read-after-write sanity check. Default is to verify.",
+    )
     ui.set_defaults(func=cmd_update_issue)
 
     us = sub.add_parser("update-status")

@@ -1810,6 +1810,33 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, retry_err,
                     )
                     return SendResult(success=False, error=str(retry_err))
+            # Transient network errors (ConnectError, timeouts, server
+            # disconnects) should not permanently disable progress-message
+            # editing.  Mark the result retryable so the caller knows it
+            # can keep trying on the next update cycle.
+            _transient_markers = (
+                "connecterror",
+                "connect error",
+                "connection error",
+                "networkerror",
+                "network error",
+                "timed out",
+                "readtimeout",
+                "writetimeout",
+                "server disconnected",
+                "temporarily unavailable",
+                "temporary failure",
+                "httpx",
+            )
+            _is_transient = any(m in err_str for m in _transient_markers)
+            if _is_transient:
+                logger.warning(
+                    "[%s] Transient network error editing message %s (will retry): %s",
+                    self.name,
+                    message_id,
+                    e,
+                )
+                return SendResult(success=False, error=str(e), retryable=True)
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,

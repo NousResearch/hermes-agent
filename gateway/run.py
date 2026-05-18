@@ -15462,6 +15462,17 @@ class GatewayRunner:
                         )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
+                            # Transient network errors (ConnectError, timeouts)
+                            # must not permanently disable progress-message
+                            # editing — the next cycle can catch up.  Only
+                            # permanent failures (flood control, message not
+                            # found, permissions) should set can_edit = False.
+                            if getattr(result, "retryable", False):
+                                logger.debug(
+                                    "[%s] Transient edit failure — keeping can_edit=True",
+                                    adapter.name,
+                                )
+                                continue
                             if "flood" in _err or "retry after" in _err:
                                 # Flood control hit — backoff but keep editing.
                                 # Only disable edits for non-recoverable errors.

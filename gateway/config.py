@@ -1120,6 +1120,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ac, list):
                         ac = ",".join(str(v) for v in ac)
                     os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+                ntc = mattermost_cfg.get("no_thread_channels")
+                if ntc is not None and not os.getenv("MATTERMOST_NO_THREAD_CHANNELS"):
+                    if isinstance(ntc, list):
+                        ntc = ",".join(str(v) for v in ntc)
+                    os.environ["MATTERMOST_NO_THREAD_CHANNELS"] = str(ntc)
 
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
@@ -1377,6 +1382,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.MATTERMOST].enabled = True
         config.platforms[Platform.MATTERMOST].token = mattermost_token
         config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
+        for env_key, extra_key in (
+            ("MATTERMOST_REPLY_MODE", "reply_mode"),
+            ("MATTERMOST_NO_THREAD_CHANNELS", "no_thread_channels"),
+        ):
+            env_value = os.getenv(env_key)
+            if env_value:
+                config.platforms[Platform.MATTERMOST].extra[extra_key] = env_value
     mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
     if mattermost_home and Platform.MATTERMOST in config.platforms:
         config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(

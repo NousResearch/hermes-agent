@@ -95,6 +95,15 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
+        no_thread_raw = config.extra.get("no_thread_channels") or []
+        if isinstance(no_thread_raw, str):
+            no_thread_values = no_thread_raw.split(",")
+        else:
+            no_thread_values = list(no_thread_raw)
+        env_no_thread = os.getenv("MATTERMOST_NO_THREAD_CHANNELS", "")
+        if env_no_thread:
+            no_thread_values.extend(env_no_thread.split(","))
+        self._no_thread_channels = {str(v).strip() for v in no_thread_values if str(v).strip()}
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
@@ -270,7 +279,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            if reply_to and self._should_thread_reply(chat_id):
                 payload["root_id"] = reply_to
 
             data = await self._api_post("posts", payload)
@@ -279,6 +288,10 @@ class MattermostAdapter(BasePlatformAdapter):
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
+
+    def _should_thread_reply(self, chat_id: str) -> bool:
+        """Return whether replies in this channel should be nested in a Mattermost thread."""
+        return self._reply_mode == "thread" and chat_id not in self._no_thread_channels
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -450,7 +463,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        if reply_to and self._should_thread_reply(chat_id):
             payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)
@@ -488,7 +501,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        if reply_to and self._should_thread_reply(chat_id):
             payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)

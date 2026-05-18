@@ -225,6 +225,38 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert "root_id" not in payload
 
+
+    @pytest.mark.asyncio
+    async def test_send_no_thread_channel_overrides_thread_mode(self):
+        """Configured no-thread channels should stay flat even when reply_mode is thread."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._no_thread_channels = {"channel_1"}
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_no_thread"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Flat reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    def test_no_thread_channels_from_config_and_env(self, monkeypatch):
+        from gateway.platforms.mattermost import MattermostAdapter
+        monkeypatch.setenv("MATTERMOST_NO_THREAD_CHANNELS", "env_chan, other_chan")
+        adapter = MattermostAdapter(PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"url": "https://mm.example.com", "no_thread_channels": ["config_chan"]},
+        ))
+        assert adapter._no_thread_channels == {"config_chan", "env_chan", "other_chan"}
+
     @pytest.mark.asyncio
     async def test_send_api_failure(self):
         """When API returns error, send should return failure."""

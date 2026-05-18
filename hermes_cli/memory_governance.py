@@ -118,6 +118,28 @@ class ExecutionResult:
     detail: str
 
 
+@dataclass(frozen=True)
+class PolicyCard:
+    subject: str
+    allowed: tuple[str, ...]
+    forbidden: tuple[str, ...]
+    applies_to: tuple[str, ...]
+    source_memory_id: str
+    source: str
+    source_text_hash: str
+    confidence: float
+    extractor_version: str = "policy-card-v0"
+
+
+@dataclass(frozen=True)
+class PolicyConflict:
+    verdict: str
+    assignment: str
+    agent: str
+    forbidden_task_class: str
+    reason: str
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -540,6 +562,195 @@ def load_builtin_items(*, target: str = "all") -> tuple[list[MemoryItem], str]:
     return items, source
 
 
+def _node_id(prefix: str, label: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return f"{prefix}_{cleaned or 'item'}"
+
+
+def extract_policy_cards(items: list[MemoryItem]) -> list[PolicyCard]:
+    """Extract a tiny v0 typed policy-card set from obvious routing memories.
+
+    This is intentionally narrow and deterministic. Unsupported prose is
+    ignored rather than guessed.
+    """
+    cards: list[PolicyCard] = []
+    for item in items:
+        compact = " ".join(item.text.split())
+        if not re.search(r"\bshould receive only\b", compact, flags=re.IGNORECASE):
+            continue
+        subject_match = re.match(
+            r"([A-Z][A-Za-z0-9_-]{1,80})\s+should receive only\s+(.+?)\s*,?\s+not\s+(.+?)\.?$",
+            compact,
+        )
+        if not subject_match:
+            continue
+        subject = subject_match.group(1).strip()
+        allowed_text = subject_match.group(2).strip().rstrip(".,;")
+        forbidden_text = subject_match.group(3).strip().rstrip(".,;")
+        forbidden_parts = [part.strip(" .;") for part in re.split(r"\s+or\s+|\s*,\s*", forbidden_text) if part.strip(" .;")]
+        if not allowed_text or not forbidden_parts:
+            continue
+        cards.append(
+            PolicyCard(
+                subject=subject,
+                allowed=(allowed_text,),
+                forbidden=tuple(forbidden_parts),
+                applies_to=("Linear routing", "agent delegation", "Paperclip task assignment"),
+                source_memory_id=item.memory_id,
+                source=item.source,
+                source_text_hash=_sha256(item.text),
+                confidence=0.95,
+            )
+        )
+    return cards
+
+
+def _assignment_matches_task(assignment: str, task_class: str) -> bool:
+    assignment_lower = assignment.lower()
+    task_lower = task_class.lower()
+    if task_lower in assignment_lower:
+        return True
+    aliases = {
+        "umbrella/control-tower os architecture": ("umbrella", "architecture"),
+        "broad routing/strategy ownership": ("routing", "strategy"),
+    }
+    return all(token in assignment_lower for token in aliases.get(task_lower, ()))
+
+
+def build_policy_graph(cards: list[PolicyCard], *, candidate_assignments: list[str] | None = None) -> dict[str, Any]:
+    """Build Graphify-compatible advisory graph JSON from typed policy cards."""
+    nodes: dict[str, dict[str, Any]] = {}
+    links: list[dict[str, Any]] = []
+
+    def add_node(node_id: str, label: str, file_type: str, card: PolicyCard | None = None, **extra: Any) -> None:
+        if node_id in nodes:
+            return
+        data = {
+            "id": node_id,
+            "label": label,
+            "file_type": file_type,
+            "source_file": card.source if card else "memory-governance:graphify",
+            "source_location": card.source_memory_id if card else None,
+            "community": 0,
+            "norm_label": label.lower(),
+        }
+        if card:
+            data.update(
+                {
+                    "source_text_hash": card.source_text_hash,
+                    "extractor_version": card.extractor_version,
+                    "card_confidence": card.confidence,
+                }
+            )
+        data.update(extra)
+        nodes[node_id] = data
+
+    def add_edge(source: str, target: str, relation: str, card: PolicyCard, *, confidence: str = "EXTRACTED", score: float = 1.0) -> None:
+        links.append(
+            {
+                "source": source,
+                "target": target,
+                "_src": source,
+                "_tgt": target,
+                "relation": relation,
+                "confidence": confidence,
+                "confidence_score": score,
+                "source_file": card.source,
+                "source_location": card.source_memory_id,
+                "source_text_hash": card.source_text_hash,
+                "extractor_version": card.extractor_version,
+                "weight": 1.0,
+            }
+        )
+
+    for card in cards:
+        agent_id = _node_id("agent", card.subject)
+        policy_id = _node_id("policy", f"{card.subject} Routing Policy")
+        add_node(agent_id, card.subject, "memory_entity", card)
+        add_node(policy_id, f"{card.subject} Routing Policy", "policy_card", card)
+        add_edge(policy_id, agent_id, "policy_subject", card)
+        for allowed in card.allowed:
+            task_id = _node_id("task", allowed)
+            add_node(task_id, allowed, "task_class", card)
+            add_edge(agent_id, task_id, "allowed_for", card)
+        for forbidden in card.forbidden:
+            task_id = _node_id("task", forbidden)
+            add_node(task_id, forbidden, "task_class", card)
+            add_edge(agent_id, task_id, "forbidden_for", card)
+        for surface in card.applies_to:
+            surface_id = _node_id("surface", surface)
+            add_node(surface_id, surface, "surface", card)
+            add_edge(policy_id, surface_id, "applies_to", card)
+
+    for assignment in candidate_assignments or []:
+        assignment_id = _node_id("assignment", assignment)
+        add_node(assignment_id, assignment, "candidate_assignment", None, status="candidate")
+        assignment_lower = assignment.lower()
+        for card in cards:
+            agent_id = _node_id("agent", card.subject)
+            policy_id = _node_id("policy", f"{card.subject} Routing Policy")
+            if card.subject.lower() in assignment_lower:
+                links.append({"source": assignment_id, "target": agent_id, "_src": assignment_id, "_tgt": agent_id, "relation": "assigns", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "candidate", "source_location": assignment, "candidate_assignment_hash": _sha256(assignment), "weight": 1.0})
+            for forbidden in card.forbidden:
+                if _assignment_matches_task(assignment, forbidden):
+                    task_id = _node_id("task", forbidden)
+                    links.append({"source": assignment_id, "target": task_id, "_src": assignment_id, "_tgt": task_id, "relation": "task_class", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "candidate", "source_location": assignment, "candidate_assignment_hash": _sha256(assignment), "weight": 1.0})
+                    links.append({"source": assignment_id, "target": policy_id, "_src": assignment_id, "_tgt": policy_id, "relation": "conflicts_with", "confidence": "INFERRED", "confidence_score": 0.9, "source_file": "candidate", "source_location": assignment, "candidate_assignment_hash": _sha256(assignment), "source_text_hash": card.source_text_hash, "extractor_version": card.extractor_version, "weight": 1.0})
+                    decision_id = "decision_hold_for_dmitri_review"
+                    add_node(decision_id, "HOLD for Dmitri review", "routing_decision", card)
+                    links.append({"source": assignment_id, "target": decision_id, "_src": assignment_id, "_tgt": decision_id, "relation": "requires_decision", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "candidate", "source_location": assignment, "candidate_assignment_hash": _sha256(assignment), "source_text_hash": card.source_text_hash, "extractor_version": card.extractor_version, "weight": 1.0})
+
+    return {"directed": True, "multigraph": False, "graph": {}, "nodes": list(nodes.values()), "links": links, "hyperedges": []}
+
+
+def detect_policy_conflicts(cards: list[PolicyCard], candidate_assignments: list[str]) -> list[PolicyConflict]:
+    conflicts: list[PolicyConflict] = []
+    for assignment in candidate_assignments:
+        for card in cards:
+            if card.subject.lower() not in assignment.lower():
+                continue
+            for forbidden in card.forbidden:
+                if _assignment_matches_task(assignment, forbidden):
+                    conflicts.append(
+                        PolicyConflict(
+                            verdict="HOLD",
+                            assignment=assignment,
+                            agent=card.subject,
+                            forbidden_task_class=forbidden,
+                            reason="candidate assignment hits graph edge agent --forbidden_for--> task_class",
+                        )
+                    )
+    return conflicts
+
+
+def render_graphify_policy_report(cards: list[PolicyCard], graph: dict[str, Any], conflicts: list[PolicyConflict]) -> str:
+    lines = [
+        "",
+        "Graphify typed policy-card enrichment — READ ONLY",
+        f"policy_cards: {len(cards)}",
+        f"graph_nodes: {len(graph.get('nodes', []))}",
+        f"graph_edges: {len(graph.get('links', []))}",
+        f"conflicts: {len(conflicts)}",
+    ]
+    if cards:
+        lines.append("policy edges:")
+        for card in cards:
+            for allowed in card.allowed:
+                lines.append(f"- {card.subject} --allowed_for--> {allowed} [source={card.source} memory_id={card.source_memory_id} sha={card.source_text_hash[:12]}]")
+            for forbidden in card.forbidden:
+                lines.append(f"- {card.subject} --forbidden_for--> {forbidden} [source={card.source} memory_id={card.source_memory_id} sha={card.source_text_hash[:12]}]")
+    if conflicts:
+        lines.append("conflict readback:")
+        for conflict in conflicts:
+            lines.append(json.dumps(conflict.__dict__, ensure_ascii=False, sort_keys=True))
+    lines.append("safety:")
+    lines.append("- graphify enrichment is advisory only")
+    lines.append("- no Mem0 mutation executed")
+    lines.append("- no built-in memory mutation executed")
+    lines.append("- no Linear field/status/label/relation mutation executed by this path")
+    return "\n".join(lines)
+
+
 def render_table(proposals: list[Proposal], *, ledger_path: Path, run_id: str) -> str:
     lines = []
     lines.append("Mem0 Governance Overlay v0 — DRY RUN ONLY")
@@ -944,10 +1155,19 @@ def cmd_governance(args: argparse.Namespace) -> int:
     proposals = [build_proposal(item) for item in items]
     ledger = _ledger_path(getattr(args, "ledger", None))
     run_id = write_proposals(ledger, proposals, source=source)
-    if getattr(args, "report", False):
-        print(render_report(proposals, ledger_path=ledger, run_id=run_id, limit=getattr(args, "report_limit", 12)))
-    else:
-        print(render_table(proposals, ledger_path=ledger, run_id=run_id))
+    output = render_report(proposals, ledger_path=ledger, run_id=run_id, limit=getattr(args, "report_limit", 12)) if getattr(args, "report", False) else render_table(proposals, ledger_path=ledger, run_id=run_id)
+    if getattr(args, "graphify", False):
+        candidates = list(getattr(args, "graphify_candidate", None) or [])
+        cards = extract_policy_cards(items)
+        graph = build_policy_graph(cards, candidate_assignments=candidates)
+        output += render_graphify_policy_report(cards, graph, detect_policy_conflicts(cards, candidates))
+        graph_out = getattr(args, "graphify_output", None)
+        if graph_out:
+            graph_path = Path(graph_out).expanduser()
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+            graph_path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+            output += f"\ngraph_json_written: {graph_path}"
+    print(output)
     return 0
 
 
@@ -1029,6 +1249,22 @@ def add_parser(memory_subparsers: argparse._SubParsersAction) -> None:
         default=12,
         help="Rows per report section (default: 12).",
     )
+    parser.add_argument(
+        "--graphify",
+        action="store_true",
+        help="Add read-only typed policy-card graph enrichment to the dry-run report.",
+    )
+    parser.add_argument(
+        "--graphify-candidate",
+        action="append",
+        default=[],
+        help="Candidate assignment to check against typed policy cards. Repeatable.",
+    )
+    parser.add_argument(
+        "--graphify-output",
+        default=None,
+        help="Optional path to write Graphify-compatible advisory graph JSON.",
+    )
 
 
 def add_doctor_parser(memory_subparsers: argparse._SubParsersAction) -> None:
@@ -1064,6 +1300,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--report", action="store_true")
     parser.add_argument("--report-limit", type=int, default=12)
+    parser.add_argument("--graphify", action="store_true")
+    parser.add_argument("--graphify-candidate", action="append", default=[])
+    parser.add_argument("--graphify-output", default=None)
     return cmd_governance(parser.parse_args(argv))
 
 

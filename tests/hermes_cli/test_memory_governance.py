@@ -5,11 +5,15 @@ from pathlib import Path
 
 from hermes_cli.memory_governance import (
     MemoryItem,
+    build_policy_graph,
     build_proposal,
     classify_memory,
+    detect_policy_conflicts,
     execute_approved_proposals,
+    extract_policy_cards,
     load_builtin_items,
     load_json_items,
+    render_graphify_policy_report,
     render_report,
     write_proposals,
 )
@@ -105,6 +109,76 @@ def test_build_proposal_has_stable_hash_and_approval_phrase():
     assert first.body_sha256 == second.body_sha256
     assert first.action_sha256 == second.action_sha256
     assert first.approval_phrase == f"approve memory {first.proposal_id} sha256 {first.action_sha256}"
+
+
+def test_extract_policy_cards_converts_cyrus_routing_memory_to_typed_edges():
+    item = MemoryItem(
+        source="mem0:search_fallback",
+        row_number=1,
+        memory_id="cyrus-rule",
+        text="Cyrus should receive only bounded PR-producing implementation tasks, not umbrella/control-tower OS architecture or broad routing/strategy ownership.",
+    )
+
+    cards = extract_policy_cards([item])
+    graph = build_policy_graph(cards, candidate_assignments=["Cyrus owns Linear OS architecture umbrella"])
+
+    assert len(cards) == 1
+    assert cards[0].subject == "Cyrus"
+    assert cards[0].allowed == ("bounded PR-producing implementation tasks",)
+    assert cards[0].forbidden == ("umbrella/control-tower OS architecture", "broad routing/strategy ownership")
+    edges = {(edge["source"], edge["relation"], edge["target"]) for edge in graph["links"]}
+    assert ("agent_cyrus", "allowed_for", "task_bounded_pr_producing_implementation_tasks") in edges
+    assert ("agent_cyrus", "forbidden_for", "task_umbrella_control_tower_os_architecture") in edges
+    assert any(edge["relation"] == "conflicts_with" and edge["confidence"] == "INFERRED" for edge in graph["links"])
+    assert all("source_text_hash" in node for node in graph["nodes"] if node["file_type"] != "candidate_assignment")
+
+
+def test_policy_conflict_detector_holds_for_forbidden_assignment():
+    item = MemoryItem(
+        source="mem0:search_fallback",
+        row_number=1,
+        memory_id="cyrus-rule",
+        text="Cyrus should receive only bounded PR-producing implementation tasks, not umbrella/control-tower OS architecture or broad routing/strategy ownership.",
+    )
+    cards = extract_policy_cards([item])
+
+    conflicts = detect_policy_conflicts(cards, ["Cyrus owns Linear OS architecture umbrella"])
+
+    assert len(conflicts) == 1
+    assert conflicts[0].verdict == "HOLD"
+    assert conflicts[0].agent == "Cyrus"
+    assert conflicts[0].forbidden_task_class == "umbrella/control-tower OS architecture"
+
+
+def test_policy_conflict_detector_does_not_hold_allowed_bounded_pr_task():
+    item = MemoryItem(
+        source="mem0:search_fallback",
+        row_number=1,
+        memory_id="cyrus-rule",
+        text="Cyrus should receive only bounded PR-producing implementation tasks, not umbrella/control-tower OS architecture or broad routing/strategy ownership.",
+    )
+    cards = extract_policy_cards([item])
+
+    conflicts = detect_policy_conflicts(cards, ["Cyrus implements a bounded PR-producing task"])
+
+    assert conflicts == []
+
+
+def test_graphify_policy_report_is_read_only_and_embeds_conflict_json():
+    item = MemoryItem(
+        source="mem0:search_fallback",
+        row_number=1,
+        memory_id="cyrus-rule",
+        text="Cyrus should receive only bounded PR-producing implementation tasks, not umbrella/control-tower OS architecture or broad routing/strategy ownership.",
+    )
+    cards = extract_policy_cards([item])
+    conflicts = detect_policy_conflicts(cards, ["Cyrus owns Linear OS architecture umbrella"])
+    report = render_graphify_policy_report(cards, build_policy_graph(cards), conflicts)
+
+    assert "Graphify typed policy-card enrichment — READ ONLY" in report
+    assert "Cyrus --forbidden_for--> umbrella/control-tower OS architecture" in report
+    assert '"verdict": "HOLD"' in report
+    assert "no Mem0 mutation executed" in report
 
 
 def test_load_json_items_accepts_results_shape(tmp_path):

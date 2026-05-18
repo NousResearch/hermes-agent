@@ -494,24 +494,15 @@ And the two auxiliary LLM slots:
 
 The GUI is strictly a **read-through-the-DB + write-through-kanban_db** layer with no domain logic of its own:
 
-```
-┌────────────────────────┐      WebSocket (tails task_events)
-│   React SPA (plugin)   │ ◀──────────────────────────────────┐
-│   HTML5 drag-and-drop  │                                    │
-└──────────┬─────────────┘                                    │
-           │ REST over fetchJSON                              │
-           ▼                                                  │
-┌────────────────────────┐     writes call kanban_db.*        │
-│  FastAPI router        │     directly — same code path      │
-│  plugins/kanban/       │     the CLI /kanban verbs use      │
-│  dashboard/plugin_api.py                                    │
-└──────────┬─────────────┘                                    │
-           │                                                  │
-           ▼                                                  │
-┌────────────────────────┐                                    │
-│  ~/.hermes/kanban.db   │ ───── append task_events ──────────┘
-│  (WAL, shared)         │
-└────────────────────────┘
+```mermaid
+flowchart TD
+  spa[React SPA plugin<br/>HTML5 drag-and-drop]
+  router[FastAPI router<br/>plugins/kanban/dashboard/plugin_api.py]
+  db[~/.hermes/kanban.db<br/>WAL, shared]
+
+  spa -- REST over fetchJSON --> router
+  router -- writes call kanban_db.*<br/>same path as CLI /kanban verbs --> db
+  db -- WebSocket tails task_events --> spa
 ```
 
 ### REST surface

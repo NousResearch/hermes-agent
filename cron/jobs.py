@@ -707,6 +707,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
 
+        # Normalize script clears the same way create_job() does.  This keeps
+        # direct data-layer callers from bypassing the no_agent invariants with
+        # whitespace-only strings.
+        if "script" in updates:
+            _script = updates["script"]
+            if _script in (None, "", False):
+                updates["script"] = None
+            else:
+                updates["script"] = str(_script).strip() or None
+
+        if "no_agent" in updates:
+            updates["no_agent"] = bool(updates["no_agent"])
+
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
 
@@ -714,6 +727,23 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
             updated["skills"] = normalized_skills
             updated["skill"] = normalized_skills[0] if normalized_skills else None
+
+        if updated.get("no_agent") and not updated.get("script"):
+            raise ValueError(
+                "no_agent=True requires a script — with no agent and no script "
+                "there is nothing for the job to run."
+            )
+
+        # Switching an existing script-only job back to agent mode must not
+        # create an empty LLM job. Existing invalid legacy rows are left alone
+        # unless the update explicitly toggles no_agent off.
+        if "no_agent" in updates and not updated.get("no_agent"):
+            prompt_text = str(updated.get("prompt") or "").strip()
+            skills_list = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+            if not prompt_text and not skills_list:
+                raise ValueError(
+                    "agent-driven jobs require either prompt or at least one skill"
+                )
 
         if schedule_changed:
             updated_schedule = updated["schedule"]

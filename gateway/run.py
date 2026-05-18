@@ -5851,6 +5851,33 @@ class GatewayRunner:
             return True
 
         user_id = source.user_id
+
+        # Telegram (and similar) authorize entire group/forum chats by
+        # chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+        # That allowlist is chat-scoped, so it must work even when
+        # source.user_id is None — Telegram emits anonymous-admin posts
+        # and sender_chat traffic in groups with no `from_user`, and an
+        # operator who explicitly listed the chat expects those to be
+        # honored. Run this check before the no-user-id guard below so
+        # documented behavior matches reality
+        # (website/docs/reference/environment-variables.md,
+        # website/docs/user-guide/messaging/telegram.md).
+        if source.chat_type in {"group", "forum"} and source.chat_id:
+            chat_allowlist_env = {
+                Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+                Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            }.get(source.platform, "")
+            if chat_allowlist_env:
+                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                if raw_chat_allowlist:
+                    allowed_group_ids = {
+                        cid.strip()
+                        for cid in raw_chat_allowlist.split(",")
+                        if cid.strip()
+                    }
+                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                        return True
+
         if not user_id:
             return False
 
@@ -6197,11 +6224,14 @@ class GatewayRunner:
             pass
         elif source.user_id is None:
             # Messages with no user identity (Telegram service messages,
-            # channel forwards, anonymous admin actions) cannot be
-            # authorized — drop silently instead of triggering the pairing
-            # flow with a None user_id.
-            logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-            return None
+            # channel forwards, anonymous admin posts, sender_chat) can't
+            # be paired, but they can still be authorized via a
+            # chat-scoped allowlist (e.g. TELEGRAM_GROUP_ALLOWED_CHATS
+            # authorizes every member of the listed chat regardless of
+            # sender). Defer to _is_user_authorized so that path runs.
+            if not self._is_user_authorized(source):
+                logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+                return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.

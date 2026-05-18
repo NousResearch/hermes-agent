@@ -154,11 +154,15 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     policy = str(policy or AUTO_APPROVE_ASK).strip()
     if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
         return False
-    path = Path(proposal.path).expanduser().resolve(strict=False)
+    raw_path = Path(proposal.path).expanduser()
+    # resolve() follows symlinks — on macOS /tmp → /private/tmp, so the
+    # resolved form never starts with "/tmp/". Use raw_path for the /tmp
+    # check and the resolved form only for the cwd relative_to() test.
+    path = raw_path.resolve(strict=False)
     if policy == AUTO_APPROVE_SESSION:
         return True
     if policy == AUTO_APPROVE_WORKSPACE:
-        if str(path).startswith("/tmp/"):
+        if str(raw_path).startswith("/tmp/"):
             return True
         if cwd:
             root = Path(cwd).expanduser().resolve(strict=False)

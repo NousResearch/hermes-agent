@@ -2351,6 +2351,113 @@ class LobeHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# Local installed skills source adapter
+# ---------------------------------------------------------------------------
+
+class LocalSkillSource(SkillSource):
+    """Read installed/bundled skills from HERMES_HOME/skills.
+
+    The hub commands should be able to inspect skills that `hermes skills list`
+    already shows as locally installed. Without this source, `skills inspect
+    envelope` can fail even though the local Envelope skill is enabled.
+    """
+
+    def __init__(self):
+        self._skills_dir = SKILLS_DIR
+
+    def source_id(self) -> str:
+        return "local"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "builtin"
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        results: List[SkillMeta] = []
+        query_lower = (query or "").lower()
+        for meta in self._scan_all():
+            searchable = f"{meta.name} {meta.description} {' '.join(meta.tags)} {meta.identifier}".lower()
+            if not query_lower or query_lower in searchable:
+                results.append(meta)
+            if len(results) >= limit:
+                break
+        return results
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        rel = identifier.split("/", 1)[-1] if identifier.startswith("local/") else identifier
+        skill_name = rel.rsplit("/", 1)[-1]
+        for meta in self._scan_all():
+            if meta.identifier == identifier or meta.identifier.endswith(f"/{rel}") or meta.name == skill_name:
+                return meta
+        return None
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        meta = self.inspect(identifier)
+        if not meta or not meta.path:
+            return None
+        skill_dir = self._skills_dir / meta.path
+        try:
+            resolved = skill_dir.resolve()
+            if not str(resolved).startswith(str(self._skills_dir.resolve())):
+                return None
+        except (OSError, ValueError):
+            return None
+        files: Dict[str, Union[str, bytes]] = {}
+        for f in resolved.rglob("*"):
+            if f.is_file() and not f.name.startswith(".") and "__pycache__" not in f.parts and f.suffix != ".pyc":
+                try:
+                    files[str(f.relative_to(resolved))] = f.read_bytes()
+                except OSError:
+                    continue
+        if not files:
+            return None
+        return SkillBundle(
+            name=meta.name,
+            files=files,
+            source="local",
+            identifier=meta.identifier,
+            trust_level="builtin",
+        )
+
+    def _scan_all(self) -> List[SkillMeta]:
+        if not self._skills_dir.is_dir():
+            return []
+        results: List[SkillMeta] = []
+        for skill_md in sorted(self._skills_dir.rglob("SKILL.md")):
+            try:
+                rel_parts = skill_md.parent.relative_to(self._skills_dir).parts
+            except ValueError:
+                continue
+            if any(part.startswith(".") for part in rel_parts):
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            fm = OptionalSkillSource._parse_frontmatter(content)
+            name = str(fm.get("name") or skill_md.parent.name)
+            desc = str(fm.get("description") or "")
+            tags: List[str] = []
+            meta_block = fm.get("metadata", {})
+            if isinstance(meta_block, dict):
+                hermes_meta = meta_block.get("hermes", {})
+                if isinstance(hermes_meta, dict):
+                    raw_tags = hermes_meta.get("tags", [])
+                    if isinstance(raw_tags, list):
+                        tags = [str(t) for t in raw_tags]
+            rel_path = str(skill_md.parent.relative_to(self._skills_dir))
+            results.append(SkillMeta(
+                name=name,
+                description=desc[:200],
+                source="local",
+                identifier=f"local/{rel_path}",
+                trust_level="builtin",
+                path=rel_path,
+                tags=tags,
+            ))
+        return results
+
+
+# ---------------------------------------------------------------------------
 # Official optional skills source adapter
 # ---------------------------------------------------------------------------
 
@@ -3134,6 +3241,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     extra_taps = taps_mgr.list_taps()
 
     sources: List[SkillSource] = [
+        LocalSkillSource(),           # Installed/bundled local skills
         OptionalSkillSource(),        # Official optional skills (highest priority)
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),

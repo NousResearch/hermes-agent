@@ -153,6 +153,32 @@ def _ra():
     return run_agent
 
 
+def _should_eager_fallback(reason: "FailoverReason", eager_rate_limit_fallback: bool) -> bool:
+    """Whether a failover ``reason`` should trigger an immediate ("eager")
+    switch to the next fallback provider, before the normal retry/backoff loop.
+
+    Two reasons reach the eager-fallback gate:
+
+    * ``FailoverReason.billing`` (HTTP 402) — **always** eager, regardless of
+      the user setting.  A confirmed billing error is permanent: retrying burns
+      paid requests against an exhausted balance (#31273), and skipping fallback
+      would only drop it into the ``is_client_error`` abort path without ever
+      trying a backup provider.
+    * ``FailoverReason.rate_limit`` (HTTP 429) — eager by default, but honored
+      as configurable via ``agent.eager_rate_limit_fallback``.  Transient limits
+      (e.g. DashScope burst quotas, peak-hour throttling) often clear within the
+      retry window, so users can opt into retrying the primary first by setting
+      the flag to ``False``.
+
+    Any other reason is not handled by this gate and returns ``False``.
+    """
+    if reason == FailoverReason.billing:
+        return True
+    if reason == FailoverReason.rate_limit:
+        return bool(eager_rate_limit_fallback)
+    return False
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -2791,15 +2817,25 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                # Eager fallback for rate-limit (429) and billing (402) errors.
                 # When a fallback model is configured, switch immediately instead
                 # of burning through retries with exponential backoff -- the
                 # primary provider won't recover within the retry window.
+                #
+                # Billing always fails over eagerly (402 is permanent); rate-
+                # limit honors agent.eager_rate_limit_fallback (default True), so
+                # users on bursty-but-recovering primaries can set it False to
+                # retry the primary api_max_retries times before falling back.
+                # See _should_eager_fallback for the full rationale.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                should_eager_fallback = _should_eager_fallback(
+                    classified.reason,
+                    getattr(agent, "_eager_rate_limit_fallback", True),
+                )
+                if should_eager_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota

@@ -842,6 +842,21 @@ When the iteration budget is fully exhausted, the CLI shows a notification to th
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
+### Eager Rate-Limit Fallback
+
+`agent.eager_rate_limit_fallback` (default: `true`) controls what happens when a provider returns a 429 rate-limit error:
+
+- **`true` (default)**: Immediately switch to the next [fallback provider](/user-guide/features/fallback-providers) without retrying the rate-limited one. This is the safest default — you get a response from the backup provider instead of waiting through retries that may all fail.
+- **`false`**: Retry the rate-limited provider up to `api_max_retries` times with exponential backoff before falling back. Useful when your primary provider's rate limits are transient (e.g., DashScope burst quotas, Anthropic peak-hour throttling) — the primary often recovers within a few seconds.
+
+**Note**: Confirmed billing errors (402 — insufficient credits, subscription expired) always trigger immediate fallback regardless of this setting. Retrying a permanent billing error only burns paid requests against an exhausted balance ([#31273](https://github.com/NousResearch/hermes-agent/issues/31273)), so billing never honors the retry path.
+
+```yaml
+agent:
+  api_max_retries: 3                    # Retries per provider
+  eager_rate_limit_fallback: false      # Retry before fallback (default: true)
+```
+
 ### API Timeouts
 
 Hermes has separate timeout layers for streaming, plus a stale detector for non-streaming calls. The stale detectors auto-adjust for local providers only when you leave them at their implicit defaults.

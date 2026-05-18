@@ -1114,6 +1114,25 @@ def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
+def test_named_custom_provider_gpt5_without_api_mode_uses_responses(monkeypatch):
+    """GPT-5 named custom providers should auto-upgrade to Responses API."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "relay")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "relay",
+            "base_url": "https://relay.example.com/v1",
+            "api_key": "sk-test",
+            "model": "gpt-5.4",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="relay")
+
+    assert resolved["api_mode"] == "codex_responses"
+
+
 def test_anthropic_messages_in_valid_api_modes():
     """anthropic_messages should be accepted by _parse_api_mode."""
     assert rp._parse_api_mode("anthropic_messages") == "anthropic_messages"

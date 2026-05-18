@@ -150,6 +150,24 @@ class TestResolveProviderClientNamedCustom:
         # Should use _read_main_model() fallback
         assert model == "main-model"
 
+    def test_main_named_custom_gpt5_without_api_mode_wraps_codex(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.4", "provider": "relay"},
+            "providers": {
+                "relay": {
+                    "base_url": "https://relay.example.com/v1",
+                    "api_key": "k",
+                    "default_model": "gpt-5.4",
+                }
+            },
+        })
+        from agent.auxiliary_client import CodexAuxiliaryClient, resolve_provider_client
+
+        client, model = resolve_provider_client("main")
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4"
+
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "test"},

@@ -88,6 +88,33 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _infer_openai_compatible_api_mode(
+    base_url: str,
+    model_name: Optional[str],
+) -> Optional[str]:
+    """Infer api_mode for OpenAI-compatible custom endpoints.
+
+    Mirrors the main agent's GPT-5 custom-endpoint upgrade while preserving
+    the Azure OpenAI exception: generic relays serving GPT-5.x models should
+    default to the Responses API, but Azure OpenAI keeps GPT-5 on the regular
+    chat completions path.
+    """
+    detected = _detect_api_mode_for_url(base_url)
+    if detected:
+        return detected
+
+    raw_base_url = str(base_url or "").strip().lower()
+    if "openai.azure.com" in raw_base_url:
+        return None
+
+    normalized_model = str(model_name or "").strip().lower()
+    if "/" in normalized_model:
+        normalized_model = normalized_model.rsplit("/", 1)[-1]
+    if normalized_model.startswith("gpt-5"):
+        return "codex_responses"
+    return None
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -378,6 +405,7 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
@@ -395,7 +423,9 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": api_mode_override
+            or _infer_openai_compatible_api_mode(base_url, model_name)
+            or "chat_completions",
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
@@ -587,7 +617,13 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+        model_name=custom_provider.get("model"),
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -608,7 +644,7 @@ def _resolve_named_custom_runtime(
     result = {
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
+        or _infer_openai_compatible_api_mode(base_url, custom_provider.get("model"))
         or "chat_completions",
         "base_url": base_url,
         "api_key": api_key or "no-key-required",

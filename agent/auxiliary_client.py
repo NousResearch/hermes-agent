@@ -711,8 +711,12 @@ class _CodexCompletionsAdapter:
             # keywords (HTTP 400). Strip them here to match the parity guarantee that
             # chat_completion_helpers.py provides for the main-agent xAI path.
             try:
-                from tools.schema_sanitizer import strip_pattern_and_format
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
                 tools, _ = strip_pattern_and_format(list(tools))
+                tools, _ = strip_slash_enum(tools)
             except Exception as exc:
                 logger.warning(
                     "Auxiliary client: failed to sanitize tool schemas for "

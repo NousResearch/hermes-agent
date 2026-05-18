@@ -2591,21 +2591,11 @@ async def get_profile_setup_command(name: str):
 
 @app.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
-    from tools.environments.local import _sanitize_subprocess_env
-
     try:
         command = _profile_setup_command(name)
-        profile_dir = _resolve_profile_dir(name)
-        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-        sanitized_env["HERMES_HOME"] = str(profile_dir)
-
-        # Ensure HOME isolation matches the target profile, not the server's profile.
-        profile_home = profile_dir / "home"
-        if profile_home.is_dir():
-            sanitized_env["HOME"] = str(profile_home)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command], env=sanitized_env)
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
             applescript = (
@@ -2614,7 +2604,7 @@ async def open_profile_terminal_endpoint(name: str):
                 f'do script "{escaped}"\n'
                 "end tell"
             )
-            subprocess.Popen(["osascript", "-e", applescript], env=sanitized_env)
+            subprocess.Popen(["osascript", "-e", applescript])
         else:
             terminal_commands = [
                 ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
@@ -2634,7 +2624,7 @@ async def open_profile_terminal_endpoint(name: str):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 ) == 0:
-                    subprocess.Popen(popen_args, env=sanitized_env)
+                    subprocess.Popen(popen_args)
                     break
             else:
                 raise HTTPException(
@@ -3011,13 +3001,19 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _is_public_bind() -> bool:
+    """True when bound to all-interfaces (operator used --insecure)."""
+    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    WebSocket endpoints expose interactive chat/control surfaces and use the
-    same session token that the unauthenticated SPA HTML needs to bootstrap.
-    Keep them loopback-only even when the HTTP dashboard is publicly bound.
+    Allows loopback always; allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth).
     """
+    if _is_public_bind():
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True

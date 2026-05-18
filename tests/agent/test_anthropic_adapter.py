@@ -9,8 +9,6 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
-    _CLAUDE_CODE_VERSION_FALLBACK,
-    _detect_claude_code_version,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
@@ -32,38 +30,6 @@ from agent.transports import get_transport
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
-
-
-class TestClaudeCodeVersionDetection:
-    def test_detects_version_from_npm_package_metadata(self, tmp_path, monkeypatch):
-        package_dir = tmp_path / "lib" / "node_modules" / "@anthropic-ai" / "claude-code"
-        package_dir.mkdir(parents=True)
-        (package_dir / "package.json").write_text(
-            json.dumps({"name": "@anthropic-ai/claude-code", "version": "2.9.10"}),
-            encoding="utf-8",
-        )
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        claude = bin_dir / "claude"
-        claude.write_text("#!/usr/bin/env node\n", encoding="utf-8")
-        claude.chmod(0o755)
-
-        monkeypatch.setenv("PATH", str(bin_dir))
-
-        assert _detect_claude_code_version() == "2.9.10"
-
-    def test_does_not_execute_claude_binary_from_path(self, tmp_path, monkeypatch):
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        marker = tmp_path / "executed"
-        claude = bin_dir / "claude"
-        claude.write_text(f"#!/bin/sh\ntouch {marker}\necho 9.9.9\n", encoding="utf-8")
-        claude.chmod(0o755)
-
-        monkeypatch.setenv("PATH", str(bin_dir))
-
-        assert _detect_claude_code_version() == _CLAUDE_CODE_VERSION_FALLBACK
-        assert not marker.exists()
 
 
 class TestIsOAuthToken:

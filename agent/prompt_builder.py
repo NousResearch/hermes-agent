@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import stat
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -90,14 +89,6 @@ def _find_git_root(start: Path) -> Optional[Path]:
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
 
 
-def _is_regular_context_file(candidate: Path) -> bool:
-    """Return True only for regular files, without following symlinks."""
-    try:
-        return stat.S_ISREG(candidate.lstat().st_mode)
-    except OSError:
-        return False
-
-
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
     """Discover the nearest ``.hermes.md`` or ``HERMES.md``.
 
@@ -111,7 +102,7 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if _is_regular_context_file(candidate):
+            if candidate.is_file():
                 return candidate
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
@@ -1344,8 +1335,6 @@ def _load_hermes_md(cwd_path: Path) -> str:
     if not hermes_md_path:
         return ""
     try:
-        if not _is_regular_context_file(hermes_md_path):
-            return ""
         content = hermes_md_path.read_text(encoding="utf-8").strip()
         if not content:
             return ""

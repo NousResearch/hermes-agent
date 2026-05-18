@@ -20,7 +20,6 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from urllib.parse import urljoin
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -2594,54 +2593,27 @@ class DiscordAdapter(BasePlatformAdapter):
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
             async with aiohttp.ClientSession(**_sess_kw) as session:
-                current_url = animation_url
-                for _ in range(10):
-                    async with session.get(
-                        current_url,
-                        timeout=aiohttp.ClientTimeout(total=30),
-                        allow_redirects=False,
-                        **_req_kw,
-                    ) as resp:
-                        if 300 <= resp.status < 400:
-                            location = resp.headers.get("Location")
-                            if not location:
-                                raise Exception(f"Redirect response missing Location: HTTP {resp.status}")
+                async with session.get(animation_url, timeout=aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"Failed to download animation: HTTP {resp.status}")
 
-                            redirected_url = urljoin(str(resp.url), location)
-                            if not is_safe_url(redirected_url):
-                                logger.warning(
-                                    "[%s] Blocked unsafe animation redirect target during Discord send_animation",
-                                    self.name,
-                                )
-                                return await super().send_image(
-                                    chat_id, animation_url, caption, reply_to, metadata=metadata
-                                )
-                            current_url = redirected_url
-                            continue
+                    animation_data = await resp.read()
 
-                        if resp.status != 200:
-                            raise Exception(f"Failed to download animation: HTTP {resp.status}")
+                    import io
+                    file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
 
-                        animation_data = await resp.read()
-                        break
-                else:
-                    raise Exception("Too many redirects while downloading animation")
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
 
-            import io
-            file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
-
-            if self._is_forum_parent(channel):
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=file,
-                )
-
-            msg = await channel.send(
-                content=caption if caption else None,
-                file=file,
-            )
-            return SendResult(success=True, message_id=str(msg.id))
+                    msg = await channel.send(
+                        content=caption if caption else None,
+                        file=file,
+                    )
+                    return SendResult(success=True, message_id=str(msg.id))
 
         except ImportError:
             logger.warning(

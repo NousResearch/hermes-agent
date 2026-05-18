@@ -4,7 +4,7 @@ Production pipeline for interactive and generative visual art using [p5.js](http
 
 ## What it does
 
-Creates browser-based visual art from text prompts. The agent handles the full pipeline: creative concept, code generation, preview, export, and iterative refinement. Output is a single HTML file that runs in any browser — no build step required.
+Creates browser-based visual art from text prompts. The agent handles the full pipeline: creative concept, code generation, preview, export, and iterative refinement. Output is a single self-contained HTML file that runs in any browser — no build step, no server, no dependencies beyond a CDN script tag.
 
 The output is real interactive art. Not tutorial exercises. Generative systems, particle physics, noise fields, shader effects, kinetic typography — composed with intentional color palettes, layered composition, and visual hierarchy.
 
@@ -34,7 +34,7 @@ The output is real interactive art. Not tutorial exercises. Generative systems, 
 
 A modern browser. That's it for basic use.
 
-For headless export: Node.js, Puppeteer, ffmpeg. The bundled exporter serves the sketch from an isolated localhost directory and blocks outbound browser requests; use local copies of p5.js and other assets for automated exports.
+For headless export: Node.js, Puppeteer, ffmpeg.
 
 ```bash
 bash skills/creative/p5js/scripts/setup.sh

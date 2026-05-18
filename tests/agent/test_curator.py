@@ -536,15 +536,16 @@ def test_curator_review_prompt_has_invariants():
 
 
 def test_curator_review_prompt_points_at_existing_tools_only():
-    """The review prompt must rely only on the restricted skills toolset
+    """The review prompt must rely on existing tools (skill_manage + terminal)
     and must NOT reference bespoke curator tools that are not registered
     model tools."""
     from agent.curator import CURATOR_REVIEW_PROMPT
     assert "skill_manage" in CURATOR_REVIEW_PROMPT
     assert "skills_list" in CURATOR_REVIEW_PROMPT
     assert "skill_view" in CURATOR_REVIEW_PROMPT
-    assert "restricted to the skills toolset" in CURATOR_REVIEW_PROMPT.lower()
-    # These would be nice but aren't actually registered as tools.
+    assert "terminal" in CURATOR_REVIEW_PROMPT.lower()
+    # These would be nice but aren't actually registered as tools — the
+    # curator uses skill_manage + terminal mv instead.
     assert "archive_skill" not in CURATOR_REVIEW_PROMPT
     assert "pin_skill" not in CURATOR_REVIEW_PROMPT
 

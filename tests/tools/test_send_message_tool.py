@@ -600,52 +600,6 @@ class TestSendToPlatformChunking:
             ("disconnect",),
         ]
 
-    def test_send_matrix_via_adapter_rejects_sensitive_media_path_before_connect(self, tmp_path):
-        secret_path = tmp_path / ".ssh" / "id_rsa"
-        secret_path.parent.mkdir()
-        secret_path.write_text("private key material")
-
-        class FakeAdapter:
-            def __init__(self, _config):
-                raise AssertionError("adapter must not connect for denied media paths")
-
-        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
-
-        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
-            result = asyncio.run(
-                _send_matrix_via_adapter(
-                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                    "!room:example.com",
-                    "do not leak",
-                    media_files=[(str(secret_path), False)],
-                )
-            )
-
-        assert "sensitive location" in result["error"]
-        assert str(secret_path) not in result["error"]
-
-    def test_send_matrix_via_adapter_rejects_non_regular_media_path(self, tmp_path):
-        directory_path = tmp_path / "media-dir"
-        directory_path.mkdir()
-
-        class FakeAdapter:
-            def __init__(self, _config):
-                raise AssertionError("adapter must not connect for invalid media paths")
-
-        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
-
-        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
-            result = asyncio.run(
-                _send_matrix_via_adapter(
-                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                    "!room:example.com",
-                    "not a file",
-                    media_files=[(str(directory_path), False)],
-                )
-            )
-
-        assert result["error"] == "Media path must be a regular file"
-
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send

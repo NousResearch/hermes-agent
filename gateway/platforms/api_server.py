@@ -599,9 +599,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
-        # Active approval session key for each run_id.  API runs use a
-        # per-run approval key so concurrent runs sharing conversation
-        # continuity cannot resolve each other's approval prompts.
+        # Active approval session key for each run_id.  The approval core
+        # resolves requests by session key, while API clients address the
+        # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
@@ -723,16 +723,6 @@ class APIServerAdapter(BasePlatformAdapter):
     # (e.g. ``agent:main:webui:dm:user-42``) while staying small enough
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
-    _API_SESSION_KEY_PREFIX = "api-server"
-
-    def _api_session_scope_key(self, raw: str) -> str:
-        """Return a deterministic API-server-only memory scope key."""
-        scope_digest = hmac.new(
-            self._api_key.encode("utf-8"),
-            raw.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return f"{self._API_SESSION_KEY_PREFIX}-{scope_digest}"
 
     def _parse_session_key_header(
         self, request: "web.Request"
@@ -749,10 +739,9 @@ class APIServerAdapter(BasePlatformAdapter):
         on validation failure.
 
         Security: like session continuation, accepting a caller-supplied
-        memory scope requires API-key authentication.  The caller's key is
-        then converted to an API-server namespace bound to the configured
-        bearer key, so API clients cannot impersonate deterministic native
-        gateway session keys (for example Telegram/Slack memory scopes).
+        memory scope requires API-key authentication so that an
+        unauthenticated client on a local-only server can't inject itself
+        into another user's long-term memory scope by guessing a key.
         """
         raw = request.headers.get("X-Hermes-Session-Key", "").strip()
         if not raw:
@@ -785,7 +774,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        return self._api_session_scope_key(raw), None
+        return raw, None
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -2889,7 +2878,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = f"api_run:{run_id}"
+        approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -2956,23 +2945,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     from gateway.session_context import clear_session_vars, set_session_vars
                     from tools.approval import (
                         register_gateway_notify,
-                        reset_current_run_id,
                         reset_current_session_key,
-                        set_current_run_id,
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
 
                     effective_task_id = session_id or run_id
                     approval_token = None
-                    approval_run_token = None
                     session_tokens = []
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
-                        approval_run_token = set_current_run_id(run_id)
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
@@ -2987,11 +2972,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
-                            if approval_run_token is not None:
-                                try:
-                                    reset_current_run_id(approval_run_token)
-                                except Exception:
-                                    pass
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)

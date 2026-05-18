@@ -2188,19 +2188,6 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
-    def test_websocket_rejects_non_loopback_on_public_bind(self, monkeypatch):
-        from types import SimpleNamespace
-
-        monkeypatch.setattr(
-            self.ws_module.app.state, "bound_host", "0.0.0.0", raising=False
-        )
-
-        remote_ws = SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))
-        loopback_ws = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-
-        assert self.ws_module._ws_client_is_allowed(remote_ws) is False
-        assert self.ws_module._ws_client_is_allowed(loopback_ws) is True
-
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,

@@ -1405,34 +1405,22 @@ def cleanup_all_environments():
 
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
-    resolved_task_id = _resolve_container_task_id(task_id)
-    task_keys = tuple(
-        dict.fromkeys(key for key in (resolved_task_id, task_id) if key)
-    )
-
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
     env = None
-    cleaned_task_id = resolved_task_id
     with _env_lock:
-        for key in task_keys:
-            candidate = _active_environments.pop(key, None)
-            _last_activity.pop(key, None)
-            if candidate is not None and env is None:
-                env = candidate
-                cleaned_task_id = key
+        env = _active_environments.pop(task_id, None)
+        _last_activity.pop(task_id, None)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        for key in task_keys:
-            _creation_locks.pop(key, None)
+        _creation_locks.pop(task_id, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        for key in task_keys:
-            clear_file_ops_cache(key)
+        clear_file_ops_cache(task_id)
     except ImportError:
         pass
 
@@ -1447,14 +1435,14 @@ def cleanup_vm(task_id: str):
         elif hasattr(env, 'terminate'):
             env.terminate()
 
-        logger.info("Manually cleaned up environment for task: %s", cleaned_task_id)
+        logger.info("Manually cleaned up environment for task: %s", task_id)
 
     except Exception as e:
         error_str = str(e)
         if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", cleaned_task_id)
+            logger.info("Environment for task %s already cleaned up", task_id)
         else:
-            logger.warning("Error cleaning up environment for task %s: %s", cleaned_task_id, e)
+            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _atexit_cleanup():

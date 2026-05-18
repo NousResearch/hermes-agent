@@ -226,22 +226,6 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
-    def test_save_env_value_hardens_existing_permissive_env_in_container(self, tmp_path):
-        if os.name == "nt":
-            return
-
-        env_path = tmp_path / ".env"
-        env_path.write_text("TENOR_API_KEY=old-secret\n")
-        env_path.chmod(0o666)
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), patch(
-            "hermes_cli.config._is_container", return_value=True
-        ):
-            save_env_value("TENOR_API_KEY", "sk-test-secret")
-
-        env_mode = env_path.stat().st_mode & 0o777
-        assert env_mode == 0o600
-
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
@@ -284,22 +268,6 @@ class TestRemoveEnvValue:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "ORPHAN_KEY": "orphan"}):
             remove_env_value("ORPHAN_KEY")
             assert "ORPHAN_KEY" not in os.environ
-
-    def test_remove_env_value_hardens_existing_permissive_env_in_container(self, tmp_path):
-        if os.name == "nt":
-            return
-
-        env_path = tmp_path / ".env"
-        env_path.write_text("KEY_A=value_a\nKEY_B=value_b\n")
-        env_path.chmod(0o666)
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), patch(
-            "hermes_cli.config._is_container", return_value=True
-        ):
-            assert remove_env_value("KEY_B") is True
-
-        env_mode = env_path.stat().st_mode & 0o777
-        assert env_mode == 0o600
 
 
 class TestSaveConfigAtomicity:

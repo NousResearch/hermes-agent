@@ -3007,10 +3007,9 @@ class HermesIndexSource(SkillSource):
 
     def trust_level_for(self, identifier: str) -> str:
         index = self._ensure_loaded()
-        entry = self._find_entry(identifier, index)
-        github_id = self._github_identifier_from_entry(entry) if entry else ""
-        if github_id:
-            return self._github_trust_level(github_id)
+        for skill in index.get("skills", []):
+            if skill.get("identifier") == identifier:
+                return skill.get("trust_level", "community")
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
@@ -3047,17 +3046,27 @@ class HermesIndexSource(SkillSource):
         if not entry:
             return None
 
-        github_id = self._github_identifier_from_entry(entry)
-        if not github_id:
-            return None
+        # Use resolved path if available
+        resolved = entry.get("resolved_github_id")
+        if resolved:
+            bundle = self._get_github().fetch(resolved)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
 
-        bundle = self._get_github().fetch(github_id)
-        if not bundle:
-            return None
+        # Fall back to identifier-based fetch via repo/path
+        repo = entry.get("repo", "")
+        path = entry.get("path", "")
+        if repo and path:
+            github_id = f"{repo}/{path}"
+            bundle = self._get_github().fetch(github_id)
+            if bundle:
+                bundle.source = entry.get("source", "hermes-index")
+                bundle.identifier = identifier
+                return bundle
 
-        bundle.metadata.setdefault("hermes_index_identifier", entry.get("identifier", ""))
-        bundle.metadata.setdefault("hermes_index_source", entry.get("source", "hermes-index"))
-        return bundle
+        return None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Return metadata from the index.  Zero API calls."""
@@ -3098,63 +3107,17 @@ class HermesIndexSource(SkillSource):
         return None
 
     @staticmethod
-    def _is_github_identifier(identifier: str) -> bool:
-        return isinstance(identifier, str) and len(identifier.split("/", 2)) >= 3
-
-    @classmethod
-    def _github_identifier_from_entry(cls, entry: dict) -> str:
-        """Return the GitHub path that install policy should trust.
-
-        The centralized index is only a discovery cache.  Source, trust, and
-        install-policy identity must come from the concrete GitHub path that is
-        actually downloaded, not from index-controlled display metadata.
-        """
-        if not isinstance(entry, dict):
-            return ""
-
-        repo = entry.get("repo") or ""
-        path = entry.get("path") or ""
-        resolved = entry.get("resolved_github_id") or ""
-
-        if cls._is_github_identifier(resolved):
-            if not repo or resolved == repo or resolved.startswith(f"{repo}/"):
-                return resolved
-            logger.warning(
-                "Ignoring Hermes index resolved_github_id %r that does not match repo %r",
-                resolved,
-                repo,
-            )
-
-        fallback = f"{repo}/{path}" if repo and path else ""
-        return fallback if cls._is_github_identifier(fallback) else ""
-
-    @staticmethod
-    def _github_trust_level(identifier: str) -> str:
-        parts = identifier.split("/", 2)
-        if len(parts) >= 2 and f"{parts[0]}/{parts[1]}" in TRUSTED_REPOS:
-            return "trusted"
-        return "community"
-
-    @classmethod
-    def _to_meta(cls, entry: dict) -> SkillMeta:
-        github_id = cls._github_identifier_from_entry(entry)
-        trust_level = cls._github_trust_level(github_id) if github_id else "community"
-        extra = dict(entry.get("extra", {}) or {})
-        if entry.get("identifier"):
-            extra.setdefault("hermes_index_identifier", entry.get("identifier"))
-        if entry.get("source"):
-            extra.setdefault("hermes_index_source", entry.get("source"))
-
+    def _to_meta(entry: dict) -> SkillMeta:
         return SkillMeta(
             name=entry.get("name", ""),
             description=entry.get("description", ""),
-            source="github" if github_id else "hermes-index",
+            source=entry.get("source", "hermes-index"),
             identifier=entry.get("identifier", ""),
-            trust_level=trust_level,
+            trust_level=entry.get("trust_level", "community"),
             repo=entry.get("repo"),
             path=entry.get("path"),
             tags=entry.get("tags", []),
-            extra=extra,
+            extra=entry.get("extra", {}),
         )
 
 

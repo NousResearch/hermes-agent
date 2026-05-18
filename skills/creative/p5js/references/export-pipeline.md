@@ -270,7 +270,7 @@ ffmpeg -i frame-%04d.png -i palette.png \
 
 ## Headless Export (Puppeteer)
 
-For automated, server-side, or CI rendering. Uses a headless Chrome browser to run the sketch. The bundled exporter serves only the sketch directory from localhost and blocks browser requests to other origins; keep libraries and assets local for exports.
+For automated, server-side, or CI rendering. Uses a headless Chrome browser to run the sketch.
 
 ### export-frames.js (Node.js Script)
 
@@ -279,19 +279,12 @@ See `scripts/export-frames.js` for the full implementation. Basic pattern:
 ```javascript
 const puppeteer = require('puppeteer');
 
-async function captureFrames(sketchUrl, allowedOrigin, outputDir, options) {
+async function captureFrames(htmlPath, outputDir, options) {
   const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--disable-gpu', '--disable-dev-shm-usage']
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   const page = await browser.newPage();
-
-  await page.setRequestInterception(true);
-  page.on('request', request => {
-    new URL(request.url()).origin === allowedOrigin
-      ? request.continue()
-      : request.abort('blockedbyclient');
-  });
 
   await page.setViewport({
     width: options.width || 1920,
@@ -299,7 +292,7 @@ async function captureFrames(sketchUrl, allowedOrigin, outputDir, options) {
     deviceScaleFactor: 1
   });
 
-  await page.goto(sketchUrl, {
+  await page.goto(`file://${path.resolve(htmlPath)}`, {
     waitUntil: 'networkidle0'
   });
 
@@ -327,7 +320,7 @@ async function captureFrames(sketchUrl, allowedOrigin, outputDir, options) {
 See `scripts/render.sh` for the complete render script. Pipeline:
 
 ```
-1. Start isolated localhost server → launch Puppeteer → open sketch HTML
+1. Launch Puppeteer → open sketch HTML
 2. Capture N frames as PNG sequence
 3. Pipe to ffmpeg → encode H.264 MP4
 4. Optional: add audio track

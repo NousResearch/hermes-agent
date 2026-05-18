@@ -12418,6 +12418,93 @@ class GatewayRunner:
             handler=_on_confirm,
         )
 
+    @staticmethod
+    def _tool_definition_name(tool_def: Any) -> Optional[str]:
+        if not isinstance(tool_def, dict):
+            return None
+        function = tool_def.get("function")
+        if not isinstance(function, dict):
+            return None
+        name = function.get("name")
+        return name if isinstance(name, str) and name else None
+
+    @classmethod
+    def _replace_agent_mcp_tools(
+        cls,
+        agent: Any,
+        mcp_tool_definitions: List[Dict[str, Any]],
+    ) -> bool:
+        """Refresh only MCP-prefixed tools on an existing cached agent.
+
+        ``/reload-mcp`` mutates the global tool registry, but live gateway
+        sessions keep their own ``agent.tools`` list for prompt-cache reuse.
+        Replace the dynamic MCP slice while preserving plugin and built-in
+        tools that were appended or filtered when the session was created.
+        """
+        if agent is None or not hasattr(agent, "tools"):
+            return False
+
+        existing_tools = list(getattr(agent, "tools", None) or [])
+        preserved: List[Dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for tool_def in existing_tools:
+            name = cls._tool_definition_name(tool_def)
+            if name and name.startswith("mcp_"):
+                continue
+            preserved.append(tool_def)
+            if name:
+                seen_names.add(name)
+
+        refreshed = list(preserved)
+        for tool_def in mcp_tool_definitions:
+            name = cls._tool_definition_name(tool_def)
+            if not name or not name.startswith("mcp_") or name in seen_names:
+                continue
+            refreshed.append(tool_def)
+            seen_names.add(name)
+
+        agent.tools = refreshed
+        agent.valid_tool_names = {
+            name
+            for name in (cls._tool_definition_name(tool) for tool in refreshed)
+            if name
+        }
+        return True
+
+    def _refresh_cached_mcp_tools(
+        self,
+        mcp_tool_definitions: List[Dict[str, Any]],
+    ) -> int:
+        """Apply refreshed MCP definitions to cached and currently running agents."""
+        refreshed_count = 0
+        refreshed_ids: set[int] = set()
+
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        cache = getattr(self, "_agent_cache", None)
+        if cache_lock is not None and cache is not None:
+            with cache_lock:
+                for cached in list(cache.values()):
+                    agent = cached[0] if isinstance(cached, tuple) and cached else None
+                    if agent is None or id(agent) in refreshed_ids:
+                        continue
+                    if self._replace_agent_mcp_tools(agent, mcp_tool_definitions):
+                        refreshed_ids.add(id(agent))
+                        refreshed_count += 1
+
+        running_agents = getattr(self, "_running_agents", {}) or {}
+        for agent in list(running_agents.values()):
+            if (
+                agent is None
+                or agent is _AGENT_PENDING_SENTINEL
+                or id(agent) in refreshed_ids
+            ):
+                continue
+            if self._replace_agent_mcp_tools(agent, mcp_tool_definitions):
+                refreshed_ids.add(id(agent))
+                refreshed_count += 1
+
+        return refreshed_count
+
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -12439,6 +12526,29 @@ class GatewayRunner:
 
             # Reconnect by discovering tools (reads config.yaml fresh)
             new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            new_tool_names = set(new_tools or [])
+
+            mcp_tool_definitions = None
+            try:
+                from model_tools import get_tool_definitions
+
+                current_tool_definitions = get_tool_definitions(quiet_mode=True)
+                mcp_tool_definitions = [
+                    tool_def
+                    for tool_def in current_tool_definitions
+                    if (self._tool_definition_name(tool_def) in new_tool_names)
+                ]
+            except Exception as exc:
+                logger.warning("Failed to load refreshed MCP tool schemas: %s", exc)
+            if mcp_tool_definitions is not None:
+                refreshed_agents = self._refresh_cached_mcp_tools(
+                    mcp_tool_definitions
+                )
+                if refreshed_agents:
+                    logger.info(
+                        "Refreshed MCP tool schemas for %d cached/running agent(s)",
+                        refreshed_agents,
+                    )
 
             # Compute what changed
             with _lock:

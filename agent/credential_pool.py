@@ -471,6 +471,34 @@ class CredentialPool:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
 
+    def align_current_to_runtime(
+        self,
+        *,
+        runtime_api_key: Optional[str],
+        runtime_base_url: Optional[str] = None,
+    ) -> Optional[PooledCredential]:
+        """Align the selected entry to the credential currently backing the runtime.
+
+        Updates only the in-memory current selection. Lease counters and
+        persisted entry ordering remain untouched.
+        """
+        runtime_key = str(runtime_api_key or "").strip()
+        if not runtime_key:
+            return self.current()
+
+        base_norm = str(runtime_base_url or "").strip().rstrip("/").lower()
+        with self._lock:
+            for entry in self._entries:
+                entry_key = str(getattr(entry, "runtime_api_key", "") or "").strip()
+                if entry_key != runtime_key:
+                    continue
+                entry_base = str(getattr(entry, "runtime_base_url", "") or "").strip().rstrip("/").lower()
+                if base_norm and entry_base and entry_base != base_norm:
+                    continue
+                self._current_id = entry.id
+                return entry
+            return self.current()
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
         for idx, entry in enumerate(self._entries):

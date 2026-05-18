@@ -3880,6 +3880,7 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        runtime_base_norm = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
@@ -3890,20 +3891,32 @@ class AIAgent:
                 pass
 
             self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
+            self._anthropic_base_url = runtime_base_norm
             self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
+                runtime_key, runtime_base_norm,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
-            self.base_url = runtime_base
+            self.base_url = runtime_base_norm
+            if hasattr(self, "_primary_runtime") and isinstance(self._primary_runtime, dict):
+                self._primary_runtime["api_key"] = runtime_key
+                self._primary_runtime["base_url"] = runtime_base_norm
+                self._primary_runtime["anthropic_api_key"] = runtime_key
+                self._primary_runtime["anthropic_base_url"] = runtime_base_norm
             return
 
         self.api_key = runtime_key
-        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        self.base_url = runtime_base_norm
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        if hasattr(self, "_primary_runtime") and isinstance(self._primary_runtime, dict):
+            self._primary_runtime["api_key"] = self.api_key
+            self._primary_runtime["base_url"] = self.base_url
+            _rt_client_kwargs = self._primary_runtime.get("client_kwargs")
+            if isinstance(_rt_client_kwargs, dict):
+                _rt_client_kwargs["api_key"] = self.api_key
+                _rt_client_kwargs["base_url"] = self.base_url
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
 
@@ -3918,6 +3931,27 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
         from agent.agent_runtime_helpers import recover_with_credential_pool
         return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context)
+
+    @staticmethod
+    def _load_runtime_credential_pool(
+        provider: str,
+        *,
+        base_url: Optional[str] = None,
+        runtime_api_key: Optional[str] = None,
+        current_provider: Optional[str] = None,
+        current_base_url: Optional[str] = None,
+        current_pool=None,
+    ):
+        from agent.agent_runtime_helpers import load_runtime_credential_pool
+
+        return load_runtime_credential_pool(
+            provider,
+            base_url=base_url,
+            runtime_api_key=runtime_api_key,
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_pool=current_pool,
+        )
 
     def _credential_pool_may_recover_rate_limit(self) -> bool:
         """Whether a rate-limit retry should wait for same-provider credentials."""

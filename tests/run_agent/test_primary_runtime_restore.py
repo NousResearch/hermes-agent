@@ -30,7 +30,63 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+class _FakePool:
+    def __init__(self, name: str, has_credentials: bool = True):
+        self.name = name
+        self._has_credentials = has_credentials
+
+    def has_credentials(self):
+        return self._has_credentials
+
+    def has_available(self):
+        return self._has_credentials
+
+    def current(self):
+        return None
+
+    def entries(self):
+        return []
+
+    def align_current_to_runtime(self, *, runtime_api_key: str, runtime_base_url: str | None = None):
+        return None
+
+
+def _make_pool_entry(
+    entry_id: str,
+    *,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    priority: int,
+):
+    from agent.credential_pool import PooledCredential
+
+    return PooledCredential(
+        provider=provider,
+        id=entry_id,
+        label=entry_id,
+        auth_type="api_key",
+        priority=priority,
+        source="manual",
+        access_token=api_key,
+        base_url=base_url,
+    )
+
+
+def _make_credential_pool(provider: str, entries: list, *, current_id: str | None = None):
+    from agent.credential_pool import CredentialPool
+
+    pool = CredentialPool(provider, entries)
+    pool._current_id = current_id
+    return pool
+
+
+def _make_agent(
+    fallback_model=None,
+    provider="custom",
+    base_url="https://my-llm.example.com/v1",
+    credential_pool=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
@@ -45,6 +101,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            credential_pool=credential_pool,
         )
         agent.client = MagicMock()
         return agent
@@ -83,6 +140,11 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["compressor_context_length"] == cc.context_length
         assert rt["compressor_threshold_tokens"] == cc.threshold_tokens
 
+    def test_snapshot_includes_credential_pool(self):
+        primary_pool = _FakePool("primary")
+        agent = _make_agent(credential_pool=primary_pool)
+        assert agent._primary_runtime["credential_pool"] is primary_pool
+
     def test_snapshot_includes_anthropic_state_when_applicable(self):
         """Anthropic-mode agents should snapshot Anthropic-specific state."""
         with (
@@ -109,6 +171,54 @@ class TestPrimaryRuntimeSnapshot:
         agent = _make_agent(provider="custom")
         rt = agent._primary_runtime
         assert "anthropic_api_key" not in rt
+
+    def test_primary_openai_credential_rotation_updates_snapshot(self):
+        rotated_entry = _make_pool_entry(
+            "entry-b",
+            provider="custom",
+            api_key="rotated-key-abcdef",
+            base_url="https://my-llm.example.com/v1",
+            priority=0,
+        )
+        agent = _make_agent()
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._swap_credential(rotated_entry)
+
+        assert agent._primary_runtime["api_key"] == "rotated-key-abcdef"
+        assert agent._primary_runtime["client_kwargs"]["api_key"] == "rotated-key-abcdef"
+        assert agent._primary_runtime["base_url"] == "https://my-llm.example.com/v1"
+
+    def test_primary_anthropic_credential_rotation_updates_snapshot(self):
+        rotated_entry = _make_pool_entry(
+            "entry-b",
+            provider="anthropic",
+            api_key="sk-ant...cdef",
+            base_url="https://api.anthropic.com",
+            priority=0,
+        )
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant...5678",
+                base_url="https://api.anthropic.com",
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            agent._swap_credential(rotated_entry)
+
+        assert agent._primary_runtime["api_key"] == "sk-ant...cdef"
+        assert agent._primary_runtime["anthropic_api_key"] == "sk-ant...cdef"
+        assert agent._primary_runtime["anthropic_base_url"] == "https://api.anthropic.com"
 
 
 # =============================================================================
@@ -188,6 +298,81 @@ class TestRestorePrimaryRuntime:
         assert agent.context_compressor.context_length == original_ctx_len
         assert agent.context_compressor.threshold_tokens == original_threshold
 
+    def test_fallback_realigns_credential_pool_and_restore_recovers_primary_pool(self):
+        primary_pool = _FakePool("primary")
+        fallback_pool = _FakePool("fallback")
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            credential_pool=primary_pool,
+        )
+
+        mock_client = _mock_resolve()
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch.object(AIAgent, "_load_runtime_credential_pool", return_value=fallback_pool, create=True),
+        ):
+            agent._try_activate_fallback()
+
+        assert agent._credential_pool is fallback_pool
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._restore_primary_runtime()
+
+        assert agent._credential_pool is primary_pool
+
+    def test_fallback_clears_credential_pool_when_target_provider_has_none(self):
+        primary_pool = _FakePool("primary")
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            credential_pool=primary_pool,
+        )
+
+        mock_client = _mock_resolve()
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch.object(AIAgent, "_load_runtime_credential_pool", return_value=None, create=True),
+        ):
+            agent._try_activate_fallback()
+
+        assert agent._credential_pool is None
+
+    def test_same_runtime_fallback_preserves_existing_pool_identity(self):
+        entry_a = _make_pool_entry(
+            "entry-a",
+            provider="openrouter",
+            api_key="key-a",
+            base_url="https://openrouter.ai/api/v1",
+            priority=0,
+        )
+        entry_b = _make_pool_entry(
+            "entry-b",
+            provider="openrouter",
+            api_key="key-b",
+            base_url="https://openrouter.ai/api/v1",
+            priority=1,
+        )
+        primary_pool = _make_credential_pool("openrouter", [entry_a, entry_b], current_id="entry-a")
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "model-b"},
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            credential_pool=primary_pool,
+        )
+        agent.model = "model-a"
+        agent._primary_runtime["model"] = "model-a"
+
+        mock_client = _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="key-b")
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        assert agent._credential_pool is primary_pool
+        assert agent._credential_pool.current() is not None
+        assert agent._credential_pool.current().id == "entry-b"
+
     def test_restores_prompt_caching_flag(self):
         agent = _make_agent()
         original_caching = agent._use_prompt_caching
@@ -210,6 +395,42 @@ class TestRestorePrimaryRuntime:
             result = agent._restore_primary_runtime()
 
         assert result is False
+
+    def test_restore_rebuilds_with_rotated_primary_credential(self):
+        entry_a = _make_pool_entry(
+            "entry-a",
+            provider="custom",
+            api_key="startup-key-abcdef",
+            base_url="https://my-llm.example.com/v1",
+            priority=0,
+        )
+        entry_b = _make_pool_entry(
+            "entry-b",
+            provider="custom",
+            api_key="rotated-key-abcdef",
+            base_url="https://my-llm.example.com/v1",
+            priority=1,
+        )
+        primary_pool = _make_credential_pool("custom", [entry_a, entry_b], current_id="entry-a")
+        agent = _make_agent(
+            fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            credential_pool=primary_pool,
+        )
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._swap_credential(entry_b)
+
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback()
+
+        with patch.object(agent, "_create_openai_client", return_value=MagicMock()) as mock_create:
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        kwargs = mock_create.call_args.args[0]
+        assert kwargs["api_key"] == "rotated-key-abcdef"
+        assert kwargs["base_url"] == "https://my-llm.example.com/v1"
 
 
 # =============================================================================
@@ -235,6 +456,59 @@ class TestTryRecoverPrimaryTransport:
             )
 
         assert result is True
+
+    def test_recovers_primary_credential_pool_from_snapshot(self):
+        primary_pool = _FakePool("primary")
+        drifted_pool = _FakePool("drifted")
+        agent = _make_agent(provider="custom", credential_pool=primary_pool)
+        agent._credential_pool = drifted_pool
+        error = _make_transport_error("ReadTimeout")
+
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent._credential_pool is primary_pool
+
+    def test_recovery_rebuilds_with_rotated_primary_credential(self):
+        entry_a = _make_pool_entry(
+            "entry-a",
+            provider="custom",
+            api_key="startup-key-abcdef",
+            base_url="https://my-llm.example.com/v1",
+            priority=0,
+        )
+        entry_b = _make_pool_entry(
+            "entry-b",
+            provider="custom",
+            api_key="rotated-key-abcdef",
+            base_url="https://my-llm.example.com/v1",
+            priority=1,
+        )
+        primary_pool = _make_credential_pool("custom", [entry_a, entry_b], current_id="entry-a")
+        agent = _make_agent(provider="custom", credential_pool=primary_pool)
+        error = _make_transport_error("ReadTimeout")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._swap_credential(entry_b)
+
+        with (
+            patch.object(agent, "_create_openai_client", return_value=MagicMock()) as mock_create,
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        kwargs = mock_create.call_args.args[0]
+        assert kwargs["api_key"] == "rotated-key-abcdef"
+        assert kwargs["base_url"] == "https://my-llm.example.com/v1"
 
     def test_recovers_on_connect_timeout(self):
         agent = _make_agent(provider="custom")

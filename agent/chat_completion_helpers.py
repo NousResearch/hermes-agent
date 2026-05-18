@@ -1168,6 +1168,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = agent.provider
+        old_base_url = agent.base_url
+        old_pool = getattr(agent, "_credential_pool", None)
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1244,6 +1247,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # timeout takes effect on the very next fallback request,
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+        agent._credential_pool = agent._load_runtime_credential_pool(
+            fb_provider,
+            base_url=fb_base_url,
+            runtime_api_key=getattr(agent, "api_key", ""),
+            current_provider=old_provider,
+            current_base_url=old_base_url,
+            current_pool=old_pool,
+        )
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (

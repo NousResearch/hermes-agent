@@ -32,10 +32,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
+from agent.credential_pool import STATUS_EXHAUSTED, get_custom_provider_pool_key, load_pool
+from agent.message_sanitization import (
+    _repair_tool_call_arguments,
+    _sanitize_surrogates,
+)
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
@@ -61,6 +65,57 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
         return True
     memory_manager = getattr(agent, "_memory_manager", None)
     return bool(memory_manager and memory_manager.has_tool(function_name))
+
+
+def load_runtime_credential_pool(
+    provider: str,
+    *,
+    base_url: Optional[str] = None,
+    runtime_api_key: Optional[str] = None,
+    current_provider: Optional[str] = None,
+    current_base_url: Optional[str] = None,
+    current_pool=None,
+):
+    """Load or reuse the credential pool appropriate for a runtime backend."""
+    provider_norm = str(provider or "").strip().lower()
+    base_norm = str(base_url or "").strip().rstrip("/")
+    current_provider_norm = str(current_provider or "").strip().lower()
+    current_base_norm = str(current_base_url or "").strip().rstrip("/")
+
+    if (
+        current_pool is not None
+        and provider_norm
+        and provider_norm == current_provider_norm
+        and base_norm == current_base_norm
+    ):
+        if hasattr(current_pool, "align_current_to_runtime"):
+            current_pool.align_current_to_runtime(
+                runtime_api_key=runtime_api_key,
+                runtime_base_url=base_url,
+            )
+        return current_pool
+
+    if not provider_norm:
+        return None
+
+    pool_key = provider_norm
+    if provider_norm == "custom":
+        pool_key = get_custom_provider_pool_key(base_norm) or provider_norm
+
+    try:
+        pool = load_pool(pool_key)
+    except Exception:
+        return None
+
+    if not pool.has_credentials():
+        return None
+    if hasattr(pool, "align_current_to_runtime"):
+        pool.align_current_to_runtime(
+            runtime_api_key=runtime_api_key,
+            runtime_base_url=base_url,
+        )
+    return pool
+
 
 
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
@@ -772,6 +827,7 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        agent._credential_pool = rt.get("credential_pool")
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -927,6 +983,7 @@ def restore_primary_runtime(agent) -> bool:
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        agent._credential_pool = rt.get("credential_pool")
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
@@ -1386,6 +1443,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = agent.base_url
+    old_pool = getattr(agent, "_credential_pool", None)
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1511,6 +1570,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 pass
         raise
 
+    agent._credential_pool = load_runtime_credential_pool(
+        agent.provider,
+        base_url=agent.base_url,
+        runtime_api_key=getattr(agent, "api_key", ""),
+        current_provider=old_provider,
+        current_base_url=old_base_url,
+        current_pool=old_pool,
+    )
+
     # ── Re-evaluate prompt caching ──
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy(
@@ -1571,6 +1639,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
+        "credential_pool": getattr(agent, "_credential_pool", None),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

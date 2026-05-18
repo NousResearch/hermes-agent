@@ -662,3 +662,164 @@ def test_cmd_proxy_start_refuses_when_unauthenticated(capsys, tmp_path, monkeypa
     assert rc == 2
     err = capsys.readouterr().err
     assert "hermes login nous" in err
+
+
+# ---------------------------------------------------------------------------
+# XaiOAuthAdapter
+#
+# Lets external OpenAI-compatible clients call xAI through Hermes's existing
+# OAuth credential. Delegates credential resolution to
+# ``tools.xai_http.resolve_xai_http_credentials`` which handles the runtime
+# provider, PKCE refresh, and env fallback paths.
+# ---------------------------------------------------------------------------
+
+
+def test_registry_lists_xai_oauth():
+    assert "xai-oauth" in ADAPTERS
+
+
+def test_get_adapter_xai_oauth_returns_instance():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    adapter = get_adapter("xai-oauth")
+    assert isinstance(adapter, XaiOAuthAdapter)
+    assert isinstance(adapter, UpstreamAdapter)
+
+
+def test_xai_oauth_adapter_metadata():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    adapter = XaiOAuthAdapter()
+    assert adapter.name == "xai-oauth"
+    assert adapter.display_name == "xAI OAuth"
+    # Only /chat/completions is forwarded for this provider. /embeddings,
+    # /models and friends should NOT be in the allowlist — adding them
+    # would require explicit verification that xAI supports them on the
+    # operator's subscription tier.
+    assert "/chat/completions" in adapter.allowed_paths
+    assert "/embeddings" not in adapter.allowed_paths
+    assert "/models" not in adapter.allowed_paths
+
+
+def test_xai_oauth_adapter_authenticated_when_credentials_resolve():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    creds = {
+        "api_key": "xai-test-bearer",
+        "base_url": "https://api.x.ai/v1",
+        "provider": "xai-oauth",
+    }
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        return_value=creds,
+    ):
+        assert XaiOAuthAdapter().is_authenticated()
+
+
+def test_xai_oauth_adapter_not_authenticated_when_resolver_raises():
+    """OAuth refresh exceptions inside resolve_xai_http_credentials
+    must NOT bubble up out of is_authenticated. /health should report
+    False instead of 500-ing."""
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        side_effect=RuntimeError("simulated PKCE refresh failure"),
+    ):
+        assert XaiOAuthAdapter().is_authenticated() is False
+
+
+def test_xai_oauth_adapter_not_authenticated_when_api_key_empty():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        return_value={"api_key": "", "base_url": "https://api.x.ai/v1"},
+    ):
+        assert XaiOAuthAdapter().is_authenticated() is False
+
+
+def test_xai_oauth_adapter_get_credential_uses_runtime_resolver():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    creds = {
+        "api_key": "xai-runtime-bearer",
+        "base_url": "https://api.x.ai/v1",
+        "provider": "xai-oauth",
+    }
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        return_value=creds,
+    ) as mock_resolve:
+        cred = XaiOAuthAdapter().get_credential()
+
+    mock_resolve.assert_called_once()
+    assert cred.bearer == "xai-runtime-bearer"
+    assert cred.base_url == "https://api.x.ai/v1"
+    assert cred.token_type == "Bearer"
+
+
+def test_xai_oauth_adapter_get_credential_strips_trailing_slash_from_base_url():
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    creds = {
+        "api_key": "xai-runtime-bearer",
+        "base_url": "https://api.x.ai/v1/",  # trailing slash
+        "provider": "xai-oauth",
+    }
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        return_value=creds,
+    ):
+        cred = XaiOAuthAdapter().get_credential()
+    assert cred.base_url == "https://api.x.ai/v1"
+
+
+def test_xai_oauth_adapter_get_credential_raises_when_api_key_empty():
+    """Operator-facing error message must hint at the fix —
+    'run hermes login xai' or 'set XAI_API_KEY'."""
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        return_value={"api_key": "  ", "base_url": "https://api.x.ai/v1"},
+    ):
+        adapter = XaiOAuthAdapter()
+        with pytest.raises(RuntimeError, match="hermes login xai|XAI_API_KEY"):
+            adapter.get_credential()
+
+
+def test_xai_oauth_adapter_get_credential_wraps_resolver_exception():
+    """Underlying resolver exceptions are wrapped into a RuntimeError
+    with a useful prefix, not leaked as the raw exception type."""
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    with patch(
+        "tools.xai_http.resolve_xai_http_credentials",
+        side_effect=ValueError("token endpoint returned malformed JSON"),
+    ):
+        adapter = XaiOAuthAdapter()
+        with pytest.raises(RuntimeError, match="Failed to resolve xAI"):
+            adapter.get_credential()
+
+
+def test_xai_oauth_adapter_retry_credential_returns_none_on_401():
+    """Per spec: on upstream 401 the adapter returns None so the proxy
+    server synthesizes a 503 (retryable) for the consuming substrate's
+    fallback chain. Returning a fresh credential and retrying would
+    risk an infinite loop if the OAuth refresh is genuinely broken."""
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    adapter = XaiOAuthAdapter()
+    cred = adapter.get_retry_credential(
+        failed_credential=UpstreamCredential(
+            bearer="stale-bearer", base_url="https://api.x.ai/v1",
+        ),
+        status_code=401,
+    )
+    assert cred is None
+
+
+def test_xai_oauth_adapter_retry_credential_returns_none_for_other_statuses():
+    """5xx / 429 / 400 should NOT trigger a retry from this adapter.
+    The proxy server's fallback chain handles those statuses directly."""
+    from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
+    adapter = XaiOAuthAdapter()
+    for status in (400, 403, 429, 500, 502, 503, 504):
+        cred = adapter.get_retry_credential(
+            failed_credential=UpstreamCredential(
+                bearer="x", base_url="https://api.x.ai/v1",
+            ),
+            status_code=status,
+        )
+        assert cred is None, f"expected None for status {status}, got {cred!r}"

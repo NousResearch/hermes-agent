@@ -213,6 +213,18 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+# Plugin discovery (hermes_cli/plugins.py::_scan_directory_level) reads a
+# ``plugin.yaml`` (or ``plugin.yml``) manifest from each plugin directory to
+# register the plugin. Without these manifests in the installed package the
+# scan returns zero hits and built-in providers go missing, most visibly the
+# web-search providers under ``plugins/web/``, which surfaces as
+# "No web search provider configured" on Homebrew installs (#28149).
+#
+# Pin plugin manifests in package-data as defense against future
+# MANIFEST.in or include_package_data changes; under current setuptools
+# the recursive-include in MANIFEST.in also covers the wheel, so this
+# entry is belt-and-suspenders rather than strictly required today.
+plugins = ["**/plugin.yaml", "**/plugin.yml"]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]

@@ -1,4 +1,9 @@
 graft skills
 graft optional-skills
+# Bundled plugin manifests (plugin.yaml / plugin.yml). Without these the
+# PluginManager scan finds zero plugins on installs built from the sdist (e.g.
+# Homebrew, see #28149). package-data already covers the wheel; this covers
+# the sdist that downstream packagers build from.
+recursive-include plugins plugin.yaml plugin.yml
 global-exclude __pycache__
 global-exclude *.py[cod]

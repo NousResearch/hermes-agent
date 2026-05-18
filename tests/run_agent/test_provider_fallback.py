@@ -8,6 +8,7 @@ advancement through multiple providers.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
+import agent.conversation_loop as conversation_loop
 
 
 def _make_agent(fallback_model=None):
@@ -195,6 +196,29 @@ def _pool(n_entries: int, has_available: bool = True):
 
 
 class TestPoolRotationRoom:
+    def test_conversation_loop_exposes_pool_recovery_helper(self):
+        """The extracted conversation loop must resolve the helper lazily.
+
+        Gateway sessions call ``agent.conversation_loop.run_conversation``
+        directly. The eager fallback branch used to reference this helper as a
+        module-local global even though it lived in ``run_agent``, raising
+        NameError instead of switching to the configured fallback provider.
+        """
+        pool = _pool(1)
+
+        with patch("run_agent._pool_may_recover_from_rate_limit", return_value=False) as helper:
+            assert conversation_loop._pool_may_recover_from_rate_limit(
+                pool,
+                provider="openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+            ) is False
+
+        helper.assert_called_once_with(
+            pool,
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
     def test_none_pool_returns_false(self):
         assert _pool_may_recover_from_rate_limit(None) is False
 

@@ -82,6 +82,17 @@ def _ra():
     return run_agent
 
 
+def _pool_may_recover_from_rate_limit(*args, **kwargs):
+    """Delegate to ``run_agent``'s helper while preserving patchability.
+
+    ``run_conversation`` was extracted from ``run_agent.AIAgent`` but still
+    refers to this helper in the eager fallback path. Resolve lazily through
+    ``run_agent`` so gateway sessions do not hit a module-local NameError when
+    the primary provider rate-limits and a fallback model is configured.
+    """
+    return _ra()._pool_may_recover_from_rate_limit(*args, **kwargs)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 

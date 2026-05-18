@@ -203,6 +203,7 @@ from agent.tool_dispatch_helpers import (
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 
 
 
@@ -412,6 +413,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        default_headers: Dict[str, str] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -481,6 +483,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            default_headers=default_headers,
         )
 
     def _get_session_db_for_recall(self):
@@ -599,6 +602,8 @@ class AIAgent:
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', default_headers=None):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
+        if default_headers is None:
+            return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
         return switch_model(self, new_model, new_provider, api_key, base_url, api_mode, default_headers)
 
     def _safe_print(self, *args, **kwargs):
@@ -2753,6 +2758,7 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+        from agent.client_headers import merge_default_headers
         from agent.auxiliary_client import (
             _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
@@ -2794,6 +2800,11 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+        if getattr(self, "_default_headers", None):
+            self._client_kwargs["default_headers"] = merge_default_headers(
+                self._client_kwargs.get("default_headers"),
+                self._default_headers,
+            )
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

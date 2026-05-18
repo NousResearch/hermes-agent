@@ -137,6 +137,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    default_headers: Dict[str, str] = None,
 ):
     """
     Initialize the AI Agent.
@@ -216,6 +217,7 @@ def init_agent(
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
+    agent._default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -554,7 +556,12 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                default_headers=agent._default_headers,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -646,6 +653,12 @@ def init_agent(
                         client_kwargs["default_headers"] = dict(_ph.default_headers)
                 except Exception:
                     pass
+            if agent._default_headers:
+                from agent.client_headers import merge_default_headers
+                client_kwargs["default_headers"] = merge_default_headers(
+                    client_kwargs.get("default_headers"),
+                    agent._default_headers,
+                )
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client
@@ -667,6 +680,14 @@ def init_agent(
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
+                elif agent._default_headers:
+                    client_kwargs["default_headers"] = dict(agent._default_headers)
+                if agent._default_headers:
+                    from agent.client_headers import merge_default_headers
+                    client_kwargs["default_headers"] = merge_default_headers(
+                        client_kwargs.get("default_headers"),
+                        agent._default_headers,
+                    )
             else:
                 # When the user explicitly chose a non-OpenRouter provider
                 # but no credentials were found, fail fast with a clear
@@ -720,6 +741,12 @@ def init_agent(
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:
                                 client_kwargs["default_headers"] = dict(_fb_headers)
+                            if agent._default_headers:
+                                from agent.client_headers import merge_default_headers
+                                client_kwargs["default_headers"] = merge_default_headers(
+                                    client_kwargs.get("default_headers"),
+                                    agent._default_headers,
+                                )
                             _fb_resolved = True
                             break
                     if not _fb_resolved:
@@ -1286,6 +1313,7 @@ def init_agent(
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
+            default_headers=agent._default_headers,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
@@ -1303,6 +1331,7 @@ def init_agent(
             config_context_length=_config_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
+            default_headers=agent._default_headers,
         )
     agent.compression_enabled = compression_enabled
 

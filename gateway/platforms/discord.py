@@ -4450,10 +4450,28 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        client_user = self._client.user if self._client else None
+        self_role_mentioned = False
+        if client_user and getattr(message, "guild", None) and getattr(message, "role_mentions", None):
+            bot_member = getattr(message.guild, "me", None)
+            if bot_member is None and hasattr(message.guild, "get_member"):
+                bot_member = message.guild.get_member(client_user.id)
+            bot_role_ids = {
+                getattr(role, "id", None)
+                for role in getattr(bot_member, "roles", [])
+            }
+            self_role_mentioned = any(
+                getattr(role, "id", None) in bot_role_ids
+                for role in message.role_mentions
+            )
+
+        if client_user and (client_user in message.mentions or self_role_mentioned):
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            normalized_content = normalized_content.replace(f"<@{client_user.id}>", "").strip()
+            normalized_content = normalized_content.replace(f"<@!{client_user.id}>", "").strip()
+            if self_role_mentioned:
+                for role in getattr(message, "role_mentions", []) or []:
+                    normalized_content = normalized_content.replace(f"<@&{role.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

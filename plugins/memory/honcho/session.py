@@ -1087,7 +1087,17 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if card:
+                return card
+            # Honcho self-hosted v3 stores the peer card on the peer itself
+            # (GET /peers/{id}/card). The observer-target slot used above is
+            # only populated when writes also go through that path. Fall back
+            # to the target peer's own card so honcho_profile works regardless
+            # of which write path populated it.
+            if target_peer_id:
+                return self._fetch_peer_card(target_peer_id)
+            return []
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
@@ -1234,13 +1244,22 @@ class HonchoSessionManager:
         if not session:
             return None
         try:
-            peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            if observer_peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
                 return None
-            peer_obj = self._get_or_create_peer(peer_id)
-            result = peer_obj.set_card(card)
-            logger.info("Updated peer card for %s (%d facts)", peer_id, len(card))
+            peer_obj = self._get_or_create_peer(observer_peer_id)
+            result = (
+                peer_obj.set_card(card, target=target_peer_id)
+                if target_peer_id is not None
+                else peer_obj.set_card(card)
+            )
+            logger.info(
+                "Updated peer card observer=%s target=%s (%d facts)",
+                observer_peer_id,
+                target_peer_id or observer_peer_id,
+                len(card),
+            )
             return result
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)

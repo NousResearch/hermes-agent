@@ -1920,6 +1920,7 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
                 "client_id": QWEN_OAUTH_CLIENT_ID,
             },
             timeout=timeout_seconds,
+            follow_redirects=True,
         )
     except Exception as exc:
         raise AuthError(
@@ -1935,6 +1936,16 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
             + (f" Response: {body}" if body else ""),
             provider="qwen-oauth",
             code="qwen_refresh_failed",
+        )
+
+    # Diagnostic: log response details before JSON parsing
+    # (fixes #7746 where redirect responses with empty bodies are misdiagnosed)
+    ct = response.headers.get("content-type", "")
+    location = response.headers.get("location", "")
+    if response.status_code >= 300 or "json" not in ct.lower():
+        logger.warning(
+            "Qwen OAuth refresh: status=%d, content-type=%s, body_len=%d, location=%s",
+            response.status_code, ct, len(response.content), location,
         )
 
     try:

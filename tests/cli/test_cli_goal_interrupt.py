@@ -170,7 +170,7 @@ class TestHealthyTurnStillRuns:
         # Force the judge to say "continue" without touching the network.
         with patch(
             "hermes_cli.goals.judge_goal",
-            return_value=("continue", "needs more steps", False),
+            return_value=("continue", "needs more steps", False, False),
         ):
             cli._maybe_continue_goal_after_turn()
 
@@ -190,7 +190,7 @@ class TestHealthyTurnStillRuns:
 
         with patch(
             "hermes_cli.goals.judge_goal",
-            return_value=("done", "goal satisfied", False),
+            return_value=("done", "goal satisfied", False, False),
         ):
             cli._maybe_continue_goal_after_turn()
 

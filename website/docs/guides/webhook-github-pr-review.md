@@ -88,7 +88,7 @@ platforms:
 | `deliver_extra.pr_number` | Resolves to the PR number from the payload. |
 
 :::note The payload does not contain code
-The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. The `terminal` tool is included in the default `hermes-webhook` toolset, so no extra configuration is needed.
+The GitHub webhook payload includes PR metadata (title, description, branch names, URLs) but **not the diff**. The prompt above instructs the agent to run `gh pr diff` to fetch the actual changes. Because webhook payload fields can contain untrusted user content, the default `hermes-webhook` toolset exposes no tools; explicitly enable the `terminal` toolset for the `webhook` platform only if this route is trusted to run local commands.
 :::
 
 ---

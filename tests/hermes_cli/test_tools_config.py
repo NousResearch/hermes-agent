@@ -115,6 +115,17 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     assert "messaging" in enabled
 
 
+def test_get_platform_tools_webhook_defaults_to_no_tools():
+    """Webhook payloads are provider-authenticated but still untrusted prompt input."""
+    assert _get_platform_tools({}, "webhook", include_default_mcp_servers=False) == set()
+
+
+def test_get_platform_tools_webhook_allows_explicit_opt_in():
+    config = {"platform_toolsets": {"webhook": ["terminal"]}}
+
+    assert _get_platform_tools(config, "webhook", include_default_mcp_servers=False) == {"terminal"}
+
+
 def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
     enabled = _get_platform_tools({}, "homeassistant")
 
@@ -950,6 +961,7 @@ def test_discord_toolsets_in_configurable_toolsets():
 def test_discord_toolsets_in_default_off():
     assert "discord" in _DEFAULT_OFF_TOOLSETS
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+    assert "computer_use" in _DEFAULT_OFF_TOOLSETS
 
 
 def test_discord_toolsets_not_available_on_other_platforms():

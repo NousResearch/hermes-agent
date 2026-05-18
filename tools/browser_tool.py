@@ -502,8 +502,31 @@ def _is_local_mode() -> bool:
     return _get_cloud_provider() is None
 
 
+def _cdp_override_is_loopback(cdp_url: str) -> bool:
+    """Return True when a CDP override targets this machine's loopback host."""
+    from ipaddress import ip_address
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(cdp_url).hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _is_local_backend() -> bool:
-    """Return True when the browser runs locally (no cloud provider).
+    """Return True when the browser runs locally.
+
+    CDP overrides may point at hosted browsers without a named cloud provider
+    configured.  Treat them as remote unless they explicitly target loopback,
+    so remote CDP sessions keep the same SSRF protections as cloud providers.
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
@@ -512,7 +535,14 @@ def _is_local_backend() -> bool:
     and network access on the same machine, so the check adds no security
     value.
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    if _is_camofox_mode():
+        return True
+
+    cdp_override = _get_cdp_override()
+    if cdp_override:
+        return _cdp_override_is_loopback(cdp_override)
+
+    return _get_cloud_provider() is None
 
 
 _auto_local_for_private_urls_resolved = False
@@ -1353,7 +1383,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer web_extract so URL safety checks are applied; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {

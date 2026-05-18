@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+import types
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -587,18 +588,67 @@ def test_curator_review_prompt_has_invariants():
     assert "consolidat" in CURATOR_REVIEW_PROMPT.lower() or "merge" in CURATOR_REVIEW_PROMPT.lower()
 
 
-def test_curator_review_prompt_points_at_existing_tools_only():
-    """The review prompt must rely only on the restricted skills toolset
-    and must NOT reference bespoke curator tools that are not registered
-    model tools."""
+def test_curator_review_prompt_points_at_constrained_tools_only():
+    """The review prompt must rely on constrained skill tools only."""
     from agent.curator import CURATOR_REVIEW_PROMPT
     assert "skill_manage" in CURATOR_REVIEW_PROMPT
     assert "skills_list" in CURATOR_REVIEW_PROMPT
     assert "skill_view" in CURATOR_REVIEW_PROMPT
-    assert "restricted to the skills toolset" in CURATOR_REVIEW_PROMPT.lower()
-    # These would be nice but aren't actually registered as tools.
+    assert "terminal" not in CURATOR_REVIEW_PROMPT.lower()
+    # These would be nice but aren't actually registered as tools — the
+    # curator uses skill_manage instead.
     assert "archive_skill" not in CURATOR_REVIEW_PROMPT
     assert "pin_skill" not in CURATOR_REVIEW_PROMPT
+
+
+def test_run_llm_review_limits_agent_to_curator_toolset(curator_env, monkeypatch):
+    """The unattended curator must not inherit the default terminal toolset."""
+    # The fixture stubs _run_llm_review for most tests; reload to exercise the
+    # real constructor path without making a network call.
+    curator = importlib.reload(curator_env["curator"])
+    captured_kwargs = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, user_message):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=FakeAgent),
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            load_config=lambda: {
+                "model": {"provider": "openrouter", "default": "model"}
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(resolve_runtime_provider=lambda **_kwargs: {
+            "api_key": "key",
+            "base_url": "https://example.invalid/v1",
+            "api_mode": "chat_completions",
+            "provider": "openrouter",
+        }),
+    )
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert captured_kwargs["enabled_toolsets"] == ["curator"]
 
 
 def test_curator_does_not_instruct_model_to_pin():

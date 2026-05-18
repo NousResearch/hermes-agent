@@ -63,13 +63,18 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  display: flex;
   gap: 0.75rem;
   align-items: start;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.hermes-kanban-columns::-webkit-scrollbar {
+  display: none;
 }
 
 .hermes-kanban-column {
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);

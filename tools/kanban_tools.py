@@ -693,16 +693,22 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 
 def _handle_link(args: dict, **kw) -> str:
-    """Add a parent→child dependency edge after the fact."""
+    """Add a parent→child dependency or hierarchy edge after the fact."""
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
+    relation_type = args.get("relation_type") or "dependency"
     if not parent_id or not child_id:
         return tool_error("both parent_id and child_id are required")
     try:
         kb, conn = _connect()
         try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-            return _ok(parent_id=parent_id, child_id=child_id)
+            kb.link_tasks(
+                conn,
+                parent_id=parent_id,
+                child_id=child_id,
+                relation_type=relation_type,
+            )
+            return _ok(parent_id=parent_id, child_id=child_id, relation_type=relation_type)
         finally:
             conn.close()
     except ValueError as e:
@@ -1102,15 +1108,21 @@ KANBAN_UNBLOCK_SCHEMA = {
 KANBAN_LINK_SCHEMA = {
     "name": "kanban_link",
     "description": (
-        "Add a parent→child dependency edge after both tasks already "
-        "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "Add a parent→child dependency or hierarchy edge after both tasks already "
+        "exist. dependency gates readiness/claiming; hierarchy models "
+        "umbrella/epic structure only. Cycles and self-links are rejected."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "parent_id": {"type": "string", "description": "Parent task id."},
             "child_id":  {"type": "string", "description": "Child task id."},
+            "relation_type": {
+                "type": "string",
+                "enum": ["dependency", "hierarchy"],
+                "default": "dependency",
+                "description": "Relation type. dependency gates scheduling; hierarchy is structural only.",
+            },
         },
         "required": ["parent_id", "child_id"],
     },

@@ -370,9 +370,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     # --- link / unlink ---
-    p_link = sub.add_parser("link", help="Add a parent->child dependency")
+    p_link = sub.add_parser("link", help="Add a parent->child dependency or hierarchy relation")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--type",
+        choices=("dependency", "hierarchy"),
+        default="dependency",
+        dest="relation_type",
+        help="Relation type. dependency gates readiness/claiming; hierarchy is umbrella/epic structure only.",
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -1521,8 +1528,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
-    print(f"Linked {args.parent_id} -> {args.child_id}")
+        kb.link_tasks(conn, args.parent_id, args.child_id, relation_type=args.relation_type)
+    print(f"Linked {args.parent_id} -> {args.child_id} ({args.relation_type})")
     return 0
 
 

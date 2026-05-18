@@ -803,6 +803,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
+    relation_type TEXT NOT NULL DEFAULT 'dependency',
     PRIMARY KEY (parent_id, child_id)
 );
 
@@ -1076,6 +1077,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+
+    link_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_links'"
+    ).fetchone() is not None
+    if link_table_exists:
+        link_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_links)")}
+        if "relation_type" not in link_cols:
+            _add_column_if_missing(
+                conn,
+                "task_links",
+                "relation_type",
+                "relation_type TEXT NOT NULL DEFAULT 'dependency'",
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_links_type_child "
+            "ON task_links(relation_type, child_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_links_type_parent "
+            "ON task_links(relation_type, parent_id)"
+        )
 
     # task_events gained a run_id column; back-fill it as NULL for
     # historical events (they predate runs and can't be attributed).
@@ -1511,9 +1533,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    relation_type: str = "dependency",
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    if relation_type not in {"dependency", "hierarchy"}:
+        raise ValueError("relation_type must be one of: dependency, hierarchy")
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -1523,21 +1553,28 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
         conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-            (parent_id, child_id),
+            """
+            INSERT INTO task_links (parent_id, child_id, relation_type)
+            VALUES (?, ?, ?)
+            ON CONFLICT(parent_id, child_id) DO UPDATE SET
+                relation_type = excluded.relation_type
+            """,
+            (parent_id, child_id, relation_type),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
-            )
+        # Dependency links gate readiness/claims; hierarchy links only model
+        # umbrella/epic breakdowns and must not block child execution.
+        if relation_type == "dependency":
+            parent_status = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+            ).fetchone()["status"]
+            if parent_status != "done":
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {"parent": parent_id, "child": child_id, "relation_type": relation_type},
         )
 
 
@@ -1842,7 +1879,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
+                "WHERE l.child_id = ? AND l.relation_type = 'dependency'",
                 (task_id,),
             ).fetchall()
             if all(p["status"] in {"done", "archived"} for p in parents):
@@ -1886,7 +1923,9 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? "
+            "AND l.relation_type = 'dependency' "
+            "AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -2688,7 +2727,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? "
+            "AND l.relation_type = 'dependency' "
+            "AND p.status != 'done' LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
@@ -3232,6 +3273,10 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
+    if sys.platform == "linux":
+        proc_status = f"/proc/{int(pid)}/status"
+        if not os.path.exists(proc_status):
+            return False
     from gateway.status import _pid_exists
     if not _pid_exists(int(pid)):
         return False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -45,6 +46,60 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+    with kb.connect() as conn:
+        link_cols = {
+            row["name"]: row for row in conn.execute("PRAGMA table_info(task_links)")
+        }
+    assert link_cols["relation_type"]["dflt_value"] == "'dependency'"
+
+
+def test_init_migrates_legacy_task_links_to_dependency(tmp_path):
+    db = tmp_path / "legacy-kanban.db"
+    raw = sqlite3.connect(db)
+    raw.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT NOT NULL DEFAULT 'test',
+            created_at INTEGER NOT NULL DEFAULT 1,
+            started_at INTEGER,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            worker_pid INTEGER,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            tenant TEXT,
+            idempotency_key TEXT
+        );
+        CREATE TABLE task_links (
+            parent_id TEXT NOT NULL,
+            child_id TEXT NOT NULL,
+            PRIMARY KEY (parent_id, child_id)
+        );
+        INSERT INTO tasks (id, title, status)
+        VALUES ('p', 'parent', 'todo'), ('c', 'child', 'todo');
+        INSERT INTO task_links (parent_id, child_id) VALUES ('p', 'c');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    kb.init_db(db)
+
+    with kb.connect(db) as conn:
+        row = conn.execute(
+            "SELECT parent_id, child_id, relation_type FROM task_links"
+        ).fetchone()
+    assert dict(row) == {
+        "parent_id": "p",
+        "child_id": "c",
+        "relation_type": "dependency",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +156,42 @@ def test_link_keeps_ready_child_when_parent_already_done(kanban_home):
         assert kb.get_task(conn, b).status == "ready"
         kb.link_tasks(conn, a, b)
         assert kb.get_task(conn, b).status == "ready"
+
+
+def test_hierarchy_link_does_not_gate_ready_or_claim(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="umbrella")
+        child = kb.create_task(conn, title="child")
+        assert kb.get_task(conn, child).status == "ready"
+
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        row = conn.execute(
+            "SELECT relation_type FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (parent, child),
+        ).fetchone()
+        assert row["relation_type"] == "hierarchy"
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.claim_task(conn, child) is not None
+
+
+def test_link_can_update_existing_relation_type(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="umbrella")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child, relation_type="dependency")
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+
+        row = conn.execute(
+            "SELECT relation_type FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (parent, child),
+        ).fetchone()
+        assert row["relation_type"] == "hierarchy"
+        conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (child,))
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, child).status == "ready"
 
 
 def test_link_rejects_self_loop(kanban_home):

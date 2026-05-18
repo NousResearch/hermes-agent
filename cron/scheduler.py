@@ -175,7 +175,16 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     normalized_profile = normalize_profile_name(raw_profile)
-    profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
 
     override_token = None
     try:

@@ -339,6 +339,92 @@ def test_describer_include_soul_tolerates_missing_file(profile_env, monkeypatch)
     assert "SOUL.md" not in user_text
 
 
+def test_describer_does_not_include_agents_by_default(profile_env, monkeypatch):
+    """AGENTS.md content must not leak into the prompt when include_agents=False."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    (profile_env / "AGENTS.md").write_text(
+        "# Newton — Delivery Engineer\nLane: All coding tasks for project repos."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")  # no flags
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Newton" not in user_text
+    assert "AGENTS.md" not in user_text
+
+
+def test_describer_includes_agents_when_opt_in(profile_env, monkeypatch):
+    """include_agents=True pulls AGENTS.md content into the prompt."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    (profile_env / "AGENTS.md").write_text(
+        "# Newton — Delivery Engineer\nLane: All coding tasks for project repos."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", include_agents=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Newton" in user_text
+    assert "Delivery Engineer" in user_text
+    assert "All coding tasks" in user_text
+
+
+def test_describer_include_agents_falls_back_to_workspace(profile_env, monkeypatch):
+    """When AGENTS.md isn't at profile root, fall back to workspace/AGENTS.md."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    workspace = profile_env / "workspace"
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text(
+        "# Edison — Architect\nLane: Specs and architecture authoring."
+    )
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", include_agents=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "Edison" in user_text
+    assert "Architect" in user_text
+
+
+def test_describer_include_agents_tolerates_missing_file(profile_env, monkeypatch):
+    """include_agents=True must not error when no AGENTS.md exists."""
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(describer, "_builtin_skill_ids", lambda: set())
+
+    patch_ctx, captured = _capture_user_msg()
+    with patch_ctx, patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof", include_agents=True)
+    assert outcome.ok
+    user_text = captured[0][1]["content"]
+    assert "AGENTS.md" not in user_text
+
+
 def test_describer_caps_skill_list_and_keeps_user_skills(profile_env, monkeypatch):
     """When skill count exceeds MAX_SKILLS_FOR_PROMPT, user skills must all survive."""
     monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")

@@ -9223,6 +9223,7 @@ def cmd_profile(args):
         from hermes_cli import profile_describer as _pd
 
         include_soul_flag = bool(getattr(args, "include_soul", False))
+        include_agents_flag = bool(getattr(args, "include_agents", False))
         tag_skills_flag = bool(getattr(args, "tag_skills", False))
 
         if all_flag:
@@ -9240,6 +9241,7 @@ def cmd_profile(args):
                 tgt,
                 overwrite=overwrite_flag,
                 include_soul=include_soul_flag,
+                include_agents=include_agents_flag,
                 tag_builtins=tag_skills_flag,
             )
             if outcome.ok:
@@ -12202,6 +12204,16 @@ Examples:
              "in the prompt. Off by default — per the canonical Hermes docs "
              "SOUL.md is for voice/tone only. Enable when your SOUL.md "
              "encodes lane/role information you want the describer to read.",
+    )
+    profile_describe.add_argument(
+        "--include-agents",
+        dest="include_agents",
+        action="store_true",
+        help="With --auto, include AGENTS.md content as the canonical "
+             "role/lane signal in the prompt. AGENTS.md is the docs-blessed "
+             "location for project-specific role information; this is the "
+             "doc-correct way to feed lane signal to the describer. Off by "
+             "default to preserve existing prompt shape.",
     )
 
     profile_show = profile_subparsers.add_parser("show", help="Show profile details")

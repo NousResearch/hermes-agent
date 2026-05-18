@@ -57,6 +57,11 @@ MAX_SKILLS_FOR_PROMPT = 60
 # meant to be small per Hermes docs, but we cap to be safe.
 MAX_SOUL_CHARS = 4000
 
+# Cap on AGENTS.md content fed when --include-agents is passed. AGENTS.md
+# is the canonical place for lane/role information so we allow a slightly
+# larger budget than SOUL.md, but still bounded.
+MAX_AGENTS_CHARS = 6000
+
 
 _SYSTEM_PROMPT_BASE = """You are a profile-describer for the Hermes Agent kanban board.
 
@@ -68,7 +73,7 @@ profile needs a short, concrete description of what it's good at.
 You are given a profile's:
   - Name
   - Model / provider
-  - List of installed skill names{tag_blurb}{soul_blurb}
+  - List of installed skill names{tag_blurb}{soul_blurb}{agents_blurb}
 
 Produce a single JSON object with exactly one key:
 
@@ -82,7 +87,7 @@ Rules:
   - Stay concrete. Bad: "an AI agent that helps users."
                   Good: "Reads and modifies Python codebases — runs tests,
                          refactors functions, opens GitHub PRs."
-  - 1-2 sentences, <= 280 characters total.{tag_rule}{soul_rule}
+  - 1-2 sentences, <= 280 characters total.{tag_rule}{soul_rule}{agents_rule}
   - Never invent capabilities the skills don't suggest.
   - Never write "Hermes Agent profile" or other meta-narration.
   - No code fences, no preamble, no closing remarks. Output only JSON.
@@ -97,6 +102,11 @@ _SOUL_BLURB = (
     "\n  - SOUL.md content describing role/identity (only when the user "
     "explicitly opted in)"
 )
+_AGENTS_BLURB = (
+    "\n  - AGENTS.md content describing the profile's lane, role, and "
+    "workflow (the canonical Hermes location for project-specific role "
+    "information)"
+)
 _TAG_RULE = (
     "\n  - Weight [user] skills as the dominant signal of role and domain. "
     "[built-in] skills are present in most profiles and carry weak lane "
@@ -108,15 +118,26 @@ _SOUL_RULE = (
     "portion as authoritative for the agent's purpose; let skills inform "
     "capability detail but not override stated role."
 )
+_AGENTS_RULE = (
+    "\n  - When AGENTS.md content is provided, treat its role/lane "
+    "statements as the highest-priority signal — AGENTS.md is the "
+    "canonical Hermes location for declaring what an agent does. Skills "
+    "and other signals fill in capability detail; they do not override "
+    "stated role."
+)
 
 
-def _build_system_prompt(*, tag_builtins: bool, include_soul: bool) -> str:
+def _build_system_prompt(
+    *, tag_builtins: bool, include_soul: bool, include_agents: bool
+) -> str:
     """Build the system prompt with sections gated to the active flags."""
     return _SYSTEM_PROMPT_BASE.format(
         tag_blurb=_TAG_BLURB if tag_builtins else "",
         soul_blurb=_SOUL_BLURB if include_soul else "",
+        agents_blurb=_AGENTS_BLURB if include_agents else "",
         tag_rule=_TAG_RULE if tag_builtins else "",
         soul_rule=_SOUL_RULE if include_soul else "",
+        agents_rule=_AGENTS_RULE if include_agents else "",
     )
 
 
@@ -126,7 +147,7 @@ Provider: {provider}
 Installed skill count: {skill_count_text}
 Notable skills (up to {skill_cap}):
 {skill_list}
-{soul_block}"""
+{soul_block}{agents_block}"""
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -299,6 +320,47 @@ def _load_soul_md(profile_dir: Path) -> str:
     return text
 
 
+# Candidate locations for AGENTS.md, in priority order. Hermes itself supports
+# AGENTS.md at the project cwd (canonical) or anywhere in the profile tree;
+# operators commonly stash a fleet-style AGENTS.md under a workspace/
+# subdirectory of the profile when the profile maps to a fixed working
+# directory. We try the canonical profile-root location first, then fall
+# back to workspace/ which is the convention used in the multi-agent fleet
+# layout this feature was originally designed to support.
+_AGENTS_MD_CANDIDATES = (
+    Path("AGENTS.md"),
+    Path("workspace") / "AGENTS.md",
+)
+
+
+def _load_agents_md(profile_dir: Path) -> str:
+    """Return AGENTS.md content for the profile, capped to ``MAX_AGENTS_CHARS``.
+
+    AGENTS.md is the canonical place for project-specific lane / role /
+    workflow information per the Hermes docs. We check the profile root
+    first, then ``workspace/AGENTS.md`` as a fallback for fleet layouts
+    that keep agent context in a workspace subdirectory.
+
+    Returns empty string if no AGENTS.md is found, the file is empty, or
+    it cannot be read.
+    """
+    for rel in _AGENTS_MD_CANDIDATES:
+        candidate = profile_dir / rel
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text(errors="replace").strip()
+        except Exception as exc:
+            logger.debug("describe: could not read AGENTS.md at %s: %s", candidate, exc)
+            continue
+        if not text:
+            continue
+        if len(text) > MAX_AGENTS_CHARS:
+            text = text[:MAX_AGENTS_CHARS] + "\n... (truncated)"
+        return text
+    return ""
+
+
 def _extract_json_blob(raw: str) -> Optional[dict]:
     if not raw:
         return None
@@ -324,6 +386,7 @@ def describe_profile(
     timeout: Optional[int] = None,
     tag_builtins: bool = False,
     include_soul: bool = False,
+    include_agents: bool = False,
 ) -> DescribeOutcome:
     """Auto-generate a description for one profile.
 
@@ -347,6 +410,12 @@ def describe_profile(
     into the prompt as a role-identity signal. Per the canonical Hermes
     docs SOUL.md is voice/tone only, so this is off by default — only
     set True when the profile keeps lane/role information in SOUL.md.
+
+    ``include_agents`` (default False) pulls the profile's AGENTS.md
+    content into the prompt as the canonical role/lane signal. AGENTS.md
+    is the docs-blessed location for project-specific role information,
+    but it's off by default to keep existing prompt shape unchanged for
+    callers who don't pass the flag.
     """
     canon = profiles_mod.normalize_profile_name(profile_name)
     if not profiles_mod.profile_exists(canon):
@@ -412,6 +481,18 @@ def describe_profile(
                 f"---\n{soul_text}\n---"
             )
 
+    # Optional AGENTS.md lane/role block (opt-in). This is the canonical
+    # docs-blessed home for role information; SOUL.md is the escape hatch
+    # for fleets that pollute SOUL with lane content.
+    agents_block = ""
+    if include_agents:
+        agents_text = _load_agents_md(profile_dir)
+        if agents_text:
+            agents_block = (
+                "\nProfile AGENTS.md (canonical lane/role/workflow):\n"
+                f"---\n{agents_text}\n---"
+            )
+
     # Read model + provider from the profile's config.
     try:
         model, provider = profiles_mod._read_config_model(profile_dir)
@@ -437,7 +518,9 @@ def describe_profile(
         return DescribeOutcome(canon, False, "no auxiliary client configured")
 
     system_prompt = _build_system_prompt(
-        tag_builtins=tag_builtins, include_soul=include_soul
+        tag_builtins=tag_builtins,
+        include_soul=include_soul,
+        include_agents=include_agents,
     )
     user_msg = _USER_TEMPLATE.format(
         name=canon,
@@ -447,6 +530,7 @@ def describe_profile(
         skill_cap=MAX_SKILLS_FOR_PROMPT,
         skill_list=skill_list,
         soul_block=soul_block,
+        agents_block=agents_block,
     )
 
     try:

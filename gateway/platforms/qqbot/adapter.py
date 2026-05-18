@@ -705,9 +705,8 @@ class QQAdapter(BasePlatformAdapter):
                 "token": f"QQBot {token}",
                 "intents": (1 << 25)
                            | (1 << 30)
-                           | (
-                                   1 << 12
-                           ),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE
+                           | (1 << 12)
+                           | (1 << 26),  # C2C_GROUP_AT_MESSAGES + PUBLIC_GUILD_MESSAGES + DIRECT_MESSAGE + INTERACTION
                 "shard": [0, 1],
                 "properties": {
                     "$os": "macOS",
@@ -1620,11 +1619,15 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache image: %s", self._log_tag, exc)
             else:
-                # Other attachments (video, file, etc.): record as text.
+                # Other attachments (video, file, etc.): download and record with path.
                 try:
                     cached_path = await self._download_and_cache(url, ct)
                     if cached_path:
-                        other_attachments.append(f"[Attachment: {filename or ct}]")
+                        name = filename or ct
+                        if ct.startswith("video/"):
+                            other_attachments.append(f"[video: {name} ({cached_path})]")
+                        else:
+                            other_attachments.append(f"[file: {name} ({cached_path})]")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
 

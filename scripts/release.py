@@ -42,6 +42,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Home Assistant Add-on config
 HASSIO_CONFIG = REPO_ROOT / "hassio" / "hermes" / "config.yaml"
 HASSIO_DOCKERFILE = REPO_ROOT / "hassio" / "hermes" / "Dockerfile"
+HASSIO_BUILD_YAML = REPO_ROOT / "hassio" / "hermes" / "build.yaml"
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -1695,6 +1696,8 @@ def main():
                 add_files.append(str(HASSIO_CONFIG))
             if HASSIO_DOCKERFILE.exists():
                 add_files.append(str(HASSIO_DOCKERFILE))
+            if HASSIO_BUILD_YAML.exists():
+                add_files.append(str(HASSIO_BUILD_YAML))
             # Add all RELEASE_v*.md (should only be one now, and we want to stage the deletion of old ones)
             add_result = git_result("add", *add_files, "RELEASE_v*.md")
             if add_result.returncode != 0:

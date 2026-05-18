@@ -1,0 +1,4 @@
+context: ../..
+build_from:
+  aarch64: "ghcr.io/home-assistant/aarch64-base-python:3.13-alpine3.21"
+  amd64: "ghcr.io/home-assistant/amd64-base-python:3.13-alpine3.21"

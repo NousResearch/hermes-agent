@@ -104,6 +104,61 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+_VOLATILE_MEMORY_PATTERNS = [
+    (r"\b(PR|pull request|issue)\s*#?\d+\b", "artifact reference"),
+    (r"\b(commit|sha)\s+[0-9a-f]{7,40}\b", "commit reference"),
+    (r"\b(submitted|opened|merged|closed)\s+(a\s+)?(PR|pull request|issue)\b", "session action"),
+    (r"\b(fixed|implemented|completed|finished)\s+(bug|issue|task|phase|slice|wave)\b", "completion log"),
+]
+
+_SHORT_HORIZON_PATTERNS = [
+    r"\b(today|tomorrow|yesterday|this week|this month|last time|next time)\b",
+    r"\b\d{4}-\d{2}-\d{2}\b",
+]
+
+_IMPERATIVE_MEMORY_PATTERN = re.compile(
+    r"^\s*(always|never|do not|don't|must|should|run|use|avoid|remember to)\b",
+    re.IGNORECASE,
+)
+
+
+def _memory_selection_warnings(content: str) -> List[str]:
+    """Return non-blocking warnings for entries that look like poor long-term memory.
+
+    This is deliberately advisory, not validation: the LLM/user may still have a
+    legitimate reason to save the entry, and hard-blocking would make memory less
+    useful.  The warning gives the agent immediate tool-boundary feedback when an
+    entry looks better suited to session_search, an artifact, or a skill.
+    """
+    text = (content or "").strip()
+    if not text:
+        return []
+
+    warnings: List[str] = []
+    for pattern, label in _VOLATILE_MEMORY_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            warnings.append(
+                "This looks like session progress or a short-lived artifact "
+                f"({label}); prefer session_search, the repo/PR, or a task artifact "
+                "unless the entry is a stable convention."
+            )
+            break
+
+    if any(re.search(pattern, text, re.IGNORECASE) for pattern in _SHORT_HORIZON_PATTERNS):
+        warnings.append(
+            "This contains short-horizon wording; memory should keep facts that "
+            "will still matter later, while temporary state belongs in session_search."
+        )
+
+    if _IMPERATIVE_MEMORY_PATTERN.search(text):
+        warnings.append(
+            "Rewrite imperative memory as a declarative fact to avoid future turns "
+            "treating it as a permanent command."
+        )
+
+    return warnings
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -261,7 +316,11 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(
+            target,
+            "Entry added.",
+            policy_warnings=_memory_selection_warnings(content),
+        )
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -319,7 +378,11 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(
+            target,
+            "Entry replaced.",
+            policy_warnings=_memory_selection_warnings(new_content),
+        )
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -370,7 +433,12 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(
+        self,
+        target: str,
+        message: Optional[str] = None,
+        policy_warnings: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -385,6 +453,8 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        if policy_warnings:
+            resp["policy_warnings"] = policy_warnings
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
@@ -525,6 +595,8 @@ MEMORY_SCHEMA = {
         "The most valuable memory prevents the user from having to repeat themselves.\n\n"
         "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
         "state to memory; use session_search to recall those from past transcripts.\n"
+        "Selection routing: facts → memory; state/progress → session_search or artifacts; "
+        "workflows → skills. Write memories as declarative facts, not commands.\n"
         "If you've discovered a new way to do something, solved a problem that could be "
         "necessary later, save it as a skill with the skill tool.\n\n"
         "TWO TARGETS:\n"

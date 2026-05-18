@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
+pytest.importorskip("dingtalk")
 
 from gateway.config import Platform, PlatformConfig
 

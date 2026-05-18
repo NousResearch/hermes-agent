@@ -52,6 +52,46 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_SLACK_BLOCKS_MAX_BLOCKS = 50
+_SLACK_BLOCKS_MAX_JSON_CHARS = 24000
+
+
+def normalize_slack_blocks(blocks: Any) -> Optional[List[Dict[str, Any]]]:
+    """Validate and normalize a Slack Block Kit payload.
+
+    Slack accepts up to 50 blocks for chat.postMessage. Keep this helper
+    deliberately conservative: it only accepts JSON-serializable lists of
+    dictionaries with string ``type`` fields and enforces a payload-size cap.
+    Malformed blocks fall back to plain text delivery instead of being sent.
+    """
+    if blocks is None:
+        return None
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    if len(blocks) > _SLACK_BLOCKS_MAX_BLOCKS:
+        return None
+    normalized: List[Dict[str, Any]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            return None
+        if not isinstance(block.get("type"), str) or not block.get("type"):
+            return None
+        normalized.append(block)
+    try:
+        encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    if len(encoded) > _SLACK_BLOCKS_MAX_JSON_CHARS:
+        return None
+    return normalized
+
+
+def slack_blocks_from_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """Extract validated Slack blocks from send metadata."""
+    if not metadata:
+        return None
+    return normalize_slack_blocks(metadata.get("slack_blocks") or metadata.get("blocks"))
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -783,6 +823,10 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            slack_blocks = slack_blocks_from_metadata(metadata)
+            if slack_blocks and len(chunks) > 1:
+                logger.debug("[Slack] Ignoring Block Kit blocks because message was split into %d chunks", len(chunks))
+                slack_blocks = None
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -802,6 +846,8 @@ class SlackAdapter(BasePlatformAdapter):
                     # Only broadcast the first chunk of the first reply
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
+                if slack_blocks and i == 0:
+                    kwargs["blocks"] = slack_blocks
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 

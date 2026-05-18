@@ -11,6 +11,9 @@ def _make_source(platform_str="telegram"):
     source = MagicMock()
     source.platform = getattr(Platform, platform_str.upper(), None) or platform_str
     source.user_id = "user_123"
+    source.chat_type = "dm"
+    source.chat_id = None
+    source.thread_id = None
     return source
 
 
@@ -39,6 +42,7 @@ def _make_runner(transcript=None, session_id="sess_001"):
     runner.session_store = store
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._pending_history_selection = {}
     return runner, store
 
 

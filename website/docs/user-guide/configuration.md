@@ -1108,6 +1108,17 @@ agent:
   tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
 ```
 
+## Gateway Update Restarts
+
+When `hermes update` finishes installing new code, it restarts every running gateway so profile services pick up the update. Multiple profile gateways restart through a bounded worker pool:
+
+```yaml
+agent:
+  update_gateway_restart_concurrency: 4
+```
+
+The default of `4` prevents one slow or stuck profile from blocking all other profiles, while avoiding a large simultaneous restart burst on small devices. Set this to `1` for fully sequential restarts, or raise it on larger hosts that run many gateway profiles.
+
 ## TTS Configuration
 
 ```yaml

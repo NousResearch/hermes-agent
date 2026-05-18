@@ -45,7 +45,7 @@ When you run `hermes update`, the following steps occur:
 2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
 3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 4. **Config migration** — detects new config options added since your version and prompts you to set them
-5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. When multiple profile gateways are running, restarts use a bounded worker pool so one slow profile does not block the others; tune the pool with `agent.update_gateway_restart_concurrency` in `config.yaml` (`4` by default, `1` for sequential restarts).
 
 ### Preview-only: `hermes update --check`
 
@@ -130,7 +130,7 @@ You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams b
 /update
 ```
 
-This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
+This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart and then resume. On multi-profile hosts, Hermes restarts gateways with a bounded worker pool (`agent.update_gateway_restart_concurrency`, default `4`) so a slow profile does not hold up every other profile.
 
 ### Manual Update
 

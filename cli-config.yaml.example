@@ -572,6 +572,10 @@ agent:
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
 
+  # Max gateway restart workers used by `hermes update` when multiple profile
+  # gateways are running. Set to 1 for sequential restarts on small devices.
+  # update_gateway_restart_concurrency: 4
+
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
   # to 1 if you use fallback providers and want fast failover on flaky

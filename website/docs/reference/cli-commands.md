@@ -1207,6 +1207,7 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 Additional behavior:
 
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
+- **Bounded gateway restarts.** When multiple profile gateways are running, Hermes restarts them through a bounded worker pool so one slow profile does not block the rest. Configure the cap with `agent.update_gateway_restart_concurrency` (`4` by default, `1` for sequential behavior).
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
 

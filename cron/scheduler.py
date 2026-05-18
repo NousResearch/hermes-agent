@@ -278,6 +278,152 @@ def _quiet_day_fallback() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Artemis B-0510-01 Phase 4b — post-LLM semantic voice-scan.
+# ---------------------------------------------------------------------------
+#
+# Phase 3's _scan_briefing_anti_patterns relies on literal substring markers,
+# which miss third-person voice violations using recipient first names or
+# paraphrased pronoun structures (Amy "if Amy responds", Crystal "her CS + SWE
+# positioning"). Phase 4b adds a semantic check: a small LLM call to
+# google/gemini-3-flash-preview (configurable) judges whether the briefing
+# addresses its reader in second person or narrates about them in third
+# person. Fail-open on any error — the scan is an enforcement layer, not the
+# primary defense.
+#
+# Bench evidence: logs/bench/voice-scan-2026-05-18.md in the Artemis repo —
+# gemini-3-flash-preview hit 7/7 on the calibration fixture set at ~1.7s
+# median latency and ~$0.0003 per call.
+
+_VOICE_SCAN_PROMPT = """You are auditing a Coach's daily briefing for a single user before delivery.
+
+The briefing must be in SECOND PERSON ("you / your") when referring to the recipient.
+
+A voice violation is when the briefing uses THIRD PERSON to refer to the recipient — either by name (e.g. "if Amy responds" when Amy IS the recipient) or by pronoun ("she / he / her / his / they") when the pronoun refers to the recipient.
+
+Third-party names (events, companies, other people) are NOT violations even if they are proper nouns. Only the recipient being named/pronouned in third person counts.
+
+Examples of violations (recipient is the named person):
+- "if Amy responds" (recipient=Amy)
+- "Crystal's positioning" (recipient=Crystal)
+- "she reaches out" (referring to the recipient)
+- "Maggie's bandwidth is the blocker" (recipient=Maggie)
+
+Examples of OK content:
+- "let me know if you're going" (second person — recipient addressed directly)
+- "Women in Tech SF on 5/21" (Women in Tech SF is an event, not the recipient)
+- "AIET 2026 in Zagreb" (event name)
+- "Andiamo role" (company name)
+
+Briefing content:
+<<<
+{text}
+>>>
+
+Respond with strict JSON only. No prose, no markdown fences, just JSON:
+{{"verdict": "PASS" or "FAIL", "offending_phrases": ["..."]}}"""
+
+
+def _voice_scan_log_path() -> Path:
+    return get_hermes_home() / "logs" / "voice_scan.log"
+
+
+def _voice_scan_log(level: str, job_id: str, msg: str) -> None:
+    """Append a one-line log entry to voice_scan.log. Self-swallowing — voice
+    scan must never break the cron tick."""
+    try:
+        path = _voice_scan_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{ts} {level} job={job_id} {msg}\n")
+    except Exception:
+        pass
+
+
+def _voice_scan_check(text: str, job_id: str = "?") -> tuple[bool, str]:
+    """Semantic voice-scan via OpenRouter LLM call.
+
+    Returns ``(True, "")`` for PASS / inconclusive / any error (fail-open), or
+    ``(False, reason)`` only when the model returns a confident FAIL verdict.
+
+    Env knobs:
+      - VOICE_SCAN_MODEL — OpenRouter model id (default
+        ``google/gemini-3-flash-preview``).
+      - VOICE_SCAN_ENABLED — set to "0" to disable the scan entirely.
+      - OPENROUTER_API_KEY — required; missing key → fail-open + WARN log.
+
+    No new dependencies — uses stdlib urllib so the scan works on every cron
+    environment without venv changes.
+    """
+    if os.getenv("VOICE_SCAN_ENABLED", "1") != "1":
+        return True, ""
+    if not text or not text.strip():
+        return True, ""
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        _voice_scan_log("WARN", job_id, "no OPENROUTER_API_KEY — fail-open")
+        return True, ""
+
+    model = os.getenv("VOICE_SCAN_MODEL", "google/gemini-3-flash-preview")
+    prompt = _VOICE_SCAN_PROMPT.format(text=text)
+
+    import urllib.request
+    import urllib.error
+
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 400,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/elmtree-askmo/artemis",
+            "X-Title": "Artemis voice-scan",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        _voice_scan_log("WARN", job_id, f"HTTP/parse error — fail-open: {exc!r}")
+        return True, ""
+
+    try:
+        content = payload["choices"][0]["message"]["content"]
+        if content is None:
+            raise ValueError("content is None")
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        _voice_scan_log("WARN", job_id, f"no content in response — fail-open: {exc!r}")
+        return True, ""
+
+    raw = content.strip()
+    # Tolerate fenced JSON.
+    if raw.startswith("```"):
+        raw = raw.strip("`").lstrip("json").strip()
+    try:
+        verdict_obj = json.loads(raw)
+    except json.JSONDecodeError:
+        _voice_scan_log("WARN", job_id, f"non-JSON model output — fail-open. raw={raw[:200]!r}")
+        return True, ""
+
+    verdict = str(verdict_obj.get("verdict", "")).upper()
+    if verdict == "FAIL":
+        offending = verdict_obj.get("offending_phrases") or []
+        reason = f"voice-scan FAIL ({model}): {offending}"
+        _voice_scan_log("HIT", job_id, reason)
+        return False, reason
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Artemis S-0511-07 — briefing-output persistence (scheduler-side write).
 # ---------------------------------------------------------------------------
 #
@@ -1286,6 +1432,22 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                             "substituting deterministic quiet-day fallback. "
                             "Original first 200 chars: %s",
                             job["id"], ap_reason, deliver_content[:200],
+                        )
+                        deliver_content = _quiet_day_fallback()
+
+                # Artemis B-0510-01 Phase 4b — semantic voice-scan.
+                # Catches B-class voice violations (third-person narration
+                # about the recipient by name or pronoun) that Phase 3's
+                # literal-marker guard misses. Briefing-only, fail-open on
+                # any LLM/HTTP/parse error.
+                if should_deliver and success and _is_briefing_job(job):
+                    vs_clean, vs_reason = _voice_scan_check(deliver_content, job["id"])
+                    if not vs_clean:
+                        logger.warning(
+                            "Job '%s': output tripped voice-scan (%s) — "
+                            "substituting deterministic quiet-day fallback. "
+                            "Original first 200 chars: %s",
+                            job["id"], vs_reason, deliver_content[:200],
                         )
                         deliver_content = _quiet_day_fallback()
 

@@ -1,0 +1,6 @@
+name: tool-result-compaction
+version: 0.1.0
+description: "Compact high-noise tool results before they enter the LLM context. Opt-in via plugins.enabled; defaults to observe-only unless configured."
+author: "Hermes Agent"
+hooks:
+  - transform_tool_result

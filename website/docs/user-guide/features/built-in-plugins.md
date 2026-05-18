@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `tool-result-compaction` | hook | Observe or compact high-noise terminal tool results before they enter LLM context |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -114,6 +115,56 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
 **Disabling again:** `hermes plugins disable disk-cleanup`.
+
+### tool-result-compaction
+
+Compacts high-noise `terminal` tool results before they are appended back into the conversation context. This is useful for test runs, build logs, and command output where the important information is usually at the head, tail, or around failure markers.
+
+The plugin is deliberately conservative:
+
+- It is opt-in like other bundled standalone plugins.
+- Its default mode is `observe`, so enabling it does not rewrite tool results until you explicitly switch to `compact`.
+- It only targets `terminal` results for now.
+- It preserves `exit_code`, head lines, tail lines, and diagnostic lines containing markers such as `FAILED`, `Traceback`, `Exception`, or `AssertionError`.
+- For very long single-line output, it falls back to character-level head / diagnostic span / tail compaction so minified logs and build blobs still shrink.
+- It fails open: invalid JSON, small outputs, unsupported tools, or plugin errors leave the original tool result unchanged.
+
+**Setup:**
+
+```bash
+hermes plugins enable tool-result-compaction
+```
+
+Then choose the operating mode in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - tool-result-compaction
+  entries:
+    tool-result-compaction:
+      mode: observe        # observe | compact
+      threshold_chars: 12000
+      head_lines: 40
+      tail_lines: 80
+```
+
+Switch `mode` to `compact` only after you are comfortable with the compressed format.
+
+**How it works:**
+
+| Hook | Behaviour |
+|---|---|
+| `transform_tool_result` | Receives the final tool-result string after `post_tool_call`. In `compact` mode, large terminal JSON payloads get rewritten with a shorter `output` plus a `tool_result_compaction` metadata block. |
+
+**Verify:**
+
+```bash
+hermes plugins list                 # tool-result-compaction should show "enabled"
+python -m pytest tests/test_tool_result_compaction_plugin.py -q -o 'addopts='
+```
+
+**Disabling:** `hermes plugins disable tool-result-compaction`.
 
 ### observability/langfuse
 

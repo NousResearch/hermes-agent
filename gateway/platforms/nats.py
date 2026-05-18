@@ -8,9 +8,11 @@ over the reply subject; the SDK owns terminator + heartbeat emission.
 Protocol spec: ``../nats-ai-pysdk/docs/nats-agent-protocol.md`` (v0.1).
 Hermes architectural reference: ``docs/nats-gateway-design.md``.
 
-Phase 2 scope (this file, as of initial landing): config parsing +
-``NatsAdapter`` skeleton. Connection, streaming, attachments, and
-mid-stream queries land in phases 3–6 (see
+Phase 3 scope (this file, as of this commit): config parsing +
+``connect()`` / ``disconnect()`` lifecycle wiring. The prompt handler is
+still a stub that acknowledges the connection but does not route through
+the gateway's ``MessageEvent`` pipeline — that, plus streaming,
+attachments, and mid-stream queries, land in phases 4–6 (see
 ``docs/nats-gateway-progress.md``).
 """
 
@@ -19,12 +21,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 try:
-    import natsagent  # noqa: F401  (presence check; symbols imported lazily)
+    import natsagent
     NATSAGENT_AVAILABLE = True
 except ImportError:
+    natsagent = None  # type: ignore[assignment]
     NATSAGENT_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
@@ -32,6 +35,9 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
+
+if TYPE_CHECKING:
+    from natsagent import Envelope, PromptStream
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +320,9 @@ def _positive_int(value: Any, default: int, field_name: str) -> int:
 class NatsAdapter(BasePlatformAdapter):
     """Gateway adapter for the NATS Agent Protocol v0.1.
 
-    Phase 2 skeleton — parses settings and registers as a platform.
-    ``connect()``, ``send()``, and the streaming pipeline land in phases
-    3 and 4; see ``docs/nats-gateway-design.md`` §6 and
+    Phase 3 scope — settings parsing, connect/disconnect lifecycle, and
+    a placeholder prompt handler. ``send()`` and the inbound streaming
+    pipeline land in Phase 4; see ``docs/nats-gateway-design.md`` §6 and
     ``docs/nats-gateway-progress.md`` for the current state.
     """
 
@@ -343,30 +349,191 @@ class NatsAdapter(BasePlatformAdapter):
             logger.error("[%s] %s", self.name, exc)
 
     # ------------------------------------------------------------------
-    # Abstract methods — Phase 2 stubs. Real implementations in Phase 3+.
-    #
-    # Stubs intentionally fail *gracefully* rather than raising: the
-    # gateway's connect_all() loop (gateway/run.py:2076) treats
-    # ``connect() returning False + has_fatal_error + retryable=False``
-    # as a permanent-fatal state and won't schedule 30-s reconnect
-    # attempts, so a partially-landed NATS integration doesn't spam
-    # the gateway log until Phase 3 ships.
+    # Lifecycle (Phase 3)
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        self._set_fatal_error(
-            "nats_not_implemented",
-            "NATS adapter connect() is not yet implemented "
-            "(Phase 3 — see docs/nats-gateway-progress.md)",
-            retryable=False,
-        )
-        return False
+        """Open a NATS connection, register the agent, and start heartbeats.
+
+        Sequence (design doc §9 "Gateway startup"):
+          1. Acquire the machine-local scope lock ``nats:{agent}:{owner}:{name}``
+             (§5) so two profiles on one host can't shadow each other's
+             registrations.
+          2. ``natsagent.connect(servers=... | context=...)`` — the SDK picks
+             the right nats-py auth bundle. We pass through exactly one of
+             ``servers`` / ``context``; :class:`NatsAdapterSettings`
+             already enforced the xor at init time.
+          3. Build the :class:`natsagent.Agent` with the resolved identity
+             and §2.1 endpoint metadata (max_payload, attachments_ok) +
+             §8.2 heartbeat cadence.
+          4. Register the prompt handler (`self._on_prompt`) — mandatory
+             per :meth:`natsagent.Agent.start`.
+          5. ``agent.start()`` — registers the NATS micro service,
+             advertises on ``$SRV.*`` discovery subjects, and spawns the
+             heartbeat publisher task.
+
+        Failures at any step roll back cleanly: the lock is released, any
+        partially-constructed ``_agent``/``_nc`` handles are torn down,
+        and a retryable fatal error is recorded so ``gateway/run.py``
+        queues another attempt 30 s later.
+        """
+        if self.has_fatal_error and not self.fatal_error_retryable:
+            # Config parsing in __init__ failed — nothing to recover.
+            # Returning False here keeps the behavior gate deterministic
+            # regardless of whether connect_all retried us by mistake.
+            return False
+        if self._settings is None:
+            # Defensive — has_fatal_error should already be True in this
+            # case, but guard so later code never dereferences None.
+            return False
+        if not NATSAGENT_AVAILABLE or natsagent is None:
+            self._set_fatal_error(
+                "nats_sdk_missing",
+                "natsagent SDK not installed; run: pip install 'hermes-agent[nats]'",
+                retryable=False,
+            )
+            return False
+
+        settings = self._settings
+
+        if not self._acquire_platform_lock(
+            "nats",
+            settings.identity,
+            f"NATS agent identity {settings.identity}",
+        ):
+            # _acquire_platform_lock already set the fatal error and logged.
+            return False
+
+        try:
+            connect_kwargs: Dict[str, Any] = {}
+            if settings.servers is not None:
+                # natsagent.connect accepts list[str] directly; copy so the
+                # SDK can't mutate our frozen-dataclass-owned list via
+                # nats-py internals.
+                connect_kwargs["servers"] = list(settings.servers)
+            if settings.context is not None:
+                connect_kwargs["context"] = settings.context
+
+            self._nc = await natsagent.connect(**connect_kwargs)
+
+            self._agent = natsagent.Agent(
+                agent=settings.agent,
+                owner=settings.owner,
+                name=settings.name,
+                nc=self._nc,
+                heartbeat_interval_s=settings.heartbeat_interval_s,
+                max_payload=settings.max_payload,
+                attachments_ok=settings.attachments_ok,
+            )
+            self._agent.on_prompt(self._on_prompt)
+            await self._agent.start()
+
+            self._mark_connected()
+            logger.info(
+                "[%s] Connected — registered as agents.%s.%s.%s "
+                "(heartbeat=%ss, max_payload=%s, attachments_ok=%s)",
+                self.name,
+                settings.agent,
+                settings.owner,
+                settings.name,
+                settings.heartbeat_interval_s,
+                settings.max_payload,
+                settings.attachments_ok,
+            )
+            return True
+
+        except Exception as exc:
+            # Best-effort teardown so the next retry starts from a clean
+            # slate. _teardown_handles releases the lock too.
+            await self._teardown_handles()
+            self._set_fatal_error(
+                "nats_connect_error",
+                f"NATS connect failed: {exc}",
+                retryable=True,
+            )
+            logger.error(
+                "[%s] Failed to connect to NATS: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return False
 
     async def disconnect(self) -> None:
-        # Idempotent no-op. Safe to call before Phase 3 lands, and
-        # mirrors the contract Phase 3's real disconnect() will uphold
-        # (no partial state to clean up when connect() never succeeded).
-        return None
+        """Stop the agent, close the NATS client, and release the lock.
+
+        Idempotent — safe to call after a failed ``connect()`` or twice in
+        a row during gateway shutdown. Preserves any fatal error state so
+        callers can still inspect ``fatal_error_message`` after shutdown.
+        """
+        await self._teardown_handles()
+        self._mark_disconnected()
+        logger.info("[%s] Disconnected from NATS", self.name)
+
+    async def _teardown_handles(self) -> None:
+        """Shared cleanup for both connect-failure and disconnect paths.
+
+        Order matters: stop the agent before closing the underlying NATS
+        client so the heartbeat publisher has a live connection to emit
+        its final frame (§8 recommends agents emit a terminal heartbeat,
+        though the SDK currently just stops the task). Closing `nc` first
+        would surface a stream of "connection closed" warnings from the
+        heartbeat loop.
+        """
+        # Phase 4 populates ``_active_streams``; clearing here is a cheap
+        # guardrail against stale handles leaking across reconnects.
+        self._active_streams.clear()
+
+        if self._agent is not None:
+            try:
+                await self._agent.stop()
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Error stopping natsagent.Agent: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                self._agent = None
+
+        if self._nc is not None:
+            try:
+                await self._nc.close()
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Error closing NATS connection: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                self._nc = None
+
+        self._release_platform_lock()
+
+    # ------------------------------------------------------------------
+    # Prompt handler — Phase 3 stub, Phase 4 will route through MessageEvent
+    # ------------------------------------------------------------------
+
+    async def _on_prompt(self, envelope: "Envelope", stream: "PromptStream") -> None:
+        """Phase 3 placeholder — acknowledges receipt so end-to-end wiring
+        can be verified (agent appears in ``$SRV.PING``, prompts get a
+        response, terminator follows) without the full MessageEvent
+        pipeline yet.
+
+        Phase 4 replaces this with the real ``x-session`` extraction,
+        attachment decoding, MessageEvent construction, and streaming
+        deltas — see T4.1 in ``docs/nats-gateway-progress.md``.
+        """
+        await stream.send(
+            "[hermes] NATS adapter is online. Prompt routing lands in "
+            "Phase 4 (see docs/nats-gateway-progress.md)."
+        )
+
+    # ------------------------------------------------------------------
+    # Outbound — Phase 4 will wire ``send()`` into ``_active_streams``.
+    # ------------------------------------------------------------------
 
     async def send(  # pragma: no cover — Phase 4
         self,
@@ -381,7 +548,12 @@ class NatsAdapter(BasePlatformAdapter):
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        # Phase 3 wires this into the gateway's session machinery; the
-        # return shape is already final (design doc §3) so landing it in
-        # the skeleton doesn't block other work.
+        """Return minimal DM-style chat info for session-key construction.
+
+        The NATS wire has no richer chat concept — every prompt is a
+        direct request/reply, so ``chat_type="dm"`` is always the right
+        answer (design doc §3). The name mirrors the caller-supplied
+        ``x-session`` string, which is what ``build_session_key`` uses
+        downstream to key sessions.
+        """
         return {"name": chat_id, "type": "dm"}

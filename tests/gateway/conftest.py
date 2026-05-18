@@ -235,8 +235,14 @@ def _ensure_natsagent_mock() -> None:
 
     mod = MagicMock()
 
-    # Top-level connect() factory is awaited in the adapter.
+    # Top-level connect() factory is awaited in the adapter. The returned
+    # NATS client exposes `.close()` as an awaitable (nats-py's Client.close
+    # is a coroutine), so pre-wire an AsyncMock on the MagicMock return
+    # value — otherwise `await nc.close()` in NatsAdapter.disconnect() blows
+    # up with "object MagicMock can't be used in 'await' expression" under
+    # the mock.
     mod.connect = AsyncMock()
+    mod.connect.return_value.close = AsyncMock()
 
     # Agent / PromptStream — support `await agent.start()` / `.stop()` usage.
     mod.Agent = MagicMock()

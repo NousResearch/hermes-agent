@@ -20,8 +20,8 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 2 — Adapter skeleton (T2.1, T2.2)
-- **Next phase:** Phase 3 — Connection & lifecycle (T3.1 through T3.4)
+- **Last completed phase:** Phase 3 — Connection & lifecycle (T3.1 through T3.4)
+- **Next phase:** Phase 4 — Inbound path (T4.1 through T4.4). This is the meaty phase; plan for a dedicated session.
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
 - **Known blockers:** none
 - **Open design questions pending user input:** 4 items listed in §16 of `docs/nats-gateway-design.md`. Default answers are noted there; proceed with defaults unless the user redirects.
@@ -55,10 +55,10 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 
 ### Phase 3 — Connection & lifecycle
 
-- [ ] **T3.1** — Implement `NatsAdapter.connect()` (lock, natsagent.connect, Agent.start, _mark_connected)
-- [ ] **T3.2** — Implement `NatsAdapter.disconnect()` (idempotent, cancel handlers, agent.stop, nc.close, release lock)
-- [ ] **T3.3** — Implement `get_chat_info()` (returns `{"name": chat_id, "type": "dm"}`)
-- [ ] **T3.4** — `tests/gateway/test_nats_connect.py` — connect/disconnect/lock/handler registration
+- [x] **T3.1** — Implement `NatsAdapter.connect()` (lock, natsagent.connect, Agent.start, _mark_connected)
+- [x] **T3.2** — Implement `NatsAdapter.disconnect()` (idempotent, cancel handlers, agent.stop, nc.close, release lock)
+- [x] **T3.3** — Implement `get_chat_info()` (returns `{"name": chat_id, "type": "dm"}`)
+- [x] **T3.4** — `tests/gateway/test_nats_connect.py` — connect/disconnect/lock/handler registration
 
 ### Phase 4 — Inbound path (the meaty one; plan for a dedicated session)
 
@@ -163,6 +163,22 @@ Plain `int(True) == 1` would silently pass `heartbeat_interval_s`/`ack_keepalive
 ### 2026-04-21 — Phase 2 — `_active_streams`/`_nc`/`_agent` initialised on adapter regardless of config validity
 
 Even when `NatsAdapterSettings.from_extra` fails, `NatsAdapter.__init__` initialises `_active_streams = {}`, `_nc = None`, `_agent = None`. Reason: Phase 3's `connect()` and Phase 4's `send()` assume these attributes exist. If a fatal-error adapter somehow reaches later-phase code (e.g. GatewayRunner still calling `get_chat_info()` on it), `AttributeError` would be a harder failure than "not connected". Cheap guard, no downside.
+
+### 2026-04-21 — Phase 3 — Conftest mock: `nc.close` explicitly made awaitable
+
+`tests/gateway/conftest.py::_ensure_natsagent_mock` now wires `mod.connect.return_value.close = AsyncMock()`. Background: `mod.connect = AsyncMock()` returns a MagicMock when awaited, and a MagicMock's `.close()` returns another MagicMock — which can't be `await`-ed. `NatsAdapter.disconnect()`'s `await self._nc.close()` would blow up in every test touching the lifecycle path. No downstream cost — the real nats-py `Client.close` is already a coroutine, so keeping `close` async matches production behavior.
+
+### 2026-04-21 — Phase 3 — `_on_prompt` ships a placeholder response instead of a real pipeline
+
+The handler registered at `agent.on_prompt(...)` is a one-liner that sends a short "NATS adapter is online, Phase 4 wires the real pipeline" ResponseChunk and returns. Reason: `natsagent.Agent.start()` enforces that a handler is registered (raises otherwise), and we need `connect()` to land a fully-running micro service in Phase 3 so `$SRV.PING` discovery and heartbeat emission can be verified against a real nats-server between phases. Phase 4 swaps this handler for the real `x-session` + attachment + MessageEvent pipeline (T4.1). The placeholder is test-asserted (`TestPromptHandlerStub`) so any regression during Phase 4's swap will be caught.
+
+### 2026-04-21 — Phase 3 — `disconnect()` teardown order: `agent.stop()` before `nc.close()`
+
+`_teardown_handles()` stops the agent first, then closes the NATS client. Reason: the SDK's heartbeat publisher runs inside the agent's background task and emits on the NATS connection. Closing `nc` first would surface a burst of "connection closed" warnings from the heartbeat loop before the stop signal reaches it. Both halves of teardown are wrapped in try/except so a failing stop() doesn't prevent the close() and vice-versa — gateway shutdown runs disconnect() over every adapter in sequence and one raising would abort teardown for all the others after it.
+
+### 2026-04-21 — Phase 3 — Lock release on connect failure is routed through `_teardown_handles()`, not a separate code path
+
+Previously in Telegram (`gateway/platforms/telegram.py:910`), the connect() failure branch explicitly calls `_release_platform_lock()`. The NATS adapter instead routes both the success-disconnect path and the connect-failure path through a single `_teardown_handles()` helper. Reason: Phase 4 adds more handles (`_active_streams`, `stream_delta_callback`, keep-alive task) that also need cleanup in both paths — centralizing the teardown logic now means T4.x doesn't have to remember to wire cleanup into two places.
 
 ---
 

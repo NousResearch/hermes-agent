@@ -95,6 +95,7 @@ NOUS_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_CHATGPT_WEB_BASE_URL = "https://chatgpt.com/backend-api/f"
+DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
 MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
 MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
 MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
@@ -201,6 +202,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="ChatGPT Web",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CHATGPT_WEB_BASE_URL,
+    ),
+    "xai-oauth": ProviderConfig(
+        id="xai-oauth",
+        name="xAI Grok OAuth (SuperGrok Subscription)",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
     "qwen-oauth": ProviderConfig(
         id="qwen-oauth",
@@ -5483,6 +5490,48 @@ def get_chatgpt_web_auth_status() -> Dict[str, Any]:
     return codex_status
 
 
+def get_xai_oauth_auth_status() -> Dict[str, Any]:
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("xai-oauth")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if api_key and not _xai_access_token_is_expiring(api_key, 0):
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": "oauth_pkce",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+    except Exception:
+        pass
+
+    try:
+        creds = resolve_xai_oauth_runtime_credentials()
+        return {
+            "logged_in": True,
+            "auth_store": str(_auth_file_path()),
+            "last_refresh": creds.get("last_refresh"),
+            "auth_mode": creds.get("auth_mode"),
+            "source": creds.get("source"),
+            "api_key": creds.get("api_key"),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "auth_store": str(_auth_file_path()),
+            "error": str(exc),
+        }
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -5557,6 +5606,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "chatgpt-web":
         return get_chatgpt_web_auth_status()
+    if target == "xai-oauth":
+        return get_xai_oauth_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
     if target == "google-gemini-cli":

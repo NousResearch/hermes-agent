@@ -73,6 +73,18 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli import chatgpt_web as _chatgpt_web
 
+# OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
+# `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
+from agent.process_bootstrap import (
+    OpenAI,
+    _OpenAIProxy,
+    _load_openai_cls,
+    _SafeWriter,
+    _install_safe_stdio,
+    _get_proxy_from_env,
+    _get_proxy_for_base_url,
+)
+from agent.iteration_budget import IterationBudget
 
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
@@ -2184,57 +2196,7 @@ class AIAgent:
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
-            save_trajectories=save_trajectories,
-            verbose_logging=verbose_logging,
             quiet_mode=quiet_mode,
-            ephemeral_system_prompt=ephemeral_system_prompt,
-            log_prefix_chars=log_prefix_chars,
-            log_prefix=log_prefix,
-            providers_allowed=providers_allowed,
-            providers_ignored=providers_ignored,
-            providers_order=providers_order,
-            provider_sort=provider_sort,
-            provider_require_parameters=provider_require_parameters,
-            provider_data_collection=provider_data_collection,
-            openrouter_min_coding_score=openrouter_min_coding_score,
-            session_id=session_id,
-            tool_progress_callback=tool_progress_callback,
-            tool_start_callback=tool_start_callback,
-            tool_complete_callback=tool_complete_callback,
-            thinking_callback=thinking_callback,
-            reasoning_callback=reasoning_callback,
-            clarify_callback=clarify_callback,
-            step_callback=step_callback,
-            stream_delta_callback=stream_delta_callback,
-            interim_assistant_callback=interim_assistant_callback,
-            tool_gen_callback=tool_gen_callback,
-            status_callback=status_callback,
-            max_tokens=max_tokens,
-            reasoning_config=reasoning_config,
-            service_tier=service_tier,
-            request_overrides=request_overrides,
-            prefill_messages=prefill_messages,
-            platform=platform,
-            user_id=user_id,
-            user_name=user_name,
-            chat_id=chat_id,
-            chat_name=chat_name,
-            chat_type=chat_type,
-            thread_id=thread_id,
-            gateway_session_key=gateway_session_key,
-            skip_context_files=skip_context_files,
-            load_soul_identity=load_soul_identity,
-            skip_memory=skip_memory,
-            session_db=session_db,
-            parent_session_id=parent_session_id,
-            iteration_budget=iteration_budget,
-            fallback_model=fallback_model,
-            credential_pool=credential_pool,
-            checkpoints_enabled=checkpoints_enabled,
-            checkpoint_max_snapshots=checkpoint_max_snapshots,
-            checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
-            checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
-            pass_session_id=pass_session_id,
         )
 
         # Show tool configuration and store valid tool names for validation

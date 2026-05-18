@@ -2479,9 +2479,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    runtime_provider = runtime.get("provider")
+    child_provider = runtime_provider
+    if (
+        runtime_provider == _RUNTIME_PROVIDER_CUSTOM
+        and configured_provider
+        and not configured_provider.lower().startswith("custom:")
+    ):
+        child_provider = configured_provider
+
     return {
         "model": configured_model or runtime.get("model") or None,
-        "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
+        "provider": child_provider,
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),

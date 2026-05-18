@@ -365,6 +365,31 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-ok", "terminal", "tests failed: 1 assertion error")
         assert result.status == "completed"
 
+    def test_build_tool_complete_marks_raised_exception_prefix_as_failed(self):
+        """The agent's tool executor wraps raised exceptions in a canonical
+        "Error executing tool '<name>': ..." prefix. That prefix is unique to
+        the wrapper and means the tool blew up, so it must surface as failed
+        in Zed regardless of whether the body parses as JSON.
+        """
+        result = build_tool_complete(
+            "tc-fail-exc",
+            "patch",
+            "Error executing tool 'patch': KeyError: 'foo'",
+        )
+        assert result.status == "failed"
+
+    def test_build_tool_complete_does_not_match_error_word_alone(self):
+        """Bare 'Error: ...' messages (without the unique 'Error executing
+        tool '<name>':' prefix) must still be reported as completed — they
+        legitimately appear in compiler/linter/test output.
+        """
+        result = build_tool_complete(
+            "tc-ok-error-word",
+            "terminal",
+            "Error: pytest collected 0 items",
+        )
+        assert result.status == "completed"
+
     def test_build_tool_complete_marks_structured_polished_tool_error_as_failed(self):
         result = build_tool_complete("tc-fail", "read_file", '{"error": "File not found"}')
         assert result.status == "failed"

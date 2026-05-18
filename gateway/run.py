@@ -13403,6 +13403,24 @@ class GatewayRunner:
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+
+                # Write the notification to the session transcript so the agent
+                # retains context of the update result (#27846).  Without this,
+                # the standalone adapter.send() lands outside the conversation
+                # history and the agent cannot see that an update already occurred.
+                session_key = pending.get("session_key")
+                if session_key and hasattr(self, "session_store") and self.session_store is not None:
+                    entry = self.session_store._entries.get(session_key)
+                    if entry:
+                        self.session_store.append_to_transcript(
+                            entry.session_id,
+                            {"role": "system", "content": msg},
+                        )
+                        logger.debug(
+                            "Update notification written to transcript session %s",
+                            entry.session_id,
+                        )
+
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",

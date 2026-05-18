@@ -22,6 +22,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SessionSource,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
@@ -764,6 +765,37 @@ class TestSendDocument:
 
 
 class TestTelegramPhotoBatching:
+    def test_photo_batch_key_is_sender_scoped_for_shared_threads(self, adapter):
+        first_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="group-1",
+            chat_type="group",
+            user_id="authorized",
+            thread_id="topic-1",
+        )
+        second_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="group-1",
+            chat_type="group",
+            user_id="attacker",
+            thread_id="topic-1",
+        )
+        msg = SimpleNamespace(media_group_id=None)
+
+        first_key = adapter._photo_batch_key(
+            MessageEvent(text="", message_type=MessageType.PHOTO, source=first_source),
+            msg,
+        )
+        second_key = adapter._photo_batch_key(
+            MessageEvent(text="", message_type=MessageType.PHOTO, source=second_source),
+            msg,
+        )
+
+        assert first_key != second_key
+        assert ":sender:authorized:" in first_key
+        assert ":sender:attacker:" in second_key
+
+
     @pytest.mark.asyncio
     async def test_flush_photo_batch_does_not_drop_newer_scheduled_task(self, adapter):
         old_task = MagicMock()

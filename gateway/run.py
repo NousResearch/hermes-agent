@@ -2531,21 +2531,19 @@ class GatewayRunner:
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
-        """Load fallback provider chain from config.yaml.
+        """Load fallback provider chain from config.yaml with env expansion.
 
         Returns a list of provider dicts (``fallback_providers``), a single
         dict (legacy ``fallback_model``), or None if not configured.
         AIAgent.__init__ normalizes both formats into a chain.
+        Uses load_config() so ${VAR} env references are expanded.
         """
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
-                if fb:
-                    return fb
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+            if fb:
+                return fb
         except Exception:
             pass
         return None

@@ -335,6 +335,9 @@ class AIAgent:
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+    _ASYNC_CONTEXT_PRIOR_USER_TAIL_SEPARATOR_MESSAGE = (
+        "--- END OF PRIOR CONTEXT — respond to the message below, not the context above ---"
+    )
 
     @property
     def base_url(self) -> str:
@@ -562,6 +565,7 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
+        self._clear_async_context_candidate()
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
@@ -3709,6 +3713,80 @@ class AIAgent:
             bool: True if sanitization is needed (non-Codex API), False otherwise.
         """
         return self.api_mode != "codex_responses"
+
+    def _get_async_context_lock(self) -> threading.Lock:
+        """Forwarder — see ``agent.conversation_compression.get_async_context_lock``."""
+        from agent.conversation_compression import get_async_context_lock
+        return get_async_context_lock(self)
+
+    @staticmethod
+    def _context_messages_digest(messages: list) -> str:
+        """Forwarder — see ``agent.conversation_compression.context_messages_digest``."""
+        from agent.conversation_compression import context_messages_digest
+        return context_messages_digest(messages)
+
+    def _clear_async_context_candidate(self) -> None:
+        """Forwarder — see ``agent.conversation_compression.clear_async_context_candidate``."""
+        from agent.conversation_compression import clear_async_context_candidate
+        clear_async_context_candidate(self)
+
+    def _maybe_start_async_context_compression(
+        self,
+        messages: list,
+        *,
+        approx_tokens: int = None,
+        focus_topic: str = None,
+    ) -> bool:
+        """Forwarder — see ``agent.conversation_compression.maybe_start_async_context_compression``."""
+        from agent.conversation_compression import maybe_start_async_context_compression
+        return maybe_start_async_context_compression(
+            self,
+            messages,
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+        )
+
+    def _maybe_apply_async_context_candidate(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: int = None,
+        task_id: str = "default",
+    ) -> tuple[list, str | None, bool]:
+        """Forwarder — see ``agent.conversation_compression.maybe_apply_async_context_candidate``."""
+        from agent.conversation_compression import maybe_apply_async_context_candidate
+        return maybe_apply_async_context_candidate(
+            self,
+            messages,
+            system_message,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+        )
+
+    def _finalize_context_rewrite(
+        self,
+        *,
+        original_messages: list,
+        rewritten_messages: list,
+        system_message: str,
+        approx_tokens: int = None,
+        task_id: str = "default",
+        source_label: str = "context compression",
+        notify_memory_pre_compress: bool = False,
+    ) -> tuple[list, str]:
+        """Forwarder — see ``agent.conversation_compression.finalize_context_rewrite``."""
+        from agent.conversation_compression import finalize_context_rewrite
+        return finalize_context_rewrite(
+            self,
+            original_messages=original_messages,
+            rewritten_messages=rewritten_messages,
+            system_message=system_message,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+            source_label=source_label,
+            notify_memory_pre_compress=notify_memory_pre_compress,
+        )
 
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``."""

@@ -21,12 +21,34 @@ Lifecycle:
   3. update_from_response() called after each API response with usage data
   4. should_compress() checked after each turn
   5. compress() called when should_compress() returns True
-  6. on_session_end() called at real session boundaries (CLI exit, /reset,
+  6. Optional async preparation may run on a host-owned background thread:
+     should_prepare_async_compression() -> prepare_async_compression().
+     The result is only a candidate; the host validates and applies it at a
+     safe point.
+  7. on_session_end() called at real session boundaries (CLI exit, /reset,
      gateway session expiry) — NOT per-turn
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class ContextCompressionCandidate:
+    """Prepared context rewrite returned by asynchronous context engines.
+
+    The host owns the commit lifecycle. Engines may prepare a replacement for
+    an immutable snapshot, but the host validates ``base_digest`` against the
+    live transcript before applying it and appends any newer suffix messages.
+    """
+
+    messages: List[Dict[str, Any]]
+    base_message_count: int = 0
+    base_digest: str = ""
+    estimated_tokens_saved: Optional[int] = None
+    description: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class ContextEngine(ABC):
@@ -109,6 +131,53 @@ class ContextEngine(ABC):
         can do a cheap estimate.
         """
         return False
+
+    # -- Optional: asynchronous candidate preparation -------------------------
+
+    def should_prepare_async_compression(
+        self,
+        prompt_tokens: int = None,
+        messages: List[Dict[str, Any]] = None,
+    ) -> bool:
+        """Return True when the host should prepare a background candidate.
+
+        This is intentionally separate from ``should_compress()``. Returning
+        True here must not imply that the live transcript can be rewritten
+        immediately; the host snapshots ``messages``, runs
+        ``prepare_async_compression()`` in the background, then validates the
+        returned candidate at a later safe point.
+        """
+        return False
+
+    def prepare_async_compression(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int = None,
+        focus_topic: str = None,
+    ) -> Optional[ContextCompressionCandidate | List[Dict[str, Any]]]:
+        """Prepare a compression candidate for an immutable snapshot.
+
+        Implementations must treat ``messages`` as read-only and must not mutate
+        live agent state. They may return either a ``ContextCompressionCandidate``
+        or a replacement OpenAI-format message list; the host fills in snapshot
+        version metadata when omitted.
+        """
+        return None
+
+    def on_async_compression_applied(
+        self,
+        candidate: ContextCompressionCandidate,
+        **kwargs: Any,
+    ) -> None:
+        """Called after the host successfully applies an async candidate."""
+
+    def on_async_compression_discarded(
+        self,
+        candidate: ContextCompressionCandidate,
+        reason: str,
+        **kwargs: Any,
+    ) -> None:
+        """Called when the host discards a prepared candidate."""
 
     # -- Optional: manual /compress preflight ------------------------------
 

@@ -259,6 +259,10 @@ def run_conversation(
     if isinstance(persist_user_message, str):
         persist_user_message = _sanitize_surrogates(persist_user_message)
 
+    # Preserve plugin lifecycle semantics even if async compression later
+    # clears conversation_history so persistence rewrites the new session.
+    hook_is_first_turn = not bool(conversation_history)
+
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
@@ -357,6 +361,16 @@ def run_conversation(
                 # whose session happened to land just past a multiple of N).
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
+    if messages:
+        messages, _async_system_prompt, _async_context_applied = (
+            agent._maybe_apply_async_context_candidate(
+                messages,
+                system_message,
+                task_id=effective_task_id,
+            )
+        )
+        if _async_context_applied:
+            conversation_history = None
 
     # Prefill messages (few-shot priming) are injected at API-call time only,
     # never stored in the messages list. This keeps them ephemeral: they won't
@@ -395,6 +409,14 @@ def run_conversation(
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
+    current_turn_user_msg = user_msg
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        messages.append(
+            {
+                "role": "assistant",
+                "content": agent._ASYNC_CONTEXT_PRIOR_USER_TAIL_SEPARATOR_MESSAGE,
+            }
+        )
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -507,7 +529,7 @@ def run_conversation(
             session_id=agent.session_id,
             user_message=original_user_message,
             conversation_history=list(messages),
-            is_first_turn=(not bool(conversation_history)),
+            is_first_turn=hook_is_first_turn,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
@@ -738,6 +760,11 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            for _idx, _msg in enumerate(messages):
+                if _msg is current_turn_user_msg:
+                    current_turn_user_idx = _idx
+                    agent._persist_user_message_idx = _idx
+                    break
 
         api_messages = []
         for idx, msg in enumerate(messages):
@@ -4053,6 +4080,21 @@ def run_conversation(
             )
         except Exception:
             pass  # Background review is best-effort
+
+    if final_response and not interrupted:
+        try:
+            _async_prompt_tokens = (
+                getattr(agent.context_compressor, "last_prompt_tokens", 0) or None
+            )
+            agent._maybe_start_async_context_compression(
+                messages,
+                approx_tokens=_async_prompt_tokens,
+            )
+        except Exception as _async_ctx_err:
+            logger.debug(
+                "async context compression scheduling failed: %s",
+                _async_ctx_err,
+            )
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

@@ -96,7 +96,12 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
+| `should_prepare_async_compression(prompt_tokens, messages)` | Returns `False` | You want the host to prepare a background compression candidate |
+| `prepare_async_compression(messages, current_tokens, focus_topic)` | Returns `None` | You can build a host-validated async compression candidate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
+
+Async preparation runs on a host snapshot, so implementations must not mutate live agent state.
+Engines that call external services from `prepare_async_compression()` should enforce their own request timeout and return `None` on timeout; the host treats async preparation as best-effort, keeps at most one in-flight preparation, and does not cancel running plugin code.
 
 ## Engine tools
 
@@ -151,7 +156,11 @@ Only one engine can be registered. A second plugin attempting to register is rej
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway expiry)
+6. Optional async preparation — after a completed turn, the host may call
+   should_prepare_async_compression() and run prepare_async_compression() on a
+   snapshot in the background; candidates are validated and applied or
+   discarded at a later safe point
+7. on_session_end() — session boundary (CLI exit, /reset, gateway expiry)
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.

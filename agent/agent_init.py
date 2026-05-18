@@ -1305,6 +1305,11 @@ def init_agent(
             api_mode=agent.api_mode,
         )
     agent.compression_enabled = compression_enabled
+    agent._async_context_lock = threading.Lock()
+    agent._async_context_thread: threading.Thread | None = None
+    agent._async_context_inflight_digest: str | None = None
+    agent._pending_async_context_candidate = None
+    agent._async_context_generation = 0
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

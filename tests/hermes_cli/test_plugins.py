@@ -1207,6 +1207,60 @@ class TestPluginCommands:
             assert engine is not None
             assert engine.name == "stub-engine"
 
+    def test_general_plugin_can_register_context_engine_and_transform_tool_hook(self, tmp_path, monkeypatch):
+        """A general plugin can package a ContextEngine and realtime tool-result hook together."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "progressive-context"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({
+                "name": "progressive-context",
+                "version": "0.1.0",
+                "description": "Test progressive context plugin",
+            })
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.context_engine import ContextEngine\n\n"
+            "class ProgressiveEngine(ContextEngine):\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'progressive-context'\n\n"
+            "    def update_from_response(self, usage):\n"
+            "        return None\n\n"
+            "    def should_compress(self, prompt_tokens=None):\n"
+            "        return False\n\n"
+            "    def compress(self, messages, current_tokens=None, focus_topic=None):\n"
+            "        return messages\n\n"
+            "def _transform_tool_result(**kw):\n"
+            "    return f'compressed[{kw[\"tool_name\"]}]:' + kw['result']\n\n"
+            "def register(ctx):\n"
+            "    ctx.register_context_engine(ProgressiveEngine())\n"
+            "    ctx.register_hook('transform_tool_result', _transform_tool_result)\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["progressive-context"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            engine = plugins_mod.get_plugin_context_engine()
+            assert engine is not None
+            assert engine.name == "progressive-context"
+            hook_results = plugins_mod.invoke_hook(
+                "transform_tool_result",
+                tool_name="terminal",
+                args={"command": "cat large.log"},
+                result="raw output",
+                task_id="task",
+                session_id="session",
+                tool_call_id="call",
+                duration_ms=7,
+            )
+            assert hook_results == ["compressed[terminal]:raw output"]
+
     def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
         """Commands registered during discover_and_load() are tracked on LoadedPlugin."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

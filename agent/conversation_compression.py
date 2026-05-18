@@ -28,14 +28,19 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import logging
 import os
 import tempfile
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from agent.context_engine import ContextCompressionCandidate, ContextEngine
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -240,6 +245,402 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def get_async_context_lock(agent: Any) -> threading.Lock:
+    lock = getattr(agent, "_async_context_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        agent._async_context_lock = lock
+    return lock
+
+
+def context_messages_digest(messages: list) -> str:
+    payload = json.dumps(
+        messages,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def clear_async_context_candidate(agent: Any) -> None:
+    lock = get_async_context_lock(agent)
+    with lock:
+        agent._pending_async_context_candidate = None
+        agent._async_context_inflight_digest = None
+        agent._async_context_generation = (
+            getattr(agent, "_async_context_generation", 0) + 1
+        )
+        thread = getattr(agent, "_async_context_thread", None)
+        if thread is not None and not thread.is_alive():
+            agent._async_context_thread = None
+
+
+def _coerce_async_context_candidate(
+    agent: Any,
+    result: Any,
+    *,
+    snapshot: list,
+) -> ContextCompressionCandidate | None:
+    if result is None:
+        return None
+    if isinstance(result, ContextCompressionCandidate):
+        candidate = result
+    elif isinstance(result, list):
+        candidate = ContextCompressionCandidate(messages=result)
+    else:
+        return None
+    if not isinstance(candidate.messages, list):
+        return None
+    base_message_count = len(snapshot)
+    if candidate.base_message_count <= 0:
+        candidate.base_message_count = base_message_count
+    if candidate.base_message_count > base_message_count:
+        return None
+    if not candidate.base_digest:
+        candidate.base_digest = agent._context_messages_digest(
+            snapshot[: candidate.base_message_count]
+        )
+    return candidate
+
+
+def _notify_async_context_discarded(
+    agent: Any,
+    candidate: ContextCompressionCandidate,
+    reason: str,
+) -> None:
+    try:
+        agent.context_compressor.on_async_compression_discarded(
+            candidate,
+            reason=reason,
+            session_id=agent.session_id or "",
+        )
+    except Exception as exc:
+        logger.debug("context engine async discard hook failed: %s", exc)
+
+
+def maybe_start_async_context_compression(
+    agent: Any,
+    messages: list,
+    *,
+    approx_tokens: Optional[int] = None,
+    focus_topic: Optional[str] = None,
+) -> bool:
+    """Ask the active context engine to prepare a background candidate.
+
+    The host owns snapshotting and commit.  The engine only computes a
+    candidate on a copied message list; the live transcript is never mutated
+    from the background thread.
+    """
+    if not getattr(agent, "compression_enabled", False):
+        return False
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None:
+        return False
+    should_prepare = getattr(engine, "should_prepare_async_compression", None)
+    prepare = getattr(engine, "prepare_async_compression", None)
+    if not callable(should_prepare) or not callable(prepare):
+        return False
+    if (
+        getattr(type(engine), "should_prepare_async_compression", None)
+        is ContextEngine.should_prepare_async_compression
+    ):
+        return False
+
+    lock = agent._get_async_context_lock()
+    with lock:
+        thread = getattr(agent, "_async_context_thread", None)
+        if thread is not None and thread.is_alive():
+            return False
+        if getattr(agent, "_pending_async_context_candidate", None) is not None:
+            return False
+        generation = getattr(agent, "_async_context_generation", 0)
+
+    if approx_tokens is None:
+        try:
+            approx_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                tools=agent.tools or None,
+            )
+        except Exception as exc:
+            logger.debug("context engine async token estimate failed: %s", exc)
+            return False
+
+    try:
+        try:
+            should = bool(
+                should_prepare(prompt_tokens=approx_tokens, messages=messages)
+            )
+        except TypeError:
+            should = bool(should_prepare(approx_tokens))
+    except Exception as exc:
+        logger.debug("context engine async prepare check failed: %s", exc)
+        return False
+    if not should:
+        return False
+
+    snapshot = copy.deepcopy(messages)
+    base_digest = agent._context_messages_digest(snapshot)
+    base_message_count = len(snapshot)
+
+    def _run_prepare() -> None:
+        candidate = None
+        try:
+            try:
+                result = prepare(
+                    snapshot,
+                    current_tokens=approx_tokens,
+                    focus_topic=focus_topic,
+                )
+            except TypeError:
+                result = prepare(snapshot, current_tokens=approx_tokens)
+            candidate = _coerce_async_context_candidate(
+                agent,
+                result,
+                snapshot=snapshot,
+            )
+        except Exception as exc:
+            logger.debug("context engine async compression preparation failed: %s", exc)
+        finally:
+            lock = agent._get_async_context_lock()
+            with lock:
+                if getattr(agent, "_async_context_generation", 0) != generation:
+                    return
+                agent._async_context_inflight_digest = None
+                thread = getattr(agent, "_async_context_thread", None)
+                if thread is not None and threading.current_thread() is thread:
+                    agent._async_context_thread = None
+                if candidate is not None:
+                    agent._pending_async_context_candidate = candidate
+
+    thread = threading.Thread(
+        target=_run_prepare,
+        daemon=True,
+        name="context-compression-prepare",
+    )
+    with lock:
+        current_thread = getattr(agent, "_async_context_thread", None)
+        if getattr(agent, "_async_context_generation", 0) != generation:
+            return False
+        if current_thread is not None and current_thread.is_alive():
+            return False
+        if getattr(agent, "_pending_async_context_candidate", None) is not None:
+            return False
+        agent._async_context_thread = thread
+        agent._async_context_inflight_digest = base_digest
+    thread.start()
+    logger.debug(
+        "context async compression preparation started: session=%s messages=%d tokens=~%s",
+        agent.session_id or "none",
+        base_message_count,
+        f"{approx_tokens:,}" if approx_tokens else "unknown",
+    )
+    return True
+
+
+def maybe_apply_async_context_candidate(
+    agent: Any,
+    messages: list,
+    system_message: str,
+    *,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+) -> tuple[list, str | None, bool]:
+    """Apply a prepared candidate if its snapshot still matches ``messages``."""
+    lock = agent._get_async_context_lock()
+    with lock:
+        candidate = getattr(agent, "_pending_async_context_candidate", None)
+        if candidate is None:
+            return messages, None, False
+        agent._pending_async_context_candidate = None
+
+    base_count = candidate.base_message_count
+    if base_count <= 0 or base_count > len(messages):
+        _notify_async_context_discarded(agent, candidate, "stale_message_count")
+        return messages, None, False
+
+    current_digest = agent._context_messages_digest(messages[:base_count])
+    if current_digest != candidate.base_digest:
+        _notify_async_context_discarded(agent, candidate, "stale_digest")
+        return messages, None, False
+
+    if candidate.messages == messages[:base_count]:
+        _notify_async_context_discarded(agent, candidate, "no_op")
+        return messages, None, False
+
+    rewritten = list(candidate.messages) + list(messages[base_count:])
+    new_messages, new_system_prompt = agent._finalize_context_rewrite(
+        original_messages=messages,
+        rewritten_messages=rewritten,
+        system_message=system_message,
+        approx_tokens=approx_tokens,
+        task_id=task_id,
+        source_label="async context compression",
+        notify_memory_pre_compress=True,
+    )
+    try:
+        agent.context_compressor.on_async_compression_applied(
+            candidate,
+            session_id=agent.session_id or "",
+            new_message_count=len(new_messages),
+        )
+    except Exception as exc:
+        logger.debug("context engine async apply hook failed: %s", exc)
+    return new_messages, new_system_prompt, True
+
+
+def finalize_context_rewrite(
+    agent: Any,
+    *,
+    original_messages: list,
+    rewritten_messages: list,
+    system_message: str,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+    source_label: str = "context compression",
+    notify_memory_pre_compress: bool = False,
+) -> tuple[list, str]:
+    _pre_msg_count = len(original_messages)
+    compressed = list(rewritten_messages)
+
+    if notify_memory_pre_compress and agent._memory_manager:
+        try:
+            agent._memory_manager.on_pre_compress(original_messages)
+        except Exception:
+            pass
+
+    todo_snapshot = agent._todo_store.format_for_injection()
+    if todo_snapshot:
+        compressed.append({"role": "user", "content": todo_snapshot})
+
+    agent._invalidate_system_prompt()
+    new_system_prompt = agent._build_system_prompt(system_message)
+    agent._cached_system_prompt = new_system_prompt
+
+    old_session_id = None
+    if agent._session_db:
+        try:
+            # Propagate title to the new session with auto-numbering
+            old_title = agent._session_db.get_session_title(agent.session_id)
+            # Trigger memory extraction on the old session before it rotates.
+            agent.commit_memory_session(original_messages)
+            agent._session_db.end_session(agent.session_id, "compression")
+            old_session_id = agent.session_id
+            agent.session_id = (
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
+                f"{uuid.uuid4().hex[:6]}"
+            )
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
+            try:
+                from gateway.session_context import _SESSION_ID
+
+                _SESSION_ID.set(agent.session_id)
+            except Exception:
+                pass
+            # Update session_log_file to point to the new session's JSON file
+            agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+            agent._session_db_created = False
+            agent._session_db.create_session(
+                session_id=agent.session_id,
+                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                model=agent.model,
+                model_config=agent._session_init_model_config,
+                parent_session_id=old_session_id,
+            )
+            agent._session_db_created = True
+            # Auto-number the title for the continuation session
+            if old_title:
+                try:
+                    new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                    agent._session_db.set_session_title(agent.session_id, new_title)
+                except (ValueError, Exception) as e:
+                    logger.debug("Could not propagate title on compression: %s", e)
+            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+            # Reset flush cursor — new session starts with no messages written
+            agent._last_flushed_db_idx = 0
+        except Exception as e:
+            logger.warning(
+                "Session DB compression split failed — new session will NOT be indexed: %s",
+                e,
+            )
+
+    # Notify the context engine that the session_id rotated because of
+    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
+    # boundary_reason="compression" to preserve DAG lineage across the
+    # rollover instead of re-initializing fresh per-session state.
+    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+    try:
+        if old_session_id and hasattr(agent.context_compressor, "on_session_start"):
+            agent.context_compressor.on_session_start(
+                agent.session_id or "",
+                boundary_reason="compression",
+                old_session_id=old_session_id,
+            )
+    except Exception as _ce_err:
+        logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
+    # Notify memory providers of the compression-driven session_id rotation
+    # so provider-cached per-session state (Hindsight's _document_id,
+    # accumulated turn buffers, counters) refreshes. reset=False because
+    # the logical conversation continues; only the id and DB row rolled
+    # over. See #6672.
+    try:
+        if old_session_id and agent._memory_manager:
+            agent._memory_manager.on_session_switch(
+                agent.session_id or "",
+                parent_session_id=old_session_id,
+                reset=False,
+                reason="compression",
+            )
+    except Exception as _me_err:
+        logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+
+    # Warn on repeated compressions (quality degrades with each pass)
+    _cc = agent.context_compressor.compression_count
+    if _cc >= 2:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
+            f"accuracy may degrade. Consider /new to start fresh.",
+            force=True,
+        )
+
+    # Update token estimate after compaction so pressure calculations
+    # use the post-compression count, not the stale pre-compression one.
+    # Use estimate_request_tokens_rough() so tool schemas are included —
+    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
+    # omitting them delays the next compression cycle far past the
+    # configured threshold (issue #14695).
+    _compressed_est = estimate_request_tokens_rough(
+        compressed,
+        system_prompt=new_system_prompt or "",
+        tools=agent.tools or None,
+    )
+    agent.context_compressor.last_prompt_tokens = _compressed_est
+    agent.context_compressor.last_completion_tokens = 0
+
+    # Clear the file-read dedup cache.  After compression the original
+    # read content is summarised away — if the model re-reads the same
+    # file it needs the full content, not a "file unchanged" stub.
+    try:
+        from tools.file_tools import reset_file_dedup
+
+        reset_file_dedup(task_id)
+    except Exception:
+        pass
+
+    logger.info(
+        "%s done: session=%s messages=%d->%d tokens=~%s",
+        source_label,
+        agent.session_id or "none",
+        _pre_msg_count,
+        len(compressed),
+        f"{_compressed_est:,}",
+    )
+    return compressed, new_system_prompt
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -315,124 +716,14 @@ def compress_context(
                     "check auxiliary.compression.model in config.yaml."
                 )
 
-    todo_snapshot = agent._todo_store.format_for_injection()
-    if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
-
-    agent._invalidate_system_prompt()
-    new_system_prompt = agent._build_system_prompt(system_message)
-    agent._cached_system_prompt = new_system_prompt
-
-    if agent._session_db:
-        try:
-            # Propagate title to the new session with auto-numbering
-            old_title = agent._session_db.get_session_title(agent.session_id)
-            # Trigger memory extraction on the old session before it rotates.
-            agent.commit_memory_session(messages)
-            agent._session_db.end_session(agent.session_id, "compression")
-            old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            os.environ["HERMES_SESSION_ID"] = agent.session_id
-            try:
-                from gateway.session_context import _SESSION_ID
-                _SESSION_ID.set(agent.session_id)
-            except Exception:
-                pass
-            # Update session_log_file to point to the new session's JSON file
-            agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
-            agent._session_db_created = False
-            agent._session_db.create_session(
-                session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=agent.model,
-                model_config=agent._session_init_model_config,
-                parent_session_id=old_session_id,
-            )
-            agent._session_db_created = True
-            # Auto-number the title for the continuation session
-            if old_title:
-                try:
-                    new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                    agent._session_db.set_session_title(agent.session_id, new_title)
-                except (ValueError, Exception) as e:
-                    logger.debug("Could not propagate title on compression: %s", e)
-            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
-            agent._last_flushed_db_idx = 0
-        except Exception as e:
-            logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
-
-    # Notify the context engine that the session_id rotated because of
-    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
-    # boundary_reason="compression" to preserve DAG lineage across the
-    # rollover instead of re-initializing fresh per-session state.
-    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
-    try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and hasattr(agent.context_compressor, "on_session_start"):
-            agent.context_compressor.on_session_start(
-                agent.session_id or "",
-                boundary_reason="compression",
-                old_session_id=_old_sid,
-            )
-    except Exception as _ce_err:
-        logger.debug("context engine on_session_start (compression): %s", _ce_err)
-
-    # Notify memory providers of the compression-driven session_id rotation
-    # so provider-cached per-session state (Hindsight's _document_id,
-    # accumulated turn buffers, counters) refreshes. reset=False because
-    # the logical conversation continues; only the id and DB row rolled
-    # over. See #6672.
-    try:
-        _old_sid = locals().get("old_session_id")
-        if _old_sid and agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                agent.session_id or "",
-                parent_session_id=_old_sid,
-                reset=False,
-                reason="compression",
-            )
-    except Exception as _me_err:
-        logger.debug("memory manager on_session_switch (compression): %s", _me_err)
-
-    # Warn on repeated compressions (quality degrades with each pass)
-    _cc = agent.context_compressor.compression_count
-    if _cc >= 2:
-        agent._vprint(
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh.",
-            force=True,
-        )
-
-    # Update token estimate after compaction so pressure calculations
-    # use the post-compression count, not the stale pre-compression one.
-    # Use estimate_request_tokens_rough() so tool schemas are included —
-    # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
-    # omitting them delays the next compression cycle far past the
-    # configured threshold (issue #14695).
-    _compressed_est = estimate_request_tokens_rough(
-        compressed,
-        system_prompt=new_system_prompt or "",
-        tools=agent.tools or None,
+    return agent._finalize_context_rewrite(
+        original_messages=messages,
+        rewritten_messages=compressed,
+        system_message=system_message,
+        approx_tokens=approx_tokens,
+        task_id=task_id,
+        source_label="context compression",
     )
-    agent.context_compressor.last_prompt_tokens = _compressed_est
-    agent.context_compressor.last_completion_tokens = 0
-
-    # Clear the file-read dedup cache.  After compression the original
-    # read content is summarised away — if the model re-reads the same
-    # file it needs the full content, not a "file unchanged" stub.
-    try:
-        from tools.file_tools import reset_file_dedup
-        reset_file_dedup(task_id)
-    except Exception:
-        pass
-
-    logger.info(
-        "context compression done: session=%s messages=%d->%d tokens=~%s",
-        agent.session_id or "none", _pre_msg_count, len(compressed),
-        f"{_compressed_est:,}",
-    )
-    return compressed, new_system_prompt
 
 
 def try_shrink_image_parts_in_messages(api_messages: list) -> bool:

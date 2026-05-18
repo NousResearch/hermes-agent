@@ -4,7 +4,7 @@ import json
 import pytest
 from typing import Any, Dict, List
 
-from agent.context_engine import ContextEngine
+from agent.context_engine import ContextCompressionCandidate, ContextEngine
 from agent.context_compressor import ContextCompressor
 
 
@@ -123,6 +123,16 @@ class TestDefaults:
     def test_should_compress_preflight_default_false(self):
         engine = StubEngine()
         assert engine.should_compress_preflight([]) is False
+
+    def test_async_compression_defaults_are_noop(self):
+        engine = StubEngine()
+        messages = [{"role": "user", "content": "hello"}]
+        assert engine.should_prepare_async_compression(1000, messages) is False
+        assert engine.prepare_async_compression(messages, current_tokens=1000) is None
+        # Hooks are no-ops by default.
+        candidate = ContextCompressionCandidate(messages=messages)
+        assert engine.on_async_compression_applied(candidate) is None
+        assert engine.on_async_compression_discarded(candidate, "stale") is None
 
 
 # ---------------------------------------------------------------------------

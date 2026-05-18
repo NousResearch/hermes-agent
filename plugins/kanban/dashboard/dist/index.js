@@ -83,6 +83,12 @@
     completion_blocked_hallucination: "⚠ Completion blocked — phantom card ids",
     suspected_hallucinated_references: "⚠ Prose referenced phantom card ids",
   };
+  const FALLBACK_TRASH = {
+    label: "Trash",
+    title: "Drag a card here to permanently delete it",
+    confirm: "Permanently delete this task? This cannot be undone.",
+    dropHint: "Drop to delete",
+  };
   const DIAGNOSTIC_EVENT_KIND_KEYS = {
     completion_blocked_hallucination: "completionBlockedHallucination",
     suspected_hallucinated_references: "suspectedHallucinatedReferences",
@@ -331,10 +337,12 @@
         const under = document.elementFromPoint(ev.clientX, ev.clientY);
         proxy.style.display = "";
         const col = under && under.closest && under.closest("[data-kanban-column]");
-        if (col !== lastTarget) {
+        const trash = under && under.closest && under.closest("[data-kanban-trash]");
+        const target = col || trash;
+        if (target !== lastTarget) {
           if (lastTarget) lastTarget.classList.remove("hermes-kanban-column--drop");
-          if (col) col.classList.add("hermes-kanban-column--drop");
-          lastTarget = col;
+          if (target) target.classList.add("hermes-kanban-column--drop");
+          lastTarget = target;
         }
       }
       function up() {
@@ -344,10 +352,18 @@
         if (lastTarget) {
           lastTarget.classList.remove("hermes-kanban-column--drop");
           const status = lastTarget.getAttribute("data-kanban-column");
-          lastTarget.dispatchEvent(new CustomEvent("hermes-kanban:drop", {
-            detail: { taskId, status },
-            bubbles: true,
-          }));
+          const isTrash = lastTarget.hasAttribute("data-kanban-trash");
+          if (isTrash) {
+            lastTarget.dispatchEvent(new CustomEvent("hermes-kanban:delete", {
+              detail: { taskId },
+              bubbles: true,
+            }));
+          } else if (status) {
+            lastTarget.dispatchEvent(new CustomEvent("hermes-kanban:drop", {
+              detail: { taskId, status },
+              bubbles: true,
+            }));
+          }
         }
         proxy.remove();
       }
@@ -873,6 +889,32 @@
       });
     }, [board, loadBoardList, switchBoard]);
 
+   const deleteTask = useCallback(function (taskId) {
+     if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
+     return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+       method: "DELETE",
+     }).then(function () {
+       loadBoard();
+       setSelectedIds(function (prev) {
+         const next = new Set(prev);
+         next.delete(taskId);
+         return next;
+       });
+     }).catch(function (e) { setError(String(e.message || e)); });
+   }, [board, loadBoard, t]);
+
+    const deleteSelected = useCallback(function (count) {
+      if (selectedIds.size === 0) return Promise.resolve();
+      if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
+      const ids = Array.from(selectedIds);
+      setSelectedIds(new Set());
+      return Promise.all(ids.map(function (id) {
+        return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+      })).then(function () {
+        loadBoard();
+      }).catch(function (e) { setError(String(e.message || e)); });
+    }, [selectedIds, board, loadBoard, t]);
+
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
       return h("div", { className: "p-8 text-sm text-muted-foreground" },
@@ -927,13 +969,14 @@
           },
           onRefresh: loadBoard,
         }),
-        selectedIds.size > 0 ? h(BulkActionBar, {
-          count: selectedIds.size,
-          assignees: (boardData && boardData.assignees) || [],
-          onApply: applyBulk,
-          onClear: clearSelected,
-          onSelectAllVisible: selectAllVisible,
-        }) : null,
+       selectedIds.size > 0 ? h(BulkActionBar, {
+         count: selectedIds.size,
+         assignees: (boardData && boardData.assignees) || [],
+         onApply: applyBulk,
+         onClear: clearSelected,
+         onSelectAllVisible: selectAllVisible,
+         onDelete: deleteSelected,
+       }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
@@ -948,6 +991,7 @@
           selectAllInColumn,
           onMove: moveTask,
           onMoveSelected: moveSelected,
+          onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -2006,6 +2050,14 @@
         size: "sm",
         title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
       }, tx(t, "archive", "Archive")),
+      h(Button, {
+        onClick: function () {
+          props.onDelete(props.count);
+        },
+        size: "sm",
+        variant: "destructive",
+        title: "Permanently delete selected tasks. This cannot be undone.",
+      }, tx(t, "delete", "Delete")),
       h("div", { className: "hermes-kanban-bulk-priority",
                  title: "Set priority on selected tasks. Higher = claimed first." },
         h(Input, {
@@ -2072,6 +2124,65 @@
   }
 
   // -------------------------------------------------------------------------
+  // Trash Drop Zone
+  // -------------------------------------------------------------------------
+
+  function TrashDropZone(props) {
+    const { t } = useI18n();
+    const [dragOver, setDragOver] = useState(false);
+    const zoneRef = useRef(null);
+
+    useEffect(function () {
+      if (!zoneRef.current) return undefined;
+      const el = zoneRef.current;
+      function onTouchDelete(e) {
+        const taskId = e.detail && e.detail.taskId;
+        if (taskId && props.onDelete) props.onDelete(taskId);
+      }
+      el.addEventListener("hermes-kanban:delete", onTouchDelete);
+      return function () { el.removeEventListener("hermes-kanban:delete", onTouchDelete); };
+    }, [props.onDelete]);
+
+    const handleDragOver = function (e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (!dragOver) setDragOver(true);
+    };
+    const handleDragLeave = function () { setDragOver(false); };
+    const handleDrop = function (e) {
+      e.preventDefault();
+      setDragOver(false);
+      const taskId = e.dataTransfer.getData(MIME_TASK);
+      if (!taskId) return;
+      if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
+        if (window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: props.selectedIds.size }))) {
+          const ids = Array.from(props.selectedIds);
+          Promise.all(ids.map(function (id) { return props.onDelete(id); })).catch(function () {});
+        }
+      } else {
+        props.onDelete(taskId);
+      }
+    };
+
+    return h("div", {
+      ref: zoneRef,
+      "data-kanban-trash": "true",
+      className: cn(
+        "hermes-kanban-trash",
+        dragOver ? "hermes-kanban-trash--drop" : "",
+        props.draggingTaskId ? "hermes-kanban-trash--active" : "",
+      ),
+      onDragOver: handleDragOver,
+      onDragLeave: handleDragLeave,
+      onDrop: handleDrop,
+    },
+      h("span", { className: "hermes-kanban-trash-icon" }, "🗑️"),
+      h("span", { className: "hermes-kanban-trash-label" },
+        tx(t, "trash.dropHint", FALLBACK_TRASH.dropHint)),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Columns
   // -------------------------------------------------------------------------
 
@@ -2103,6 +2214,11 @@
           onCreate: props.onCreate,
           allTasks: props.allTasks,
         });
+      }),
+      h(TrashDropZone, {
+        draggingTaskId: props.draggingTaskId,
+        selectedIds: props.selectedIds,
+        onDelete: props.onDelete,
       }),
     );
   }

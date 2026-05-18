@@ -2987,6 +2987,29 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Hard-delete a task and cascade to all related rows.
+
+    Because the schema does not use ``ON DELETE CASCADE`` foreign keys,
+    we explicitly delete from child tables first, then the task row.
+    This keeps the operation atomic (single ``write_txn``).
+
+    Returns ``True`` if the task existed and was deleted, ``False``
+    if the task was not found.
+    """
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if cur.rowcount != 1:
+            return False
+        conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
+        conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+    recompute_ready(conn)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------

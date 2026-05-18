@@ -13,6 +13,7 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _IS_WINDOWS,
     _prepend_shell_init,
     _read_terminal_shell_init_config,
     _resolve_shell_init_files,
@@ -20,6 +21,10 @@ from tools.environments.local import (
 
 
 class TestResolveShellInitFiles:
+    @pytest.mark.skipif(
+        _IS_WINDOWS,
+        reason="Default auto-sourced bash init files are POSIX-only by design.",
+    )
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
         bashrc.write_text('export MARKER=seen\n')
@@ -34,6 +39,10 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(bashrc)]
 
+    @pytest.mark.skipif(
+        _IS_WINDOWS,
+        reason="Default auto-sourced bash init files are POSIX-only by design.",
+    )
     def test_auto_sources_profile_when_present(self, tmp_path, monkeypatch):
         """~/.profile is where ``n`` / ``nvm`` installers typically write
         their PATH export on Debian/Ubuntu, and it has no interactivity
@@ -51,6 +60,10 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(profile)]
 
+    @pytest.mark.skipif(
+        _IS_WINDOWS,
+        reason="Default auto-sourced bash init files are POSIX-only by design.",
+    )
     def test_auto_sources_bash_profile_when_present(self, tmp_path, monkeypatch):
         bash_profile = tmp_path / ".bash_profile"
         bash_profile.write_text('export MARKER=bp\n')
@@ -64,6 +77,10 @@ class TestResolveShellInitFiles:
 
         assert resolved == [str(bash_profile)]
 
+    @pytest.mark.skipif(
+        _IS_WINDOWS,
+        reason="Default auto-sourced bash init files are POSIX-only by design.",
+    )
     def test_auto_sources_profile_before_bashrc(self, tmp_path, monkeypatch):
         """Both files present: profile runs first so PATH exports in
         profile take effect even if bashrc short-circuits on the
@@ -134,6 +151,9 @@ class TestResolveShellInitFiles:
         target.parent.mkdir()
         target.write_text('export A=1\n')
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("HOMEDRIVE", tmp_path.drive)
+        monkeypatch.setenv("HOMEPATH", str(tmp_path).removeprefix(tmp_path.drive))
         monkeypatch.setenv("CUSTOM_RC_DIR", str(tmp_path / "rc"))
 
         with patch(
@@ -148,8 +168,8 @@ class TestResolveShellInitFiles:
         ):
             resolved_var = _resolve_shell_init_files()
 
-        assert resolved_home == [str(target)]
-        assert resolved_var == [str(target)]
+        assert [os.path.normpath(p) for p in resolved_home] == [os.path.normpath(str(target))]
+        assert [os.path.normpath(p) for p in resolved_var] == [os.path.normpath(str(target))]
 
     def test_missing_explicit_files_are_skipped_silently(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -160,6 +180,28 @@ class TestResolveShellInitFiles:
             resolved = _resolve_shell_init_files()
 
         assert resolved == []
+
+
+class TestReadTerminalShellInitConfig:
+    def test_coerces_quoted_false_auto_source_bashrc(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"auto_source_bashrc": "false"}},
+        ):
+            files, auto_bashrc = _read_terminal_shell_init_config()
+
+        assert files == []
+        assert auto_bashrc is False
+
+    def test_coerces_numeric_zero_auto_source_bashrc(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"terminal": {"auto_source_bashrc": "0"}},
+        ):
+            files, auto_bashrc = _read_terminal_shell_init_config()
+
+        assert files == []
+        assert auto_bashrc is False
 
 
 class TestPrependShellInit:
@@ -184,8 +226,8 @@ class TestPrependShellInit:
 
 
 @pytest.mark.skipif(
-    os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
-    reason="Requires bash; CI sandbox may strip it.",
+    _IS_WINDOWS or (os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash")),
+    reason="Requires a native POSIX bash environment.",
 )
 class TestSnapshotEndToEnd:
     """Spin up a real LocalEnvironment and confirm the snapshot sources

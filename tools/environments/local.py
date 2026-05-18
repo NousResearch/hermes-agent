@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from utils import is_truthy_value
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -328,7 +329,10 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         files = terminal_cfg.get("shell_init_files") or []
         if not isinstance(files, list):
             files = []
-        auto_bashrc = bool(terminal_cfg.get("auto_source_bashrc", True))
+        auto_bashrc = is_truthy_value(
+            terminal_cfg.get("auto_source_bashrc"),
+            default=True,
+        )
         return [str(f) for f in files if f], auto_bashrc
     except Exception:
         return [], True

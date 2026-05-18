@@ -330,6 +330,12 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(fake_loop.calls, 2)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_declares_editable_message_capability(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.assertTrue(FeishuAdapter.SUPPORTS_MESSAGE_EDITING)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

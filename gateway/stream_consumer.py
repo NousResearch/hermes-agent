@@ -529,6 +529,9 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                        elif not self._edit_supported and self._message_id:
+                            await self._flush_segment_tail_on_edit_failure()
+                            self._final_response_sent = True
                         elif (
                             current_update_visible
                             and not self._adapter_requires_finalize
@@ -545,6 +548,8 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if self._fallback_final_send and not self._final_response_sent:
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return

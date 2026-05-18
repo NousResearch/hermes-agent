@@ -130,12 +130,16 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "edit"],
+                "description": "Action to perform. 'send' (default) sends a message. 'edit' updates an existing message by message_id when supported. 'list' returns all available channels/contacts across connected platforms."
             },
             "target": {
                 "type": "string",
                 "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+            },
+            "message_id": {
+                "type": "string",
+                "description": "Existing platform message ID to update when action='edit'. Use the message_id returned by a previous successful send_message(action='send') call."
             },
             "message": {
                 "type": "string",
@@ -153,6 +157,10 @@ def send_message_tool(args, **kw):
 
     if action == "list":
         return _handle_list()
+    if action == "edit":
+        return _handle_edit(args)
+    if action != "send":
+        return tool_error(f"Unknown action: {action}")
 
     return _handle_send(args)
 
@@ -315,6 +323,95 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _handle_edit(args):
+    """Edit an existing message on a platform target."""
+    target = args.get("target", "")
+    message_id = str(args.get("message_id", "")).strip()
+    message = args.get("message", "")
+    if not target or not message_id or not message:
+        return tool_error("'target', 'message_id', and 'message' are required when action='edit'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    if not chat_id:
+        home = config.get_home_channel(platform)
+        if home:
+            chat_id = home.chat_id
+        else:
+            return json.dumps({
+                "error": f"No home channel set for {platform_name} to determine which chat contains the message. "
+                f"Specify a channel directly with '{platform_name}:CHANNEL_ID'."
+            })
+
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    if media_files:
+        return tool_error("MEDIA attachments are not supported when action='edit'")
+
+    try:
+        from model_tools import _run_async
+        result = _run_async(
+            _edit_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                message_id,
+                cleaned_message,
+                thread_id=thread_id,
+            )
+        )
+        if isinstance(result, dict) and "error" in result:
+            result["error"] = _sanitize_error_text(result["error"])
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Edit failed: {e}"))
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -523,6 +620,94 @@ async def _send_via_adapter(
             f"register a standalone_sender_fn on its PlatformEntry."
         )
     }
+
+
+def _unsupported_edit(platform) -> dict:
+    platform_name = getattr(platform, "value", str(platform))
+    return {
+        "success": False,
+        "unsupported": True,
+        "action": "edit",
+        "platform": platform_name,
+        "error": f"Platform '{platform_name}' does not support message editing via send_message.",
+    }
+
+
+def _adapter_edit_result(platform, chat_id, result) -> dict:
+    platform_name = getattr(platform, "value", str(platform))
+    if result.success:
+        return {
+            "success": True,
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "message_id": result.message_id,
+        }
+    return {
+        "success": False,
+        "platform": platform_name,
+        "chat_id": chat_id,
+        "message_id": getattr(result, "message_id", None),
+        "error": result.error or "edit failed",
+    }
+
+
+async def _edit_to_platform(platform, pconfig, chat_id, message_id, message, thread_id=None):
+    """Route a message edit to a platform adapter when supported."""
+    from gateway.config import Platform
+
+    if platform == Platform.FEISHU:
+        return await _edit_feishu(pconfig, chat_id, message_id, message)
+
+    adapter_classes = {}
+    try:
+        from gateway.platforms.telegram import TelegramAdapter
+        adapter_classes[Platform.TELEGRAM] = TelegramAdapter
+    except ImportError:
+        pass
+    try:
+        from gateway.platforms.discord import DiscordAdapter
+        adapter_classes[Platform.DISCORD] = DiscordAdapter
+    except ImportError:
+        pass
+    try:
+        from gateway.platforms.slack import SlackAdapter
+        adapter_classes[Platform.SLACK] = SlackAdapter
+    except ImportError:
+        pass
+    try:
+        from gateway.platforms.matrix import MatrixAdapter
+        adapter_classes[Platform.MATRIX] = MatrixAdapter
+    except ImportError:
+        pass
+    try:
+        from gateway.platforms.mattermost import MattermostAdapter
+        adapter_classes[Platform.MATTERMOST] = MattermostAdapter
+    except ImportError:
+        pass
+    try:
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        adapter_classes[Platform.WHATSAPP] = WhatsAppAdapter
+    except ImportError:
+        pass
+
+    adapter_cls = adapter_classes.get(platform)
+    if adapter_cls is None:
+        return _unsupported_edit(platform)
+    if getattr(adapter_cls, "SUPPORTS_MESSAGE_EDITING", True) is False:
+        return _unsupported_edit(platform)
+
+    try:
+        adapter = adapter_cls(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error(f"{platform.value} connect failed")
+        try:
+            result = await adapter.edit_message(chat_id, message_id, message)
+            return _adapter_edit_result(platform, chat_id, result)
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"{platform.value} edit failed: {e}")
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
@@ -1768,6 +1953,30 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _edit_feishu(pconfig, chat_id, message_id, message):
+    """Edit a Feishu/Lark message using the adapter's update pipeline."""
+    try:
+        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
+        if not FEISHU_AVAILABLE:
+            return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
+    except ImportError:
+        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+
+    try:
+        adapter = FeishuAdapter(pconfig)
+        if getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False:
+            return _unsupported_edit(getattr(adapter, "platform", "feishu"))
+        domain_name = getattr(adapter, "_domain_name", "feishu")
+        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+        adapter._client = adapter._build_lark_client(domain)
+
+        result = await adapter.edit_message(chat_id, message_id, message)
+        return _adapter_edit_result(getattr(adapter, "platform", "feishu"), chat_id, result)
+    except Exception as e:
+        return _error(f"Feishu edit failed: {e}")
 
 
 def _check_send_message():

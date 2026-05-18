@@ -22,7 +22,9 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
     _derive_forum_thread_name,
+    _edit_to_platform,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
@@ -78,6 +80,90 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_schema_exposes_edit_action_and_message_id(self):
+        action = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]
+
+        assert "edit" in action["enum"]
+        assert "message_id" in SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+
+    def test_edit_requires_message_id(self):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "edit",
+                    "target": "telegram:123",
+                    "message": "updated",
+                }
+            )
+        )
+
+        assert "error" in result
+        assert "message_id" in result["error"]
+
+    def test_edit_dispatches_to_platform_and_preserves_message_id(self):
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: pconfig},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._edit_to_platform", new=AsyncMock(return_value={
+                 "success": True,
+                 "platform": "telegram",
+                 "chat_id": "123",
+                 "message_id": "mid-1",
+             })) as edit_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "edit",
+                        "target": "telegram:123",
+                        "message_id": "mid-1",
+                        "message": "updated",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "mid-1"
+        edit_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            pconfig,
+            "123",
+            "mid-1",
+            "updated",
+            thread_id=None,
+        )
+
+    def test_edit_unsupported_platform_returns_machine_readable_payload(self):
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.WECOM: pconfig},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "edit",
+                        "target": "wecom:123",
+                        "message_id": "msg-1",
+                        "message": "updated",
+                    }
+                )
+            )
+
+        assert result["success"] is False
+        assert result["unsupported"] is True
+        assert result["action"] == "edit"
+        assert result["platform"] == "wecom"
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -1146,6 +1232,65 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+class TestEditToPlatform:
+    def test_unsupported_platform_returns_machine_readable_payload(self):
+        result = asyncio.run(
+            _edit_to_platform(
+                Platform.WECOM,
+                SimpleNamespace(enabled=True, extra={}),
+                "chat-1",
+                "msg-1",
+                "updated",
+            )
+        )
+
+        assert result["success"] is False
+        assert result["unsupported"] is True
+        assert result["platform"] == "wecom"
+        assert result["action"] == "edit"
+
+    def test_feishu_edit_uses_adapter_and_preserves_message_id(self, monkeypatch):
+        class _Adapter:
+            SUPPORTS_MESSAGE_EDITING = True
+
+            def __init__(self, pconfig):
+                self.pconfig = pconfig
+                self._domain_name = "feishu"
+                self._client = None
+
+            def _build_lark_client(self, domain):
+                return SimpleNamespace(domain=domain)
+
+            async def edit_message(self, chat_id, message_id, content):
+                self.call = (chat_id, message_id, content)
+                return SimpleNamespace(success=True, message_id=message_id)
+
+        feishu_mod = SimpleNamespace(
+            FeishuAdapter=_Adapter,
+            FEISHU_AVAILABLE=True,
+            FEISHU_DOMAIN="feishu-domain",
+            LARK_DOMAIN="lark-domain",
+        )
+        monkeypatch.setitem(sys.modules, "gateway.platforms.feishu", feishu_mod)
+
+        result = asyncio.run(
+            _edit_to_platform(
+                Platform.FEISHU,
+                SimpleNamespace(enabled=True, extra={}),
+                "oc_chat",
+                "om_msg",
+                "updated",
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": "oc_chat",
+            "message_id": "om_msg",
+        }
 
 
 # ---------------------------------------------------------------------------

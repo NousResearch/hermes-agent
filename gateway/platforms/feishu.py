@@ -56,6 +56,7 @@ import logging
 import mimetypes
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -144,6 +145,13 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+def _feishu_state_path(filename: str) -> Path:
+    try:
+        return get_hermes_home() / filename
+    except RuntimeError:
+        return Path(tempfile.gettempdir()) / "hermes-agent" / filename
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -1408,6 +1416,7 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    SUPPORTS_MESSAGE_EDITING = True
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1432,7 +1441,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._event_handler: Optional[Any] = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
-        self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
+        self._dedup_state_path = _feishu_state_path("feishu_seen_message_ids.json")
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
@@ -3848,13 +3857,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not bot_ids:
             return None
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/bots/basic_batch")
-                .queries([("bot_ids", oid) for oid in bot_ids])
-                .token_types({AccessTokenType.TENANT})
-                .build()
+            req = self._build_base_get_request(
+                "/open-apis/bot/v3/bots/basic_batch",
+                queries=[("bot_ids", oid) for oid in bot_ids],
             )
             resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
@@ -4095,13 +4100,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
         try:
-            req = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.GET)
-                .uri("/open-apis/bot/v3/info")
-                .token_types({AccessTokenType.TENANT})
-                .build()
-            )
+            req = self._build_base_get_request("/open-apis/bot/v3/info")
             resp = await asyncio.to_thread(self._client.request, req)
             content = getattr(getattr(resp, "raw", None), "content", None)
             if content:
@@ -4692,6 +4691,24 @@ class FeishuAdapter(BasePlatformAdapter):
         if "CreateFileRequest" in globals():
             return CreateFileRequest.builder().request_body(request_body).build()
         return SimpleNamespace(request_body=request_body)
+
+    @staticmethod
+    def _build_base_get_request(uri: str, *, queries: Optional[List[tuple[str, str]]] = None) -> Any:
+        if "BaseRequest" in globals():
+            builder = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri(uri)
+            )
+            if queries:
+                builder = builder.queries(queries)
+            return builder.token_types({AccessTokenType.TENANT}).build()
+        return SimpleNamespace(
+            http_method="GET",
+            uri=uri,
+            queries=queries or [],
+            token_types={"TENANT"},
+        )
 
     def _build_post_payload(self, content: str) -> str:
         return _build_markdown_post_payload(content)

@@ -146,17 +146,15 @@ Fix if you're using the adapter-owned pattern:
 
 Conversely, `gateway/run.py::_run_in_executor_with_context` uses `copy_context()` to propagate context **into** executor threads. That direction works; the `run_coroutine_threadsafe` direction does not. Mixing sync worker threads with async loops without respecting this will surface as "works in unit tests, hangs in integration."
 
-### Per-session serialization (structural race elimination)
+### Session serialization (structural race elimination)
 
-If your transport supports multiple concurrent prompts per session (e.g. NATS's envelope `session` field lets multiple callers target the same session string simultaneously), a per-session `asyncio.Lock` inside the adapter eliminates entire classes of races structurally — concurrent-handler stream-registration overwrites, notify-callback overwrites, ambiguous contextvar fallbacks — by making the concurrent state impossible rather than reconciling it correctly.
+If your transport supports multiple concurrent prompts on the same prompt subject (NATS, gRPC streaming, anything programmatic where multiple callers can race the same endpoint), a session-scoped `asyncio.Lock` inside the adapter eliminates entire classes of races structurally — concurrent-handler stream-registration overwrites, notify-callback overwrites, ambiguous contextvar fallbacks — by making the concurrent state impossible rather than reconciling it correctly.
 
-Canonical pattern (`NatsAdapter`):
+Canonical pattern (`NatsAdapter`, post-v0.3):
 
-- `_session_locks: dict[str, asyncio.Lock]` keyed on the per-session identifier (`chat_id`).
-- `setdefault` for lock creation — one atomic dict op under the GIL, no await between check and insert.
+- `_session_lock: asyncio.Lock` — single Lock per service, since v0.3 pins one `session_name` per `AgentService` (multi-session = multi-profile). For a transport that genuinely hosts multiple sessions in one process, scale this to `dict[str, asyncio.Lock]` keyed on the session id.
 - Acquire the lock **after** keep-alive emission starts (a queued handler should still signal liveness to the caller) and **after** envelope/attachment decoding (malformed inputs should fail fast, not queue).
-- Clear `_session_locks` in `disconnect()` / teardown so reconnects don't inherit locks held by cancelled tasks.
-- Distinct session ids still run in parallel — the lock is per-session, not global.
+- Rebuild the Lock in `connect()` so reconnects don't inherit a Lock held by a cancelled task.
 
 Prefer this over per-send disambiguation (contextvar priority, compound-key registries, closure-captured streams) when the concurrency itself isn't load-bearing. A test that asserts "two overlapping handlers each route their send to the right stream" becomes **structurally impossible under serialization** — the interleaved sequence deadlocks — and the replacement test asserts the stronger timeline invariant (A enter → A leave → B enter → B leave).
 

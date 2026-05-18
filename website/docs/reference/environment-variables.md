@@ -406,10 +406,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `NATS_URL` | NATS server URL for the gateway adapter (e.g. `nats://127.0.0.1:4222`). Setting any NATS env var auto-enables the platform. |
 | `NATS_CONTEXT` | NATS context name (from `$NATS_CONFIG_HOME/context/<name>.json`) — alternative to `NATS_URL` for credentialed connections |
-| `HERMES_NATS_AGENT` | NATS agent family token in the subject `agents.<agent>.<owner>.<name>` (default: `hermes`) |
+| `HERMES_NATS_AGENT` | NATS agent family token in the subject `agents.prompt.<agent>.<owner>.<session_name>` (default: `hermes`) |
 | `HERMES_NATS_OWNER` | NATS owner token (required when NATS is enabled) |
-| `HERMES_NATS_NAME` | NATS instance name token (required when NATS is enabled) |
-| `HERMES_NATS_SESSION` | Default `envelope.session` fallback when callers don't specify one (default: `default`) |
+| `HERMES_NATS_SESSION_NAME` | NATS session name — the 5th subject token, fixed per `AgentService` (required when NATS is enabled). Multi-session deployments use Hermes profile isolation: one profile = one service = one `session_name`. |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |
 | `WEBHOOK_PORT` | HTTP server port for receiving webhooks (default: `8644`) |
 | `WEBHOOK_SECRET` | Global HMAC secret for webhook signature validation (used as fallback when routes don't specify their own) |

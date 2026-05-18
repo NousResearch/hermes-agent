@@ -212,6 +212,39 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
+    def test_get_peer_card_falls_back_to_target_peer_own_card(self):
+        # When the observer-target card slot is empty (returns None/[]), fall
+        # back to the target peer's own card. Self-hosted Honcho v3 stores the
+        # peer card on the peer itself; the observer-target slot is only
+        # populated when writes also go through that path.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = None  # observer-target slot empty
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = ["Prefers: dark mode"]
+
+        def _peer(peer_id: str) -> MagicMock:
+            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        assert mgr.get_peer_card(session.key) == ["Prefers: dark mode"]
+        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+        user_peer.get_card.assert_called_once_with()
+
+    def test_set_peer_card_uses_observer_target_in_ai_observe_others_mode(self):
+        # Writes must go to the same observer-target slot that reads check,
+        # so that a subsequent honcho_profile read returns what was written.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Role: user"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.set_peer_card(session.key, ["Role: user"])
+
+        assert result == ["Role: user"]
+        assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()

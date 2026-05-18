@@ -462,6 +462,63 @@ class TestSendUpdateNotification:
         assert "Update complete" in call_args[0][1] or "update finished" in call_args[0][1].lower()
 
     @pytest.mark.asyncio
+    async def test_writes_notification_to_session_transcript(self, tmp_path):
+        """Writes the update result as a system message into the session transcript.
+
+        Regression test for #27846: when the gateway restarts after 'hermes update',
+        the notification must be added to the session transcript so the agent retains
+        context of the update outcome across restarts.
+        """
+        from unittest.mock import MagicMock
+        from dataclasses import dataclass
+
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        # Write pending marker with session_key so the fix can find the session
+        pending = {
+            "platform": "telegram",
+            "chat_id": "67890",
+            "user_id": "12345",
+            "session_key": "telegram:67890:12345",
+            "timestamp": "2026-03-04T21:00:00",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("✓ All done")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        # Mock session_store with _entries lookup
+        @dataclass
+        class FakeEntry:
+            session_id: str
+
+        mock_session_store = MagicMock()
+        mock_session_store._entries = {
+            "telegram:67890:12345": FakeEntry(session_id="session-abc123"),
+        }
+        runner.session_store = mock_session_store
+
+        # Mock the adapter
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        # Verify transcript was written BEFORE adapter.send
+        mock_session_store.append_to_transcript.assert_called_once()
+        call_args = mock_session_store.append_to_transcript.call_args
+        assert call_args[0][0] == "session-abc123"
+        msg_dict = call_args[0][1]
+        assert msg_dict["role"] == "system"
+        assert "update finished" in msg_dict["content"].lower()
+
+        # Verify adapter.send was also called
+        mock_adapter.send.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_sends_notification_with_thread_metadata(self, tmp_path):
         """Final update notification preserves thread metadata when present."""
         runner = _make_runner()

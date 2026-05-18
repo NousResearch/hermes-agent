@@ -11286,6 +11286,13 @@ Examples:
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    from hermes_cli.memory_governance import (
+        add_doctor_parser as _add_memory_doctor_parser,
+        add_parser as _add_memory_governance_parser,
+    )
+
+    _add_memory_governance_parser(memory_sub)
+    _add_memory_doctor_parser(memory_sub)
     _reset_parser = memory_sub.add_parser(
         "reset",
         help="Erase all built-in memory (MEMORY.md and USER.md)",
@@ -11315,6 +11322,14 @@ Examples:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "governance":
+            from hermes_cli.memory_governance import cmd_governance
+
+            raise SystemExit(cmd_governance(args))
+        elif sub == "doctor":
+            from hermes_cli.memory_governance import cmd_doctor
+
+            raise SystemExit(cmd_doctor(args))
         elif sub == "reset":
             from hermes_constants import get_hermes_home, display_hermes_home
 

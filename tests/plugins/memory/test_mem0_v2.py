@@ -140,8 +140,26 @@ class TestMem0ResponseUnwrapping:
         result = json.loads(provider.handle_tool_call("mem0_profile", {}))
 
         assert result["count"] == 2
+        assert result["source"] == "get_all"
         assert "alpha" in result["result"]
         assert "beta" in result["result"]
+
+    def test_profile_falls_back_to_broad_search_when_get_all_empty(self, monkeypatch):
+        client = FakeClientV2(
+            all_results={"results": []},
+            search_results={"results": [{"memory": "fallback fact", "score": 0.2}]},
+        )
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_profile", {}))
+
+        assert result["count"] == 1
+        assert result["source"] == "search_fallback"
+        assert "fallback fact" in result["result"]
+        assert client.captured_search["query"] == "*"
+        assert client.captured_search["filters"] == provider._read_filters()
+        assert client.captured_search["rerank"] is False
+        assert client.captured_search["top_k"] == 50
 
     def test_profile_list_response_backward_compat(self, monkeypatch):
         """Old API returned bare lists — still works."""
@@ -225,3 +243,19 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+    def test_is_available_requires_api_key_and_sdk(self, monkeypatch, tmp_path):
+        import importlib.util
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = Mem0MemoryProvider()
+
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        assert provider.is_available() is False
+
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None if name == "mem0" else object())
+        assert provider.is_available() is False
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "mem0" else None)
+        assert provider.is_available() is True

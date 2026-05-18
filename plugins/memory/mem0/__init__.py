@@ -141,7 +141,10 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
-        return bool(cfg.get("api_key"))
+        if not cfg.get("api_key"):
+            return False
+        import importlib.util
+        return importlib.util.find_spec("mem0") is not None
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -311,11 +314,24 @@ class Mem0MemoryProvider(MemoryProvider):
         if tool_name == "mem0_profile":
             try:
                 memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                source = "get_all"
+                if not memories:
+                    # Mem0 v3 currently stores/searches some explicit infer=False facts
+                    # but does not return them from /v3/memories/ get_all for the same
+                    # filters. Fall back to a broad search so the profile tool remains
+                    # useful instead of claiming the store is empty.
+                    memories = self._unwrap_results(client.search(
+                        query="*",
+                        filters=self._read_filters(),
+                        rerank=False,
+                        top_k=50,
+                    ))
+                    source = "search_fallback"
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
                 lines = [m.get("memory", "") for m in memories if m.get("memory")]
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
+                return json.dumps({"result": "\n".join(lines), "count": len(lines), "source": source})
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to fetch profile: {e}")

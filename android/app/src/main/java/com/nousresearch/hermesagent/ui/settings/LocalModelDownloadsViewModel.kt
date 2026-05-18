@@ -639,11 +639,11 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
             RecommendedLocalModelPreset(
                 id = "qwen35-08b-q4km-gguf",
                 title = "Qwen3.5 0.8B Q4_K_M (GGUF)",
-                description = "Small GGUF model validated on the physical Hermes test phone for visible chat replies, file creation, deletion, and native tool calling.",
-                repoOrUrl = "bartowski/Qwen_Qwen3.5-0.8B-GGUF",
-                filePath = "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf",
+                description = "Small Unsloth GGUF model for fast visible chat replies, file creation, deletion, and native tool-calling validation on phones.",
+                repoOrUrl = "unsloth/Qwen3.5-0.8B-GGUF",
+                filePath = "Qwen3.5-0.8B-Q4_K_M.gguf",
                 runtimeFlavor = "GGUF",
-                testedLabel = "Tested phone tool-calling",
+                testedLabel = "Unsloth Q4_K_M phone tool-calling",
             ),
             RecommendedLocalModelPreset(
                 id = "gemma4-e2b-litert-lm",

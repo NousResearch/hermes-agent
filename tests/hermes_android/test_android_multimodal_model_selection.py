@@ -38,7 +38,8 @@ def test_settings_model_selection_uses_one_tap_cards_without_dropdowns():
     assert 'startRecommendedModelDownload(' in downloads
     assert 'Gemma 4 E2B (LiteRT-LM)' in downloads
     assert 'Qwen3.5 0.8B Q4_K_M (GGUF)' in downloads
-    assert 'bartowski/Qwen_Qwen3.5-0.8B-GGUF' in downloads
+    assert 'unsloth/Qwen3.5-0.8B-GGUF' in downloads
+    assert 'Qwen3.5-0.8B-Q4_K_M.gguf' in downloads
     assert 'Gemma 4 E2B (LiteRT-LM)' in presets
     assert 'Gemma 4 E4B (LiteRT-LM)' in presets
     assert 'Gemma 3 1B IT INT4 (LiteRT-LM)' in presets

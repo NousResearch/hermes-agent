@@ -388,11 +388,11 @@ class NativeAppChatAndToolInstrumentedTest {
         private const val MODEL_REVISION = "7fa1d78473894f7e736a21d920c3aa80f950c0db"
         private const val MODEL_BYTES = 2_583_085_056L
         private const val QWEN_MODEL_ID = "Qwen3.5 0.8B Q4_K_M GGUF"
-        private const val QWEN_REPO = "bartowski/Qwen_Qwen3.5-0.8B-GGUF"
-        private const val QWEN_GGUF_FILE_NAME = "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf"
+        private const val QWEN_REPO = "unsloth/Qwen3.5-0.8B-GGUF"
+        private const val QWEN_GGUF_FILE_NAME = "Qwen3.5-0.8B-Q4_K_M.gguf"
         private const val QWEN_SOURCE_URL =
-            "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/$QWEN_GGUF_FILE_NAME"
-        private const val QWEN_GGUF_BYTES = 556_982_432L
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/$QWEN_GGUF_FILE_NAME"
+        private const val QWEN_GGUF_BYTES = 532_517_120L
         private val BROWSER_PACKAGES = setOf(
             "com.android.chrome",
             "com.chrome.beta",

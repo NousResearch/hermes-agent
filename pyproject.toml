@@ -158,12 +158,14 @@ google = [
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
 ]
-# NATS: synadia-ai-agents is not yet published to PyPI. For now install the
-# SDK from source: `pip install -e ../synadia-agents/client-sdk/python`
-# (the SDK lives in the synadia-ai/synadia-agents monorepo, import root
-# `synadia_ai.agents`). Once published, `pip install 'hermes-agent[nats]'`
-# will resolve the PyPI package.
-nats = ["synadia-ai-agents>=0.4.0,<1"]
+# NATS: synadia-ai-agents and synadia-ai-agent-service are not yet on
+# PyPI; we resolve both to the sibling synadia-agents monorepo via
+# [tool.uv.sources] below. Once published, `pip install
+# 'hermes-agent[nats]'` will resolve from PyPI normally.
+nats = [
+  "synadia-ai-agents>=0.5,<1",
+  "synadia-ai-agent-service>=0.1,<1",
+]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -222,6 +224,15 @@ gateway = ["assets/**/*"]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+
+[tool.uv.sources]
+# Resolve both NATS Agent Protocol SDKs to the sibling synadia-agents
+# checkout for monorepo dev. uv-only convention; ignored by setuptools/
+# pip and NOT persisted into the built wheel's METADATA, so external
+# users still pull the declared deps from PyPI once published.
+# Layout assumed: ../synadia-agents/ as a sibling of this repo.
+synadia-ai-agents = { path = "../synadia-agents/client-sdk/python", editable = true }
+synadia-ai-agent-service = { path = "../synadia-agents/agent-sdk/python", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

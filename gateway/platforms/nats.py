@@ -33,10 +33,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 try:
     import nats
     import synadia_ai.agents as sdk
+    import synadia_ai.agent_service as sdk_svc
     SYNADIA_AGENTS_AVAILABLE = True
 except ImportError:
     nats = None  # type: ignore[assignment]
     sdk = None  # type: ignore[assignment]
+    sdk_svc = None  # type: ignore[assignment]
     SYNADIA_AGENTS_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
@@ -52,7 +54,8 @@ from gateway.platforms.base import (
 )
 
 if TYPE_CHECKING:
-    from synadia_ai.agents import Envelope, PromptStream
+    from synadia_ai.agents import Envelope
+    from synadia_ai.agent_service import PromptStream
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +63,13 @@ logger = logging.getLogger(__name__)
 # Defaults per docs/nats-gateway-design.md §4.
 DEFAULT_AGENT = "hermes"
 DEFAULT_HEARTBEAT_INTERVAL_S = 30
-DEFAULT_MAX_PAYLOAD = "1MB"
 DEFAULT_ATTACHMENTS_OK = True
 DEFAULT_ACK_KEEPALIVE_INTERVAL_S = 20
+
+# Conservative fallback when the broker reports max_payload=0 (rare; old
+# nats-py builds before the INFO field was surfaced). Mirrors the SDK's
+# own fallback so the two paths agree on "absent broker info".
+_FALLBACK_MAX_PAYLOAD = "1MB"
 
 # §6.6 recommends callers default to 60 s inactivity timeout. Keep the
 # adapter's keep-alive cadence strictly below that so callers never trip
@@ -133,7 +140,11 @@ class NatsAdapterSettings:
     owner: str
     session_name: str
     heartbeat_interval_s: int
-    max_payload: str
+    # ``None`` means "derive from the broker's negotiated max_payload at
+    # connect time" (PR #41). When the user supplies an explicit value it
+    # passes through unchanged — the SDK still clamps down if larger than
+    # the broker can carry.
+    max_payload: Optional[str]
     attachments_ok: bool
     ack_keepalive_interval_s: int
 
@@ -173,16 +184,12 @@ class NatsAdapterSettings:
             field_name="heartbeat_interval_s",
         )
 
-        max_payload = _optional_str(
-            extra.get("max_payload"),
-            default=DEFAULT_MAX_PAYLOAD,
-            field_name="max_payload",
-        )
-        if not _MAX_PAYLOAD_RE.match(max_payload):
-            raise NatsConfigError(
-                f"NATS: 'max_payload' {max_payload!r} is not a valid size "
-                f"(expected e.g. '1MB', '512KB', '4GB')"
-            )
+        # Leave max_payload unset by default so ``_on_connect`` can derive
+        # it from ``nc.max_payload`` (the broker's negotiated INFO value).
+        # PR #41: SDK clamps down on values larger than the broker, but
+        # never up — so hardcoding "1MB" here would cap us on every host
+        # regardless of negotiated capacity.
+        max_payload = _parse_optional_max_payload(extra.get("max_payload"))
 
         attachments_ok = extra.get("attachments_ok", DEFAULT_ATTACHMENTS_OK)
         if not isinstance(attachments_ok, bool):
@@ -319,6 +326,52 @@ def _optional_str(value: Any, default: str, field_name: str) -> str:
     if not stripped:
         return default
     return stripped
+
+
+def _parse_optional_max_payload(value: Any) -> Optional[str]:
+    """Validate a user-supplied ``max_payload``, or return ``None`` if unset.
+
+    ``None`` and empty/whitespace-only strings both map to ``None`` so
+    ``_on_connect`` can derive from the broker's negotiated INFO. Any
+    other type raises :class:`NatsConfigError`; non-conforming size
+    strings raise against the §2.1 grammar.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise NatsConfigError(
+            f"NATS: 'max_payload' must be a string, got {type(value).__name__}"
+        )
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if not _MAX_PAYLOAD_RE.match(stripped):
+        raise NatsConfigError(
+            f"NATS: 'max_payload' {stripped!r} is not a valid size "
+            f"(expected e.g. '1MB', '512KB', '4GB')"
+        )
+    return stripped
+
+
+def _format_max_payload_grammar(byte_count: int) -> str:
+    """Render ``byte_count`` in the SDK's §2.1 size grammar.
+
+    Picks the largest unit (B/KB/MB/GB) where the value is a clean
+    integer multiple — so ``1048576`` becomes ``"1MB"`` rather than
+    ``"1024KB"``. Re-implemented locally because ``synadia_ai.agents._bytes``
+    is module-private (not in ``__all__``) and we don't want to depend on
+    a private import.
+
+    Returns ``_FALLBACK_MAX_PAYLOAD`` when ``byte_count`` is ``<= 0`` —
+    matching the SDK's own fallback for missing broker INFO. Otherwise,
+    falls through to bytes if no larger unit divides cleanly.
+    """
+    if byte_count <= 0:
+        return _FALLBACK_MAX_PAYLOAD
+    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if byte_count % factor == 0:
+            return f"{byte_count // factor}{unit}"
+    return f"{byte_count}B"
 
 
 def _positive_int(value: Any, default: int, field_name: str) -> int:
@@ -461,10 +514,11 @@ class NatsAdapter(BasePlatformAdapter):
             # Defensive — has_fatal_error should already be True in this
             # case, but guard so later code never dereferences None.
             return False
-        if not SYNADIA_AGENTS_AVAILABLE or sdk is None:
+        if not SYNADIA_AGENTS_AVAILABLE or sdk is None or sdk_svc is None:
             self._set_fatal_error(
                 "nats_sdk_missing",
-                "synadia-ai-agents SDK not installed; run: pip install 'hermes-agent[nats]'",
+                "synadia-ai-agents / synadia-ai-agent-service SDKs not installed; "
+                "run: pip install 'hermes-agent[nats]'",
                 retryable=False,
             )
             return False
@@ -503,13 +557,25 @@ class NatsAdapter(BasePlatformAdapter):
                     **sdk.load_context_options(settings.context)
                 )
 
-            self._service = sdk.AgentService(
+            # Resolve max_payload — explicit user config wins, otherwise
+            # derive from the broker's negotiated INFO. The SDK clamps
+            # down on values larger than the broker but never fills the
+            # empty case, so hermes does the fill-from-broker step here.
+            if settings.max_payload is not None:
+                resolved_max_payload = settings.max_payload
+                max_payload_origin = "configured"
+            else:
+                broker_bytes = int(getattr(self._nc, "max_payload", 0) or 0)
+                resolved_max_payload = _format_max_payload_grammar(broker_bytes)
+                max_payload_origin = "server-negotiated"
+
+            self._service = sdk_svc.AgentService(
                 agent=settings.agent,
                 owner=settings.owner,
                 session_name=settings.session_name,
                 nc=self._nc,
                 heartbeat_interval_s=settings.heartbeat_interval_s,
-                max_payload=settings.max_payload,
+                max_payload=resolved_max_payload,
                 attachments_ok=settings.attachments_ok,
             )
             self._service.on_prompt(self._on_prompt)
@@ -518,13 +584,14 @@ class NatsAdapter(BasePlatformAdapter):
             self._mark_connected()
             logger.info(
                 "[%s] Connected — subscribed at agents.prompt.%s.%s.%s "
-                "(heartbeat=%ss, max_payload=%s, attachments_ok=%s)",
+                "(heartbeat=%ss, max_payload=%s (%s), attachments_ok=%s)",
                 self.name,
                 settings.agent,
                 settings.owner,
                 settings.session_name,
                 settings.heartbeat_interval_s,
-                settings.max_payload,
+                resolved_max_payload,
+                max_payload_origin,
                 settings.attachments_ok,
             )
             return True

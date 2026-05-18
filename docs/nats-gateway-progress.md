@@ -20,7 +20,7 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 10 — protocol v0.3 / `synadia-ai-agents` SDK migration (PRs #24/#25/#26 in `synadia-ai/synadia-agents`)
+- **Last completed phase:** Phase 11 — split SDK migration (`synadia-ai-agents` v0.5 client / `synadia-ai-agent-service` v0.1 agent) + broker-derived `max_payload` (PR #41 in `synadia-ai/synadia-agents`)
 - **Next phase:** None — all phases complete. PR on `nats-gateway` → `main` is the next human step.
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
 - **Known blockers:** none
@@ -121,6 +121,23 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 - [x] **T10.10** — `scripts/run_tests.sh tests/gateway/` — 190/190 NATS tests green
 - [x] **T10.11** — Update `CLAUDE.md` SDK reference (package + import name + AgentService rename)
 - [x] **T10.12** — Rewrite design-doc §1–§6 + §11–§17 deltas; append Phase 10 entry to this progress doc; rewrite `website/docs/user-guide/messaging/nats.md` (env var rename, package rename, subject examples, `_INBOX.agents` permission note, status endpoint mention)
+
+### Phase 11 — Split SDK (client v0.5 / agent v0.1) + broker-derived `max_payload` (2026-04-30)
+
+Two upstream changes landed in one batch:
+
+- **SDK split** (CHANGELOG 0.5.0, 2026-04-30) — `synadia-ai-agents` v0.4.x split into a wire-only client SDK (`synadia-ai-agents` v0.5, import root `synadia_ai.agents`) and a host-side agent SDK (`synadia-ai-agent-service` v0.1, import root `synadia_ai.agent_service`).
+- **PR #41 — broker-derived `max_payload`** — SDK clamps a constructor-supplied `max_payload` down to `nc.max_payload` at `start()`. Hermes hardcoded `DEFAULT_MAX_PAYLOAD = "1MB"` and capped every host at 1 MB regardless of negotiated capacity, contradicting our docs.
+
+- [x] **T11.1** — `gateway/platforms/nats.py`: import `synadia_ai.agent_service as sdk_svc` alongside `synadia_ai.agents as sdk`; split TYPE_CHECKING block; retarget `AgentService` construction to `sdk_svc.AgentService` (wire types stay on `sdk`)
+- [x] **T11.2** — `pyproject.toml`: bump `[nats]` extra to `synadia-ai-agents>=0.5,<1` + `synadia-ai-agent-service>=0.1,<1`; add new top-level `[tool.uv.sources]` block resolving both to sibling `../synadia-agents/` checkout
+- [x] **T11.3** — `NatsAdapterSettings.max_payload`: `Optional[str] = None` (was `str` with `DEFAULT_MAX_PAYLOAD = "1MB"`); only validate when user supplied a value; drop `DEFAULT_MAX_PAYLOAD` constant
+- [x] **T11.4** — `_on_connect()`: derive `resolved_max_payload` from `nc.max_payload` when settings.max_payload is None; pass user value through unchanged otherwise; conservative `_FALLBACK_MAX_PAYLOAD = "1MB"` when broker reports 0; new `_format_max_payload_grammar` helper picks largest clean unit (B/KB/MB/GB)
+- [x] **T11.5** — Connected log line: append `(server-negotiated)` / `(configured)` suffix so operators can tell which path resolved
+- [x] **T11.6** — `tests/gateway/conftest.py`: extend `_ensure_synadia_agents_mock` to register `sys.modules["synadia_ai.agent_service"]` with parallel `agent_service_mod`; AgentService/PromptStream/PromptHandler move there; early-return guard checks both modules
+- [x] **T11.7** — `tests/gateway/test_nats_connect.py`: `mock_synadia_agents` fixture proxies AgentService from agent_service module; `mock_nats` sets default `return_value.max_payload = 1MiB`; new tests for broker-derivation (8MB), user-set passthrough (512KB), and zero-broker fallback (1MB)
+- [x] **T11.8** — `tests/gateway/test_nats_config.py`: drop `DEFAULT_MAX_PAYLOAD` import; new test that unset `max_payload` stays `None`; new test that blank/whitespace string is treated as unset
+- [x] **T11.9** — Update `docs/nats-gateway.md` (sibling-path layout for both SDKs, `uv sync` replaces manual install), `docs/nats-gateway-design.md` (SDK reference, conftest mirror, install snippet, §15 cross-refs, §17.13 retro entry), `CLAUDE.md` Agent-side SDK paragraph
 
 ---
 
@@ -736,6 +753,19 @@ What stayed the same:
 **Test results.** `scripts/run_tests.sh tests/gateway/test_nats_*.py` — 190/190 green. Full `scripts/run_tests.sh tests/gateway/` — 3700/3703 green; the three failures (`test_matrix.py::test_upload_encrypted_room_uses_file_payload`, `test_agent_cache.py::test_close_vs_release_full_teardown_difference`, `test_whatsapp_connect.py::test_closed_when_http_not_ready`) are pre-existing on `main` and unrelated to NATS — verified by stashing the migration diff and reproducing two of three failures against unchanged code.
 
 **Live smoke not run in this pass.** The migration is mechanical enough (subject layout + kwarg name changes, no streaming-pipeline behavior changes) that the test suite plus a careful diff against PR #24/#25/#26's wire-format expectations was deemed sufficient. A fresh `nats-server` smoke + `examples/02-prompt-text.py` round-trip is on the verification checklist for whoever opens the PR.
+
+### 2026-04-30 — Phase 11 — Split SDK migration (client v0.5 / agent v0.1) + broker-derived `max_payload`
+
+Two coupled upstream changes landed in `synadia-ai/synadia-agents` and need to be picked up together:
+
+- **CHANGELOG 0.5.0 (2026-04-30) — SDK split.** The single `synadia-ai-agents` v0.4.x distribution split into a wire-only client SDK (`synadia-ai-agents` v0.5, import root `synadia_ai.agents`) and a host-side agent SDK (`synadia-ai-agent-service` v0.1, import root `synadia_ai.agent_service`). The agent SDK depends on the client SDK at `>=0.5`. Hermes-agent imports a mix of both surfaces, so the migration retargets `AgentService` / `PromptStream` to the new `sdk_svc` alias while leaving `Envelope`, `Attachment`, chunk/error classes, and `load_context_options` on the existing `sdk` alias.
+- **PR #41 — broker-derived `max_payload`.** SDK now clamps a constructor-supplied `max_payload` down to `nc.max_payload` at `start()`, and the `agents/hermes/README.md` was rewritten to claim hermes "Defaults to `nc.info.max_payload`". Hermes-agent's code hardcoded `DEFAULT_MAX_PAYLOAD = "1MB"` and unconditionally passed it to the SDK — capping every host at 1 MB regardless of negotiated capacity, contradicting the published behavior. Fixed by making `NatsConfig.max_payload: Optional[str] = None` and deriving from `getattr(nc, "max_payload", 0)` in `_on_connect` when unset; user-supplied values pass through unchanged (SDK still does its own clamp-down at `start()`). New helper `_format_max_payload_grammar` picks the largest clean unit so `1048576 → "1MB"` rather than `"1024KB"`. Connected log line now shows `(server-negotiated)` vs `(configured)` so operators can tell at a glance which path resolved.
+
+**Local-source override.** Both SDKs are still pre-PyPI, so `pyproject.toml` gets a new top-level `[tool.uv.sources]` block resolving each to the sibling `../synadia-agents/` checkout. uv-only convention; ignored by setuptools/pip and not persisted into the wheel METADATA, so external users still pull from PyPI once published. `uv sync --all-extras --locked` now resolves the `[nats]` extra without the manual `uv pip install -e ...` step that was documented for Phase 10.
+
+**Test mock.** `tests/gateway/conftest.py::_ensure_synadia_agents_mock` extended to register `sys.modules["synadia_ai.agent_service"]` alongside `synadia_ai.agents`. AgentService / PromptStream / PromptHandler attach to the new module mock; wire types stay on the existing one. Early-return guard checks both modules. `test_nats_connect.py::mock_synadia_agents` fixture proxies AgentService from the agent_service module so existing assertions (`mock_synadia_agents.AgentService...`) keep working unchanged.
+
+**Out of scope.** PR #41 also added caller-side `assert_within_max_payload(connection_max_payload=...)` so callers behind a smaller-cap broker fail fast. Hermes is the agent (server) — it doesn't call `Agent.prompt()` from inside the gateway — so this is a no-op for hermes-agent code.
 
 ## Task definitions reference
 

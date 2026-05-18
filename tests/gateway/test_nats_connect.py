@@ -61,13 +61,21 @@ def _build_adapter(**extra_overrides) -> NatsAdapter:
 
 @pytest.fixture
 def mock_synadia_agents(monkeypatch):
-    """Reset the synadia_ai.agents mock to a clean state for each test.
+    """Reset the synadia_ai.{agents,agent_service} mocks for each test.
 
-    The conftest autouse plants a module-level mock that persists across
+    The conftest autouse plants module-level mocks that persist across
     tests; without a fresh reset ``call_args`` from one test bleeds into
     the next and assertions become order-dependent.
+
+    After the v0.5 client / v0.1 agent SDK split, ``AgentService`` lives
+    in ``synadia_ai.agent_service`` and the wire types
+    (``load_context_options`` etc.) live in ``synadia_ai.agents``. The
+    returned proxy exposes ``AgentService`` from the agent_service module
+    so existing test assertions (``mock_synadia_agents.AgentService...``)
+    keep working transparently.
     """
-    mod = sys.modules["synadia_ai.agents"]
+    client_mod = sys.modules["synadia_ai.agents"]
+    svc_mod = sys.modules["synadia_ai.agent_service"]
 
     # Fresh AgentService factory. Each AgentService(...) call returns the
     # *same* mock instance so tests can assert on start/stop/on_prompt
@@ -78,13 +86,21 @@ def mock_synadia_agents(monkeypatch):
     # on_prompt is synchronous in the real SDK; keep it as a plain
     # MagicMock so assert_called_once_with works without await semantics.
     service_instance.on_prompt = MagicMock()
-    mod.AgentService = MagicMock(return_value=service_instance)
+    svc_mod.AgentService = MagicMock(return_value=service_instance)
 
     # ``load_context_options`` translates a `nats` context name → kwargs
     # for nats.connect. The adapter splats the result.
-    mod.load_context_options = MagicMock(return_value={"servers": ["nats://stub:4222"]})
+    client_mod.load_context_options = MagicMock(return_value={"servers": ["nats://stub:4222"]})
 
-    return mod
+    # Proxy that surfaces AgentService from agent_service while keeping
+    # the wire-type attributes accessible for existing tests.
+    class _SdkProxy:
+        AgentService = svc_mod.AgentService
+        load_context_options = client_mod.load_context_options
+        agents = client_mod
+        agent_service = svc_mod
+
+    return _SdkProxy()
 
 
 @pytest.fixture
@@ -95,10 +111,15 @@ def mock_nats(monkeypatch):
     own NATS connections. Tests assert against ``mock_nats.connect`` for
     URL/context resolution and against the returned client mock for
     ``.close()`` lifecycle.
+
+    Sets ``return_value.max_payload`` to 1 MiB so the new
+    broker-derivation path in ``_on_connect`` (PR #41 alignment) has an
+    integer to format. Tests that exercise larger brokers can override.
     """
     mod = sys.modules["nats"]
     mod.connect = AsyncMock()
     mod.connect.return_value.close = AsyncMock()
+    mod.connect.return_value.max_payload = 1024 * 1024  # 1 MiB
     return mod
 
 
@@ -206,6 +227,51 @@ class TestConnectHappyPath:
         assert kwargs["attachments_ok"] is False
         # v0.3: AgentService no longer accepts a separate ``session`` kwarg.
         assert "session" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_connect_derives_max_payload_from_broker_when_unset(
+        self, mock_synadia_agents, mock_nats, lock_granted
+    ):
+        # PR #41 alignment: when config.extra.max_payload is omitted,
+        # the adapter must read nc.max_payload (the broker's negotiated
+        # INFO value) and pass that into AgentService, so a 64MB broker
+        # isn't capped at 1MB by hermes itself.
+        mock_nats.connect.return_value.max_payload = 8 * 1024 * 1024
+
+        adapter = _build_adapter()  # no max_payload override
+        await adapter.connect()
+
+        kwargs = mock_synadia_agents.AgentService.call_args.kwargs
+        assert kwargs["max_payload"] == "8MB"
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_user_max_payload_through_unchanged(
+        self, mock_synadia_agents, mock_nats, lock_granted
+    ):
+        # When the user explicitly sets max_payload, hermes forwards it
+        # untouched. The SDK clamps down at start() if the value is
+        # larger than the broker — that's the SDK's job, unit-tested
+        # upstream, not re-proven here.
+        mock_nats.connect.return_value.max_payload = 64 * 1024 * 1024
+        adapter = _build_adapter(max_payload="512KB")
+        await adapter.connect()
+
+        kwargs = mock_synadia_agents.AgentService.call_args.kwargs
+        assert kwargs["max_payload"] == "512KB"
+
+    @pytest.mark.asyncio
+    async def test_connect_falls_back_to_1mb_when_broker_reports_zero(
+        self, mock_synadia_agents, mock_nats, lock_granted
+    ):
+        # Old nats-py builds didn't surface max_payload from the INFO
+        # frame; the field defaults to 0. Match the SDK's own fallback
+        # path so we don't try to format "0B".
+        mock_nats.connect.return_value.max_payload = 0
+        adapter = _build_adapter()
+        await adapter.connect()
+
+        kwargs = mock_synadia_agents.AgentService.call_args.kwargs
+        assert kwargs["max_payload"] == "1MB"
 
     @pytest.mark.asyncio
     async def test_connect_registers_prompt_handler_before_start(

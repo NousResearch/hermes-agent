@@ -25,7 +25,6 @@ from gateway.platforms.nats import (
     DEFAULT_AGENT,
     DEFAULT_ATTACHMENTS_OK,
     DEFAULT_HEARTBEAT_INTERVAL_S,
-    DEFAULT_MAX_PAYLOAD,
     MAX_ACK_KEEPALIVE_INTERVAL_S,
     NatsAdapter,
     NatsAdapterSettings,
@@ -55,7 +54,11 @@ class TestSettingsFromExtraHappy:
         assert settings.owner == "rene"
         assert settings.session_name == "default"
         assert settings.heartbeat_interval_s == DEFAULT_HEARTBEAT_INTERVAL_S
-        assert settings.max_payload == DEFAULT_MAX_PAYLOAD
+        # max_payload is intentionally None when not set — _on_connect
+        # derives it from the broker's negotiated INFO at connect time
+        # (PR #41). Hardcoding "1MB" here would have capped a 64MB
+        # broker.
+        assert settings.max_payload is None
         assert settings.attachments_ok is DEFAULT_ATTACHMENTS_OK
         assert settings.ack_keepalive_interval_s == DEFAULT_ACK_KEEPALIVE_INTERVAL_S
 
@@ -137,6 +140,32 @@ class TestSettingsFromExtraHappy:
             }
         )
         assert settings.max_payload == "4gb"
+
+    def test_unset_max_payload_stays_none_for_broker_derivation(self):
+        # PR #41: when the user omits max_payload, leave the field unset
+        # so _on_connect can derive it from nc.max_payload at connect
+        # time. Hardcoding "1MB" here was the bug — it capped 64MB
+        # brokers regardless of negotiated capacity.
+        settings = NatsAdapterSettings.from_extra(
+            {
+                "servers": ["nats://x:4222"],
+                "owner": "rene",
+                "session_name": "default",
+            }
+        )
+        assert settings.max_payload is None
+
+    def test_blank_max_payload_string_treated_as_unset(self):
+        # Empty/whitespace-only is the YAML "I didn't set this" shape.
+        settings = NatsAdapterSettings.from_extra(
+            {
+                "servers": ["nats://x:4222"],
+                "owner": "rene",
+                "session_name": "default",
+                "max_payload": "   ",
+            }
+        )
+        assert settings.max_payload is None
 
 
 # ---------------------------------------------------------------------------

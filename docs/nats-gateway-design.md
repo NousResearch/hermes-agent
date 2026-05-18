@@ -3,7 +3,9 @@
 **Status:** Living doc — Phase 10 migration to protocol v0.3 is the current shipped state.
 **Scope:** NATS as a gateway channel in Hermes Agent so callers can prompt the agent over NATS — send text, send attachments, and receive token-streamed responses — using the **NATS Agent Protocol v0.3**.
 **Wire spec:** `../nats-agent-sdk-docs/core-protocol.md` (v0.3).
-**Agent-side SDK:** `synadia-ai-agents` at `../synadia-agents/client-sdk/python` (PyPI package `synadia-ai-agents`, import root `synadia_ai.agents`; the SDK lives inside the `synadia-ai/synadia-agents` monorepo, `client-sdk/python` is its subtree).
+**SDKs (split as of client v0.5 / agent v0.1, 2026-04-30):** Two distributions sourced from the `synadia-ai/synadia-agents` monorepo, both resolved locally via `[tool.uv.sources]` until they ship on PyPI.
+- **Client SDK** — `synadia-ai-agents` at `../synadia-agents/client-sdk/python` (import root `synadia_ai.agents`). Wire types only: `Envelope`, `Attachment`, `ResponseChunk`, `StatusChunk`, `QueryChunk`, `HeartbeatPayload`, `AgentSubject`, errors (`QueryTimeout`, `ProtocolError`, …), discovery (`Agents`, `DiscoverFilter`), helpers (`load_context_options`, `parse_nats_url`).
+- **Agent SDK** — `synadia-ai-agent-service` at `../synadia-agents/agent-sdk/python` (import root `synadia_ai.agent_service`). Host-side only: `AgentService`, `PromptStream`, `PromptHandler`, host defaults, heartbeat publisher loop. Depends on `synadia-ai-agents>=0.5`.
 
 Cross-references to the protocol spec are by section number (e.g. §5.6). Cross-references to the Hermes codebase use `file:line`.
 
@@ -11,7 +13,7 @@ Cross-references to the protocol spec are by section number (e.g. §5.6). Cross-
 
 ## 1. Summary
 
-`gateway/platforms/nats.py` is a `BasePlatformAdapter` subclass. It registers one `synadia_ai.agents.AgentService` with the identity `agents.prompt.hermes.<owner>.<session_name>` at gateway startup; each inbound `prompt` is translated into a Hermes `MessageEvent`, routed through the normal gateway handler, streamed back chunk-by-chunk over NATS, and terminated by the SDK's empty-body terminator.
+`gateway/platforms/nats.py` is a `BasePlatformAdapter` subclass. It registers one `synadia_ai.agent_service.AgentService` with the identity `agents.prompt.hermes.<owner>.<session_name>` at gateway startup; each inbound `prompt` is translated into a Hermes `MessageEvent`, routed through the normal gateway handler, streamed back chunk-by-chunk over NATS, and terminated by the SDK's empty-body terminator.
 
 Session routing uses the **5th subject token** (`session_name`) — v0.3 collapsed `Envelope.session` into the subject itself. Each `AgentService` serves exactly one session; multi-session deployments use Hermes profile isolation (one profile = one service). Mid-stream approvals round-trip via `PromptStream.ask()`. Attachments round-trip base64 ↔ Hermes media cache. The adapter owns its own `AIAgent` construction and streaming pipeline (api_server-style), bypassing the gateway's `GatewayStreamConsumer` — see §6 for why.
 
@@ -483,7 +485,7 @@ Output of commands lands in `stream.send(ResponseChunk(text=...))` the same way 
 
 ## 12. Testing strategy
 
-Tests use `scripts/run_tests.sh` (hermetic wrapper). Mirror the Telegram collection-time mock so the suite runs without `synadia-ai-agents` installed:
+Tests use `scripts/run_tests.sh` (hermetic wrapper). Mirror the Telegram collection-time mock so the suite runs without `synadia-ai-agents` / `synadia-ai-agent-service` installed. After the v0.5 client / v0.1 agent split, the host-side surface (`AgentService`, `PromptStream`, `PromptHandler`) lives on a separate `synadia_ai.agent_service` module that must be registered alongside the wire-types mock:
 
 ```python
 # tests/gateway/conftest.py (addition)
@@ -491,23 +493,16 @@ def _ensure_synadia_agents_mock() -> None:
     if (
         "synadia_ai.agents" in sys.modules
         and hasattr(sys.modules["synadia_ai.agents"], "__file__")
+        and "synadia_ai.agent_service" in sys.modules
+        and hasattr(sys.modules["synadia_ai.agent_service"], "__file__")
     ):
         return
+
+    # Wire-types module — synadia_ai.agents
     mod = MagicMock()
-
-    # Connection factory
-    mod.connect = AsyncMock()
-
-    # AgentService / PromptStream — support await usage in tests
-    mod.AgentService = MagicMock()
-    mod.AgentService.return_value.start = AsyncMock()
-    mod.AgentService.return_value.stop = AsyncMock()
-    mod.PromptStream = MagicMock()
-
-    # Exception types (real classes so `except` works)
+    mod.load_context_options = MagicMock(return_value={"servers": ["nats://stub:4222"]})
     mod.QueryTimeout = type("QueryTimeout", (Exception,), {})
     mod.ProtocolError = type("ProtocolError", (Exception,), {})
-
     # Envelope / Attachment / chunks — pydantic-ish stand-ins
     class _FakeAttachment:
         def __init__(self, filename: str, content: str): ...
@@ -518,10 +513,20 @@ def _ensure_synadia_agents_mock() -> None:
         def from_bytes(cls, filename, data): ...
     mod.Attachment = _FakeAttachment
 
+    # Host-side module — synadia_ai.agent_service (split out in v0.5/0.1)
+    agent_service_mod = MagicMock()
+    agent_service_mod.AgentService = MagicMock()
+    agent_service_mod.AgentService.return_value.start = AsyncMock()
+    agent_service_mod.AgentService.return_value.stop = AsyncMock()
+    agent_service_mod.PromptStream = MagicMock()
+    agent_service_mod.PromptHandler = MagicMock
+
     parent = MagicMock()
     parent.agents = mod
+    parent.agent_service = agent_service_mod
     sys.modules["synadia_ai"] = parent
     sys.modules["synadia_ai.agents"] = mod
+    sys.modules["synadia_ai.agent_service"] = agent_service_mod
 
 _ensure_synadia_agents_mock()
 ```
@@ -560,7 +565,13 @@ Installation (one-time):
 
 ```bash
 source venv/bin/activate
-pip install -e ../synadia-agents/client-sdk/python   # while synadia-ai-agents is not yet on PyPI
+# Both SDKs are resolved from the sibling synadia-agents checkout via
+# [tool.uv.sources] in pyproject.toml — uv sync handles them in one step:
+uv sync --all-extras --locked
+
+# Manual fallback if you bypass uv:
+# pip install -e ../synadia-agents/client-sdk/python
+# pip install -e ../synadia-agents/agent-sdk/python
 ```
 
 Local broker:
@@ -632,7 +643,8 @@ nats sub 'agents.hermes.*.*.heartbeat'
 | Session source + key           | `gateway/session.py`                                 | `SessionSource`, `build_session_key`                 |
 | Test mock pattern              | `tests/gateway/conftest.py::_ensure_telegram_mock`   | Mirror for `_ensure_synadia_agents_mock`             |
 | CLI approval callback          | `hermes_cli/callbacks.py` (reference only)           | CLI-only; gateway uses its own notify bridge         |
-| SDK source                     | `../synadia-agents/client-sdk/python/src/synadia_ai/agents/` | `service.py`, `envelope.py`, `messages.py`, `connect.py` |
+| Client SDK source (wire types) | `../synadia-agents/client-sdk/python/src/synadia_ai/agents/` | `envelope.py`, `messages.py`, `connect.py`, errors, discovery |
+| Agent SDK source (host)        | `../synadia-agents/agent-sdk/python/src/synadia_ai/agent_service/` | `service.py`, `prompt_stream.py`, heartbeat publisher |
 | SDK examples                   | `../synadia-agents/client-sdk/python/examples/01..05-*.py` | Smoke-test inputs (§14)                        |
 | Protocol spec                  | `../nats-agent-sdk-docs/core-protocol.md`            | v0.3                                                 |
 
@@ -746,3 +758,11 @@ The fix isn't "run the full suite every phase" — it's "when a phase touches a 
 ### 17.12 Surprise that did not surface: cache-friendly streaming over a chunked transport
 
 The design doc's §12 testing strategy and the prompt-caching concerns in `CLAUDE.md` warn against mutating past context mid-conversation. The adapter-owned `AIAgent` path was built assuming it would interact with prompt caching the same way CLI and api_server do — and it did. No surprises here despite the concern at Phase 0. Worth mentioning explicitly: the adapter's streaming loop doesn't touch `AIAgent` message history, so cache invariants hold transitively.
+
+### 17.13 SDK split (v0.5 client / v0.1 agent, 2026-04-30)
+
+The single `synadia-ai-agents` distribution was split upstream into a wire-only client SDK (`synadia-ai-agents` v0.5, `synadia_ai.agents`) and a separate host-side agent SDK (`synadia-ai-agent-service` v0.1, `synadia_ai.agent_service`). Hermes-agent imports a mix of host-side (`AgentService`, `PromptStream`) and wire-side (`Envelope`, `Attachment`, chunk classes, `load_context_options`) symbols, so the split required retargeting the host-side imports to the new module while leaving wire-type imports on the old root.
+
+Sympathetic change: PR #41 made the SDK clamp a constructor-supplied `max_payload` down to `nc.max_payload` at `start()`. Hermes hardcoded `DEFAULT_MAX_PAYLOAD = "1MB"` and unconditionally passed it to `AgentService`, which capped every host at 1 MB regardless of negotiated capacity. The fix was to make `NatsConfig.max_payload` `Optional[str]` and derive from `nc.max_payload` in `_on_connect` when unset — the SDK's clamp-down logic still runs unchanged. The connected log line now shows `(server-negotiated)` vs `(configured)` so operators can tell at a glance which path resolved.
+
+**Generalizable rule.** When an upstream package splits along a layering boundary, treat host imports and wire imports as two move sets — even when a function happens to keep the same name. Static `from synadia_ai.agents import AgentService` would have silently kept resolving from the old root, masking the split until the wheel was rebuilt; an `import synadia_ai.agents as sdk` aliasing pattern made the renamed call site (`sdk_svc.AgentService`) impossible to miss in code review.

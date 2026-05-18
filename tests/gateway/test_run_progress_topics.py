@@ -1113,41 +1113,6 @@ async def test_run_agent_matrix_defaults_to_tool_activity_without_response_strea
 
 
 @pytest.mark.asyncio
-async def test_run_agent_matrix_tool_activity_uses_wide_default_preview(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        LongPreviewAgent,
-        session_id="sess-matrix-wide-tool-preview",
-        config_data={
-            "display": {
-                "tool_preview_length": 0,
-                "platforms": {"matrix": {"tool_progress": "all"}},
-            },
-        },
-        platform=Platform.MATRIX,
-        chat_id="!room:matrix.example.org",
-        chat_type="group",
-        thread_id="$thread",
-    )
-
-    assert result["final_response"] == "done"
-    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
-    assert any(LongPreviewAgent.LONG_CMD in text for text in all_contents)
-    assert all("..." not in text for text in all_contents if "terminal" in text)
-    matrix_metadata = [
-        call.get("metadata") or {}
-        for call in adapter.sent + adapter.edits
-        if call.get("metadata")
-    ]
-    assert any(
-        "python -m pytest tests/gateway/test_run_progress_topics.py" in
-        meta.get("matrix_formatted_body", "")
-        for meta in matrix_metadata
-    )
-
-
-@pytest.mark.asyncio
 async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

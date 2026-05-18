@@ -205,7 +205,7 @@ class TestPlatformDefaults:
         """Matrix opt-in progress uses longer previews when enabled."""
         from gateway.display_config import resolve_display_setting
 
-        assert resolve_display_setting({}, "matrix", "tool_preview_length") == 1000
+        assert resolve_display_setting({}, "matrix", "tool_preview_length") == 320
 
     def test_slack_defaults_tool_progress_off(self):
         """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import copy
 
-from tools.schema_sanitizer import sanitize_tool_schemas, strip_pattern_and_format
+from tools.schema_sanitizer import (
+    sanitize_tool_schemas,
+    strip_pattern_and_format,
+    strip_xai_incompatible_enum_values,
+)
 
 
 def _tool(name: str, parameters: dict) -> dict:
@@ -491,3 +495,97 @@ def test_strip_responses_mixed_formats():
     # Verify structure preserved
     assert result[0]["function"]["parameters"]["type"] == "object"
     assert result[1]["parameters"]["type"] == "object"
+
+
+# =============================================================================
+# strip_xai_incompatible_enum_values — xAI Responses /-rejection guard
+# =============================================================================
+
+
+def test_strip_xai_enum_values_removes_slash_strings_openai_format():
+    tools = [_tool("brave_llm_context", {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "accept": {
+                "type": "string",
+                "enum": ["application/json", "*/*"],
+                "description": "Media type",
+            },
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 2
+    accept = out[0]["function"]["parameters"]["properties"]["accept"]
+    assert "enum" not in accept
+    assert accept["type"] == "string"
+
+
+def test_strip_xai_enum_values_keeps_safe_values_alongside_unsafe():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["fast", "fast/precise", "precise"]},
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 1
+    assert out[0]["function"]["parameters"]["properties"]["mode"]["enum"] == [
+        "fast", "precise",
+    ]
+
+
+def test_strip_xai_enum_values_responses_format():
+    tools = [{
+        "type": "function",
+        "name": "brave_place_search",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "accept": {"type": "string", "enum": ["application/json", "*/*"]},
+            },
+        },
+    }]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 2
+    accept = out[0]["parameters"]["properties"]["accept"]
+    assert "enum" not in accept
+
+
+def test_strip_xai_enum_values_noop_when_clean():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "size": {"type": "string", "enum": ["small", "medium", "large"]},
+            "count": {"type": "integer"},
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 0
+    assert out[0]["function"]["parameters"]["properties"]["size"]["enum"] == [
+        "small", "medium", "large",
+    ]
+
+
+def test_strip_xai_enum_values_handles_nested_schemas():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "headers": {
+                "type": "object",
+                "properties": {
+                    "content_type": {"type": "string", "enum": ["text/plain", "text/html"]},
+                },
+            },
+        },
+    })]
+    out, stripped = strip_xai_incompatible_enum_values(tools)
+    assert stripped == 2
+    content_type = out[0]["function"]["parameters"]["properties"]["headers"]["properties"]["content_type"]
+    assert "enum" not in content_type
+
+
+def test_strip_xai_enum_values_handles_empty_list():
+    out, stripped = strip_xai_incompatible_enum_values([])
+    assert out == []
+    assert stripped == 0

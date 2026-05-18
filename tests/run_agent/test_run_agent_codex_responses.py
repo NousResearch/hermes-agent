@@ -1965,3 +1965,63 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def test_preflight_codex_api_kwargs_strips_slash_enums_when_is_xai_responses(monkeypatch):
+    """xAI's /v1/responses rejects string enums containing '/' — preflight strips them when flagged."""
+    _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [
+        {
+            "type": "function",
+            "name": "brave_llm_context",
+            "description": "x",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "accept": {
+                        "type": "string",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        }
+    ]
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    result = _preflight_codex_api_kwargs(kwargs, is_xai_responses=True)
+    accept = result["tools"][0]["parameters"]["properties"]["accept"]
+    assert "enum" not in accept, f"slash-containing enum should be stripped: {accept}"
+    assert accept["type"] == "string"
+
+
+def test_preflight_codex_api_kwargs_keeps_slash_enums_when_not_xai(monkeypatch):
+    """Non-xAI Responses backends (e.g. openai-codex) keep slash enums untouched."""
+    _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [
+        {
+            "type": "function",
+            "name": "brave_llm_context",
+            "description": "x",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "accept": {
+                        "type": "string",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        }
+    ]
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    result = _preflight_codex_api_kwargs(kwargs)
+    accept = result["tools"][0]["parameters"]["properties"]["accept"]
+    assert accept["enum"] == ["application/json", "*/*"]

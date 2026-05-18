@@ -1288,6 +1288,17 @@ class TestDoctorCodexCliHintPlacement:
         # Hint must sit between Codex auth and the next provider row (#27975).
         assert codex_idx < hint_idx < minimax_idx
 
+    def test_hint_suppressed_when_codex_cli_present(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=True)
+        assert "OpenAI Codex auth" in out
+        assert self._hint_line() not in out
+
+    def test_hint_suppressed_when_codex_logged_in(self, monkeypatch, tmp_path):
+        out = self._run(monkeypatch, tmp_path, codex_logged_in=True, codex_cli_present=False)
+        assert "OpenAI Codex auth" in out
+        assert "(logged in)" in out
+        assert self._hint_line() not in out
+
     def test_hint_never_attaches_to_minimax_row(self, monkeypatch, tmp_path):
         out = self._run(monkeypatch, tmp_path, codex_logged_in=False, codex_cli_present=False)
         # The MiniMax OAuth row and the hint must not be adjacent — the hint

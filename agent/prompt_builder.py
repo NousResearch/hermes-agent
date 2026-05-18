@@ -424,19 +424,11 @@ PLATFORM_HINTS = {
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
     "telegram": (
-        "You are on a text messaging communication platform, Telegram. "
-        "Standard markdown is automatically converted to Telegram format. "
-        "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
-        "`inline code`, ```code blocks```, [links](url), and ## headers. "
-        "Telegram has NO table syntax — prefer bullet lists or labeled "
-        "key: value pairs over pipe tables (any tables you do emit are "
-        "auto-rewritten into row-group bullets, which you can produce "
-        "directly for cleaner output). "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
-        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
-        "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "You're on Telegram. Markdown works: **bold**, *italic*, ~~strikethrough~~, "
+        "||spoiler||, `code`, ```blocks```, [links](url), ## headers. "
+        "No table syntax — use bullets or key: value pairs. "
+        "Send files with MEDIA:/absolute/path/to/file. Images, audio (.ogg), "
+        "and videos (.mp4) deliver natively. Image URLs in markdown also work."
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
@@ -1185,32 +1177,14 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "## Skills\n"
+            "Available skills below. Load relevant ones with skill_view(name) when they "
+            "add value — skip them if you already know the workflow or the task is trivial. "
+            "Skills are optional reference, not mandatory ritual.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

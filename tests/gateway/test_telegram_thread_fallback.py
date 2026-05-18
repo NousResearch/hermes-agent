@@ -242,7 +242,8 @@ async def test_send_typing_attempts_api_call_for_dm_topic_reply_fallback():
     Some private DM topic lanes route message sends through reply-anchor
     fallback, but live Telegram testing shows sendChatAction accepts the lane's
     message_thread_id. If Telegram rejects a stale or invalid thread later,
-    send_typing already swallows that failure as non-fatal.
+    send_typing now falls back to sending typing without thread_id so the
+    indicator at least appears in the main DM view.
     """
     adapter = _make_adapter()
     call_log = []
@@ -264,6 +265,45 @@ async def test_send_typing_attempts_api_call_for_dm_topic_reply_fallback():
     assert call_log == [
         {"chat_id": 12345, "action": "typing", "message_thread_id": 20197},
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_typing_falls_back_without_thread_on_bad_request():
+    """When DM topic typing with message_thread_id fails, retry without it."""
+    adapter = _make_adapter()
+
+    call_log = []
+    call_count = [0]
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+        call_count[0] += 1
+        if call_count[0] == 1 and kwargs.get("message_thread_id") is not None:
+            raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing(
+        "12345",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    # First call: with message_thread_id (failed)
+    # Second call: fallback without message_thread_id (succeeded)
+    assert len(call_log) == 2
+    assert call_log[0] == {
+        "chat_id": 12345,
+        "action": "typing",
+        "message_thread_id": 20197,
+    }
+    assert call_log[1] == {
+        "chat_id": 12345,
+        "action": "typing",
+    }
 
 
 @pytest.mark.asyncio

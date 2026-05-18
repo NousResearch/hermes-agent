@@ -165,6 +165,31 @@ def _cmd_status(args) -> int:
     return 0
 
 
+def _cmd_report(args) -> int:
+    from agent import curator
+
+    state = curator.load_state()
+    report_path = curator.resolve_latest_report_path(state.get("last_report_path"))
+    if report_path is None:
+        print(
+            "curator: no report found yet. Run `hermes curator run` or "
+            "`hermes curator run --dry-run` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if bool(getattr(args, "path_only", False)):
+        print(report_path)
+        return 0
+
+    try:
+        sys.stdout.write(report_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"curator: failed to read report at {report_path}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_run(args) -> int:
     from agent import curator
     if not curator.is_enabled():
@@ -207,12 +232,12 @@ def _cmd_run(args) -> int:
         if synchronous:
             print(
                 "dry-run: no changes applied. Read the report with "
-                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+                "`hermes curator report` and run `hermes curator run` (no flag) to apply."
             )
         else:
             print(
                 "dry-run: no changes applied. When the report lands, read it with "
-                "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+                "`hermes curator report` and run `hermes curator run` (no flag) to apply."
             )
     return 0
 
@@ -488,6 +513,18 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_status = subs.add_parser("status", help="Show curator status and skill stats")
     p_status.set_defaults(func=_cmd_status)
+
+    p_report = subs.add_parser(
+        "report",
+        help="Print the latest curator REPORT.md",
+    )
+    p_report.add_argument(
+        "--path",
+        dest="path_only",
+        action="store_true",
+        help="Print the resolved REPORT.md path instead of its contents",
+    )
+    p_report.set_defaults(func=_cmd_report)
 
     p_run = subs.add_parser("run", help="Trigger a curator review now")
     p_run.add_argument(

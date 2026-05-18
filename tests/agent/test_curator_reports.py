@@ -59,6 +59,35 @@ def test_reports_root_is_under_logs_not_skills(curator_env):
     assert "skills" not in root.parts
 
 
+def test_resolve_latest_report_path_prefers_existing_state_path(curator_env):
+    """When curator state still points at a live run dir, keep using it."""
+    curator = curator_env["curator"]
+    live_run = curator._reports_root() / "20260511-010203"
+    live_run.mkdir(parents=True)
+    report = live_run / "REPORT.md"
+    report.write_text("# live\n", encoding="utf-8")
+
+    resolved = curator.resolve_latest_report_path(str(live_run))
+    assert resolved == report
+
+
+def test_resolve_latest_report_path_falls_back_to_newest_existing_run(curator_env):
+    """If state points at a missing run, fall back to the newest available REPORT.md."""
+    curator = curator_env["curator"]
+    root = curator._reports_root()
+
+    older = root / "20260511-010203"
+    newer = root / "20260511-040506"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    (older / "REPORT.md").write_text("# older\n", encoding="utf-8")
+    newest_report = newer / "REPORT.md"
+    newest_report.write_text("# newer\n", encoding="utf-8")
+
+    resolved = curator.resolve_latest_report_path(str(root / "missing-run"))
+    assert resolved == newest_report
+
+
 def test_write_run_report_creates_both_files(curator_env):
     """Each run writes both a run.json (machine) and a REPORT.md (human)."""
     curator = curator_env["curator"]

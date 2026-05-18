@@ -471,6 +471,70 @@ def _reports_root() -> Path:
     return root
 
 
+def _coerce_report_md_path(path_value: Optional[str | Path]) -> Optional[Path]:
+    """Resolve a report directory/file reference to its ``REPORT.md`` path.
+
+    ``state.last_report_path`` historically records the per-run directory,
+    not the markdown file itself. Accept both so callers don't need to care
+    which shape they were handed.
+    """
+    if not path_value:
+        return None
+    try:
+        path = Path(path_value)
+    except (TypeError, ValueError):
+        return None
+
+    if path.is_dir():
+        candidate = path / "REPORT.md"
+        return candidate if candidate.exists() else None
+
+    if not path.exists() or not path.is_file():
+        return None
+
+    if path.name == "REPORT.md":
+        return path
+    if path.name == "run.json":
+        candidate = path.with_name("REPORT.md")
+        return candidate if candidate.exists() else None
+    return None
+
+
+def resolve_latest_report_path(preferred: Optional[str | Path] = None) -> Optional[Path]:
+    """Return the newest available curator ``REPORT.md``.
+
+    Resolution order:
+      1. ``preferred`` (usually ``state.last_report_path``) if it still
+         resolves to a readable ``REPORT.md``.
+      2. The newest timestamped run directory under ``logs/curator/`` whose
+         ``REPORT.md`` exists.
+
+    Returns ``None`` when no report exists yet.
+    """
+    candidate = _coerce_report_md_path(preferred)
+    if candidate is not None:
+        return candidate
+
+    root = _reports_root()
+    try:
+        run_dirs = [p for p in root.iterdir() if p.is_dir()]
+    except OSError as e:
+        logger.debug("Failed to enumerate curator report dirs under %s: %s", root, e)
+        return None
+
+    def _sort_key(path: Path) -> tuple[float, str]:
+        try:
+            return (path.stat().st_mtime, path.name)
+        except OSError:
+            return (0.0, path.name)
+
+    for run_dir in sorted(run_dirs, key=_sort_key, reverse=True):
+        candidate = _coerce_report_md_path(run_dir)
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _needle_in_path_component(needle: str, path: str) -> bool:
     """Check if *needle* is a complete filename stem or directory name in *path*.
 
@@ -898,7 +962,7 @@ def _build_rename_summary(
           • docx-extraction → document-tools
           • flaky-thing — pruned (stale)
           • old-utility → spreadsheet-ops
-        full report: hermes curator status
+        full report: hermes curator report
         keep an umbrella stable: hermes curator pin document-tools
 
     Cap is 10 entries so a 50-skill consolidation doesn't blow up
@@ -952,7 +1016,7 @@ def _build_rename_summary(
         shown += 1
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
-    lines.append("full report: hermes curator status")
+    lines.append("full report: hermes curator report")
     # Pin hint — only surface it when there's actually a destination skill
     # worth pinning. The umbrella skills that absorbed content are the natural
     # candidates: pinning one tells future curator runs to leave it alone.

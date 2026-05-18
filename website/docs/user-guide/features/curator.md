@@ -84,6 +84,7 @@ Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That
 
 ```bash
 hermes curator status         # last run, counts, pinned list, LRU top 5
+hermes curator report         # print the latest REPORT.md
 hermes curator run            # trigger a review now (blocks until the LLM pass finishes)
 hermes curator run --background  # fire-and-forget: start the LLM pass in a background thread
 hermes curator run --dry-run  # preview only — report without any mutations
@@ -216,6 +217,11 @@ Every curator run writes a timestamped directory under `~/.hermes/logs/curator/`
 ```
 
 `REPORT.md` is a quick way to see what a given run did — which skills transitioned, what the LLM reviewer said, which skills it patched. Good for auditing without having to grep `agent.log`.
+
+```bash
+hermes curator report        # print the latest REPORT.md
+hermes curator report --path # print the resolved REPORT.md path
+```
 
 ## Restoring an archived skill
 

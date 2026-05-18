@@ -891,7 +891,7 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
 # ---------------------------------------------------------------------------
 # _build_rename_summary — surfaces the "where did my skills go?" map to the
 # user-visible curator summary (gateway 💾 line, CLI Rich panel,
-# `hermes curator status`). The full data has always been in REPORT.md on
+# `hermes curator report`). The full data has always been in REPORT.md on
 # disk; this helper makes it visible without digging.
 # ---------------------------------------------------------------------------
 
@@ -938,7 +938,7 @@ def test_rename_summary_consolidation_shows_target(curator_env):
     assert "archived 2 skill(s):" in result
     assert "pdf-extraction → document-tools" in result
     assert "docx-extraction → document-tools" in result
-    assert "full report: hermes curator status" in result
+    assert "full report: hermes curator report" in result
 
 
 def test_rename_summary_pruned_marked_explicitly(curator_env):

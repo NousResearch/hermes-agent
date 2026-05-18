@@ -6788,7 +6788,28 @@ def resolve_minimax_oauth_runtime_credentials(
             "MiniMax (OAuth).",
             provider="minimax-oauth", code="not_logged_in", relogin_required=True,
         )
-    state = _refresh_minimax_oauth_state(state)
+    try:
+        state = _refresh_minimax_oauth_state(state)
+    except AuthError as exc:
+        if exc.relogin_required and state.get("refresh_token"):
+            # Terminal refresh failure — clear dead tokens from auth.json so
+            # subsequent calls fail fast without a network retry, mirroring
+            # the Nous / xAI-OAuth / Codex-OAuth quarantine pattern.
+            for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+                state.pop(_k, None)
+            state["last_auth_error"] = {
+                "provider": "minimax-oauth",
+                "code": exc.code or "refresh_failed",
+                "message": str(exc),
+                "reason": "runtime_refresh_failure",
+                "relogin_required": True,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                _minimax_save_auth_state(state)
+            except Exception as _save_exc:
+                logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
+        raise
     return {
         "provider": "minimax-oauth",
         "api_key": state["access_token"],

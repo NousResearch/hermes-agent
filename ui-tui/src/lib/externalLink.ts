@@ -32,6 +32,20 @@ const HTML_ENTITIES: Record<string, string> = {
   quot: '"'
 }
 
+const GENERIC_PATH_SEGMENTS = new Set([
+  'api', 'auth', 'login', 'logout', 'signup', 'register',
+  'status', 'page', 'post', 'item', 'index', 'home',
+  'search', 'find', 'browse', 'view', 'detail', 'list',
+  'new', 'create', 'edit', 'update', 'delete', 'remove',
+  'settings', 'config', 'preferences', 'profile', 'account',
+  'feed', 'entries', 'results', 'content', 'main',
+  'redirect', 'callback', 'return', 'verify', 'confirm',
+  'public', 'private', 'shared', 'draft', 'archive',
+  'download', 'upload', 'file', 'files', 'image', 'images',
+  'video', 'videos', 'media', 'assets', 'static', 'dist',
+  'default', 'undefined', 'null', 'true', 'false',
+])
+
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
 
@@ -109,6 +123,11 @@ export function urlSlugTitleLabel(value: string): string {
     }
 
     if (/^(?:[a-z]{1,3}\d+|\d+)$/i.test(cleaned.replace(/\s+/g, ''))) {
+      continue
+    }
+
+    // Skip generic path segments that carry no identifying information
+    if (GENERIC_PATH_SEGMENTS.has(cleaned.toLowerCase())) {
       continue
     }
 

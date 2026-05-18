@@ -30,6 +30,22 @@ describe('external link helpers', () => {
     ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
   })
 
+  it('skips generic path segments like status, page, post', () => {
+    // x.com URL with "status" as last meaningful segment → should skip to username or fallback
+    expect(urlSlugTitleLabel('https://x.com/OpenAI/status/12345')).toBe('OpenAI')
+  })
+
+  it('falls back to hostPathLabel when all segments are generic', () => {
+    expect(urlSlugTitleLabel('https://example.com/api/v1/search')).toBe('example.com/api/v1/search')
+    expect(urlSlugTitleLabel('https://example.com/auth/login')).toBe('example.com/auth/login')
+  })
+
+  it('still derives meaningful titles from non-generic slugs', () => {
+    expect(
+      urlSlugTitleLabel('https://www.getyourguide.com/fajardo-l882/from-fajardo-icacos-island-full-day-catamaran-trip-t19891/')
+    ).toBe('From Fajardo Icacos Island Full Day Catamaran Trip')
+  })
+
   it('normalizes scheme-less links', () => {
     expect(normalizeExternalUrl(' expedia.com/things-to-do/puerto-rico-el-yunque ')).toBe(
       'https://expedia.com/things-to-do/puerto-rico-el-yunque'

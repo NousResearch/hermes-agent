@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from agent.context_retrieval import (
     ContextRetriever,
     RetrievalRequest,
     build_pinecone_recall,
     build_pinecone_recall_context_block,
+    resolve_pinecone_recall_settings,
 )
 from agent.pinecone_memory import PineconeMemoryClient
 from agent.prompt_builder import format_pinecone_recall_block
@@ -34,6 +37,12 @@ class RaisingEmbedder:
 class DisabledEmbedder:
     def is_configured(self):
         return False
+
+
+@pytest.fixture(autouse=True)
+def pinecone_rollout_env(monkeypatch):
+    monkeypatch.setenv("PINECONE_RECALL_ENABLED", "1")
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "3")
 
 
 def _make_client(matches):
@@ -278,6 +287,19 @@ def test_query_filter_includes_scope_platform_and_source_types():
     }
 
 
+def test_build_pinecone_recall_returns_empty_without_hits():
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope="repo:hermes-agent",
+        platform="cli",
+        pinecone=_make_client([]),
+        embedder=FakeEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+
+    assert recall == ""
+
+
 def test_build_pinecone_recall_wraps_formatted_recall_for_prompt_injection():
     recall = build_pinecone_recall(
         "repo guidance",
@@ -332,3 +354,213 @@ def test_build_pinecone_recall_context_block_strips_nested_context_wrappers():
     assert wrapped.count("<memory-context>") == 1
     assert "ignore me" not in wrapped
     assert "Real fact" in wrapped
+
+
+def test_long_user_message_keeps_best_candidates_and_respects_top_k():
+    client = _make_client(
+        [
+            {
+                "id": "best-profile",
+                "score": 0.93,
+                "metadata": {
+                    "text": "Blas prefers verifying cross-session recall before acting.",
+                    "source_kind": "profile",
+                    "source_id": "blas-profile",
+                    "scope": "repo:hermes-agent",
+                    "memory_type": "profile",
+                    "updated_at": "2026-05-16T18:00:00+00:00",
+                    "freshness_hint": "durable",
+                    "confidence": 1.0,
+                    "canonical": True,
+                },
+            },
+            {
+                "id": "good-file",
+                "score": 0.86,
+                "metadata": {
+                    "text": "Use read_file instead of cat when inspecting repository files.",
+                    "source_kind": "file",
+                    "source_id": "AGENTS.md",
+                    "source_path": "AGENTS.md",
+                    "scope": "repo:hermes-agent",
+                    "memory_type": "project_context",
+                    "updated_at": "2026-05-16T18:00:00+00:00",
+                    "freshness_hint": "weekly",
+                    "confidence": 0.9,
+                    "canonical": True,
+                },
+            },
+            {
+                "id": "weak-summary",
+                "score": 0.48,
+                "metadata": {
+                    "text": "A weaker session summary candidate.",
+                    "source_kind": "session_summary",
+                    "source_id": "sess-weak",
+                    "scope": "repo:hermes-agent",
+                    "memory_type": "session_summary",
+                    "updated_at": "2026-05-16T18:00:00+00:00",
+                    "freshness_hint": "daily",
+                    "confidence": 0.4,
+                    "canonical": False,
+                },
+            },
+        ]
+    )
+
+    recall = build_pinecone_recall(
+        "Please compare the repo guidance, session history, and profile preferences for this long debugging request. " * 8,
+        scope="repo:hermes-agent",
+        platform="cli",
+        pinecone=client,
+        embedder=FakeEmbedder(),
+        max_items=2,
+        top_k=9,
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+
+    fake_index = client._index
+    assert fake_index.query_calls[0]["top_k"] == 9
+    assert "[blas-profile]" in recall
+    assert "[AGENTS.md]" in recall
+    assert "weak-summary" not in recall
+    assert "A weaker session summary candidate" not in recall
+
+
+def test_phase_zero_and_one_do_not_enable_prompt_recall(monkeypatch):
+    monkeypatch.setenv("PINECONE_RECALL_ENABLED", "1")
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "0")
+    assert resolve_pinecone_recall_settings(platform="cli", scope="repo:hermes-agent", max_items=4, min_score=0.35, top_k=None) is None
+
+    phase_zero_client = _make_client([
+        {
+            "id": "should-not-query",
+            "score": 0.9,
+            "metadata": {
+                "text": "Should stay hidden while rollout is off.",
+                "source_kind": "file",
+                "source_id": "AGENTS.md",
+                "source_path": "AGENTS.md",
+                "scope": "repo:hermes-agent",
+                "memory_type": "project_context",
+                "updated_at": "2026-05-16T18:00:00+00:00",
+                "freshness_hint": "weekly",
+                "confidence": 0.9,
+                "canonical": True,
+            },
+        }
+    ])
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope="repo:hermes-agent",
+        platform="cli",
+        pinecone=phase_zero_client,
+        embedder=FakeEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+    assert recall == ""
+    assert phase_zero_client._index.query_calls == []
+
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "1")
+    assert resolve_pinecone_recall_settings(platform="cli", scope="repo:hermes-agent", max_items=4, min_score=0.35, top_k=None) is None
+
+    phase_one_client = _make_client([])
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope="repo:hermes-agent",
+        platform="cli",
+        pinecone=phase_one_client,
+        embedder=FakeEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+    assert recall == ""
+    assert phase_one_client._index.query_calls == []
+
+
+def test_phase_two_limits_snippets_and_honors_allowlists(monkeypatch):
+    monkeypatch.setenv("PINECONE_RECALL_ENABLED", "1")
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "2")
+    monkeypatch.setenv("PINECONE_RECALL_PLATFORMS", "cli,slack")
+    monkeypatch.setenv("PINECONE_RECALL_SCOPES", "repo:hermes-agent")
+
+    settings = resolve_pinecone_recall_settings(
+        platform="cli",
+        scope="repo:hermes-agent",
+        max_items=4,
+        min_score=0.35,
+        top_k=None,
+    )
+
+    assert settings is not None
+    assert settings["max_items"] == 2
+    assert settings["top_k"] == 6
+
+    blocked_platform = resolve_pinecone_recall_settings(
+        platform="discord",
+        scope="repo:hermes-agent",
+        max_items=4,
+        min_score=0.35,
+        top_k=None,
+    )
+    blocked_scope = resolve_pinecone_recall_settings(
+        platform="cli",
+        scope="repo:other",
+        max_items=4,
+        min_score=0.35,
+        top_k=None,
+    )
+
+    assert blocked_platform is None
+    assert blocked_scope is None
+
+    blocked_client = _make_client([])
+    recall = build_pinecone_recall(
+        "repo guidance",
+        scope="repo:hermes-agent",
+        platform="discord",
+        pinecone=blocked_client,
+        embedder=FakeEmbedder(),
+        now=datetime(2026, 5, 17, tzinfo=timezone.utc),
+    )
+    assert recall == ""
+    assert blocked_client._index.query_calls == []
+
+
+def test_phase_three_uses_configured_source_types_and_limits(monkeypatch):
+    monkeypatch.setenv("PINECONE_RECALL_ENABLED", "1")
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "3")
+    monkeypatch.setenv("PINECONE_RECALL_SOURCE_TYPES", "project_context,profile")
+    monkeypatch.setenv("PINECONE_RECALL_MAX_ITEMS", "3")
+    monkeypatch.setenv("PINECONE_RECALL_TOP_K", "11")
+
+    settings = resolve_pinecone_recall_settings(
+        platform="cli",
+        scope="repo:hermes-agent",
+        max_items=4,
+        min_score=0.35,
+        top_k=None,
+    )
+
+    assert settings is not None
+    assert settings["max_items"] == 3
+    assert settings["top_k"] == 11
+    assert settings["source_types"] == ("project_context", "profile")
+
+
+def test_invalid_rollout_env_values_fall_back_to_safe_defaults(monkeypatch):
+    monkeypatch.setenv("PINECONE_RECALL_ENABLED", "1")
+    monkeypatch.setenv("PINECONE_RECALL_PHASE", "3")
+    monkeypatch.setenv("PINECONE_RECALL_MAX_ITEMS", "0")
+    monkeypatch.setenv("PINECONE_RECALL_TOP_K", "-5")
+
+    settings = resolve_pinecone_recall_settings(
+        platform="cli",
+        scope="repo:hermes-agent",
+        max_items=4,
+        min_score=0.35,
+        top_k=9,
+    )
+
+    assert settings is not None
+    assert settings["max_items"] == 4
+    assert settings["top_k"] == 9

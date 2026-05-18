@@ -13,6 +13,86 @@ from agent.prompt_builder import format_pinecone_recall_block
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "yes", "on", "enabled"}
+
+
+def _env_int(name: str, default: int | None = None, *, minimum: int | None = None) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        logger.warning("Ignoring invalid integer env %s=%r", name, value)
+        return default
+    if minimum is not None and parsed < minimum:
+        logger.warning("Ignoring out-of-range integer env %s=%r (minimum %s)", name, value, minimum)
+        return default
+    return parsed
+
+
+def _env_list(name: str) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return ()
+    items = [part.strip() for part in value.split(",")]
+    return tuple(part for part in items if part)
+
+
+def resolve_pinecone_recall_settings(
+    *,
+    platform: str | None,
+    scope: str | None,
+    max_items: int,
+    min_score: float,
+    top_k: int | None,
+) -> dict[str, Any] | None:
+    """Resolve phased rollout gating for prompt-time Pinecone recall."""
+    if not _env_flag("PINECONE_RECALL_ENABLED", default=False):
+        return None
+
+    phase = _env_int("PINECONE_RECALL_PHASE", 0, minimum=0) or 0
+    if phase < 2:
+        return None
+
+    allowed_platforms = _env_list("PINECONE_RECALL_PLATFORMS")
+    if allowed_platforms and (platform or "") not in allowed_platforms:
+        return None
+
+    allowed_scopes = _env_list("PINECONE_RECALL_SCOPES")
+    if allowed_scopes and (scope or "") not in allowed_scopes:
+        return None
+
+    configured_source_types = _env_list("PINECONE_RECALL_SOURCE_TYPES")
+    configured_max_items = _env_int("PINECONE_RECALL_MAX_ITEMS", minimum=1)
+    configured_top_k = _env_int("PINECONE_RECALL_TOP_K", minimum=1)
+
+    effective_max_items = configured_max_items if configured_max_items is not None else max_items
+    if phase == 2:
+        if configured_max_items is None:
+            effective_max_items = min(max_items, 2)
+        effective_top_k = configured_top_k if configured_top_k is not None else max((effective_max_items or 1) * 3, 6)
+    else:
+        effective_top_k = configured_top_k if configured_top_k is not None else top_k
+
+    settings: dict[str, Any] = {
+        "phase": phase,
+        "max_items": max(1, effective_max_items),
+        "min_score": min_score,
+        "top_k": effective_top_k,
+    }
+    if configured_source_types:
+        settings["source_types"] = configured_source_types
+    return settings
+
+
 class QueryEmbedder(Protocol):
     def embed_query(self, text: str) -> Sequence[float]: ...
 
@@ -271,6 +351,15 @@ def build_pinecone_recall(
 ) -> str:
     if not query or not query.strip():
         return ""
+    rollout_settings = resolve_pinecone_recall_settings(
+        platform=platform,
+        scope=scope,
+        max_items=max_items,
+        min_score=min_score,
+        top_k=top_k,
+    )
+    if rollout_settings is None:
+        return ""
     pinecone_client = pinecone or PineconeMemoryClient()
     query_embedder = embedder or OpenAIQueryEmbedder()
     if not pinecone_client.is_configured():
@@ -281,17 +370,18 @@ def build_pinecone_recall(
         retriever = ContextRetriever(
             pinecone=pinecone_client,
             embed_query=query_embedder,
-            default_max_items=max_items,
-            default_min_score=min_score,
+            default_max_items=int(rollout_settings.get("max_items", max_items)),
+            default_min_score=float(rollout_settings.get("min_score", min_score)),
         )
         snippets = retriever.retrieve(
             RetrievalRequest(
                 query=query,
                 scope=scope,
                 platform=platform,
-                min_score=min_score,
-                max_items=max_items,
-                top_k=top_k,
+                min_score=float(rollout_settings.get("min_score", min_score)),
+                max_items=int(rollout_settings.get("max_items", max_items)),
+                top_k=rollout_settings.get("top_k", top_k),
+                source_types=tuple(rollout_settings.get("source_types") or ()),
                 now=now or datetime.now(timezone.utc),
             )
         )
@@ -305,6 +395,7 @@ def build_pinecone_recall(
 __all__ = [
     "build_pinecone_recall",
     "build_pinecone_recall_context_block",
+    "resolve_pinecone_recall_settings",
     "ContextRetriever",
     "OpenAIQueryEmbedder",
     "RetrievedMemorySnippet",

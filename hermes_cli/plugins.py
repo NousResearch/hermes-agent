@@ -830,8 +830,12 @@ class PluginManager:
         )
         logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
         manifests.extend(bundled)
-        bundled_platforms = self._scan_directory(
-            repo_plugins / "platforms", source="bundled"
+        bundled_platforms = self._scan_directory_level(
+            repo_plugins / "platforms",
+            source="bundled",
+            skip_names=None,
+            prefix="platforms",
+            depth=0,
         )
         logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
         manifests.extend(bundled_platforms)

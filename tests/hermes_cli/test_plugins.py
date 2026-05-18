@@ -146,6 +146,71 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 1
 
+    def test_bundled_platform_plugins_have_platforms_namespace_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Bundled platform plugin keys include the platforms/ namespace.
+
+        Regression test for #27548: platform plugins under
+        plugins/platforms/<name>/ should have keys like ``platforms/teams``,
+        not bare manifest names like ``teams-platform``.
+        """
+        # Set up a fake bundled plugins dir with a platforms/ subdirectory.
+        bundled_dir = tmp_path / "bundled_plugins"
+        platforms_dir = bundled_dir / "platforms"
+        teams_dir = platforms_dir / "teams"
+        teams_dir.mkdir(parents=True)
+
+        manifest = {
+            "name": "teams-platform",
+            "label": "Microsoft Teams",
+            "kind": "platform",
+            "version": "1.0.0",
+        }
+        (teams_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+        (teams_dir / "__init__.py").write_text(
+            "def register(ctx): pass\n"
+        )
+
+        # Also create a flat top-level plugin to verify normal scanning
+        # still works.
+        flat_dir = bundled_dir / "disk-cleanup"
+        flat_dir.mkdir()
+        (flat_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "disk-cleanup", "version": "1.0.0"})
+        )
+        (flat_dir / "__init__.py").write_text(
+            "def register(ctx): pass\n"
+        )
+
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_dir))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        (tmp_path / "hermes_test").mkdir(exist_ok=True)
+
+        # Write config that opts-in via the canonical namespaced key.
+        cfg_path = tmp_path / "hermes_test" / "config.yaml"
+        cfg_path.write_text(
+            yaml.safe_dump(
+                {"plugins": {"enabled": ["platforms/teams", "disk-cleanup"]}}
+            )
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # The platform plugin must be keyed as platforms/teams.
+        assert "platforms/teams" in mgr._plugins, (
+            f"Expected key 'platforms/teams', got: {sorted(mgr._plugins.keys())}"
+        )
+        # The bare manifest name should NOT appear as a key.
+        assert "teams-platform" not in mgr._plugins, (
+            "Platform plugin should not use bare manifest name as key"
+        )
+        # Verify the flat plugin still works normally.
+        assert "disk-cleanup" in mgr._plugins
+        # The platform plugin manifest name is preserved.
+        assert mgr._plugins["platforms/teams"].manifest.name == "teams-platform"
+
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

@@ -45,10 +45,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
     value. Telegram private-chat topics created through Hermes' DM-topic helper
-    are exposed in updates as ``message_thread_id`` plus a reply anchor, but
-    outbound sends only render in the correct Telegram lane when the adapter
-    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
-    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    are exposed in updates as ``message_thread_id`` plus a reply anchor. Live
+    user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
+    synthetic/resumed sends that have no reply anchor fall back to Telegram's
+    ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
@@ -56,6 +56,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     metadata = {"thread_id": thread_id}
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
+        tid = str(thread_id)
+        if tid and tid not in {"", "1"}:
+            metadata["direct_messages_topic_id"] = tid
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
@@ -67,10 +70,9 @@ def _reply_anchor_for_event(event) -> str | None:
 
     Telegram forum/supergroup topics should be routed by topic metadata, not by
     replying to the triggering message. Hermes-created Telegram private-chat
-    topic lanes are different: Bot API sends reject their ``message_thread_id``
-    and do not route with ``direct_messages_topic_id``. Those lanes only remain
-    visible when sent with both the private topic thread id and a reply to the
-    triggering user message.
+    topic lanes prefer replying to the triggering user message so the answer
+    stays attached to the active lane; synthetic/resumed sends fall back to
+    ``direct_messages_topic_id`` metadata when no message id is available.
     """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))

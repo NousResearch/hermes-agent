@@ -378,8 +378,7 @@ async def _api_post(
 ) -> Dict[str, Any]:
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
+    async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout_ms / 1000) as response:
         raw = await response.text()
         if not response.ok:
             raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
@@ -398,12 +397,11 @@ async def _api_get(
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.get(url, headers=headers, timeout=timeout) as response:
+    async with session.get(url, headers=headers, timeout=timeout_ms / 1000) as response:
         raw = await response.text()
         if not response.ok:
             raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+            return json.loads(raw)
 
 
 async def _get_updates(
@@ -563,8 +561,6 @@ async def _upload_ciphertext(
                     return encrypted_param
                 raw = await response.text()
                 raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-            raw = await response.text()
-            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
     return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
@@ -1310,6 +1306,33 @@ class WeixinAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
+    async def _reconnect(self) -> bool:
+        """Attempt to re-establish connection using persisted credentials.
+
+        Called when the iLink session expires (errcode -14 or stale -2).
+        Reloads the token from disk, tears down the old poll session,
+        and creates a fresh one so the next ``getupdates`` succeeds.
+        """
+        logger.info("[%s] attempting reconnect…", self.name)
+        persisted = load_weixin_account(self._hermes_home, self._account_id)
+        if not persisted or not persisted.get("token"):
+            logger.error("[%s] reconnect failed: no persisted credentials for %s",
+                         self.name, _safe_id(self._account_id))
+            return False
+        self._token = str(persisted["token"]).strip()
+        self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+        # Tear down stale session
+        if self._poll_session and not self._poll_session.closed:
+            await self._poll_session.close()
+        # Fresh session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=True, connector=_make_ssl_connector(),
+        )
+        self._token_store.restore(self._account_id)
+        logger.info("[%s] reconnected with refreshed credentials (base=%s)",
+                     self.name, self._base_url)
+        return True
+
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None
         sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
@@ -1334,8 +1357,10 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
-                        await asyncio.sleep(600)
+                        logger.error("[%s] session expired; attempting reconnect", self.name)
+                        if not await self._reconnect():
+                            logger.warning("[%s] reconnect failed; sleeping 60s before retry", self.name)
+                            await asyncio.sleep(60)
                         consecutive_failures = 0
                         continue
                     consecutive_failures += 1
@@ -1634,7 +1659,10 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff with jitter for rate limits
+                            import secrets as _secrets
+                            base_wait = self._send_chunk_retry_delay_seconds * 3
+                            wait = min(base_wait * (2 ** attempt) + _secrets.randbelow(2000) / 1000, 60)
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,
@@ -1723,8 +1751,13 @@ class WeixinAdapter(BasePlatformAdapter):
                     client_id=client_id,
                 )
                 last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
+                # Dynamic delay: scale with chunk count to avoid rate limits
+                if idx < len(chunks) - 1:
+                    dynamic_delay = max(
+                        self._send_chunk_delay_seconds,
+                        2.0 + len(chunks) * 0.3,
+                    )
+                    await asyncio.sleep(dynamic_delay)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -2096,9 +2129,22 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if (live_adapter is not None and send_session is not None
-            and not send_session.closed
-            and send_session._loop is asyncio.get_running_loop()):
+
+    # Check if the live session's event loop matches the current one.
+    # aiohttp timeout contexts are bound to the loop that created them;
+    # using a session from a different loop causes
+    # "Timeout context manager should be used inside a task".
+    loop_mismatch = False
+    if send_session is not None and not send_session.closed:
+        try:
+            sess_loop = send_session._loop
+            curr_loop = asyncio.get_running_loop()
+            if sess_loop is not curr_loop:
+                loop_mismatch = True
+        except Exception:
+            pass
+
+    if not loop_mismatch and live_adapter is not None and send_session is not None and not send_session.closed:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

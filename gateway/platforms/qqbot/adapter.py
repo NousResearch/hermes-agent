@@ -668,7 +668,21 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type == aiohttp.WSMsgType.CLOSE:
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
-                raise RuntimeError("WebSocket closed")
+                # Try to retrieve the close code from the underlying WebSocket.
+                close_code: Optional[int] = None
+                try:
+                    # WebSocketClientProtocol.close_code is the last close code received.
+                    ws_protocol = getattr(self._ws, "_protocol", None)
+                    if ws_protocol is not None:
+                        close_code = getattr(ws_protocol, "close_code", None)
+                except Exception:  # noqa: BLE001
+                    pass
+                if close_code is None and msg.data:
+                    try:
+                        close_code = int(msg.data)
+                    except (TypeError, ValueError):
+                        pass
+                raise RuntimeError(f"WebSocket closed (code={close_code})")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).

@@ -79,7 +79,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
           role="listbox"
           aria-label={t.theme?.title ?? "Theme"}
           className={cn(
-            "absolute z-50 min-w-[240px]",
+            "absolute z-50 min-w-[240px] max-h-[70dvh] overflow-y-auto",
             dropUp ? "left-0 bottom-full mb-1" : "right-0 top-full mt-1",
             "border border-current/20 bg-background-base/95 backdrop-blur-sm",
             "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",

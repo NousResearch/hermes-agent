@@ -195,6 +195,10 @@ def enforce_turn_budget(
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
+        # Skip inject_image results — they contain base64 image data that must
+        # reach the adapter intact for native multimodal injection.
+        if '"_inject_image"' in content:
+            continue
         size = len(content)
         total_size += size
         if PERSISTED_OUTPUT_TAG not in content:

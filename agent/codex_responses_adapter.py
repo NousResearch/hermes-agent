@@ -175,6 +175,60 @@ def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
         return ""
 
 
+def _extract_injected_image_tool_result(content: Any) -> Optional[tuple[str, Dict[str, Any]]]:
+    """Return (compact_output, input_image_part) for an ``inject_image`` result.
+
+    Tool results must stay textual in Responses ``function_call_output`` items,
+    but generated image payloads should reach vision-capable providers as native
+    ``input_image`` content.  This strips the base64 from the tool output and
+    emits a separate multimodal user item.
+    """
+    if not isinstance(content, str) or '"_inject_image"' not in content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    img = parsed.get("_inject_image")
+    if not isinstance(img, dict):
+        return None
+    media_type = img.get("media_type")
+    data = img.get("data")
+    if not isinstance(media_type, str) or not media_type.startswith("image/"):
+        return None
+    if not isinstance(data, str) or not data:
+        return None
+
+    data_url = f"data:{media_type};base64,{data}"
+    metadata = img.get("metadata") or parsed.get("metadata") or {}
+    source_path = None
+    if isinstance(metadata, dict):
+        source_path = img.get("source_path") or metadata.get("source_path")
+    elif isinstance(img.get("source_path"), str):
+        source_path = img.get("source_path")
+    message = parsed.get("message")
+    if not isinstance(message, str) or not message.strip():
+        message = "Image injected into native multimodal context."
+
+    compact: Dict[str, Any] = {
+        "success": bool(parsed.get("success", True)),
+        "message": message,
+        "_inject_image": {
+            "media_type": media_type,
+            "native_image_attached": True,
+            "base64_omitted_from_tool_output": True,
+        },
+    }
+    if isinstance(source_path, str) and source_path:
+        compact["_inject_image"]["source_path"] = source_path
+    if isinstance(metadata, dict) and metadata:
+        compact["metadata"] = {k: v for k, v in metadata.items() if k != "data"}
+    image_part: Dict[str, Any] = {"type": "input_image", "image_url": data_url}
+    return json.dumps(compact, ensure_ascii=False), image_part
+
+
 # ---------------------------------------------------------------------------
 # ID helpers
 # ---------------------------------------------------------------------------
@@ -524,13 +578,13 @@ def _chat_messages_to_responses_input(
                     call_id = raw_tool_call_id.strip()
             if not isinstance(call_id, str) or not call_id.strip():
                 continue
-
             # Multimodal tool result: convert OpenAI-style content list into
             # Responses ``function_call_output.output`` array. The Responses
             # API accepts ``output`` as either a string or an array of
             # ``input_text``/``input_image`` items. See
             # https://developers.openai.com/api/reference/python/resources/responses/.
             tool_content = msg.get("content")
+            injected = None
             output_value: Any
             if isinstance(tool_content, list):
                 converted = _chat_content_to_responses_parts(
@@ -541,13 +595,25 @@ def _chat_messages_to_responses_input(
                 else:
                     output_value = ""
             else:
-                output_value = str(tool_content or "")
+                output = str(tool_content or "")
+                injected = _extract_injected_image_tool_result(output)
+                if injected:
+                    output, image_part = injected
+                output_value = output
 
             items.append({
                 "type": "function_call_output",
                 "call_id": call_id,
                 "output": output_value,
             })
+            if injected:
+                items.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Native image payload attached from inject_image tool result."},
+                        image_part,
+                    ],
+                })
 
     return items
 

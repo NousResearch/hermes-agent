@@ -1894,6 +1894,32 @@ def _convert_tool_message_to_result(
                 if text_content else list(stashed)
             )
 
+    # inject_image returns a JSON marker containing base64 image bytes.  Native
+    # Anthropic can receive that as an image block inside the tool_result while
+    # still keeping a compact textual status around it.
+    if multimodal_blocks is None and isinstance(content, str) and '"_inject_image"' in content:
+        try:
+            parsed_result = json.loads(content)
+            if isinstance(parsed_result, dict) and isinstance(parsed_result.get("_inject_image"), dict):
+                img = parsed_result["_inject_image"]
+                media_type = img.get("media_type")
+                data = img.get("data")
+                if isinstance(media_type, str) and media_type.startswith("image/") and isinstance(data, str) and data:
+                    text = parsed_result.get("message") or "Image injected into native multimodal context."
+                    multimodal_blocks = [
+                        {"type": "text", "text": str(text)},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data,
+                            },
+                        },
+                    ]
+        except (json.JSONDecodeError, TypeError, KeyError):
+            pass
+
     if multimodal_blocks:
         result_content: Any = multimodal_blocks
     elif isinstance(content, str):

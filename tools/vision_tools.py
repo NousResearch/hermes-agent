@@ -29,6 +29,7 @@ Usage:
 """
 
 import base64
+import io
 import json
 import logging
 import os
@@ -1588,4 +1589,314 @@ registry.register(
     check_fn=check_vision_requirements,
     is_async=True,
     emoji="🎬",
+)
+
+
+# ---------------------------------------------------------------------------
+# inject_image — load a local image into the model's native vision context
+# ---------------------------------------------------------------------------
+
+_MAX_INJECT_SIZE_MB = 20  # refuse files larger than this
+_INJECT_DEFAULT_MAX_DIMENSION = 1024
+_INJECT_DEFAULT_FORMAT = "jpeg"
+_INJECT_DEFAULT_QUALITY = 85
+
+
+def _coerce_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _prepare_injected_image_payload(
+    image_path: Path,
+    *,
+    source_mime: str,
+    max_dimension: int = _INJECT_DEFAULT_MAX_DIMENSION,
+    output_format: str = _INJECT_DEFAULT_FORMAT,
+    quality: int = _INJECT_DEFAULT_QUALITY,
+    full_resolution: bool = False,
+) -> tuple[bytes, str, Dict[str, Any]]:
+    """Return image bytes + MIME for native injection, downscaled by default.
+
+    ``inject_image`` is meant for *review context*, not archival transport.  The
+    original file stays untouched on disk; this helper creates a compact payload
+    for the model to see so every provider adapter can avoid shoving multi-MB
+    full-resolution base64 through the conversation history.
+    """
+    original_bytes = image_path.read_bytes()
+    metadata: Dict[str, Any] = {
+        "source_path": str(image_path),
+        "source_media_type": source_mime,
+        "source_size_bytes": len(original_bytes),
+        "max_dimension": max_dimension,
+        "requested_format": output_format,
+        "requested_quality": quality,
+        "full_resolution": full_resolution,
+        "resized": False,
+        "format_changed": False,
+    }
+
+    if full_resolution or max_dimension <= 0 or source_mime == "image/svg+xml":
+        if source_mime != "image/svg+xml":
+            try:
+                from PIL import Image
+                with Image.open(image_path) as img:
+                    metadata["original_dimensions"] = {"width": img.width, "height": img.height}
+                    metadata["injected_dimensions"] = {"width": img.width, "height": img.height}
+            except Exception:
+                pass
+        metadata.update({
+            "injected_media_type": source_mime,
+            "injected_size_bytes": len(original_bytes),
+        })
+        return original_bytes, source_mime, metadata
+
+    try:
+        from PIL import Image
+    except ImportError:
+        metadata.update({
+            "warning": "Pillow not installed; injected original bytes",
+            "injected_media_type": source_mime,
+            "injected_size_bytes": len(original_bytes),
+        })
+        return original_bytes, source_mime, metadata
+
+    try:
+        with Image.open(image_path) as img:
+            original_width, original_height = img.size
+            metadata["original_dimensions"] = {
+                "width": original_width,
+                "height": original_height,
+            }
+
+            if max(original_width, original_height) > max_dimension:
+                img.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
+                metadata["resized"] = True
+            else:
+                img = img.copy()
+
+            fmt = (output_format or _INJECT_DEFAULT_FORMAT).strip().lower()
+            if fmt in {"jpg", "jpeg"}:
+                pil_format = "JPEG"
+                out_mime = "image/jpeg"
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    rgba = img.convert("RGBA")
+                    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                    background.alpha_composite(rgba)
+                    img = background.convert("RGB")
+                elif img.mode != "RGB":
+                    img = img.convert("RGB")
+            elif fmt == "png":
+                pil_format = "PNG"
+                out_mime = "image/png"
+            elif fmt == "webp":
+                pil_format = "WEBP"
+                out_mime = "image/webp"
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGB")
+            else:
+                pil_format = "JPEG"
+                out_mime = "image/jpeg"
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+
+            metadata["format_changed"] = out_mime != source_mime
+            metadata["injected_dimensions"] = {"width": img.width, "height": img.height}
+
+            buffer = io.BytesIO()
+            save_kwargs: Dict[str, Any] = {"format": pil_format}
+            if pil_format in {"JPEG", "WEBP"}:
+                save_kwargs["quality"] = quality
+                save_kwargs["optimize"] = True
+            img.save(buffer, **save_kwargs)
+            payload = buffer.getvalue()
+    except Exception as exc:
+        logger.warning("inject_image could not prepare compact payload for %s: %s", image_path, exc)
+        metadata.update({
+            "warning": f"Could not resize/re-encode image; injected original bytes: {exc}",
+            "injected_media_type": source_mime,
+            "injected_size_bytes": len(original_bytes),
+        })
+        return original_bytes, source_mime, metadata
+
+    metadata.update({
+        "injected_media_type": out_mime,
+        "injected_size_bytes": len(payload),
+        "base64_size_chars": len(base64.b64encode(payload)),
+    })
+    return payload, out_mime, metadata
+
+
+def _handle_inject_image(args: Dict[str, Any], **kw: Any) -> Any:
+    """Load a local image file as a compact multimodal tool-result envelope.
+
+    By default the injected payload is a JPEG/WebP/PNG review copy capped at
+    1024 px on the long edge; pass ``full_resolution=true`` or
+    ``max_dimension=0`` only when the original bytes are genuinely needed.
+    """
+    image_path_str = str(args.get("image_path", "") or "").strip()
+    if not image_path_str:
+        return tool_error("image_path is required", success=False)
+
+    image_path = Path(os.path.expanduser(image_path_str)).resolve()
+    if not image_path.exists():
+        return tool_error(f"File not found: {image_path}", success=False)
+    if not image_path.is_file():
+        return tool_error(f"Not a file: {image_path}", success=False)
+
+    image_size_bytes = image_path.stat().st_size
+    size_mb = image_size_bytes / (1024 * 1024)
+    if size_mb > _MAX_INJECT_SIZE_MB:
+        return tool_error(
+            f"File too large ({size_mb:.1f} MB > {_MAX_INJECT_SIZE_MB} MB limit)",
+            success=False,
+        )
+
+    mime = _detect_image_mime_type(image_path)
+    if not mime or not mime.startswith("image/"):
+        return tool_error(
+            f"Not a recognised image format: {image_path.name}",
+            success=False,
+        )
+
+    max_dimension = _coerce_int(
+        args.get("max_dimension", _INJECT_DEFAULT_MAX_DIMENSION),
+        _INJECT_DEFAULT_MAX_DIMENSION,
+        minimum=0,
+        maximum=8192,
+    )
+    quality = _coerce_int(
+        args.get("quality", _INJECT_DEFAULT_QUALITY),
+        _INJECT_DEFAULT_QUALITY,
+        minimum=1,
+        maximum=100,
+    )
+    output_format = str(args.get("format", _INJECT_DEFAULT_FORMAT) or _INJECT_DEFAULT_FORMAT).strip().lower()
+    full_resolution = _coerce_bool(args.get("full_resolution"), default=False) or max_dimension <= 0
+
+    payload, injected_mime, metadata = _prepare_injected_image_payload(
+        image_path,
+        source_mime=mime,
+        max_dimension=max_dimension,
+        output_format=output_format,
+        quality=quality,
+        full_resolution=full_resolution,
+    )
+    b64 = base64.b64encode(payload).decode("ascii")
+    metadata["base64_size_chars"] = len(b64)
+    image_data_url = f"data:{injected_mime};base64,{b64}"
+    if len(image_data_url) > _MAX_BASE64_BYTES:
+        return tool_error(
+            f"Image too large for native injection: base64 payload is "
+            f"{len(image_data_url) / (1024 * 1024):.1f} MB "
+            f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB).",
+            success=False,
+        )
+
+    original_dims = metadata.get("original_dimensions") or {}
+    injected_dims = metadata.get("injected_dimensions") or original_dims
+    dims_text = ""
+    if isinstance(injected_dims, dict) and injected_dims.get("width") and injected_dims.get("height"):
+        dims_text = f", injected {injected_dims['width']}x{injected_dims['height']}"
+        if isinstance(original_dims, dict) and original_dims != injected_dims:
+            dims_text = (
+                f", original {original_dims.get('width')}x{original_dims.get('height')}"
+                f" → injected {injected_dims['width']}x{injected_dims['height']}"
+            )
+
+    question = str(args.get("question", "") or "").strip()
+    if not question:
+        question = "Inspect this image and use it to answer the user's request."
+    result = _build_native_vision_tool_result(
+        image_url=str(image_path),
+        question=question,
+        image_data_url=image_data_url,
+        image_size_bytes=len(payload),
+    )
+    result["text_summary"] = (
+        f"Image attached natively for the main model ({injected_mime}, "
+        f"{len(payload) / 1024:.1f} KiB{dims_text}). "
+        "Answer using built-in vision."
+    )
+    result.setdefault("meta", {}).update(metadata)
+    result["meta"]["source_path"] = str(image_path)
+    result["meta"]["source_media_type"] = mime
+    result["meta"]["injected_media_type"] = injected_mime
+    return result
+
+
+INJECT_IMAGE_SCHEMA = {
+    "name": "inject_image",
+    "description": (
+        "Load a local image file into your own visual context so you can see it "
+        "natively. Use this to review generated images, screenshots, or any local "
+        "image before sending or describing it to the user."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": "Absolute or relative path to a local image file (PNG, JPEG, WebP, GIF, BMP).",
+            },
+            "question": {
+                "type": "string",
+                "description": "Optional task-specific question or instruction for inspecting the image.",
+            },
+            "max_dimension": {
+                "type": "integer",
+                "description": "Maximum long-edge size for the injected review payload. Default: 1024. Use 0 only when full resolution is required.",
+                "default": _INJECT_DEFAULT_MAX_DIMENSION,
+                "minimum": 0,
+                "maximum": 8192,
+            },
+            "format": {
+                "type": "string",
+                "description": "Output format for the injected review payload. Default: jpeg.",
+                "enum": ["jpeg", "png", "webp"],
+                "default": _INJECT_DEFAULT_FORMAT,
+            },
+            "quality": {
+                "type": "integer",
+                "description": "JPEG/WebP quality for the injected review payload. Default: 85.",
+                "default": _INJECT_DEFAULT_QUALITY,
+                "minimum": 1,
+                "maximum": 100,
+            },
+            "full_resolution": {
+                "type": "boolean",
+                "description": "Inject original bytes instead of a compact review copy. Default: false; use sparingly.",
+                "default": False,
+            },
+        },
+        "required": ["image_path"],
+    },
+}
+
+
+registry.register(
+    name="inject_image",
+    toolset="vision",
+    schema=INJECT_IMAGE_SCHEMA,
+    handler=_handle_inject_image,
+    is_async=False,
+    emoji="🖼️",
+    # Must bypass result persistence/truncation so the native image payload
+    # reaches the provider adapter intact.
+    max_result_size_chars=float("inf"),
 )

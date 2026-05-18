@@ -604,6 +604,33 @@ class TestChatMessagesToResponsesInput:
         assert items[0]["call_id"] == "call_abc"
         assert items[0]["output"] == "result here"
 
+    def test_inject_image_tool_result_becomes_native_input_image(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        content = json.dumps({
+            "success": True,
+            "message": "Image injected",
+            "_inject_image": {
+                "media_type": "image/jpeg",
+                "data": "aGVsbG8=",
+                "metadata": {"source_path": "/share/hermes/gallery/test.jpg"},
+            },
+        })
+        messages = [{"role": "tool", "tool_call_id": "call_img", "content": content}]
+        items = _chat_messages_to_responses_input(messages)
+
+        assert items[0]["type"] == "function_call_output"
+        assert items[0]["call_id"] == "call_img"
+        assert "aGVsbG8=" not in items[0]["output"]
+        compact = json.loads(items[0]["output"])
+        assert compact["_inject_image"]["native_image_attached"] is True
+        assert compact["_inject_image"]["base64_omitted_from_tool_output"] is True
+        assert items[1]["role"] == "user"
+        assert items[1]["content"][1] == {
+            "type": "input_image",
+            "image_url": "data:image/jpeg;base64,aGVsbG8=",
+        }
+
     def test_encrypted_reasoning_replayed(self, monkeypatch):
         """Encrypted reasoning items from previous turns must be included in input."""
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

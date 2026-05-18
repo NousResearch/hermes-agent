@@ -39,7 +39,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "inject_image", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -115,7 +115,7 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["vision_analyze", "inject_image"],
         "includes": []
     },
 

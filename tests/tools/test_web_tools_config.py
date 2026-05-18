@@ -482,6 +482,27 @@ class TestWebSearchSchema:
         assert result == '{"success": true}'
         mock_search.assert_called_once_with("docs", limit=5)
 
+    def test_web_search_discovers_provider_plugins_before_registry_lookup(self):
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(supports_search=MagicMock(return_value=True))
+        fake_provider.name = "brave-free"
+        fake_provider.search = fake_search
+        tools.web_tools._web_provider_plugins_discovered = False
+
+        with patch("tools.web_tools._get_search_backend", return_value="brave-free"), \
+             patch("hermes_cli.plugins.discover_plugins") as mock_discover, \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=2))
+
+        assert result == {"success": True, "data": {"web": []}}
+        mock_discover.assert_called_once_with()
+        fake_search.assert_called_once_with("docs", 2)
+
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools
 

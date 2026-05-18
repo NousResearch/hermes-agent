@@ -120,6 +120,30 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+_web_provider_plugins_discovered = False
+
+
+def _ensure_web_provider_plugins_discovered() -> None:
+    """Ensure bundled web provider plugins are registered before dispatch.
+
+    The web tool functions can be imported and called directly by tests,
+    smoke checks, and tool dispatch paths that have not otherwise initialized
+    the CLI plugin manager. Without this idempotent discovery step, configured
+    backends such as brave-free/firecrawl resolve from config but the provider
+    registry is empty, producing false "No provider configured" errors.
+    """
+    global _web_provider_plugins_discovered
+    if _web_provider_plugins_discovered:
+        return
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as exc:  # noqa: BLE001 - keep web tools error-path friendly
+        logger.debug("Could not discover web provider plugins: %s", exc)
+    finally:
+        _web_provider_plugins_discovered = True
+
+
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
@@ -793,6 +817,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
+        _ensure_web_provider_plugins_discovered()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
@@ -925,6 +950,7 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            _ensure_web_provider_plugins_discovered()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -1177,6 +1203,7 @@ async def web_crawl_tool(
         # dispatches through agent.web_search_registry. The crawl response
         # shape — {"results": [{"url", "title", "content", ...}]} — is then
         # post-processed by the shared LLM-summarization path below.
+        _ensure_web_provider_plugins_discovered()
         from agent.web_search_registry import (
             get_active_crawl_provider,
             get_provider as _wsp_get_provider,

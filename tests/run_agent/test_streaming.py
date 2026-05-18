@@ -945,6 +945,155 @@ class TestCodexStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    def test_codex_stream_resets_has_tool_calls_after_retry(self):
+        """Regression: has_tool_calls must reset per retry attempt.
+
+        If attempt 1 sees a function_call event and then fails with a
+        transport error, attempt 2's output_text.delta events must still
+        be streamed to the user. Without per-attempt reset, the
+        leftover has_tool_calls=True from attempt 1 silently suppressed
+        the retry's text streaming.
+        """
+        from run_agent import AIAgent
+
+        deltas = []
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        func_call_event = SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            delta="",
+        )
+
+        class _OneEventThenRaise:
+            """Iterator that yields one event then raises ConnectionError."""
+
+            def __init__(self):
+                self._yielded = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._yielded:
+                    raise ConnectionError("simulated transport drop")
+                self._yielded = True
+                return func_call_event
+
+        stream1 = MagicMock()
+        stream1.__enter__ = MagicMock(return_value=stream1)
+        stream1.__exit__ = MagicMock(return_value=False)
+        stream1.__iter__ = MagicMock(return_value=_OneEventThenRaise())
+
+        text_event = SimpleNamespace(
+            type="response.output_text.delta",
+            delta="bar baz",
+        )
+        final_resp = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="bar baz")],
+                )
+            ],
+            status="completed",
+        )
+        stream2 = MagicMock()
+        stream2.__enter__ = MagicMock(return_value=stream2)
+        stream2.__exit__ = MagicMock(return_value=False)
+        stream2.__iter__ = MagicMock(return_value=iter([text_event]))
+        stream2.get_final_response = MagicMock(return_value=final_resp)
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.side_effect = [stream1, stream2]
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert "bar baz" in deltas, (
+            f"Retry text delta must be streamed despite attempt 1 seeing a "
+            f"function_call event; got deltas={deltas!r}"
+        )
+        assert response is final_resp
+
+    def test_codex_stream_synthesizes_output_after_retry_with_prior_tool_call(self):
+        """Regression: empty-output synthesis must fire on the retry even
+        if attempt 1 saw a function_call event.
+
+        chatgpt.com backend-api can return an empty output list on
+        get_final_response() while the SSE stream actually delivered
+        output_text deltas. The fallback synthesises the final response
+        from those deltas — but only when has_tool_calls is False. A
+        leftover True from a failed first attempt would skip synthesis
+        and leave final_response.output as [].
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        func_call_event = SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            delta="",
+        )
+
+        class _OneEventThenRaise:
+            def __init__(self):
+                self._yielded = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self._yielded:
+                    raise ConnectionError("simulated transport drop")
+                self._yielded = True
+                return func_call_event
+
+        stream1 = MagicMock()
+        stream1.__enter__ = MagicMock(return_value=stream1)
+        stream1.__exit__ = MagicMock(return_value=False)
+        stream1.__iter__ = MagicMock(return_value=_OneEventThenRaise())
+
+        text_event = SimpleNamespace(
+            type="response.output_text.delta",
+            delta="bar baz",
+        )
+        empty_final = SimpleNamespace(output=[], status="incomplete")
+        stream2 = MagicMock()
+        stream2.__enter__ = MagicMock(return_value=stream2)
+        stream2.__exit__ = MagicMock(return_value=False)
+        stream2.__iter__ = MagicMock(return_value=iter([text_event]))
+        stream2.get_final_response = MagicMock(return_value=empty_final)
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.side_effect = [stream1, stream2]
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.output, (
+            "Synthesis must populate output from streamed text after "
+            "retry; got empty output (has_tool_calls leak from attempt 1)"
+        )
+        assert response.output[0].content[0].text == "bar baz"
+
 
 class TestAnthropicStreamCallbacks:
     """Verify Anthropic streaming refreshes activity on every event."""

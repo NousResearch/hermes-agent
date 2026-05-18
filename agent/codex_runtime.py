@@ -181,16 +181,23 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
-    has_tool_calls = False
     first_delta_fired = False
     # Accumulate streamed text so we can recover if get_final_response()
     # returns empty output (e.g. chatgpt.com backend-api sends
-    # response.incomplete instead of response.completed).
+    # response.incomplete instead of response.completed). Intentionally
+    # spans retry attempts: if attempt 1 streamed "foo " to the user
+    # before failing transport, the synthesized fallback from attempt 2
+    # combines both so the recovered output matches what the user saw.
     agent._codex_streamed_text_parts: list = []
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
+        # Reset per-attempt: a function_call event on a failed attempt
+        # must not suppress text streaming or empty-output synthesis on
+        # the retry, which is a fresh API call with its own tool-call
+        # decisions.
+        has_tool_calls = False
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
                 for event in stream:

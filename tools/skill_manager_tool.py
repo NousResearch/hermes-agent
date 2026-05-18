@@ -311,6 +311,17 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
 
+    # Detect the most common footgun: trying to write SKILL.md via write_file.
+    # write_file is for supporting files; the main skill body is owned by
+    # action='create' (new skill) or action='edit' / action='patch' (existing).
+    if len(normalized.parts) == 1 and normalized.parts[0].lower() == "skill.md":
+        return (
+            "SKILL.md cannot be written via action='write_file'. "
+            "Use action='edit' (full rewrite) or action='patch' (targeted change) "
+            "to modify the main skill body. write_file is for supporting files only "
+            f"(under {', '.join(sorted(ALLOWED_SUBDIRS))}/)."
+        )
+
     # Must be under an allowed subdirectory
     if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:
         allowed = ", ".join(sorted(ALLOWED_SUBDIRS))

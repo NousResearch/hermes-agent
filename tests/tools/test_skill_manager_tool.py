@@ -183,6 +183,26 @@ class TestValidateFilePath:
         assert "File must be under one of:" in err
         assert "'malicious.py'" in err
 
+    def test_skill_md_rejected_with_helpful_message(self):
+        """write_file is for supporting files; SKILL.md goes through edit/patch.
+
+        The validator must point the caller at the right action instead of
+        emitting the generic "must be under references/..." error, which
+        confuses agents trying to update the main skill body.
+        """
+        err = _validate_file_path("SKILL.md")
+        assert err is not None
+        assert "action='edit'" in err
+        assert "action='patch'" in err
+        assert "supporting files" in err
+
+    def test_skill_md_case_insensitive_rejected(self):
+        """Cover SKILL.MD / skill.md / Skill.md variants too."""
+        for variant in ("skill.md", "Skill.md", "SKILL.MD"):
+            err = _validate_file_path(variant)
+            assert err is not None
+            assert "action='edit'" in err, f"variant={variant!r} got: {err}"
+
 
 # ---------------------------------------------------------------------------
 # CRUD operations

@@ -2479,6 +2479,20 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        # Carry artifact paths in the event payload so the gateway
+        # notifier can upload them as native attachments alongside the
+        # completion message. Workers pass these via
+        # ``kanban_complete(artifacts=[...])`` which stashes the list in
+        # ``metadata["artifacts"]`` — we promote it onto the event so
+        # consumers don't have to fetch the run row to find it.
+        if isinstance(metadata, dict):
+            md_artifacts = metadata.get("artifacts")
+            if isinstance(md_artifacts, (list, tuple)):
+                cleaned_artifacts = [
+                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+                ]
+                if cleaned_artifacts:
+                    completed_payload["artifacts"] = cleaned_artifacts
         _append_event(
             conn, task_id, "completed",
             completed_payload,

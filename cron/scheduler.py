@@ -151,12 +151,16 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     """Temporarily run a job under a specific Hermes profile.
 
     Cron jobs are stored and scheduled by the profile running the scheduler, but
-    an individual job can opt into a different runtime profile.  While active,
-    The scheduler's test/override hook and a context-local Hermes home override
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
     both point at the resolved profile directory so _get_hermes_home(),
     .env/config loading, script resolution, AIAgent construction, and downstream
-    get_hermes_home() callers agree on the same home without mutating the
-    process-wide environment seen by other threads.
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
     """
     raw_profile = str(profile or "").strip()
     if not raw_profile:
@@ -165,6 +169,7 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
 
     global _hermes_home
     prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -187,6 +192,8 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         _hermes_home = prior_override
         if override_token is not None:
             reset_hermes_home_override(override_token)
+        os.environ.clear()
+        os.environ.update(env_snapshot)
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1832,11 +1839,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: jobs with a per-job workdir and/or profile mutate
-        # process-global runtime state inside run_job (TERMINAL_CWD,
-        # HERMES_HOME, and the scheduler's _hermes_home hook), so they MUST run
+        # Partition due jobs: jobs with a per-job workdir and/or profile touch
+        # process-global runtime state inside run_job. Workdir jobs temporarily
+        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
+        # Hermes home override, scheduler _hermes_home hook, and temporary
+        # profile .env load into os.environ with snapshot/restore. They MUST run
         # sequentially to avoid corrupting each other. Jobs without either field
-        # leave those env overrides untouched and stay parallel-safe.
+        # stay parallel-safe.
         sequential_jobs = [
             j for j in due_jobs
             if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
@@ -1848,7 +1857,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         _results: list = []
 
-        # Sequential pass for env-mutating jobs.
+        # Sequential pass for env/context-mutating jobs.
         for job in sequential_jobs:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))

@@ -780,7 +780,6 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
-[ ] session_search       currently: openrouter / google/gemini-2.5-flash
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
@@ -860,16 +859,6 @@ auxiliary:
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
 
-  # Session search — summarizes past session matches
-  session_search:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-    max_concurrency: 3       # Limit parallel summaries to reduce request-burst 429s
-    extra_body: {}           # Provider-specific OpenAI-compatible request fields
-
   # Skills hub — skill matching and search
   skills_hub:
     provider: "auto"
@@ -905,34 +894,6 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
-:::
-
-### Session Search Tuning
-
-If you use a reasoning-heavy model for `auxiliary.session_search`, Hermes now gives you two built-in controls:
-
-- `auxiliary.session_search.max_concurrency`: limits how many matched sessions Hermes summarizes at once
-- `auxiliary.session_search.extra_body`: forwards provider-specific OpenAI-compatible request fields on the summarization calls
-
-Example:
-
-```yaml
-auxiliary:
-  session_search:
-    provider: "main"
-    model: "glm-4.5-air"
-    timeout: 60
-    max_concurrency: 2
-    extra_body:
-      enable_thinking: false
-```
-
-Use `max_concurrency` when your provider rate-limits request bursts and you want `session_search` to trade some parallelism for stability.
-
-Use `extra_body` only when your provider documents OpenAI-compatible request-body fields you want Hermes to pass through for that task. Hermes forwards the object as-is.
-
-:::warning
-`extra_body` is only effective when your provider actually supports the field you send. If the provider does not expose a native OpenAI-compatible reasoning-off flag, Hermes cannot synthesize one on its behalf.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks

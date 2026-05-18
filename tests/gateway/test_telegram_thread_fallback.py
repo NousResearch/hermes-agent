@@ -134,6 +134,70 @@ def _make_adapter():
     return adapter
 
 
+def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
+    """Reply-derived thread ids in ordinary groups must not create topic lanes."""
+    from gateway.platforms import telegram as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="Done",
+        caption=None,
+        chat=SimpleNamespace(
+            id=-100123,
+            type=telegram_mod.ChatType.SUPERGROUP,
+            is_forum=False,
+            title="Regular group",
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=461,
+        is_topic_message=False,
+        reply_to_message=SimpleNamespace(
+            message_id=460,
+            text="Please complete the CAPTCHA/login, then reply done.",
+            caption=None,
+        ),
+        message_id=462,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.source.chat_id == "-100123"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id is None
+    assert build_session_key(event.source) == "agent:main:telegram:group:-100123:456"
+
+
+def test_forum_group_topic_message_preserves_thread_session_key():
+    """Real Telegram forum-topic messages should still route by topic id."""
+    from gateway.platforms import telegram as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="hello from topic",
+        caption=None,
+        chat=SimpleNamespace(
+            id=-100123,
+            type=telegram_mod.ChatType.SUPERGROUP,
+            is_forum=True,
+            title="Forum group",
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=17585,
+        is_topic_message=True,
+        reply_to_message=None,
+        message_id=10,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.source.chat_id == "-100123"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "17585"
+    assert build_session_key(event.source) == "agent:main:telegram:group:-100123:17585"
+
+
 def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     """Forum General-topic messages should keep synthetic thread context."""
     from gateway.platforms import telegram as telegram_mod

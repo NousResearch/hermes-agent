@@ -449,13 +449,15 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
                        user_id=42, user_name="Test User", forum_topic_created=None,
-                       is_topic_message=None):
+                       is_topic_message=None, is_forum=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
         id=chat_id,
         type=chat_type,
         title=None,
     )
+    if is_forum is not None:
+        chat.is_forum = is_forum
     # Add full_name attribute for DM chats
     if not hasattr(chat, "full_name"):
         chat.full_name = user_name
@@ -594,7 +596,12 @@ def test_group_topic_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="hello"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -617,7 +624,12 @@ def test_group_topic_skill_binding_second_topic():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=12, text="deal update"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=12,
+        text="deal update",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -639,7 +651,12 @@ def test_group_topic_no_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=1, text="hey"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=1,
+        text="hey",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -661,7 +678,12 @@ def test_group_topic_unmapped_thread_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=999, text="random"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=999,
+        text="random",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -683,7 +705,12 @@ def test_group_topic_unmapped_chat_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1009999999999, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="wrong group"
+        chat_id=-1009999999999,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="wrong group",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -720,7 +747,12 @@ def test_group_topic_chat_id_int_string_coercion():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=7, text="test"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=7,
+        text="test",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 

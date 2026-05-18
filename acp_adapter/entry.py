@@ -182,56 +182,31 @@ def _run_setup() -> None:
 
 
 def _run_setup_browser(assume_yes: bool = False) -> int:
-    """Bootstrap agent-browser + Playwright Chromium for the registry-install path.
+    """Bootstrap agent-browser + Chromium.
 
-    Shells out to the bundled platform-specific bootstrap script
-    (acp_adapter/bootstrap/bootstrap_browser_tools.{sh,ps1}) so the install
-    logic lives in one place — readable, debuggable, and shareable with
-    install.sh / install.ps1 if we ever want to call it from there too.
+    Routes through dep_ensure -> install.{sh,ps1} --ensure, sharing code
+    with ``hermes postinstall`` and the runtime lazy installer.
 
-    Returns the script's exit code (0 on success).
+    Returns 0 on success, 1 on failure.
     """
-    import platform
-    import subprocess
+    from hermes_cli.dep_ensure import ensure_dependency
 
-    bootstrap_dir = Path(__file__).resolve().parent / "bootstrap"
-
-    if platform.system() == "Windows":
-        script = bootstrap_dir / "bootstrap_browser_tools.ps1"
-        if not script.is_file():
-            print(
-                f"Bootstrap script not found at {script} — wheel may be incomplete.",
-                file=sys.stderr,
-            )
-            return 1
-        cmd = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", str(script),
-        ]
-        if assume_yes:
-            cmd.append("-Yes")
-    else:
-        script = bootstrap_dir / "bootstrap_browser_tools.sh"
-        if not script.is_file():
-            print(
-                f"Bootstrap script not found at {script} — wheel may be incomplete.",
-                file=sys.stderr,
-            )
-            return 1
-        cmd = ["bash", str(script)]
-        if assume_yes:
-            cmd.append("--yes")
-
-    # stdio is inherited so the user sees the bootstrap's progress live.
     try:
-        result = subprocess.run(cmd, check=False)
-    except FileNotFoundError as exc:
-        # bash / powershell.exe not on PATH
-        print(f"Could not launch browser bootstrap: {exc}", file=sys.stderr)
+        node_ok = ensure_dependency("node", interactive=not assume_yes)
+        if not node_ok:
+            print("Node.js installation failed — cannot proceed with browser tools.",
+                  file=sys.stderr)
+            return 1
+
+        browser_ok = ensure_dependency("browser", interactive=not assume_yes)
+        if not browser_ok:
+            print("Browser tools installation failed.", file=sys.stderr)
+            return 1
+
+        return 0
+    except OSError as exc:
+        print(f"Browser bootstrap failed: {exc}", file=sys.stderr)
         return 1
-    return result.returncode
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -736,10 +736,16 @@ def switch_model(
                     ),
                 )
 
-        # Resolve alias on the TARGET provider
+        # Resolve alias on the TARGET provider.
+        # Do not let reverse alias matches for the same bare model id leak a
+        # different provider's endpoint into an explicit provider selection
+        # (e.g. Discord picker: provider=openai-codex, model=gpt-5.5 must not
+        # inherit clawbay-gpt5.5's base_url just because both expose gpt-5.5).
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
-            _, new_model, resolved_alias = alias_result
+            alias_provider, alias_model, alias_name = alias_result
+            if alias_provider == target_provider:
+                new_model, resolved_alias = alias_model, alias_name
 
     # =================================================================
     # PATH B: No explicit provider — resolve from model input
@@ -899,7 +905,7 @@ def switch_model(
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
-        if _da is not None and _da.base_url:
+        if _da is not None and _da.base_url and _da.provider == target_provider:
             base_url = _da.base_url
             api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:

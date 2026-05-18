@@ -1013,6 +1013,63 @@ async def test_send_does_not_retry_timeout():
 
 
 @pytest.mark.asyncio
+async def test_send_retries_wrapped_connect_timeout():
+    """Retry TimedOut only when it wraps a TCP connect timeout.
+
+    A generic Telegram TimedOut may have reached Telegram and must not be
+    retried, but an underlying ConnectTimeout means the connection was never
+    established. Retrying prevents a silent drop without risking duplicates.
+    """
+    adapter = _make_adapter()
+
+    class FakeConnectTimeout(Exception):
+        pass
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] < 3:
+            err = FakeTimedOut("Timed out")
+            err.__cause__ = FakeConnectTimeout("connect timed out")
+            raise err
+        return SimpleNamespace(message_id=201)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "201"
+    assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_marks_wrapped_connect_timeout_retryable_after_exhaustion():
+    """Final SendResult remains retryable for outer gateway retry handling."""
+    adapter = _make_adapter()
+
+    class FakeConnectTimeout(Exception):
+        pass
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        err = FakeTimedOut("Timed out")
+        err.__context__ = FakeConnectTimeout("ConnectTimeout")
+        raise err
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
     """After clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()

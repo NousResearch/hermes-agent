@@ -194,6 +194,37 @@ async def test_send_skips_completion_reaction_for_streaming_preview(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_send_create_thread_metadata_sends_inside_new_thread(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=4321)
+    thread = SimpleNamespace(
+        id=999,
+        name="Daily update",
+        send=AsyncMock(return_value=sent_msg),
+    )
+    channel = SimpleNamespace(
+        create_thread=AsyncMock(return_value=thread),
+        send=AsyncMock(),
+        type=0,
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "Daily update\nUseful content", metadata={"create_thread": True})
+
+    assert result.success is True
+    channel.create_thread.assert_awaited_once()
+    thread.send.assert_awaited_once()
+    channel.send.assert_not_awaited()
+    assert result.raw_response["thread_id"] == "999"
+    assert result.raw_response["message_ids"] == ["4321"]
+    assert "999" in adapter._threads
+
+
+@pytest.mark.asyncio
 async def test_edit_finalize_adds_completion_reaction(monkeypatch):
     monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))

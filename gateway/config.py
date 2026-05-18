@@ -957,6 +957,20 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # threaded_free_response_channels: free-response channels that should
+                # still create a task thread for new top-level messages.
+                tfrc = discord_cfg.get("threaded_free_response_channels")
+                if tfrc is not None and not os.getenv("DISCORD_THREADED_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(tfrc, list):
+                        tfrc = ",".join(str(v) for v in tfrc)
+                    os.environ["DISCORD_THREADED_FREE_RESPONSE_CHANNELS"] = str(tfrc)
+                # delivery_thread_channels: channels where cron/live-adapter delivery
+                # should explicitly ask the Discord adapter to create a fresh thread.
+                dtc = discord_cfg.get("delivery_thread_channels")
+                if dtc is not None and not os.getenv("DISCORD_DELIVERY_THREAD_CHANNELS"):
+                    if isinstance(dtc, list):
+                        dtc = ",".join(str(v) for v in dtc)
+                    os.environ["DISCORD_DELIVERY_THREAD_CHANNELS"] = str(dtc)
                 # history_backfill: recover missed channel messages for shared sessions
                 # when require_mention is active.  Fetches messages between bot turns
                 # and prepends them to the user message for context.

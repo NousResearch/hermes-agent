@@ -597,6 +597,48 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
 
+    def test_live_discord_delivery_thread_channel_sets_create_thread_metadata(self, monkeypatch):
+        """Discord cron delivery can opt into a fresh thread per run."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        monkeypatch.setenv("DISCORD_DELIVERY_THREAD_CHANNELS", "9876")
+        job = {
+            "id": "daily-discord",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "9876"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Daily update",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args.kwargs["metadata"] == {"create_thread": True}
+
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
         from gateway.config import Platform

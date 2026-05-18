@@ -1617,6 +1617,17 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
+            if not thread_id and metadata and metadata.get("create_thread"):
+                thread_result = await self._send_to_created_thread(channel, content)
+                if thread_result.success:
+                    return thread_result
+                logger.warning(
+                    "[%s] Explicit Discord delivery thread creation failed in %s: %s; falling back to direct send",
+                    self.name,
+                    chat_id,
+                    thread_result.error,
+                )
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1690,6 +1701,63 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _send_to_created_thread(self, parent_channel: Any, content: str) -> SendResult:
+        """Create a Discord text-channel thread and send content inside it.
+
+        This is intentionally opt-in via ``metadata={"create_thread": True}``
+        from callers such as cron delivery. Generic sends to the same channel
+        must remain direct unless the caller explicitly requests a thread.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        thread_name = _derive_forum_thread_name(content)[:90] or "Hermes"
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        try:
+            thread = await parent_channel.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason="Hermes delivery requested a new thread",
+            )
+        except Exception as direct_error:
+            try:
+                seed_msg = await parent_channel.send(
+                    f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
+                )
+                thread = await seed_msg.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason="Hermes delivery requested a new thread",
+                )
+            except Exception as fallback_error:
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Discord rejected direct delivery-thread creation and fallback. "
+                        f"Direct error: {direct_error}. Fallback error: {fallback_error}"
+                    ),
+                )
+
+        thread_id = str(getattr(thread, "id", ""))
+        if thread_id:
+            self._threads.mark(thread_id)
+
+        message_ids = []
+        for chunk in chunks:
+            msg = await thread.send(content=chunk)
+            message_ids.append(str(msg.id))
+
+        if not chunks:
+            msg = await thread.send(content=thread_name)
+            message_ids.append(str(msg.id))
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[0] if message_ids else thread_id,
+            raw_response={"message_ids": message_ids, "thread_id": thread_id},
+        )
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -4730,6 +4798,8 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        channel_ids: set[str] = set()
+        is_free_channel = False
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4788,13 +4858,21 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            threaded_free_raw = os.getenv("DISCORD_THREADED_FREE_RESPONSE_CHANNELS", "")
+            threaded_free_channels = {ch.strip() for ch in threaded_free_raw.split(",") if ch.strip()}
+            should_thread_free_channel = (
+                is_free_channel
+                and ("*" in threaded_free_channels or bool(channel_ids & threaded_free_channels))
+            )
+            skip_thread = bool(channel_ids & no_thread_channels) or (
+                is_free_channel and not should_thread_free_channel
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if (
                 auto_thread
                 and not skip_thread
-                and not is_free_channel
+                and (not is_free_channel or should_thread_free_channel)
                 and not is_voice_linked_channel
                 and not is_reply_message
             ):

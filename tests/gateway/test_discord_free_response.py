@@ -109,6 +109,7 @@ def adapter(monkeypatch):
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_THREADED_FREE_RESPONSE_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
@@ -545,6 +546,56 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_threaded_free_response_channel_creates_thread(adapter, monkeypatch):
+    """Listed free-response channels should still create an auto-thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_THREADED_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    fake_thread = FakeThread(channel_id=990, name="threaded free response")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="stock research prompt",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "stock research prompt"
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "990"
+    assert "990" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_channels_override_threaded_free_response(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_THREADED_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="should stay inline",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "group"
 
 

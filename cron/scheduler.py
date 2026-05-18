@@ -587,6 +587,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None
+            if platform_name.lower() == "discord" and not thread_id:
+                delivery_thread_raw = os.getenv("DISCORD_DELIVERY_THREAD_CHANNELS", "")
+                delivery_thread_channels = {
+                    ch.strip() for ch in delivery_thread_raw.split(",") if ch.strip()
+                }
+                if "*" in delivery_thread_channels or str(chat_id) in delivery_thread_channels:
+                    send_metadata = {"create_thread": True}
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()

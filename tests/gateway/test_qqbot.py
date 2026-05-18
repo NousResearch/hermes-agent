@@ -1868,7 +1868,7 @@ class TestProcessAttachmentsPathExposure:
         adapter = self._make_adapter()
 
         # Mock _download_and_cache to return a known path
-        async def fake_download(url, ct):
+        async def fake_download(url, ct, original_name=""):
             return "/tmp/cache/video_abc123.mp4"
 
         adapter._download_and_cache = fake_download  # type: ignore[assignment]
@@ -1893,7 +1893,7 @@ class TestProcessAttachmentsPathExposure:
     async def test_file_attachment_includes_path(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct):
+        async def fake_download(url, ct, original_name=""):
             return "/tmp/cache/doc_abc123_report.pdf"
 
         adapter._download_and_cache = fake_download  # type: ignore[assignment]
@@ -1916,7 +1916,7 @@ class TestProcessAttachmentsPathExposure:
     async def test_video_without_filename_falls_back_to_content_type(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct):
+        async def fake_download(url, ct, original_name=""):
             return "/tmp/cache/video_xyz.mp4"
 
         adapter._download_and_cache = fake_download  # type: ignore[assignment]
@@ -1938,7 +1938,7 @@ class TestProcessAttachmentsPathExposure:
     async def test_download_failure_produces_no_attachment_info(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct):
+        async def fake_download(url, ct, original_name=""):
             return None
 
         adapter._download_and_cache = fake_download  # type: ignore[assignment]

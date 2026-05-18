@@ -125,6 +125,15 @@ TOOLSETS = {
         "tools": ["terminal", "process", "omx_ralph"],
         "includes": []
     },
+
+    "codex": {
+        "description": (
+            "Hermes-owned Codex executor sessions. Codex returns structured "
+            "evidence only; Hermes remains the user-facing agent and verifier."
+        ),
+        "tools": ["codex_session"],
+        "includes": []
+    },
     
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",

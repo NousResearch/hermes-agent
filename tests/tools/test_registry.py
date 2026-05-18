@@ -296,6 +296,7 @@ class TestBuiltinDiscovery:
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
+            "tools.codex_session_tool",
             "tools.computer_use_tool",
             "tools.cronjob_tools",
             "tools.delegate_tool",
@@ -320,6 +321,7 @@ class TestBuiltinDiscovery:
             "tools.tts_tool",
             "tools.vision_tools",
             "tools.web_tools",
+            "tools.youtube_music_digging_tool",
             "tools.yuanbao_tools",
         }
 

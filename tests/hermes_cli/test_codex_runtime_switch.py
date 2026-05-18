@@ -183,6 +183,8 @@ class TestApply:
         assert "Default sandbox: :workspace" in r.message
         # Hermes tool callback announcement
         assert "via MCP" in r.message
+        assert "turn-runtime replacement" in r.message
+        assert "codex_session" in r.message
 
     def test_disable_does_not_trigger_migration(self):
         """Switching back to auto must not write to ~/.codex/."""

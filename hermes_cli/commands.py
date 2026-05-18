@@ -125,7 +125,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
-    CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
+    CommandDef("codex-runtime", "Toggle experimental Codex turn-runtime replacement (not the codex_session executor tool)",
                "Configuration", args_hint="[auto|codex_app_server|on|off]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),

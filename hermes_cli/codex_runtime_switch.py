@@ -251,6 +251,11 @@ def apply(
             "Hermes tools available via MCP callback)."
         )
         msg_lines.append(
+            "Boundary: this is a turn-runtime replacement, not the Hermes-owned "
+            "`codex_session` executor tool. Use the `codex` toolset / "
+            "`codex_session` when Hermes must remain the user-facing agent."
+        )
+        msg_lines.append(
             "Effective on next session — current cached agent keeps "
             "the prior runtime to preserve prompt cache."
         )

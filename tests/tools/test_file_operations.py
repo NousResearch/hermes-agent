@@ -579,3 +579,59 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+class TestWriteFilePostWriteVerification:
+    """Tests for the post-write verification added in write_file."""
+
+    def test_write_file_fails_when_file_not_persisted(self, mock_env):
+        """Silent persistence failures must not report write success."""
+        file_contents = {"/tmp/test/a.py": "old content\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat "):
+                for path in file_contents:
+                    if path in command:
+                        return {"output": file_contents[path], "returncode": 0}
+                return {"output": "", "returncode": 1}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                for path in file_contents:
+                    if path in command:
+                        return {"output": str(len(file_contents[path].encode())), "returncode": 0}
+                return {"output": "0", "returncode": 0}
+            if command.startswith("cat >"):
+                return {"output": "", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/a.py", "new content\n")
+        assert result.error is not None
+        assert "verification failed" in result.error.lower()
+        assert "did not persist" in result.error.lower()
+
+    def test_write_file_succeeds_when_file_persisted(self, mock_env):
+        """Normal success path: persisted bytes should still report success."""
+        state = {"content": "old content\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/a.py", "new content\n")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert result.bytes_written == len("new content\n".encode())
+        assert state["content"] == "new content\n"

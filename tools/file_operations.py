@@ -962,6 +962,32 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
+        # Post-write verification - re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise report success while leaving the
+        # file unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return WriteResult(
+                error=f"Post-write verification failed: could not re-read {path}"
+            )
+        _verify_stdout_normalized = (
+            verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        )
+        _content_normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+        if _verify_stdout_normalized != _content_normalized:
+            return WriteResult(
+                error=(
+                    f"Post-write verification failed for {path}: on-disk content "
+                    f"differs from intended write "
+                    f"(wrote {len(_content_normalized)} chars, read back "
+                    f"{len(_verify_stdout_normalized)} chars after normalizing line endings). "
+                    "The write did not persist. Re-read the file and try again."
+                )
+            )
+
         # Get bytes written (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)

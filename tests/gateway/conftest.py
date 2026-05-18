@@ -274,7 +274,21 @@ def _ensure_natsagent_mock() -> None:
 
     mod.Attachment = _FakeAttachment
     mod.Envelope = MagicMock
-    mod.ResponseChunk = MagicMock
+    # ResponseChunk / StatusChunk are constructed via kwargs (text=..., status=...).
+    # Use simple stand-ins that accept kwargs and remember them — tests assert
+    # on ``.text`` / ``.status`` to verify the adapter wrapped outgoing content
+    # correctly.
+    class _FakeResponseChunk:
+        def __init__(self, *, text: str = "", attachments=None):
+            self.text = text
+            self.attachments = attachments
+
+    class _FakeStatusChunk:
+        def __init__(self, *, status: str):
+            self.status = status
+
+    mod.ResponseChunk = _FakeResponseChunk
+    mod.StatusChunk = _FakeStatusChunk
 
     sys.modules["natsagent"] = mod
 

@@ -347,6 +347,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-nats": {
+        "description": "NATS Agent Protocol — full agent tools routed over NATS request/reply (no interactive UI tools; streams chunk-by-chunk)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": [],
+    },
+
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [

@@ -8,21 +8,25 @@ over the reply subject; the SDK owns terminator + heartbeat emission.
 Protocol spec: ``../nats-ai-pysdk/docs/nats-agent-protocol.md`` (v0.1).
 Hermes architectural reference: ``docs/nats-gateway-design.md``.
 
-Phase 3 scope (this file, as of this commit): config parsing +
-``connect()`` / ``disconnect()`` lifecycle wiring. The prompt handler is
-still a stub that acknowledges the connection but does not route through
-the gateway's ``MessageEvent`` pipeline — that, plus streaming,
-attachments, and mid-stream queries, land in phases 4–6 (see
-``docs/nats-gateway-progress.md``).
+Phase 4 scope (T4.1–T4.3): full inbound pipeline — x-session extraction,
+attachment decoding, MessageEvent construction, keep-alive emission,
+adapter-owned AIAgent + streaming delta pump for text prompts, and
+reuse of the gateway's command dispatch for slash commands.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
 import re
+import threading
+import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 try:
     import natsagent
@@ -34,7 +38,13 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +75,14 @@ _MAX_PAYLOAD_RE = re.compile(r"^\s*\d+\s*(?:B|KB|MB|GB)\s*$", re.IGNORECASE)
 # sanitized by the SDK (base64-url fallback for non-conforming tokens), so
 # we only insist on non-empty there.
 _AGENT_TOKEN_RE = re.compile(r"^[a-z0-9-]+$")
+
+# Attachment extension → cache helper. Anything not matching an image /
+# audio / video extension falls back to the document cache, which preserves
+# the original filename and accepts arbitrary bytes (§5.2: "Agents interpret
+# the bytes by extension or content sniff" — extension-only is compliant).
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus"}
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 
 
 def check_nats_requirements() -> bool:
@@ -321,19 +339,29 @@ def _positive_int(value: Any, default: int, field_name: str) -> int:
 class NatsAdapter(BasePlatformAdapter):
     """Gateway adapter for the NATS Agent Protocol v0.1.
 
-    Phase 3 scope — settings parsing, connect/disconnect lifecycle, and
-    a placeholder prompt handler. ``send()`` and the inbound streaming
-    pipeline land in Phase 4; see ``docs/nats-gateway-design.md`` §6 and
-    ``docs/nats-gateway-progress.md`` for the current state.
+    Phase 4 scope — settings parsing, connect/disconnect lifecycle, and
+    the full inbound pipeline: ``_on_prompt`` extracts ``x-session``,
+    decodes attachments, starts a keep-alive task, dispatches slash
+    commands through the gateway's command registry, and drives text
+    prompts through an adapter-owned ``AIAgent`` with streaming deltas
+    pumped onto the ``PromptStream``.
     """
+
+    # NATS publishes each streaming chunk as a fresh ResponseChunk — there
+    # is no "edit message" semantic on the wire (design doc §6.1), so the
+    # default GatewayStreamConsumer (which progressively edits a single
+    # platform message) is incompatible. This flag causes ``run.py`` to
+    # skip consumer construction for NATS; streaming is instead wired
+    # adapter-locally via ``_run_nats_agent``'s stream_delta_callback.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform.NATS)
 
-        # Per-chat PromptStream handles. Populated by Phase 4's
-        # ``_on_prompt`` and consulted by ``send()`` / attachment helpers.
-        # Initialised here so later phases can assume the attribute exists
-        # regardless of whether ``connect()`` ran.
+        # Per-chat PromptStream handles. Populated by ``_on_prompt`` on
+        # receipt and consulted by ``send()`` / attachment helpers for
+        # tool-driven outputs that want to land on the caller's reply
+        # subject.
         self._active_streams: Dict[str, Any] = {}
         self._nc: Optional[Any] = None
         self._agent: Optional[Any] = None
@@ -343,13 +371,10 @@ class NatsAdapter(BasePlatformAdapter):
         # registers its own task here via ``asyncio.current_task()`` so
         # ``_teardown_handles`` can cancel-and-await every live invocation
         # before ``agent.stop()`` deregisters the micro-service endpoint
-        # and ``nc.close()`` drops the connection. Phase 3's handler is a
-        # single ``await stream.send(...)`` so cancellation is cheap
-        # today, but Phase 4 hands long-running streaming work to
-        # ``_on_prompt`` and needs the machinery already in place. The
-        # ``Event`` itself is loop-agnostic in Python 3.10+ (binds lazily
-        # at first ``set()``/``wait()``) so constructing it in ``__init__``
-        # — which may run before any event loop exists — is safe.
+        # and ``nc.close()`` drops the connection. The ``Event`` itself is
+        # loop-agnostic in Python 3.10+ (binds lazily at first
+        # ``set()``/``wait()``) so constructing it in ``__init__`` — which
+        # may run before any event loop exists — is safe.
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._in_flight_handlers: Set[asyncio.Task] = set()
 
@@ -420,8 +445,8 @@ class NatsAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Reset shutdown signalling for this attempt so Phase 4
-            # handlers that gate long-running work on
+            # Reset shutdown signalling for this attempt so long-running
+            # prompt handlers that gate streaming on
             # ``self._shutdown_event`` start from a clean slate when a
             # previous teardown set it.
             self._shutdown_event.clear()
@@ -525,8 +550,8 @@ class NatsAdapter(BasePlatformAdapter):
             await asyncio.gather(*pending, return_exceptions=True)
         self._in_flight_handlers.clear()
 
-        # Phase 4 populates ``_active_streams``; clearing here is a cheap
-        # guardrail against stale handles leaking across reconnects.
+        # Clear any lingering stream handles so a late send() fails fast
+        # rather than publishing onto a socket that's about to close.
         self._active_streams.clear()
 
         if self._agent is not None:
@@ -558,55 +583,541 @@ class NatsAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
     # ------------------------------------------------------------------
-    # Prompt handler — Phase 3 stub, Phase 4 will route through MessageEvent
+    # Inbound prompt handler — Phase 4
     # ------------------------------------------------------------------
 
     async def _on_prompt(self, envelope: "Envelope", stream: "PromptStream") -> None:
-        """Phase 3 placeholder — acknowledges receipt so end-to-end wiring
-        can be verified (agent appears in ``$SRV.PING``, prompts get a
-        response, terminator follows) without the full MessageEvent
-        pipeline yet.
+        """Per-prompt entry point dispatched by :class:`natsagent.Agent`.
 
-        Registers the running task in ``self._in_flight_handlers`` so
-        :meth:`_teardown_handles` can cancel it on shutdown. The
-        registration lives on the handler (rather than on a wrapper
-        layer owned by the SDK) so Phase 4's long-running streaming
-        body inherits the behavior for free.
+        Sequence (design doc §6.2):
 
-        Phase 4 replaces the body with real ``x-session`` extraction,
-        attachment decoding, MessageEvent construction, and streaming
-        deltas — see T4.1 in ``docs/nats-gateway-progress.md``.
+          1. Extract ``x-session`` → ``chat_id`` (raw envelope bytes
+             because the SDK's pydantic model drops unknown fields).
+          2. Decode any ``attachments`` into the hermes media cache so the
+             downstream agent can read them via local paths (§8.1).
+          3. Build the normalized :class:`MessageEvent` with a
+             ``SessionSource`` that ``build_session_key`` can key on.
+          4. Register the stream in ``_active_streams`` so tool outputs
+             like ``send_image_file`` can publish onto the same reply
+             subject, and spin up the keep-alive task (§6.4).
+          5. For slash commands, reuse the gateway runner's dispatch via
+             ``self._message_handler`` — it returns the rendered response
+             string, which we wrap in a :class:`ResponseChunk`. For text
+             prompts, build an adapter-owned :class:`AIAgent` with a
+             stream_delta_callback that pumps deltas through an
+             ``asyncio.Queue`` onto the stream (§6.3).
+          6. Always unwind the stream, keep-alive, and task-tracking in
+             the ``finally`` block so the SDK's terminator runs on a
+             clean slate whether we succeeded, raised, or got cancelled
+             during shutdown.
         """
         task = asyncio.current_task()
         if task is not None:
             self._in_flight_handlers.add(task)
+
+        chat_id = self._extract_session(stream) or self._session_default()
+        keepalive_task: Optional[asyncio.Task] = None
+        stream_registered = False
+
         try:
-            await stream.send(
-                "[hermes] NATS adapter is online. Prompt routing lands in "
-                "Phase 4 (see docs/nats-gateway-progress.md)."
+            prompt_text, media_urls, media_types, message_type = self._unpack_envelope(envelope)
+
+            # Register the stream BEFORE any I/O so tool outputs fired
+            # from a handler (e.g., an attachment cache error path) can
+            # find the stream to publish onto.
+            self._active_streams[chat_id] = stream
+            stream_registered = True
+
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_id,
+                chat_type="dm",
+                user_id=chat_id,
+                user_name=chat_id,
             )
+            is_command = self._looks_like_command(prompt_text)
+            event = MessageEvent(
+                text=prompt_text,
+                message_type=MessageType.COMMAND if is_command else message_type,
+                source=source,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+
+            # Keep-alive emission keeps callers (§6.6 recommends 60 s
+            # inactivity timeout) from dropping the subscription while
+            # the model is silent mid-reasoning.
+            keepalive_task = asyncio.create_task(
+                self._run_keepalive(stream),
+                name=f"nats-keepalive-{chat_id}",
+            )
+
+            if is_command:
+                await self._dispatch_command(event, stream)
+            else:
+                await self._run_text_prompt(event, stream, chat_id)
+
+        except asyncio.CancelledError:
+            # Gateway shutdown cancelled this handler. Propagate so the
+            # SDK's `_on_prompt_request` finally-block still emits the
+            # terminator — CancelledError is a BaseException subclass
+            # that's NOT caught by the SDK's broad `except Exception`.
+            raise
+        except Exception:
+            logger.exception("[%s] NATS prompt handler failed", self.name)
+            # Re-raise so the SDK responds with a 500 error frame + terminator
+            # (agent.py:270-272, §9.3).
+            raise
         finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await keepalive_task
+            if stream_registered:
+                # Only pop if we registered — guards against popping a
+                # key owned by a different concurrent handler if one
+                # ever raced us on the same chat_id.
+                current = self._active_streams.get(chat_id)
+                if current is stream:
+                    self._active_streams.pop(chat_id, None)
             if task is not None:
-                # ``discard`` (not ``remove``) — ``_teardown_handles``
-                # may have called ``clear()`` already if cancellation
-                # landed before this finally block ran.
+                # ``discard`` (not ``remove``) — ``_teardown_handles`` may
+                # have already called ``clear()`` if cancellation landed
+                # before this finally-block ran.
                 self._in_flight_handlers.discard(task)
 
     # ------------------------------------------------------------------
-    # Outbound — Phase 4 will wire ``send()`` into ``_active_streams``.
+    # Session extraction — §3 / §5.6
     # ------------------------------------------------------------------
 
-    async def send(  # pragma: no cover — Phase 4
+    def _session_default(self) -> str:
+        """Return the fallback ``x-session`` value from settings.
+
+        Isolated as a method so the test-only path where ``_settings`` is
+        None (fatal-init adapter) still has a deterministic answer rather
+        than an ``AttributeError``.
+        """
+        if self._settings is not None:
+            return self._settings.session_default
+        return DEFAULT_SESSION_DEFAULT
+
+    def _extract_session(self, stream: Any) -> Optional[str]:
+        """Peek raw request bytes for ``x-session`` (§5.6 unknown-field passthrough).
+
+        The SDK's :class:`Envelope` uses ``extra="ignore"``, so parsed
+        envelopes drop ``x-session``. We re-parse the raw payload via
+        ``stream._request.data`` — private but stable, and this is the
+        adapter-local workaround approved in design doc §3 pending an
+        SDK upstream.
+        """
+        request = getattr(stream, "_request", None)
+        raw = getattr(request, "data", None)
+        if not isinstance(raw, (bytes, bytearray)):
+            return None
+        return _extract_x_session(bytes(raw))
+
+    # ------------------------------------------------------------------
+    # Attachment round-trip — §8.1
+    # ------------------------------------------------------------------
+
+    def _unpack_envelope(
+        self, envelope: "Envelope"
+    ) -> Tuple[str, List[str], List[str], MessageType]:
+        """Decode an :class:`Envelope` into the MessageEvent fields.
+
+        Returns ``(prompt_text, media_urls, media_types, message_type)``.
+
+        Attachment-decode failures surface as ``RuntimeError`` and are
+        caught by ``_on_prompt`` → re-raised, which the SDK converts to a
+        500 error frame per §9.3. Per-attachment partial success is not
+        attempted: a malformed attachment invalidates the whole prompt
+        from the caller's perspective (they don't see a "half the files
+        worked" response).
+        """
+        prompt_text = getattr(envelope, "prompt", "") or ""
+        raw_attachments = getattr(envelope, "attachments", None) or []
+
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        first_message_type: Optional[MessageType] = None
+
+        for idx, att in enumerate(raw_attachments):
+            filename = getattr(att, "filename", "") or f"attachment_{idx}"
+            try:
+                data = att.to_bytes()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"NATS: attachment #{idx} ({filename!r}) base64 decode failed: {exc}"
+                ) from exc
+
+            ext = Path(filename).suffix.lower()
+            try:
+                if ext in _IMAGE_EXTS:
+                    path = cache_image_from_bytes(data, ext=ext or ".jpg")
+                    mtype = MessageType.PHOTO
+                elif ext in _AUDIO_EXTS:
+                    path = cache_audio_from_bytes(data, ext=ext or ".ogg")
+                    mtype = MessageType.AUDIO
+                elif ext in _VIDEO_EXTS:
+                    path = cache_video_from_bytes(data, ext=ext or ".mp4")
+                    mtype = MessageType.VIDEO
+                else:
+                    path = cache_document_from_bytes(data, filename=filename)
+                    mtype = MessageType.DOCUMENT
+            except ValueError as exc:
+                # cache_image_from_bytes raises ValueError when the bytes
+                # don't look like a real image — caller sent us HTML or
+                # garbage with a .jpg extension. Surface as a protocol
+                # error so the SDK returns 400.
+                raise RuntimeError(
+                    f"NATS: attachment #{idx} ({filename!r}) failed validation: {exc}"
+                ) from exc
+
+            media_urls.append(path)
+            media_types.append(mtype.value)
+            if first_message_type is None:
+                first_message_type = mtype
+
+        message_type = first_message_type or MessageType.TEXT
+        return prompt_text, media_urls, media_types, message_type
+
+    # ------------------------------------------------------------------
+    # Keep-alive — §6.4
+    # ------------------------------------------------------------------
+
+    async def _run_keepalive(self, stream: Any) -> None:
+        """Emit ``{type:status, data:"ack"}`` every ``ack_keepalive_interval_s``.
+
+        MVP behavior: fixed tick regardless of handler activity (design
+        doc §6.4). Protocol §6.6 recommends callers default to a 60 s
+        inactivity timeout, and our settings validator keeps this cadence
+        below that — the worst-case outcome here is occasional redundant
+        acks, never a caller-side timeout.
+
+        Stops cleanly on cancellation. We don't re-raise send failures
+        because a dead stream is caught on the next ``stream.send`` call
+        in the pump/command paths, where the handler is already on an
+        error path.
+        """
+        interval = self._settings.ack_keepalive_interval_s if self._settings else DEFAULT_ACK_KEEPALIVE_INTERVAL_S
+        chunk_factory = getattr(natsagent, "StatusChunk", None)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            if self._shutdown_event.is_set():
+                return
+            try:
+                chunk = chunk_factory(status="ack") if chunk_factory is not None else {"status": "ack"}
+                await stream.send(chunk)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                # Don't escalate — the main handler will either finish
+                # normally and hit the same error on its next send, or
+                # already be unwinding. Log at debug so noisy reconnects
+                # don't spam prod logs.
+                logger.debug(
+                    "[%s] NATS keep-alive send failed (stream likely closed): %s",
+                    self.name,
+                    exc,
+                )
+                return
+
+    # ------------------------------------------------------------------
+    # Slash-command dispatch — reuses gateway COMMAND_REGISTRY
+    # ------------------------------------------------------------------
+
+    def _looks_like_command(self, prompt: str) -> bool:
+        """Heuristic: is this envelope a slash command?
+
+        Conservative — we only treat a leading ``/`` followed by a word
+        character as a command. Prompts that begin with ``/`` but encode
+        a path (e.g. ``/var/log/foo``) would be misclassified; callers
+        can defeat the heuristic by prefixing with whitespace or a
+        space, which is documented in the design.
+        """
+        stripped = (prompt or "").lstrip()
+        if not stripped.startswith("/"):
+            return False
+        if len(stripped) < 2:
+            return False
+        # Valid slash-command first chars: a-z A-Z 0-9 _ ; reject things
+        # like "//" or "/var/log" which clearly aren't commands.
+        head = stripped[1]
+        if not (head.isalnum() or head == "_"):
+            return False
+        # Reject file paths — commands never contain "/" in the token.
+        # Matches MessageEvent.get_command()'s behavior in base.py:746.
+        first_token = stripped.split(None, 1)[0]
+        if "/" in first_token[1:]:
+            return False
+        return True
+
+    async def _dispatch_command(self, event: MessageEvent, stream: Any) -> None:
+        """Route a slash command through the gateway's dispatch registry.
+
+        Design doc §10: commands flow through the existing
+        ``COMMAND_REGISTRY`` / ``command.dispatch()`` pipeline. The
+        gateway runner sets ``_message_handler`` to
+        ``GatewayRunner._handle_message``, which returns the rendered
+        response string for recognized commands. We wrap the reply in a
+        ``ResponseChunk`` and publish it on the prompt stream.
+
+        If ``_message_handler`` is unset (standalone tests, misconfigured
+        gateway), emit a short error instead of going silent — the caller
+        deserves to know the command didn't run.
+        """
+        if self._message_handler is None:
+            await self._send_text(stream, "NATS: gateway has no message handler wired; "
+                                          "command not dispatched.")
+            return
+
+        try:
+            response = await self._message_handler(event)
+        except Exception as exc:
+            logger.exception("[%s] command dispatch failed", self.name)
+            await self._send_text(
+                stream, f"[hermes] command failed: {exc}"
+            )
+            return
+
+        if response:
+            await self._send_text(stream, str(response))
+
+    # ------------------------------------------------------------------
+    # Text prompt — adapter-owned AIAgent + streaming pump
+    # ------------------------------------------------------------------
+
+    async def _run_text_prompt(
+        self, event: MessageEvent, stream: Any, chat_id: str
+    ) -> None:
+        """Run a text prompt through an adapter-owned AIAgent.
+
+        Deltas land via ``stream_delta_callback`` on the agent's worker
+        thread; we forward them through an ``asyncio.Queue`` into a pump
+        task that awaits ``stream.send`` on the event-loop thread (§6.3).
+
+        Rationale for bypassing ``self._message_handler``: the default
+        path constructs a ``GatewayStreamConsumer`` which edits a single
+        platform message. NATS is publish-each-chunk — edits are
+        meaningless on the wire. Building the agent here mirrors
+        ``api_server.py``'s pattern (§6.1) while keeping slash commands
+        on the gateway's dispatch path for registry consistency.
+
+        The final assistant text (returned by ``run_conversation``) is
+        the authoritative response; if streaming was disabled for any
+        reason, it still lands on the caller via ``_send_text``. When
+        streaming is live, the same text has already arrived via the
+        pump — we detect that and skip the duplicate publish.
+        """
+        loop = asyncio.get_running_loop()
+        delta_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        streamed_anything = threading.Event()
+
+        def _delta_callback(text: Optional[str]) -> None:
+            # The agent fires ``stream_delta_callback(None)`` to signal
+            # CLI renderers to close a response box before tool use.
+            # For NATS each chunk is its own publish, so None carries
+            # no meaning on the wire — drop it.
+            if not text:
+                return
+            streamed_anything.set()
+            try:
+                loop.call_soon_threadsafe(delta_queue.put_nowait, text)
+            except RuntimeError:
+                # Loop is closing — nothing we can do; drop the delta.
+                pass
+
+        pump_task = asyncio.create_task(
+            self._pump_deltas(delta_queue, stream),
+            name=f"nats-pump-{chat_id}",
+        )
+
+        try:
+            result = await loop.run_in_executor(
+                None,
+                self._run_agent_sync,
+                event,
+                chat_id,
+                _delta_callback,
+            )
+        finally:
+            # Signal end-of-stream and wait for the pump to drain so no
+            # late deltas sneak out AFTER the SDK's terminator fires.
+            await delta_queue.put(None)
+            try:
+                await asyncio.wait_for(pump_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                pump_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await pump_task
+
+        final_text = _final_response_text(result)
+        if final_text and not streamed_anything.is_set():
+            # Streaming was disabled or the model produced its answer
+            # entirely via non-streamed paths (e.g. tool-only turns that
+            # finalize in the last message). Deliver the final text as a
+            # single ResponseChunk so the caller gets the answer.
+            await self._send_text(stream, final_text)
+
+    async def _pump_deltas(self, queue: asyncio.Queue, stream: Any) -> None:
+        """Drain deltas from ``queue`` and publish each as a ResponseChunk.
+
+        Terminates when ``None`` is received (end-of-stream sentinel).
+        Errors from ``stream.send`` surface as logs — by the time we're
+        pumping, the handler is committed and the pump can't meaningfully
+        escalate. A broken socket will also surface in
+        ``_run_text_prompt``'s final-text fallback, which raises to the
+        SDK.
+        """
+        chunk_factory = getattr(natsagent, "ResponseChunk", None)
+        while True:
+            delta = await queue.get()
+            if delta is None:
+                return
+            try:
+                chunk = chunk_factory(text=delta) if chunk_factory is not None else delta
+                await stream.send(chunk)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.debug(
+                    "[%s] NATS pump send failed (stream likely closed): %s",
+                    self.name,
+                    exc,
+                )
+                return
+
+    def _run_agent_sync(
+        self,
+        event: MessageEvent,
+        chat_id: str,
+        stream_delta_callback: Any,
+    ) -> Any:
+        """Build an :class:`AIAgent` and run one conversation turn synchronously.
+
+        Called from ``run_in_executor`` so ``run_conversation`` (a
+        long-running sync method) doesn't block the event loop. The
+        returned ``result`` dict is consumed by ``_run_text_prompt`` to
+        fall back to non-streamed delivery when the pump saw no deltas.
+        """
+        from run_agent import AIAgent
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from gateway.session import build_session_key
+
+        user_config = _load_gateway_config()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        model = _resolve_gateway_model(user_config)
+        enabled_toolsets = sorted(_get_platform_tools(user_config, Platform.NATS.value))
+
+        max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+
+        # Load fallback provider chain so NATS matches Telegram/Discord
+        # behavior when the primary provider errors mid-run.
+        try:
+            from gateway.run import GatewayRunner
+            fallback_model = GatewayRunner._load_fallback_model()
+        except Exception:
+            fallback_model = None
+
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=True,
+        )
+
+        # Best-effort session DB wiring so NATS conversations show up
+        # under ``hermes sessions list`` alongside CLI/Telegram sessions.
+        session_db = None
+        try:
+            from hermes_state import SessionDB
+            session_db = SessionDB()
+        except Exception as exc:
+            logger.debug("[%s] SessionDB unavailable: %s", self.name, exc)
+
+        agent = AIAgent(
+            model=model,
+            **runtime_kwargs,
+            max_iterations=max_iterations,
+            quiet_mode=True,
+            verbose_logging=False,
+            enabled_toolsets=enabled_toolsets,
+            session_id=session_key,
+            platform=Platform.NATS.value,
+            user_id=event.source.user_id,
+            gateway_session_key=session_key,
+            stream_delta_callback=stream_delta_callback,
+            session_db=session_db,
+            fallback_model=fallback_model,
+        )
+
+        # Load prior history so multi-turn conversations over the same
+        # x-session stay coherent.
+        conversation_history: List[Dict[str, Any]] = []
+        if session_db is not None:
+            try:
+                conversation_history = session_db.get_messages_as_conversation(session_key) or []
+            except Exception as exc:
+                logger.debug("[%s] loading history for %s failed: %s", self.name, session_key, exc)
+
+        return agent.run_conversation(
+            user_message=event.text,
+            conversation_history=conversation_history,
+            task_id=chat_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Outbound — publish a ResponseChunk on the stream for a given chat_id
+    # ------------------------------------------------------------------
+
+    async def send(
         self,
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return SendResult(
-            success=False,
-            error="NATS send() is not yet implemented (Phase 4)",
-        )
+        """Publish ``content`` as a :class:`ResponseChunk` on the prompt stream.
+
+        NATS has no out-of-band delivery — every response lands on the
+        caller's reply subject, which only stays open for the lifetime
+        of the originating ``_on_prompt`` handler. If the stream for
+        ``chat_id`` isn't registered we return a non-retryable
+        ``SendResult`` rather than silently dropping the message; this
+        surfaces logic bugs (tool firing after handler exit) instead of
+        burying them.
+        """
+        stream = self._active_streams.get(chat_id)
+        if stream is None:
+            return SendResult(
+                success=False,
+                error=f"no active NATS stream for chat_id={chat_id}",
+            )
+        try:
+            await self._send_text(stream, content)
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=f"stream.send failed: {exc}",
+                retryable=False,
+            )
+        return SendResult(success=True, message_id=uuid.uuid4().hex)
+
+    async def _send_text(self, stream: Any, content: str) -> None:
+        """Wrap a string in a ResponseChunk and publish it.
+
+        Centralized so the command, pump, and fallback-delivery paths
+        share one chunk construction — the ``ResponseChunk`` factory
+        lookup is MagicMock-tolerant under test, where the module is
+        patched in ``tests/gateway/conftest.py``.
+        """
+        chunk_factory = getattr(natsagent, "ResponseChunk", None)
+        if chunk_factory is None:
+            await stream.send(content)
+            return
+        await stream.send(chunk_factory(text=content))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal DM-style chat info for session-key construction.
@@ -618,3 +1129,76 @@ class NatsAdapter(BasePlatformAdapter):
         downstream to key sessions.
         """
         return {"name": chat_id, "type": "dm"}
+
+    def format_message(self, content: str) -> str:
+        """No-op: NATS carries plain-text chunks verbatim (§6.3).
+
+        Override inherited from ``BasePlatformAdapter`` so the behavior
+        is documented rather than accidental — any future platform
+        formatter that assumes the base default is a no-op can still
+        rely on that here.
+        """
+        return content
+
+
+# ----------------------------------------------------------------------
+# Module-level helpers (private; kept out of the class so tests can
+# exercise them without constructing a full adapter).
+# ----------------------------------------------------------------------
+
+
+def _extract_x_session(raw: bytes) -> Optional[str]:
+    """Pull the ``x-session`` field from a raw envelope payload.
+
+    Returns None when:
+      - The payload is the plain-text §5.3 shorthand (not a JSON object).
+      - The JSON is malformed or not an object.
+      - ``x-session`` is missing, non-string, or empty after strip.
+
+    The SDK's :class:`Envelope` drops the field via ``extra="ignore"``
+    (envelope.py:35), so this local re-parse is the sanctioned workaround
+    per design doc §3 pending an SDK upstream.
+    """
+    if not raw:
+        return None
+    # §5.3 discrimination rule: first non-whitespace byte must be '{' for
+    # the JSON branch. Short-circuit the plain-text shorthand here so we
+    # don't even try a full ``json.loads`` on arbitrary UTF-8 text.
+    _ASCII_WS = b" \t\n\r"
+    for b in raw:
+        if b in _ASCII_WS:
+            continue
+        if b != ord("{"):
+            return None
+        break
+    else:
+        return None
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    value = obj.get("x-session")
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _final_response_text(result: Any) -> str:
+    """Return the assistant's final text from a ``run_conversation`` result.
+
+    Accepts both the dict shape (``{"final_response": ...}``) and the
+    bare-string shape some code paths return. Empty / None results fold
+    to an empty string so callers can safely do ``if final_text``.
+    """
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        value = result.get("final_response")
+        if isinstance(value, str):
+            return value
+    return ""

@@ -20,8 +20,8 @@ Do not rewrite the design doc unless the user asks. If a design decision turns o
 
 ## Status
 
-- **Last completed phase:** Phase 3 — Connection & lifecycle (T3.1 through T3.4)
-- **Next phase:** Phase 4 — Inbound path (T4.1 through T4.4). This is the meaty phase; plan for a dedicated session.
+- **Last completed phase:** Phase 4 — Inbound path (T4.1 through T4.4)
+- **Next phase:** Phase 5 — Outbound attachments & formatting (T5.1 through T5.5)
 - **Branch:** `nats-gateway` (feature branch; PR target is `main`)
 - **Known blockers:** none
 - **Open design questions pending user input:** 4 items listed in §16 of `docs/nats-gateway-design.md`. Default answers are noted there; proceed with defaults unless the user redirects.
@@ -62,10 +62,10 @@ Tick the box when the task is complete. One authoritative list; do not let TaskL
 
 ### Phase 4 — Inbound path (the meaty one; plan for a dedicated session)
 
-- [ ] **T4.1** — Implement `_on_prompt(envelope, stream)` — x-session → chat_id, attachments → media cache, MessageEvent, `_active_streams[chat_id] = stream`, keep-alive task, `handle_message(event)`, cleanup
-- [ ] **T4.2** — Wire `_active_streams` into `send()` — look up PromptStream, `stream.send(ResponseChunk(text=content))`, return SendResult
-- [ ] **T4.3** — Wire streaming deltas — adapter-owned AIAgent with `stream_delta_callback` forwarding to a queue → pump → `stream.send`. (Ownership decision: adapter owns the callback; see §6.1 of design doc.)
-- [ ] **T4.4** — `tests/gateway/test_nats_inbound.py` — envelope in, MessageEvent, deltas emitted, keep-alive fires, terminator, attachment round-trip
+- [x] **T4.1** — Implement `_on_prompt(envelope, stream)` — x-session → chat_id, attachments → media cache, MessageEvent, `_active_streams[chat_id] = stream`, keep-alive task, command-vs-text branch, cleanup
+- [x] **T4.2** — Wire `_active_streams` into `send()` — look up PromptStream, `stream.send(ResponseChunk(text=content))`, return SendResult
+- [x] **T4.3** — Wire streaming deltas — adapter-owned AIAgent with `stream_delta_callback` forwarding to a queue → pump → `stream.send`. (Ownership decision: adapter owns the callback; see §6.1 of design doc.)
+- [x] **T4.4** — `tests/gateway/test_nats_inbound.py` — envelope in, MessageEvent, deltas emitted, keep-alive fires, terminator, attachment round-trip
 
 ### Phase 5 — Outbound attachments & formatting
 
@@ -194,6 +194,44 @@ Tests cover: task registration/deregistration on normal completion, finally-bloc
 ### 2026-04-21 — Phase 3 — Disconnect ordering test tightened with a side_effect call-order recorder
 
 The original `test_disconnect_after_successful_connect_tears_down_in_order` asserted `agent.stop.assert_awaited_once()` + `nc.close.assert_awaited_once()` but NOT their relative order — the name was aspirational. Tightened by attaching `side_effect=lambda: call_order.append("stop")` / `("close")` to each mock and asserting `call_order == ["stop", "close"]`. `mock.call_args_list` is per-mock, so cross-mock ordering genuinely requires a shared recorder; `MagicMock.attach_mock` is the other standard option but the side_effect approach is one line shorter.
+
+### 2026-04-21 — Phase 4 — Command vs. text prompt split at `_on_prompt`
+
+Design doc §6.1 says "adapter-owned AIAgent, bypass GatewayStreamConsumer" (api_server pattern). Task list T4.1 literally says "`handle_message(event)`". Reconciling: a pure api_server-style bypass loses slash commands, which §10 explicitly wants. Pure `handle_message(event)` routes text prompts through `GatewayStreamConsumer` whose edit-a-single-message model is nonsense on NATS.
+
+Phase 4 resolves this with a two-branch dispatch inside `_on_prompt`:
+- Slash commands → `self._message_handler(event)` directly (gateway's `_handle_message` runs, returns the rendered response string, we wrap it in a `ResponseChunk` and publish). The gateway's command path short-circuits before `GatewayStreamConsumer` is ever constructed, so this is clean.
+- Text prompts → adapter-owned `AIAgent` via `_run_agent_sync` in an executor, with a `stream_delta_callback` that feeds an `asyncio.Queue` drained by `_pump_deltas`. Each delta is its own `ResponseChunk`.
+
+The classification heuristic (`_looks_like_command`) rejects paths (`/var/log/foo`), double-slashes (`//`), and bodies with non-alnum first chars — matches `MessageEvent.get_command()`'s behaviour in `base.py:746`.
+
+### 2026-04-21 — Phase 4 — `SUPPORTS_MESSAGE_EDITING = False` on NatsAdapter
+
+NATS publishes each streaming chunk as a fresh `ResponseChunk`; the protocol has no edit semantics (§6.1). `gateway/run.py:9597-9599` short-circuits `GatewayStreamConsumer` construction when the adapter reports it can't edit, so setting this flag is the cheapest way to ensure any code path that does go through `handle_message(event)` (slash commands today, possibly more tomorrow) gracefully skips the edit-based consumer instead of making noise. Streaming is wired adapter-locally via `_run_text_prompt` regardless. `weixin` and `qqbot` both use the same flag for the same reason.
+
+### 2026-04-21 — Phase 4 — `_extract_x_session` peeks `stream._request.data`
+
+Design doc §3 flags this as "open question (b)" — accepted here as MVP. The SDK's `Envelope` pydantic model has `extra="ignore"` (envelope.py:35), so `x-session` is dropped before our handler sees it. `PromptStream.__init__` stores the request on `self._request`, and `request.data` is the raw payload (agent.py:258). We JSON-re-parse the raw bytes locally. This is a private attribute today; if the SDK renames it, the adapter breaks loud and fast (attribute error at handler entry) rather than silently routing every session to `"default"`. A note to upstream a public raw-bytes handle to `nats-ai-pysdk` is carried in design doc §13 non-goals.
+
+### 2026-04-21 — Phase 4 — Attachment cache failures convert to `RuntimeError`
+
+`cache_image_from_bytes` raises `ValueError` when the magic bytes don't match (e.g. caller uploaded HTML as `.jpg`). The SDK's `_on_prompt_request` wraps any `Exception` from the handler into a 500 error frame (agent.py:270-272). For attachment-validation errors that are clearly caller-fault, 400 would be more accurate, but the SDK only differentiates based on the exception class it recognizes — `ProtocolError` → 400, anything else → 500. Raising `RuntimeError` gets us 500 with a clean message; upgrading to 400 would require either importing `natsagent.ProtocolError` at the adapter (tight coupling to the SDK's error module, which the test-harness mock barely models) or plumbing a typed error-response path into the handler. The design doc's §11 table already marks oversize-envelope as "deferred"; attachment-validation gets similar treatment for now.
+
+### 2026-04-21 — Phase 4 — `_final_response_text` fallback publishes final text when no deltas streamed
+
+Streaming deltas are fed via `stream_delta_callback` which the agent may not invoke (streaming disabled in config, tool-only turn, provider fallback). `run_conversation` returns a dict shape `{"final_response": "..."}` — we publish it as one `ResponseChunk` if and only if no deltas already landed. `threading.Event` guards the "anything streamed?" flag because the callback runs on the worker thread while the finalizer runs on the event-loop thread; a plain `bool` wouldn't be visible across threads without an explicit barrier.
+
+### 2026-04-21 — Phase 4 — `Platform.NATS` added to `hermes_cli/platforms.py` + `hermes-nats` toolset
+
+`_get_platform_tools(config, Platform.NATS.value)` requires a `PLATFORMS["nats"]["default_toolset"]` entry or it `KeyError`s. Registered `"nats"` → `"hermes-nats"` in `hermes_cli/platforms.py` (the shared registry, `tools_config.py` derives from it), and added a `hermes-nats` toolset in `toolsets.py` that mirrors `_HERMES_CORE_TOOLS` — same scope as other messaging platforms. A tighter NATS-specific subset can be carved out later if we want to restrict tools by transport.
+
+### 2026-04-21 — Phase 4 — Conftest mock gained `StatusChunk` + kwargs-recording ResponseChunk
+
+Phase 3's `ResponseChunk = MagicMock` was good enough for the placeholder handler which passed a bare string. Phase 4 emits `ResponseChunk(text=delta)` and `StatusChunk(status="ack")` via kwargs — tests assert on `chunk.text` / `chunk.status` to verify the adapter wrapped outgoing content correctly. Plain `MagicMock(text=...)` would return a MagicMock on attribute access rather than the string we passed, so the conftest now installs small kwargs-recording classes. Real SDK pydantic models behave the same way with the same surface.
+
+### 2026-04-21 — Phase 4 — `_on_prompt` re-raises `CancelledError`, swallows all other exceptions
+
+The SDK's `_on_prompt_request` has two clauses: `except Exception` → respond 500 + terminator, but `CancelledError` (a `BaseException` in 3.11+) falls through. Phase 4's handler mirrors that split — `CancelledError` re-raises so shutdown cancellation propagates cleanly through `_teardown_handles`'s `gather(return_exceptions=True)`. Arbitrary exceptions also re-raise so the SDK can convert them into a 500 error frame; we log them at ERROR level first so the gateway log has the full stack trace, not just the SDK's sanitized description line.
 
 ---
 

@@ -528,6 +528,18 @@ def run_conversation(
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+    if agent.api_mode == "claude_cli":
+        return agent._run_claude_cli_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            current_turn_user_idx=current_turn_user_idx,
+            active_system_prompt=active_system_prompt,
+            ext_prefetch_cache=_ext_prefetch_cache,
+            plugin_user_context=_plugin_user_context,
+            should_review_memory=_should_review_memory,
+        )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot

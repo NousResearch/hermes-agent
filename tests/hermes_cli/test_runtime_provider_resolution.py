@@ -150,6 +150,30 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_claude_cli_skips_anthropic_oauth(monkeypatch):
+    def _unexpected_provider_resolution(*args, **kwargs):
+        raise AssertionError("claude-cli should not resolve through provider auth")
+
+    monkeypatch.setattr(rp, "resolve_provider", _unexpected_provider_resolution)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "claude-cli",
+            "default": "claude-sonnet-4-6",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="claude-cli")
+
+    assert resolved["provider"] == "claude-cli"
+    assert resolved["api_mode"] == "claude_cli"
+    assert resolved["base_url"] == "claude-cli://local"
+    assert resolved["api_key"] == ""
+    assert resolved["source"] == "claude-cli"
+    assert resolved["requested_provider"] == "claude-cli"
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

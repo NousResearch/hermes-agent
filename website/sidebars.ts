@@ -69,6 +69,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/delegation',
             'user-guide/features/kanban',
             'user-guide/features/codex-app-server-runtime',
+            'user-guide/features/claude-cli-runtime',
             'user-guide/features/kanban-tutorial',
             'user-guide/features/kanban-worker-lanes',
             'user-guide/features/goals',

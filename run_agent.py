@@ -3872,6 +3872,255 @@ class AIAgent:
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
 
+    def _kanban_task_needs_terminal_transition(self, task_id: str) -> bool:
+        """Return True when this worker's Kanban task is still in-flight.
+
+        External runtimes such as Claude CLI own their own tool loop. If they
+        return final text without calling Hermes' kanban_complete /
+        kanban_block MCP tools, the dispatcher later sees a clean process exit
+        and records a protocol violation. This helper lets Hermes check
+        whether a terminal transition is still missing before it performs a
+        final safety block.
+        """
+        try:
+            from hermes_cli import kanban_db as kb
+
+            conn = kb.connect()
+            try:
+                task = kb.get_task(conn, task_id)
+            finally:
+                conn.close()
+            return bool(task and task.status == "running")
+        except Exception:
+            logger.debug(
+                "could not inspect kanban task %s before external-runtime "
+                "fallback",
+                task_id,
+                exc_info=True,
+            )
+            return False
+
+    def _maybe_block_kanban_external_runtime_prose(
+        self,
+        *,
+        final_text: str,
+        effective_task_id: str,
+        runtime_name: str,
+    ) -> bool:
+        """Last-resort safety net for external runtimes in Kanban workers.
+
+        The preferred path is always a real kanban_complete / kanban_block tool
+        call from the model. This only fires when an external runtime returned
+        prose and the task is still running, which would otherwise become a
+        clean-exit protocol violation in the dispatcher.
+        """
+        task_id = os.environ.get("HERMES_KANBAN_TASK")
+        if not task_id or not (final_text or "").strip():
+            return False
+        if not self._kanban_task_needs_terminal_transition(task_id):
+            return False
+
+        excerpt = re.sub(r"\s+", " ", (final_text or "").strip())
+        if len(excerpt) > 900:
+            excerpt = excerpt[:897].rstrip() + "..."
+        reason = (
+            f"external-runtime-prose: {runtime_name} returned final text "
+            "without calling kanban_complete or kanban_block. Hermes blocked "
+            f"the task to avoid a dispatcher protocol violation. Last response: "
+            f"{excerpt}"
+        )
+        try:
+            tool_result = handle_function_call(
+                "kanban_block",
+                {"task_id": task_id, "reason": reason},
+                task_id=effective_task_id,
+            )
+            try:
+                parsed = json.loads(tool_result) if isinstance(tool_result, str) else {}
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict) and parsed.get("error"):
+                logger.warning(
+                    "external-runtime fallback kanban_block failed for %s: %s",
+                    task_id,
+                    parsed.get("error"),
+                )
+                return False
+            logger.info(
+                "external-runtime fallback called kanban_block for %s via %s",
+                task_id,
+                runtime_name,
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "external-runtime fallback failed to call kanban_block for %s",
+                task_id,
+                exc_info=True,
+            )
+            return False
+
+    def _build_claude_cli_messages(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        current_turn_user_idx: int,
+        active_system_prompt: str,
+        ext_prefetch_cache: str = "",
+        plugin_user_context: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Build a transcript for Claude CLI with the same one-turn context
+        injections the API transports receive."""
+        api_messages: List[Dict[str, Any]] = []
+        for idx, msg in enumerate(messages):
+            api_msg = msg.copy()
+            if idx == current_turn_user_idx and msg.get("role") == "user":
+                injections = []
+                if ext_prefetch_cache:
+                    fenced = build_memory_context_block(ext_prefetch_cache)
+                    if fenced:
+                        injections.append(fenced)
+                if plugin_user_context:
+                    injections.append(plugin_user_context)
+                if injections:
+                    base = api_msg.get("content", "")
+                    if isinstance(base, str):
+                        api_msg["content"] = base + "\n\n" + "\n\n".join(injections)
+
+            self._copy_reasoning_content_for_api(msg, api_msg)
+            api_msg.pop("reasoning", None)
+            api_msg.pop("finish_reason", None)
+            api_msg.pop("_thinking_prefill", None)
+            if self._should_sanitize_tool_calls():
+                self._sanitize_tool_calls_for_strict_api(api_msg)
+            api_messages.append(api_msg)
+
+        effective_system = active_system_prompt or ""
+        if self.ephemeral_system_prompt:
+            effective_system = (
+                effective_system + "\n\n" + self.ephemeral_system_prompt
+            ).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        if self.prefill_messages:
+            sys_offset = 1 if (
+                api_messages and api_messages[0].get("role") == "system"
+            ) else 0
+            for idx, pfm in enumerate(self.prefill_messages):
+                api_messages.insert(sys_offset + idx, pfm.copy())
+
+        api_messages = self._sanitize_api_messages(api_messages)
+        api_messages = self._drop_thinking_only_and_merge_users(api_messages)
+        for am in api_messages:
+            if isinstance(am.get("content"), str):
+                am["content"] = am["content"].strip()
+        return api_messages
+
+    def _run_claude_cli_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        current_turn_user_idx: int,
+        active_system_prompt: str,
+        ext_prefetch_cache: str = "",
+        plugin_user_context: str = "",
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Claude CLI runtime path. Hands a rendered transcript to
+        ``claude -p`` and stores the final text as a normal assistant turn."""
+        from agent.transports.claude_cli_session import ClaudeCliSession
+
+        if not hasattr(self, "_claude_cli_session") or self._claude_cli_session is None:
+            cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            self._claude_cli_session = ClaudeCliSession(
+                cwd=cwd,
+                claude_bin=self.acp_command or None,
+                model=self.model,
+            )
+
+        api_messages = self._build_claude_cli_messages(
+            messages=messages,
+            current_turn_user_idx=current_turn_user_idx,
+            active_system_prompt=active_system_prompt,
+            ext_prefetch_cache=ext_prefetch_cache,
+            plugin_user_context=plugin_user_context,
+        )
+
+        try:
+            turn = self._claude_cli_session.run_turn(
+                messages=api_messages,
+                user_input=user_message,
+            )
+        except Exception as exc:
+            logger.exception("claude cli turn failed")
+            return {
+                "final_response": f"Claude CLI turn failed: {exc}",
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "error": str(exc),
+            }
+
+        blocked_by_fallback = self._maybe_block_kanban_external_runtime_prose(
+            final_text=turn.final_text,
+            effective_task_id=effective_task_id,
+            runtime_name="claude_cli",
+        )
+
+        if turn.final_text and not turn.error:
+            messages.append({"role": "assistant", "content": turn.final_text})
+
+        if (
+            turn.final_text
+            and not turn.interrupted
+            and turn.error is None
+            and not blocked_by_fallback
+        ):
+            try:
+                self._sync_external_memory_for_turn(
+                    original_user_message=original_user_message,
+                    final_response=turn.final_text,
+                    interrupted=False,
+                )
+            except Exception:
+                logger.debug("external memory sync raised", exc_info=True)
+
+        if (
+            turn.final_text
+            and not turn.interrupted
+            and turn.error is None
+            and not blocked_by_fallback
+            and should_review_memory
+        ):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=should_review_memory,
+                    review_skills=False,
+                )
+            except Exception:
+                logger.debug("background review spawn raised", exc_info=True)
+
+        return {
+            "final_response": turn.final_text
+            or (f"Claude CLI turn failed: {turn.error}" if turn.error else ""),
+            "messages": messages,
+            "api_calls": 1,
+            "completed": (
+                not turn.interrupted and turn.error is None and not blocked_by_fallback
+            ),
+            "partial": turn.interrupted or turn.error is not None or blocked_by_fallback,
+            "error": turn.error or (
+                "external-runtime-prose fallback blocked Kanban task"
+                if blocked_by_fallback else None
+            ),
+        }
+
     def _run_codex_app_server_turn(
         self,
         *,

@@ -519,6 +519,10 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_HUMAN_DELAY_MAX_MS` | Custom delay range maximum (ms) |
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `CODEX_HOME` | When [Codex app-server runtime](../user-guide/features/codex-app-server-runtime) is enabled, override the directory Codex CLI reads its config + auth from (default: `~/.codex`). Hermes' migration writes the managed block to `<CODEX_HOME>/config.toml`. |
+| `HERMES_CLAUDE_CLI_BIN` | Override the Claude Code CLI executable used by the optional [Claude CLI runtime](../user-guide/features/claude-cli-runtime) (default: `claude`). |
+| `HERMES_CLAUDE_CLI_MODEL` | Fallback Claude CLI model when Hermes did not pass a model name. Prefer `model.default` in `config.yaml` for normal use. |
+| `HERMES_CLAUDE_CLI_TIMEOUT_SECONDS` | Timeout for one Claude CLI turn in seconds (default: `900`). |
+| `HERMES_CLAUDE_CLI_EXTRA_ARGS` | Extra shell-style arguments appended to the `claude -p` invocation used by the Claude CLI runtime. |
 | `HERMES_KANBAN_TASK` | Set by the kanban dispatcher when spawning a worker (task UUID). Workers and the spawned `hermes-tools` MCP subprocess inherit it so kanban tools gate correctly. Don't set manually. |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `1800`) |
 | `HERMES_API_CALL_STALE_TIMEOUT` | Non-streaming stale-call timeout in seconds (default: `300`). Auto-disabled for local providers when left unset. Also configurable via `providers.<id>.stale_timeout_seconds` or `providers.<id>.models.<model>.stale_timeout_seconds` in `config.yaml`. |

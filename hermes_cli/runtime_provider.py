@@ -179,6 +179,10 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Optional opt-in: hand the entire turn to the local Claude Code CLI.
+    # This uses the user's Claude CLI login/subscription instead of Hermes'
+    # Anthropic API/OAuth credential path.
+    "claude_cli",
 }
 
 
@@ -215,6 +219,48 @@ def _maybe_apply_codex_app_server_runtime(
     if runtime == "codex_app_server":
         return "codex_app_server"
     return api_mode
+
+
+_CLAUDE_CLI_PROVIDER_ALIASES = {
+    "claude-cli",
+    "claude_cli",
+    "claude-code",
+    "claude-code-cli",
+    "anthropic-cli",
+}
+
+
+def _claude_cli_runtime_requested(
+    requested_provider: str,
+    model_cfg: Optional[Dict[str, Any]],
+) -> bool:
+    requested_norm = (requested_provider or "").strip().lower()
+    if requested_norm in _CLAUDE_CLI_PROVIDER_ALIASES:
+        return True
+    runtime = str((model_cfg or {}).get("claude_runtime") or "").strip().lower()
+    return requested_norm == "anthropic" and runtime in {"cli", "claude_cli", "claude-cli"}
+
+
+def _resolve_claude_cli_runtime(
+    *,
+    requested_provider: str,
+    model_cfg: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    model_cfg = model_cfg or {}
+    command = (
+        str(model_cfg.get("claude_cli_bin") or "").strip()
+        or os.getenv("HERMES_CLAUDE_CLI_BIN", "").strip()
+        or "claude"
+    )
+    return {
+        "provider": "claude-cli",
+        "api_mode": "claude_cli",
+        "base_url": "claude-cli://local",
+        "api_key": "",
+        "command": command,
+        "source": "claude-cli",
+        "requested_provider": requested_provider,
+    }
 
 
 def _resolve_runtime_from_pool_entry(
@@ -975,6 +1021,13 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
+
+    if _claude_cli_runtime_requested(requested_provider, model_cfg):
+        return _resolve_claude_cli_runtime(
+            requested_provider=requested_provider,
+            model_cfg=model_cfg,
+        )
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
@@ -1004,7 +1057,7 @@ def resolve_runtime_provider(
     if requested_provider == "azure-foundry":
         azure_runtime = _resolve_azure_foundry_runtime(
             requested_provider=requested_provider,
-            model_cfg=_get_model_config(),
+            model_cfg=model_cfg,
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
             target_model=target_model,
@@ -1025,7 +1078,6 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

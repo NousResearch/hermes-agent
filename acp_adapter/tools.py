@@ -209,6 +209,15 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
     "error" because tests failed or a command printed diagnostics; Zed should
     only receive ACP failed status for structured tool-level failures.
     """
+    # Raised exceptions from the agent's tool executor get wrapped in a
+    # canonical "Error executing tool '<name>': ..." prefix (see
+    # agent/tool_executor.py around the try/except). That prefix is uniquely
+    # produced by the wrapper itself — it cannot legitimately appear in
+    # well-behaved tool output. Catch it so a tool that blew up shows as
+    # failed in Zed instead of misleadingly green.
+    if isinstance(result, str) and result.startswith("Error executing tool '"):
+        return True
+
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return False

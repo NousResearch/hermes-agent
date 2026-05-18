@@ -1017,7 +1017,6 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
@@ -2342,11 +2341,36 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+def _parent_uses_codex_chatgpt_surface(parent_agent) -> bool:
+    if not parent_agent:
+        return False
+    if getattr(parent_agent, "provider", None) == "openai-codex":
+        return True
+    pu = str(getattr(parent_agent, "base_url", "") or "").lower()
+    if not pu:
+        return False
+    return (
+        base_url_hostname(pu) == "chatgpt.com"
+        and "/backend-api/codex" in pu
+    )
+
+
+def _delegation_base_url_targets_codex(configured_base_url: str) -> bool:
+    b = configured_base_url.lower()
+    return (
+        base_url_hostname(configured_base_url) == "chatgpt.com"
+        and "/backend-api/codex" in b
+    )
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
+    OpenAI-compatible endpoint, unless the parent runs on the ChatGPT Codex
+    surface and ``delegation.base_url`` points elsewhere (stale local proxy
+    config). Then the child inherits the parent's credentials.
+    ``delegation.api_key`` overrides the key; when
     omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
     inherits the parent agent's key (``effective_api_key = override_api_key or
     parent_api_key``). This lets providers that store their key outside
@@ -2370,6 +2394,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:
+        if _parent_uses_codex_chatgpt_surface(
+            parent_agent
+        ) and not _delegation_base_url_targets_codex(configured_base_url):
+            return {
+                "model": configured_model,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This

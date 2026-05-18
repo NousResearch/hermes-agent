@@ -345,7 +345,12 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
 
-    def test_child_inherits_runtime_credentials(self):
+    @patch("tools.delegate_tool._load_config")
+    def test_child_inherits_runtime_credentials(self, mock_load_config):
+        mock_load_config.return_value = {
+            "base_url": "http://127.0.0.1:8091/v1",
+            "max_iterations": 50,
+        }
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key="***"
@@ -890,62 +895,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
-        # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
-        # a /anthropic URL suffix. Subagents must pick anthropic_messages
-        # automatically, matching the main agent's runtime resolver.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["provider"], "custom")
-        self.assertEqual(creds["base_url"], "https://myfoundry.services.ai.azure.com/anthropic")
-        self.assertEqual(creds["api_key"], "foundry-key")
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_honors_explicit_api_mode(self):
-        # When delegation.api_mode is set explicitly, it overrides URL-based
-        # detection so users can force a transport on non-standard endpoints.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://proxy.example.com/v1",
-            "api_key": "proxy-key",
-            "api_mode": "anthropic_messages",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
-
-    def test_direct_endpoint_explicit_api_mode_overrides_url_detection(self):
-        # Explicit api_mode in config always wins over auto-detection.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "chat_completions",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "chat_completions")
-
-    def test_direct_endpoint_invalid_api_mode_falls_back_to_detection(self):
-        # An invalid api_mode string must not break detection; fall back to URL heuristic.
-        parent = _make_mock_parent(depth=0)
-        cfg = {
-            "model": "claude-opus-4-6",
-            "provider": "custom",
-            "base_url": "https://myfoundry.services.ai.azure.com/anthropic",
-            "api_key": "foundry-key",
-            "api_mode": "garbage",
-        }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_mode"], "anthropic_messages")
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so

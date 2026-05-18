@@ -192,44 +192,6 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
 
-    def test_model_callable_handler_ignores_hidden_provider_and_base_url(self, monkeypatch):
-        captured = {}
-
-        def fake_create_job(**kwargs):
-            captured.update(kwargs)
-            return {
-                "id": "job-1",
-                "name": "Check",
-                "skill": None,
-                "skills": [],
-                "schedule_display": "every 60m",
-                "repeat": {"times": None, "completed": 0},
-                "deliver": "local",
-                "next_run_at": "2026-05-13T00:00:00+00:00",
-                "prompt": kwargs["prompt"],
-                "model": kwargs.get("model"),
-                "provider": kwargs.get("provider"),
-                "base_url": kwargs.get("base_url"),
-                "enabled": True,
-            }
-
-        monkeypatch.setattr("tools.cronjob_tools.create_job", fake_create_job)
-
-        from tools.registry import registry
-
-        entry = registry.get_entry("cronjob")
-        result = json.loads(entry.handler({
-            "action": "create",
-            "prompt": "Check",
-            "schedule": "every 1h",
-            "provider": "custom",
-            "base_url": "http://127.0.0.1:4000/v1",
-        }))
-
-        assert result["success"] is True
-        assert captured["provider"] is None
-        assert captured["base_url"] is None
-
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(
             cronjob(

@@ -52,6 +52,28 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _slack_ssrf_redirect_guard(is_safe_url):
+    """Build an httpx response hook that blocks unsafe redirect targets."""
+
+    async def _guard(response):
+        if not response.is_redirect:
+            return
+
+        if response.next_request:
+            redirect_url = str(response.next_request.url)
+        else:
+            location = response.headers.get("location")
+            if not location:
+                return
+            redirect_url = str(response.request.url.join(location))
+
+        if not is_safe_url(redirect_url):
+            raise ValueError("Blocked redirect to private/internal address")
+
+    return _guard
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -1084,7 +1106,11 @@ class SlackAdapter(BasePlatformAdapter):
             file_uploads: List[Dict[str, Any]] = []
             initial_comment_parts: List[str] = []
             try:
-                async with _httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
+                async with _httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True,
+                    event_hooks={"response": [_slack_ssrf_redirect_guard(_is_safe_url)]},
+                ) as http_client:
                     for image_url, alt_text in chunk:
                         if alt_text:
                             initial_comment_parts.append(alt_text)
@@ -1434,18 +1460,11 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             import httpx
 
-            async def _ssrf_redirect_guard(response):
-                """Re-check redirect targets so public URLs cannot bounce into private IPs."""
-                if response.is_redirect and response.next_request:
-                    redirect_url = str(response.next_request.url)
-                    if not is_safe_url(redirect_url):
-                        raise ValueError("Blocked redirect to private/internal address")
-
             # Download the image first
             async with httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]},
+                event_hooks={"response": [_slack_ssrf_redirect_guard(is_safe_url)]},
             ) as client:
                 response = await client.get(image_url)
                 response.raise_for_status()

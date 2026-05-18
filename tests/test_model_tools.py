@@ -40,6 +40,13 @@ class TestHandleFunctionCall:
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
+    def test_dispatch_receives_session_id(self):
+        with patch("model_tools.registry.dispatch") as mock_dispatch:
+            mock_dispatch.return_value = json.dumps({"ok": True})
+            handle_function_call("web_search", {"q": "test"}, session_id="session-a")
+
+        assert mock_dispatch.call_args.kwargs["session_id"] == "session-a"
+
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),

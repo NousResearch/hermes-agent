@@ -1,18 +1,10 @@
 """
-Regression tests for the shared-container task_id mapping.
+Regression tests for container task_id mapping.
 
-The top-level agent and all delegate_task subagents share a single
-terminal sandbox keyed by ``"default"``.  ``_resolve_container_task_id``
-is the sole gatekeeper for which tool-call task_ids go to the shared
-container vs. get their own isolated sandbox.  RL / benchmark
-environments opt in to isolation by calling
-``register_task_env_overrides(task_id, {...})`` before the agent loop;
-every other task_id collapses back to ``"default"``.
-
-If you change the collapse logic, update both the helper and these
-tests -- see `hermes-agent-dev` skill, "Why do subagents get their own
-containers?" section, and the Container lifecycle paragraph under
-Docker Backend in ``website/docs/user-guide/configuration.md``.
+Top-level CLI calls use ``None`` and share ``"default"``. Gateway/ACP calls
+use per-session task IDs and must keep isolated sandboxes. ``delegate_task``
+children use separate child IDs for file-state/UI bookkeeping, then explicitly
+alias those IDs to the parent's sandbox key while the child is running.
 """
 
 import pytest
@@ -21,13 +13,17 @@ from tools import terminal_tool
 
 
 @pytest.fixture(autouse=True)
-def _clean_overrides():
-    """Ensure no stray overrides from other tests leak in."""
-    before = dict(terminal_tool._task_env_overrides)
+def _clean_task_routing_state():
+    """Ensure no stray overrides or aliases from other tests leak in."""
+    before_overrides = dict(terminal_tool._task_env_overrides)
+    before_aliases = dict(terminal_tool._task_container_aliases)
     terminal_tool._task_env_overrides.clear()
+    terminal_tool._task_container_aliases.clear()
     yield
     terminal_tool._task_env_overrides.clear()
-    terminal_tool._task_env_overrides.update(before)
+    terminal_tool._task_env_overrides.update(before_overrides)
+    terminal_tool._task_container_aliases.clear()
+    terminal_tool._task_container_aliases.update(before_aliases)
 
 
 def test_none_task_id_maps_to_default():
@@ -42,22 +38,44 @@ def test_literal_default_stays_default():
     assert terminal_tool._resolve_container_task_id("default") == "default"
 
 
-def test_subagent_task_id_collapses_to_default():
-    # delegate_task constructs IDs like "subagent-<N>-<uuid_hex>"; these
-    # should share the parent's container, not spin up their own.
-    assert terminal_tool._resolve_container_task_id("subagent-0-deadbeef") == "default"
+def test_unaliased_subagent_task_id_collapses_to_default_for_cli_compatibility():
+    assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "default"
     assert terminal_tool._resolve_container_task_id("subagent-42-cafef00d") == "default"
 
 
-def test_arbitrary_session_id_collapses_to_default():
-    # Session UUIDs or anything else without an override still collapse.
-    assert terminal_tool._resolve_container_task_id("sess-123e4567-e89b-12d3") == "default"
+def test_gateway_session_id_keeps_its_own_container_key():
+    assert (
+        terminal_tool._resolve_container_task_id("sess-123e4567-e89b-12d3")
+        == "sess-123e4567-e89b-12d3"
+    )
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["api-session-A", "api-session-", "api-session-123", "api-session-long-uuid-string"],
+)
+def test_api_session_id_collapses_to_default_container_key(task_id):
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
+
+
+def test_subagent_alias_maps_child_to_parent_session_container():
+    terminal_tool.register_task_container_alias("sa-0-deadbeef", "gateway-session-1")
+    assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "gateway-session-1"
+
+
+def test_subagent_alias_maps_child_to_default_for_cli_parent():
+    terminal_tool.register_task_container_alias("sa-0-deadbeef", None)
+    assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "default"
+
+
+def test_cleared_subagent_alias_collapses_to_default_again():
+    terminal_tool.register_task_container_alias("sa-0-deadbeef", "gateway-session-1")
+    assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "gateway-session-1"
+    terminal_tool.clear_task_container_alias("sa-0-deadbeef")
+    assert terminal_tool._resolve_container_task_id("sa-0-deadbeef") == "default"
 
 
 def test_rl_task_with_override_keeps_its_own_id():
-    # RL / benchmark pattern: register a per-task image, then the task_id
-    # must survive ``_resolve_container_task_id`` so the rollout lands in
-    # its own sandbox.
     terminal_tool.register_task_env_overrides(
         "tb2-task-fix-git", {"docker_image": "tb2:fix-git", "cwd": "/app"}
     )
@@ -70,25 +88,34 @@ def test_rl_task_with_override_keeps_its_own_id():
         terminal_tool.clear_task_env_overrides("tb2-task-fix-git")
 
 
-def test_cleared_override_collapses_again():
+def test_cleared_override_preserves_non_subagent_task_id():
     terminal_tool.register_task_env_overrides("tb2-x", {"docker_image": "x:y"})
     assert terminal_tool._resolve_container_task_id("tb2-x") == "tb2-x"
     terminal_tool.clear_task_env_overrides("tb2-x")
-    assert terminal_tool._resolve_container_task_id("tb2-x") == "default"
+    assert terminal_tool._resolve_container_task_id("tb2-x") == "tb2-x"
 
 
-def test_get_active_env_reads_shared_container_from_subagent_id():
-    """``get_active_env`` must see the shared ``"default"`` sandbox when
-    called with a subagent's task_id, so the agent loop's turn-budget
-    enforcement reads the real env (not None) during delegation."""
+def test_get_active_env_reads_aliased_parent_container_from_subagent_id():
     sentinel = object()
-    terminal_tool._active_environments["default"] = sentinel
+    terminal_tool._active_environments["gateway-session-1"] = sentinel
+    terminal_tool.register_task_container_alias("sa-7-cafe", "gateway-session-1")
     try:
-        assert terminal_tool.get_active_env("subagent-7-cafe") is sentinel
-        assert terminal_tool.get_active_env(None) is sentinel
-        assert terminal_tool.get_active_env("default") is sentinel
+        assert terminal_tool.get_active_env("sa-7-cafe") is sentinel
     finally:
-        terminal_tool._active_environments.pop("default", None)
+        terminal_tool._active_environments.pop("gateway-session-1", None)
+
+
+def test_get_active_env_keeps_distinct_gateway_sessions():
+    session_a = object()
+    session_b = object()
+    terminal_tool._active_environments["gateway-session-a"] = session_a
+    terminal_tool._active_environments["gateway-session-b"] = session_b
+    try:
+        assert terminal_tool.get_active_env("gateway-session-a") is session_a
+        assert terminal_tool.get_active_env("gateway-session-b") is session_b
+    finally:
+        terminal_tool._active_environments.pop("gateway-session-a", None)
+        terminal_tool._active_environments.pop("gateway-session-b", None)
 
 
 def test_get_active_env_honours_rl_override():
@@ -98,8 +125,6 @@ def test_get_active_env_honours_rl_override():
     terminal_tool._active_environments["rl-42"] = rl_env
     terminal_tool.register_task_env_overrides("rl-42", {"docker_image": "x"})
     try:
-        # With an override registered, lookup returns the task's own env,
-        # not the shared "default" one.
         assert terminal_tool.get_active_env("rl-42") is rl_env
     finally:
         terminal_tool.clear_task_env_overrides("rl-42")

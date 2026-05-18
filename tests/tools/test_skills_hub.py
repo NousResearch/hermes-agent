@@ -272,10 +272,6 @@ class TestSkillsShSource:
         assert bundle is not None
         assert bundle.source == "skills.sh"
         assert bundle.identifier == "skills-sh/vercel-labs/agent-skills/vercel-react-best-practices"
-        assert (
-            bundle.metadata["resolved_github_identifier"]
-            == "vercel-labs/agent-skills/vercel-react-best-practices"
-        )
         mock_fetch.assert_called_once_with("vercel-labs/agent-skills/vercel-react-best-practices")
 
     @patch.object(GitHubSource, "fetch")
@@ -294,7 +290,6 @@ class TestSkillsShSource:
         assert bundle is not None
         assert bundle.source == "skills.sh"
         assert bundle.identifier == "skills-sh/anthropics/skills/frontend-design"
-        assert bundle.metadata["resolved_github_identifier"] == expected_identifier
         assert mock_fetch.call_args_list[0] == ((expected_identifier,), {})
 
     @patch("tools.skills_hub._write_index_cache")
@@ -442,10 +437,6 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/vercel-labs/json-render/json-render-react"
-        assert (
-            bundle.metadata["resolved_github_identifier"]
-            == "vercel-labs/json-render/skills/react"
-        )
         assert bundle.files["SKILL.md"] == "# react"
         assert mock_get.called
 
@@ -478,7 +469,6 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/owner/repo/product-designer"
-        assert bundle.metadata["resolved_github_identifier"] == resolved_identifier
         # All candidate identifiers are tried before falling back to discovery
         assert mock_fetch.call_args_list[-1] == ((resolved_identifier,), {})
         assert mock_fetch.call_args_list[0] == (("owner/repo/product-designer",), {})

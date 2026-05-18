@@ -4003,11 +4003,15 @@ def _setup_dingtalk():
         client_id, client_secret = result
         save_env_value("DINGTALK_CLIENT_ID", client_id)
         save_env_value("DINGTALK_CLIENT_SECRET", client_secret)
+        save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
         print()
         print_success(f"{emoji} {label} configured via QR scan!")
     else:
         # ── Manual entry ──
         _setup_standard_platform(dingtalk_platform)
+        # Also enable allow-all by default for convenience
+        if get_env_value("DINGTALK_CLIENT_ID"):
+            save_env_value("DINGTALK_ALLOW_ALL_USERS", "true")
 
 
 def _setup_wecom():

@@ -367,7 +367,8 @@ class TestSkillView:
         assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
         assert "${HERMES_SKILL_DIR}" not in result["content"]
 
-    def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
+    def test_skill_view_does_not_apply_inline_shell_when_enabled(self, tmp_path):
+        marker = tmp_path / "skill-view-inline-shell-ran"
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
@@ -382,14 +383,18 @@ class TestSkillView:
             _make_skill(
                 tmp_path,
                 "dynamic",
-                body="Current date: !`printf 2026-04-24`",
+                body=f"Current date: !`printf RAN > {marker}; printf 2026-04-24`",
             )
             raw = skill_view("dynamic")
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert "Current date: 2026-04-24" in result["content"]
-        assert "!`printf 2026-04-24`" not in result["content"]
+        assert (
+            f"Current date: !`printf RAN > {marker}; printf 2026-04-24`"
+            in result["content"]
+        )
+        assert "Current date: 2026-04-24" not in result["content"]
+        assert not marker.exists()
 
     def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
         with (

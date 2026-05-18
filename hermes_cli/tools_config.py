@@ -82,7 +82,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin", "video", "computer_use"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -975,25 +975,6 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
-_LEGACY_PLATFORM_TOOLSET_ALIASES = {
-    "qqbot": ("qq",),
-}
-
-
-def _implicit_default_off_toolsets(platform: str) -> Set[str]:
-    """Return default-off toolsets to suppress for implicit platform config.
-
-    A platform's own unrestricted toolset remains available for backwards
-    compatibility (for example the ``homeassistant`` platform keeps the
-    ``homeassistant`` toolset). Credentials such as ``HASS_TOKEN`` are not an
-    authorization grant for other platforms; they must opt in explicitly.
-    """
-    default_off = set(_DEFAULT_OFF_TOOLSETS)
-    if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
-        default_off.remove(platform)
-    return default_off
-
-
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1005,13 +986,6 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
-    if toolset_names is None:
-        legacy_platforms = _LEGACY_PLATFORM_TOOLSET_ALIASES.get(platform, ())
-        for legacy_platform in legacy_platforms:
-            legacy_toolset_names = platform_toolsets.get(legacy_platform)
-            if isinstance(legacy_toolset_names, list):
-                toolset_names = legacy_toolset_names
-                break
 
     has_explicit_platform_toolsets = isinstance(toolset_names, list)
     if not has_explicit_platform_toolsets:

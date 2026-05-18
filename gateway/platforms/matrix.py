@@ -131,6 +131,49 @@ from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
+_RECOVERY_KEY_PATH = _STORE_DIR / "recovery_key.txt"
+
+
+def _save_generated_recovery_key(recovery_key: str, path: Path = _RECOVERY_KEY_PATH) -> Path:
+    """Persist a generated Matrix recovery key without sending it to logs."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(recovery_key)
+            handle.write("\n")
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Some filesystems (notably mounted or non-POSIX test volumes) do not
+        # support chmod. The os.open mode above is still the best effort.
+        pass
+    return path
+
+
+def _record_generated_recovery_key(mxid: str, recovery_key: str) -> Path:
+    """Save a generated Matrix recovery key and log only its storage location."""
+
+    recovery_key_path = _save_generated_recovery_key(recovery_key)
+    logger.warning(
+        "Matrix: bootstrapped cross-signing for %s. "
+        "Generated recovery key was written to %s with owner-only "
+        "permissions. Move it into MATRIX_RECOVERY_KEY in your secret "
+        "store for future restarts, then delete the file.",
+        mxid,
+        recovery_key_path,
+    )
+    return recovery_key_path
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -420,49 +463,6 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
-
-    async def _is_approval_reaction_user_authorized(self, sender: str, room_id: str) -> bool:
-        """Return whether a Matrix reaction sender may resolve an approval prompt."""
-        sender = str(sender or "").strip()
-        room_id = str(room_id or "").strip()
-        if not sender or not room_id:
-            return False
-
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn):
-            try:
-                chat_type = "dm" if await self._is_dm_room(room_id) else "group"
-                source = self.build_source(
-                    chat_id=room_id,
-                    chat_type=chat_type,
-                    user_id=sender,
-                )
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug(
-                    "Matrix: falling back to env-only approval reaction auth for %s",
-                    sender,
-                    exc_info=True,
-                )
-
-        if os.getenv("MATRIX_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
-            return True
-
-        allowed_ids = set(self._allowed_user_ids)
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-        if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
-
-        if not allowed_ids:
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
-        if "*" in allowed_ids:
-            return True
-
-        check_ids = {sender}
-        if "@" in sender:
-            check_ids.add(sender.split("@")[0])
-        return bool(check_ids & allowed_ids)
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -817,14 +817,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     if own_xsign is None:
                         try:
                             new_recovery_key = await olm.generate_recovery_key()
-                            logger.warning(
-                                "Matrix: bootstrapped cross-signing for %s. "
-                                "SAVE THIS RECOVERY KEY — set "
-                                "MATRIX_RECOVERY_KEY for future restarts so "
-                                "the bot can re-sign its device after key "
-                                "rotation: %s",
-                                client.mxid,
-                                new_recovery_key,
+                            _record_generated_recovery_key(
+                                client.mxid, new_recovery_key
                             )
                         except Exception as exc:
                             logger.warning(
@@ -2134,7 +2128,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
                     return
-                if not await self._is_approval_reaction_user_authorized(sender, room_id):
+                if self._allowed_user_ids and sender not in self._allowed_user_ids:
                     logger.info(
                         "Matrix: ignoring approval reaction from unauthorized user %s on %s",
                         sender, reacts_to,

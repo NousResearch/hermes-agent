@@ -1428,6 +1428,7 @@ def _run_single_child(
     # hand us a MagicMock don't carry stable ids; skip registration then.
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+    child_task_id = None
     if _subagent_id:
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
@@ -1465,6 +1466,12 @@ def _run_single_child(
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
+        from tools.terminal_tool import (
+            clear_task_container_alias,
+            register_task_container_alias,
+        )
+
+        register_task_container_alias(child_task_id, parent_task_id)
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -1829,6 +1836,12 @@ def _run_single_child(
         _heartbeat_stop.set()
         _heartbeat_thread.join(timeout=5)
 
+        if child_task_id:
+            try:
+                clear_task_container_alias(child_task_id)
+            except Exception:
+                pass
+
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
@@ -1920,12 +1933,6 @@ def delegate_task(
 
     Returns JSON with results array, one entry per task.
     """
-    if acp_command is not None or acp_args is not None:
-        logger.debug(
-            "delegate_task: ignoring caller-supplied ACP transport override; "
-            "ACP child transports must come from trusted configuration"
-        )
-
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -1982,6 +1989,12 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    if acp_command or acp_args:
+        logger.warning(
+            "Ignoring caller-supplied ACP command/args for delegate_task; "
+            "ACP delegation transport is controlled by trusted configuration only."
+        )
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2040,6 +2053,7 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2056,10 +2070,14 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                # ACP subprocess transports execute local commands, so only
-                # operator-configured provider credentials may select them.
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_acp_command=t.get("acp_command")
+                or acp_command
+                or creds.get("command"),
+                override_acp_args=(
+                    task_acp_args
+                    if task_acp_args is not None
+                    else (acp_args if acp_args is not None else creds.get("args"))
+                ),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2685,6 +2703,19 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "acp_command": {
+                            "type": "string",
+                            "description": (
+                                "Per-task ACP command override (e.g. 'copilot'). "
+                                "Overrides the top-level acp_command for this task only. "
+                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                            ),
+                        },
+                        "acp_args": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
+                        },
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
@@ -2702,6 +2733,28 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "acp_command": {
+                "type": "string",
+                "description": (
+                    "Override ACP command for child agents (e.g. 'copilot'). "
+                    "When set, children use ACP subprocess transport instead of inheriting "
+                    "the parent's transport. Requires an ACP-compatible CLI "
+                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "See agent/copilot_acp_client.py for the implementation. "
+                    "IMPORTANT: Do NOT set this unless the user has explicitly told you "
+                    "a specific ACP-compatible CLI is installed and configured. "
+                    "Leave empty to use the parent's default transport (Hermes subagents)."
+                ),
+            },
+            "acp_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
+                    "Only used when acp_command is set. "
+                    "Leave empty unless acp_command is explicitly provided."
+                ),
             },
         },
         "required": [],
@@ -2722,6 +2775,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        acp_command=args.get("acp_command"),
+        acp_args=args.get("acp_args"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
     ),

@@ -7425,17 +7425,20 @@ class GatewayRunner:
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
-        # If the previous session expired and was auto-reset, prepend a notice
-        # so the agent knows this is a fresh conversation (not an intentional /reset).
+        # If the previous session expired and was auto-reset, capture a notice
+        # for the agent BUT do NOT modify context_prompt — one-time transient
+        # notices must not contaminate the agent cache signature (which is
+        # computed from combined_ephemeral = context_prompt + ...).
+        # The notice is injected into combined_ephemeral AFTER _sig is computed.
+        _reset_context_note = None
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                _reset_context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+                _reset_context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -7935,6 +7938,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                reset_context_note=_reset_context_note,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -14311,6 +14315,7 @@ class GatewayRunner:
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
+        logger.debug("Evicting cached agent for session %s", session_key)
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
@@ -14799,6 +14804,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        reset_context_note: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15530,10 +15536,23 @@ class GatewayRunner:
                             except KeyError:
                                 pass
                         self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        logger.info("CACHE HIT: reusing agent for session %s (sig=%s)", session_key, _sig[:8])
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                _cached_for_log = cached
+                if _cached_for_log:
+                    logger.info("CACHE MISS: sig changed (old=%s new=%s)", 
+                               _cached_for_log[1][:8], _sig[:8])
+                else:
+                    logger.info("CACHE MISS: no cached agent for session %s (sig=%s)", session_key, _sig[:8])
+                # Inject auto-reset notice into ephemeral system prompt AFTER
+                # _sig computation so one-time transient notices don't contaminate
+                # the agent cache signature and cause per-turn evictions.
+                # Only needed for fresh agents (cache MISS); cached agents
+                # already have their frozen system prompt.
+                if reset_context_note:
+                    combined_ephemeral = (reset_context_note + "\n\n" + (combined_ephemeral or "")).strip()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -16494,6 +16513,21 @@ class GatewayRunner:
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
+                # Normalize _cfg_model the same way AIAgent.__init__ does
+                # (run_agent.py:1089-1090), so vendor-prefixed config values
+                # (e.g. "deepseek/deepseek-v4-pro") match the stripped agent
+                # model ("deepseek-v4-pro").  Without this, every turn evicts
+                # the cached agent unconditionally.
+                try:
+                    from hermes_cli.model_normalize import (
+                        _AGGREGATOR_PROVIDERS,
+                        normalize_model_for_provider,
+                    )
+                    _agent_provider = getattr(_agent, 'provider', '') or ''
+                    if _agent_provider not in _AGGREGATOR_PROVIDERS:
+                        _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+                except Exception:
+                    pass
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.

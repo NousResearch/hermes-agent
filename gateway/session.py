@@ -341,8 +341,6 @@ def build_session_context_prompt(
                 id_lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
             else:
                 id_lines.append(f"  - Channel: `{src.chat_id}`")
-            if src.message_id:
-                id_lines.append(f"  - Triggering message: `{src.message_id}`")
             lines.extend(id_lines)
         else:
             lines.append("")

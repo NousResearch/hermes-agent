@@ -145,7 +145,7 @@ class CodexAppServerClient:
         client_title: str = "Hermes Agent",
         client_version: str = "0.1",
         capabilities: Optional[dict] = None,
-        timeout: float = 10.0,
+        timeout: float = 30.0,
     ) -> dict:
         """Send `initialize` + `initialized` handshake. Returns the server's
         InitializeResponse (userAgent, codexHome, platformFamily, platformOs)."""

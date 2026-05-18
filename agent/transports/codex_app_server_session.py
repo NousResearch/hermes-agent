@@ -213,6 +213,7 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            timeout=30.0,
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):

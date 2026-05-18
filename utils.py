@@ -188,6 +188,31 @@ def atomic_yaml_write(
         raise
 
 
+class MissingYamlRoundtripDependency(ImportError):
+    """Raised when ``ruamel.yaml`` is not importable.
+
+    Wraps the bare :class:`ImportError` so callers (e.g. the gateway's
+    destructive-slash confirmation flow, see issue #27660) can detect the
+    specific dependency-missing case and surface a user-actionable
+    message instead of a generic "save failed" string.
+
+    The message includes the pip-install hint so users hit by a broken
+    or partial venv can self-heal without having to grep the source.
+    """
+
+    INSTALL_HINT = "Re-install with: pip install ruamel.yaml==0.18.17"
+
+    def __init__(self, original: ImportError) -> None:
+        message = (
+            "ruamel.yaml is required to update user config files atomically "
+            "(this is a declared core dependency in pyproject.toml). "
+            f"{self.INSTALL_HINT}. "
+            f"Underlying ImportError: {original!s}"
+        )
+        super().__init__(message)
+        self.original = original
+
+
 def atomic_roundtrip_yaml_update(
     path: Union[str, Path],
     key_path: str,
@@ -199,9 +224,18 @@ def atomic_roundtrip_yaml_update(
     user-edited config files where comments, ordering, quoting, and Unicode
     should survive a single setting mutation.  Writes still use the same temp
     file + fsync + atomic replace pattern.
+
+    Raises:
+        MissingYamlRoundtripDependency: when ``ruamel.yaml`` is not
+            importable from the current venv (issue #27660).  Bubbles up as
+            a clear, actionable error rather than a generic
+            ``ModuleNotFoundError: No module named 'ruamel'``.
     """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
+    try:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.comments import CommentedMap
+    except ImportError as exc:
+        raise MissingYamlRoundtripDependency(exc) from exc
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

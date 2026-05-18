@@ -2453,45 +2453,71 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
-def save_config_value(key_path: str, value: any) -> bool:
-    """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
-    
-    Args:
-        key_path: Dot-separated path like "agent.system_prompt"
-        value: Value to save
-    
+def save_config_value_detailed(key_path: str, value: any) -> tuple[bool, str | None]:
+    """Like :func:`save_config_value`, but also return a user-friendly error.
+
+    Callers that need to surface persistence failures to the user
+    (e.g. the gateway's destructive-slash "Always Approve" handler --
+    see issue #27660) should prefer this variant so they don't have to
+    grep the logs after a silent ``False`` return.
+
     Returns:
-        True if successful, False otherwise
+        ``(True, None)`` on success.
+        ``(False, "<human readable error>")`` on any failure.  The error
+        string is safe to embed in a chat reply -- it does NOT include a
+        full traceback, just the underlying cause plus an actionable hint
+        when the failure is a missing dependency.
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
-    
+
     try:
-        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
+
+        from utils import atomic_roundtrip_yaml_update, MissingYamlRoundtripDependency
+        try:
+            atomic_roundtrip_yaml_update(config_path, key_path, value)
+        except MissingYamlRoundtripDependency as exc:
+            # Surface the dependency hint instead of the generic
+            # "No module named 'ruamel'" -- see #27660.
+            logger.error("Failed to save config (missing dep): %s", exc)
+            return False, str(exc)
+
         try:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        
-        return True
+
+        return True, None
     except Exception as e:
         logger.error("Failed to save config: %s", e)
-        return False
+        return False, f"{type(e).__name__}: {e}"
+
+
+def save_config_value(key_path: str, value: any) -> bool:
+    """
+    Save a value to the active config file at the specified key path.
+
+    Respects the same lookup order as load_cli_config():
+    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
+    2. ./cli-config.yaml (project config - fallback)
+
+    Args:
+        key_path: Dot-separated path like "agent.system_prompt"
+        value: Value to save
+
+    Returns:
+        True if successful, False otherwise
+
+    Note:
+        For callers that need to surface the failure reason to the user,
+        prefer :func:`save_config_value_detailed` -- it returns the same
+        boolean plus a user-actionable error string.  Existing call sites
+        that only check ``bool`` are unaffected.
+    """
+    ok, _err = save_config_value_detailed(key_path, value)
+    return ok
 
 
 

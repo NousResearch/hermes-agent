@@ -113,7 +113,15 @@ check_prerequisites() {
     echo -e "${CYAN}→${NC} Checking prerequisites..."
 
     # Check for cargo/rust
-    if ! command -v cargo &> /dev/null; then
+    # On FreeBSD, cargo may be at /usr/local/bin even if not in PATH (e.g. under sudo)
+    CARGO_CMD=""
+    if command -v cargo &> /dev/null; then
+        CARGO_CMD="cargo"
+    elif [ -x "/usr/local/bin/cargo" ]; then
+        CARGO_CMD="/usr/local/bin/cargo"
+    fi
+
+    if [ -z "$CARGO_CMD" ]; then
         echo -e "${RED}✗${NC} Rust/Cargo not found."
         echo ""
         echo "Install Rust:"
@@ -125,23 +133,35 @@ check_prerequisites() {
         exit 1
     fi
 
-    CARGO_VERSION=$(cargo --version | awk '{print $2}')
+    CARGO_VERSION=$($CARGO_CMD --version | awk '{print $2}')
     echo -e "${GREEN}✓${NC} Cargo $CARGO_VERSION found"
 
-    # Check for make (required for cargo install uv on FreeBSD)
-    if ! command -v make &> /dev/null; then
-        echo -e "${RED}✗${NC} make not found (required for building uv from source)."
-        echo ""
-        echo "Install make:"
-        echo "  FreeBSD:  pkg install make"
-        echo "  Arch:     sudo pacman -S make"
-        echo "  Ubuntu:   sudo apt install make"
-        echo "  macOS:    xcode-select --install"
-        echo ""
-        exit 1
+    # Check for make
+    # On FreeBSD, Rust builds (jemalloc) need GNU make (gmake), not BSD make
+    if [ "$OS" = "freebsd" ]; then
+        if ! command -v gmake &> /dev/null; then
+            echo -e "${RED}✗${NC} GNU make (gmake) not found (required for building Rust crates on FreeBSD)."
+            echo ""
+            echo "Install GNU make:"
+            echo "  FreeBSD:  pkg install gmake"
+            echo ""
+            exit 1
+        fi
+        echo -e "${GREEN}✓${NC} gmake found"
+    else
+        if ! command -v make &> /dev/null; then
+            echo -e "${RED}✗${NC} make not found (required for building uv from source)."
+            echo ""
+            echo "Install make:"
+            echo "  FreeBSD:  pkg install make"
+            echo "  Arch:     sudo pacman -S make"
+            echo "  Ubuntu:   sudo apt install make"
+            echo "  macOS:    xcode-select --install"
+            echo ""
+            exit 1
+        fi
+        echo -e "${GREEN}✓${NC} make found"
     fi
-
-    echo -e "${GREEN}✓${NC} make found"
 }
 
 check_prerequisites

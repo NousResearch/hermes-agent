@@ -260,7 +260,7 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
-_MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
+_DEFAULT_INITIAL_CONNECT_RETRIES = 3  # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
 # Environment variables that are safe to pass to stdio subprocesses
@@ -1542,6 +1542,12 @@ class MCPServerTask:
 
         retries = 0
         initial_retries = 0
+        max_initial_connect_retries = _safe_numeric(
+            config.get("initial_connect_retries", _DEFAULT_INITIAL_CONNECT_RETRIES),
+            _DEFAULT_INITIAL_CONNECT_RETRIES,
+            int,
+            minimum=0,
+        )
         backoff = 1.0
 
         while True:
@@ -1600,11 +1606,11 @@ class MCPServerTask:
                         return
 
                     initial_retries += 1
-                    if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
+                    if initial_retries > max_initial_connect_retries:
                         logger.warning(
                             "MCP server '%s' failed initial connection after "
                             "%d attempts, giving up: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
+                            self.name, initial_retries, exc,
                         )
                         self._error = exc
                         self._ready.set()
@@ -1614,7 +1620,7 @@ class MCPServerTask:
                         "MCP server '%s' initial connection failed "
                         "(attempt %d/%d), retrying in %.0fs: %s",
                         self.name, initial_retries,
-                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                        max_initial_connect_retries, backoff, exc,
                     )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)

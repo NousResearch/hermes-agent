@@ -3858,6 +3858,10 @@ def _pid_alive(pid: Optional[int]) -> bool:
     """
     if not pid or pid <= 0:
         return False
+    if sys.platform == "linux":
+        proc_status = f"/proc/{int(pid)}/status"
+        if not os.path.exists(proc_status):
+            return False
     from gateway.status import _pid_exists
     if not _pid_exists(int(pid)):
         return False

@@ -198,7 +198,7 @@ def _queue_labels(task: kb.Task, latest_run: Optional[kb.Run], *, now: int) -> t
         labels.append("stale")
     if run_state in {"stale", "handoff_needed", "retry_needed"}:
         labels.append("stale")
-    if task.last_spawn_error or task.spawn_failures > 0:
+    if task.last_failure_error or task.consecutive_failures > 0:
         labels.append("failed")
     if run_status == "failed" or run_outcome in {"failed", "gave_up", "crashed", "timed_out"} or run_state == "failed":
         labels.append("failed")
@@ -220,8 +220,8 @@ def _next_action(task: kb.Task, latest_run: Optional[kb.Run], labels: tuple[str,
     from_run = _metadata_next_action(latest_run)
     if from_run:
         return redact_secret_text(from_run, limit=120)
-    if task.last_spawn_error:
-        return redact_secret_text(task.last_spawn_error, limit=120)
+    if task.last_failure_error:
+        return redact_secret_text(task.last_failure_error, limit=120)
     if "review_ready" in labels:
         return "review PR/checks/evidence; merge requires explicit approval"
     if "worker_done" in labels:

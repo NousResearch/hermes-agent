@@ -201,7 +201,7 @@ def _seed_control_surface_tasks():
             )
             conn.execute(
                 "UPDATE tasks SET status='blocked', current_run_id=NULL, claim_lock=NULL, "
-                "claim_expires=NULL, last_spawn_error='worker failed token=supersecret' WHERE id=?",
+                "claim_expires=NULL, last_failure_error='worker failed token=supersecret' WHERE id=?",
                 (failed,),
             )
 

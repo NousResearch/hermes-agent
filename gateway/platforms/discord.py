@@ -64,8 +64,88 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    resolve_channel_prompt,
+    resolve_channel_skills,
 )
 from tools.url_safety import is_safe_url
+
+
+def _as_discord_id_set(raw: Any) -> set[str]:
+    if raw is None:
+        return set()
+    if isinstance(raw, (list, tuple, set)):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    s = str(raw).strip()
+    if not s:
+        return set()
+    return {part.strip() for part in s.split(",") if part.strip()}
+
+
+def _discord_binding_entry(config_extra: dict, channel_id: str, parent_id: str | None = None) -> tuple[dict | None, str | None]:
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if not isinstance(bindings, list):
+        return None, None
+    ids_to_check = [str(channel_id)]
+    if parent_id:
+        ids_to_check.append(str(parent_id))
+    for wanted_id in ids_to_check:
+        for entry in bindings:
+            if isinstance(entry, dict) and str(entry.get("id", "")) == wanted_id:
+                return entry, wanted_id
+    return None, None
+
+
+def _discord_binding_summary(config_extra: dict, channel_id: str, parent_id: str | None = None) -> dict:
+    """Return the visible Discord binding state for one channel/thread."""
+    entry, matched_id = _discord_binding_entry(config_extra, str(channel_id), parent_id)
+    skills = resolve_channel_skills(config_extra, str(channel_id), parent_id) or []
+    prompt = resolve_channel_prompt(config_extra, str(channel_id), parent_id)
+    free_ids = _as_discord_id_set(config_extra.get("free_response_channels"))
+    return {
+        "matched_id": matched_id,
+        "skills": skills,
+        "created_at": entry.get("created_at") if entry else None,
+        "channel_prompt": prompt,
+        "free_response": "*" in free_ids or str(channel_id) in free_ids or (parent_id and str(parent_id) in free_ids),
+    }
+
+
+def _format_binding_overview(channel_label: str, channel_id: str, summary: dict) -> str:
+    skills = summary.get("skills") or []
+    created_at = summary.get("created_at") or "unbekannt (nicht in config erfasst)"
+    prompt = summary.get("channel_prompt")
+    free_response = "ja" if summary.get("free_response") else "nein"
+    skill_lines = "\n".join(f"- `{name}`" for name in skills) if skills else "- keine"
+    prompt_status = "gesetzt" if prompt else "nicht gesetzt"
+    return (
+        f"🔗 **Hermes Bindings für {channel_label}**\n\n"
+        f"**Channel ID:** `{channel_id}`\n"
+        f"**Gematchtes Binding:** `{summary.get('matched_id') or 'keins'}`\n"
+        f"**Gebunden seit:** {created_at}\n"
+        f"Free response: {free_response}\n"
+        f"**Channel Prompt:** {prompt_status}\n\n"
+        f"**Auto-Skills:**\n{skill_lines}\n\n"
+        "Buttons: Klicke auf einen Skill, um Beschreibung, Pfad und Binding-Kontext zu sehen."
+    )
+
+
+def _load_binding_skill_info(skill_name: str) -> dict:
+    """Load minimal skill metadata for a /bindings skill-info button."""
+    try:
+        from agent.skill_commands import _load_skill_payload
+        loaded = _load_skill_payload(skill_name)
+        if not loaded:
+            return {"name": skill_name, "description": "Skill nicht gefunden.", "path": ""}
+        loaded_skill, skill_dir, display_name = loaded
+        meta = getattr(loaded_skill, "metadata", None) or {}
+        description = getattr(loaded_skill, "description", None) or meta.get("description") or "Keine Beschreibung gefunden."
+        return {
+            "name": display_name or skill_name,
+            "description": str(description),
+            "path": str(skill_dir),
+        }
+    except Exception as exc:
+        return {"name": skill_name, "description": f"Skill-Info konnte nicht geladen werden: {exc}", "path": ""}
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -3031,6 +3111,28 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
 
+        @tree.command(name="bindings", description="Show Hermes channel skill bindings with info buttons")
+        async def slash_bindings(interaction: discord.Interaction):
+            if not await self._check_slash_authorization(interaction, "/bindings"):
+                return
+            channel = getattr(interaction, "channel", None)
+            channel_id = str(getattr(interaction, "channel_id", None) or getattr(channel, "id", "") or "")
+            parent_id = str(getattr(channel, "parent_id", "") or "") or None
+            channel_name = getattr(channel, "name", None)
+            channel_label = f"#{channel_name}" if channel_name else f"channel `{channel_id}`"
+            summary = _discord_binding_summary(self.config.extra, channel_id, parent_id)
+            content = _format_binding_overview(channel_label, channel_id, summary)
+            view = BindingSkillInfoView(
+                summary.get("skills") or [],
+                channel_id=channel_id,
+                binding_created_at=summary.get("created_at"),
+            )
+            await interaction.response.send_message(
+                content=content,
+                view=view if view.children else None,
+                ephemeral=False,
+            )
+
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(
             name="Thread name",
@@ -4950,6 +5052,44 @@ def _component_check_auth(
 
 
 if DISCORD_AVAILABLE:
+
+    class BindingSkillInfoView(discord.ui.View):
+        """Button view for the /bindings skill inspector."""
+
+        def __init__(
+            self,
+            skills: list[str],
+            channel_id: str,
+            binding_created_at: str | None = None,
+            skill_info_loader: Optional[Callable[[str], dict]] = None,
+        ):
+            super().__init__(timeout=600)
+            self.skills = list(skills)
+            self.channel_id = str(channel_id)
+            self.binding_created_at = binding_created_at
+            self.skill_info_loader = skill_info_loader or _load_binding_skill_info
+            for skill_name in self.skills[:25]:
+                button = discord.ui.Button(
+                    label=skill_name[:80],
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"hermes:binding-skill:{self.channel_id}:{skill_name}"[:100],
+                )
+
+                async def _callback(interaction: discord.Interaction, _skill=skill_name):
+                    info = self.skill_info_loader(_skill) or {}
+                    created = self.binding_created_at or "unbekannt (nicht in config erfasst)"
+                    path = info.get("path") or "unbekannt"
+                    content = (
+                        f"🔎 **Skill Binding: `{info.get('name') or _skill}`**\n\n"
+                        f"**Beschreibung:** {info.get('description') or 'Keine Beschreibung gefunden.'}\n"
+                        f"**Channel ID:** `{self.channel_id}`\n"
+                        f"**Gebunden seit:** {created}\n"
+                        f"**Skill-Pfad:** `{path}`"
+                    )
+                    await interaction.response.send_message(content=content, ephemeral=True)
+
+                button.callback = _callback
+                self.add_item(button)
 
     class ExecApprovalView(discord.ui.View):
         """

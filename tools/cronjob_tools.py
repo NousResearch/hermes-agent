@@ -65,9 +65,17 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
-_CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
+# BiDi overrides are genuinely dangerous — they can visually reorder text so a
+# reviewer sees different content than what executes. These remain hard-blocked.
+_CRON_DANGEROUS_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+}
+
+# Zero-width spaces/joiners are almost always accidental (copy-paste artefacts,
+# rich-text editors). They have no injection value in a plaintext prompt context.
+# These are silently stripped rather than blocked.
+_CRON_HARMLESS_INVISIBLE_CHARS = {
+    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
 }
 
 
@@ -84,9 +92,13 @@ def _scan_cron_prompt(prompt: str) -> str:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
         prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    for char in _CRON_INVISIBLE_CHARS:
+    # Strip harmless invisible chars (zero-width spaces/joiners) silently
+    for char in _CRON_HARMLESS_INVISIBLE_CHARS:
+        prompt_to_scan = prompt_to_scan.replace(char, '')
+    # Block genuinely dangerous invisible chars (BiDi overrides)
+    for char in _CRON_DANGEROUS_INVISIBLE_CHARS:
         if char in prompt_to_scan:
-            return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+            return f"Blocked: prompt contains dangerous BiDi override U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."

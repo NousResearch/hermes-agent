@@ -405,6 +405,61 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
+    # Commands that RTK can compact (from rtk gain list).
+    # When rtk is on PATH, these are transparently rewritten
+    # to their ``rtk <cmd>`` equivalents for token savings.
+    _RTK_WHITELIST: frozenset[str] = frozenset({
+        "ps", "ls", "grep", "find", "git", "gh", "curl",
+        "cargo", "npm", "npx", "go", "pip", "docker", "kubectl",
+        "pnpm", "jest", "vitest", "tsc", "eslint", "prettier",
+        "pytest", "ruff", "uv",
+    })
+
+    @staticmethod
+    def _rtk_available() -> bool:
+        return shutil.which("rtk") is not None
+
+    @classmethod
+    def _try_rtk_rewrite(cls, command: str) -> str:
+        """Rewrite *command* to use ``rtk <subcmd>`` when the leading binary
+        is in the whitelist and ``rtk`` is on PATH.  Returns the original
+        command unchanged when rtk is absent or the command is unknown."""
+        if not cls._rtk_available():
+            return command
+        stripped = command.lstrip()
+        if not stripped:
+            return command
+        # Extract the first token (the binary name)
+        first_token = stripped.split(maxsplit=1)[0]
+        # Strip common path prefixes and `sudo`
+        binary = first_token.rsplit("/", maxsplit=1)[-1]
+        if binary == "sudo":
+            # ``sudo foo bar`` → ``sudo rtk foo bar``
+            rest = stripped.split(maxsplit=1)[1].lstrip() if " " in stripped else ""
+            if not rest:
+                return command
+            inner = cls._try_rtk_rewrite(rest)
+            if inner is not rest:
+                return f"sudo {inner}"
+            return command
+        if binary not in cls._RTK_WHITELIST:
+            return command
+        rest = stripped[len(first_token):]
+        return f"rtk {binary}{rest}"
+
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
+        # Transparent RTK rewrites for token savings (~14% avg).
+        # Safe: unknown commands pass through unchanged.
+        command = self._try_rtk_rewrite(command)
+        return super().execute(command, cwd=cwd, timeout=timeout, stdin_data=stdin_data)
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         if cwd:
             cwd = os.path.expanduser(cwd)

@@ -12,7 +12,9 @@ The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
 1. If exactly one provider is registered, use it.
-2. Otherwise return ``None`` (the tool surfaces a helpful error pointing
+2. HermesOS auto-pair: if ``VENICE_API_KEY`` is set and a ``venice``
+   provider is registered + available, use it (matches the chat key).
+3. Otherwise return ``None`` (the tool surfaces a helpful error pointing
    the user at ``hermes tools``).
 
 Mirrors ``agent/image_gen_registry.py`` so the two surfaces behave the
@@ -22,6 +24,7 @@ same.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Dict, List, Optional
 
@@ -104,9 +107,23 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             configured,
         )
 
+    def _is_available_safe(p: VideoGenProvider) -> bool:
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
     # Fallback: single-provider case
     if len(snapshot) == 1:
         return next(iter(snapshot.values()))
+
+    # HermesOS auto-pair: if VENICE_API_KEY is set and venice plugin is
+    # available, prefer it so multi-modal pairs with Venice chat.
+    if os.environ.get("VENICE_API_KEY", "").strip():
+        venice = snapshot.get("venice")
+        if venice is not None and _is_available_safe(venice):
+            return venice
 
     return None
 

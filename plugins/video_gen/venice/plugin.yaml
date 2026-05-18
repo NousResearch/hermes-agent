@@ -1,0 +1,7 @@
+name: venice
+version: 1.0.0
+description: "Venice video generation backend. Text-to-video and image-to-video over Venice's catalog (Veo, Kling, Seedance, Wan, etc.). One API key (VENICE_API_KEY) covers chat + image + video."
+author: NousResearch
+kind: backend
+requires_env:
+  - VENICE_API_KEY

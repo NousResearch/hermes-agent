@@ -1,0 +1,7 @@
+name: venice
+version: 1.0.0
+description: "Venice image generation backend. Unified surface over Venice's catalog (qwen-image-2, nano-banana-pro, gpt-image-2, venice-sd35, grok-imagine-image). One API key (VENICE_API_KEY) covers chat + image + video."
+author: NousResearch
+kind: backend
+requires_env:
+  - VENICE_API_KEY

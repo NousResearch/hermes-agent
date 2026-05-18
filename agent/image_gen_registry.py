@@ -11,16 +11,19 @@ Active selection
 The active provider is chosen by ``image_gen.provider`` in ``config.yaml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
-1. If exactly one provider is registered, use it.
-2. Otherwise if a provider named ``fal`` is registered, use it (legacy
+1. If exactly one provider is registered + available, use it.
+2. HermesOS auto-pair: if ``VENICE_API_KEY`` is set and a ``venice``
+   provider is registered + available, use it (matches the chat key).
+3. Otherwise if a provider named ``fal`` is registered, use it (legacy
    default — matches pre-plugin behavior).
-3. Otherwise return ``None`` (the tool surfaces a helpful error pointing
+4. Otherwise return ``None`` (the tool surfaces a helpful error pointing
    the user at ``hermes tools``).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Dict, List, Optional
 
@@ -131,7 +134,16 @@ def get_active_provider() -> Optional[ImageGenProvider]:
     if len(available) == 1:
         return available[0]
 
-    # 3. Fallback: prefer legacy FAL for backward compat, when available.
+    # 3. HermesOS auto-pair: when the user's chat key is Venice
+    #    (VENICE_API_KEY in env) and a Venice image plugin is registered
+    #    + available, prefer it. The intent: "user picks Venice chat →
+    #    multi-modal Just Works on the same key, zero config."
+    if os.environ.get("VENICE_API_KEY", "").strip():
+        venice = snapshot.get("venice")
+        if venice is not None and _is_available_safe(venice):
+            return venice
+
+    # 4. Fallback: prefer legacy FAL for backward compat, when available.
     fal = snapshot.get("fal")
     if fal is not None and _is_available_safe(fal):
         return fal

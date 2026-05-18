@@ -208,11 +208,16 @@ class TestAcpExecAskGate:
     def test_interactive_env_var_routes_to_callback(self, monkeypatch):
         """When HERMES_INTERACTIVE is set and an approval callback is
         registered, a dangerous command must route through the callback."""
-        # Clean env
+        # Clean env — must also clear gateway/cron session vars that leak
+        # from the hosting process (cron job, gateway run, etc.)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
 
         from tools.approval import check_all_command_guards
 

@@ -656,6 +656,12 @@ class QQAdapter(BasePlatformAdapter):
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
+        # Guard: if ws is already closed before we start reading, raise
+        # immediately so _listen_loop can schedule reconnect instead of
+        # spinning in a tight busy-loop with 100% CPU (issue #27810).
+        if self._ws.closed:
+            raise RuntimeError("WebSocket already closed")
+
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -669,6 +675,12 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+
+        # Loop exited cleanly (ws.closed=True or _running=False) without an
+        # exception — raise so _listen_loop handles reconnect rather than
+        # immediately looping back with no sleep (busy-loop prevention).
+        if self._running and self._ws and self._ws.closed:
+            raise RuntimeError("WebSocket closed unexpectedly")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).

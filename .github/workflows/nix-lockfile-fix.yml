@@ -175,10 +175,21 @@ jobs:
               repo: context.repo.repo,
               pull_number: Number(prNumber),
             });
+            core.setOutput('pr', String(pr.number));
+
+            // Never execute fork-controlled workflow, action, or Nix code in
+            // this write-token workflow. Fork PRs must update lockfiles from
+            // an unprivileged check or by pushing a contributor-owned commit.
+            if (pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed(
+                `Refusing privileged lockfile fix for fork PR #${pr.number} from ${pr.head.repo.full_name}`
+              );
+              return;
+            }
+
             core.setOutput('ref', pr.head.ref);
             core.setOutput('repo', pr.head.repo.name);
             core.setOutput('owner', pr.head.repo.owner.login);
-            core.setOutput('pr', String(pr.number));
 
       # Wipe the sticky lockfile-check comment to a "running" state as soon
       # as the job is authorized, so the user sees their click was picked up
@@ -199,6 +210,7 @@ jobs:
           repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
           ref: ${{ steps.resolve.outputs.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: ./.github/actions/nix-setup
@@ -212,13 +224,21 @@ jobs:
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REF: ${{ steps.resolve.outputs.ref }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nix/tui.nix nix/web.nix
           git commit -m "fix(nix): refresh npm lockfile hashes"
-          git push
+
+          AUTH_HEADER="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git \
+            -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" \
+            push origin "HEAD:$TARGET_REF"
 
       - name: Update sticky (applied)
         if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''

@@ -1156,6 +1156,20 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+    def _credential_pool_has_entries(pool_store: object, *provider_ids: str) -> bool:
+        """True only when auth.json has a non-empty credential pool list.
+
+        Empty placeholder entries like {"minimax-cn": []} should not make a
+        provider appear authenticated in the /model picker.
+        """
+        if not isinstance(pool_store, dict):
+            return False
+        for provider_id in provider_ids:
+            entries = pool_store.get(provider_id)
+            if isinstance(entries, list) and entries:
+                return True
+        return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1232,7 +1246,9 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and hermes_id in store.get("credential_pool", {}):
+                if store and _credential_pool_has_entries(
+                    store.get("credential_pool", {}), hermes_id
+                ):
                     has_creds = True
             except Exception:
                 pass
@@ -1410,7 +1426,11 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 _cp_store = _load_auth_store()
                 _cp_providers_store = _cp_store.get("providers", {})
-                if _cp_store and _cp.slug in _cp_providers_store:
+                _cp_pool_store = _cp_store.get("credential_pool", {})
+                if _cp_store and (
+                    _cp.slug in _cp_providers_store
+                    or _credential_pool_has_entries(_cp_pool_store, _cp.slug)
+                ):
                     _cp_has_creds = True
             except Exception:
                 pass

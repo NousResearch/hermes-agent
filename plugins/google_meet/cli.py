@@ -159,7 +159,7 @@ def _cmd_setup() -> int:
     print("---------------------")
 
     system = _p.system()
-    system_ok = system in ("Linux", "Darwin")
+    system_ok = system in {"Linux", "Darwin"}
     print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
 
     try:
@@ -231,7 +231,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     import subprocess as _sp
 
     system = _p.system()
-    if system not in ("Linux", "Darwin"):
+    if system not in {"Linux", "Darwin"}:
         print(f"google_meet install: {system} is not supported (linux/macos only)")
         return 1
 
@@ -242,7 +242,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
             ans = input(f"{prompt} [y/N] ").strip().lower()
         except EOFError:
             return False
-        return ans in ("y", "yes")
+        return ans in {"y", "yes"}
 
     print("google_meet install")
     print("-------------------")

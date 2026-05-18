@@ -89,7 +89,7 @@ def _build_agent_history(history: list) -> list:
     agent_history: list = []
     for msg in history:
         role = msg.get("role")
-        if not role or role in ("session_meta", "system"):
+        if not role or role in {"session_meta", "system"}:
             continue
         has_tool_calls = "tool_calls" in msg
         has_tool_call_id = "tool_call_id" in msg

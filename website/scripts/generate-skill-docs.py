@@ -602,7 +602,7 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
         else:
             optional[meta["category"]].append(meta)
 
-    def cat_section(bucket: dict[str, list[dict[str, Any]]]) -> list[dict]:
+    def cat_section(bucket: dict[str, list[dict[str, Any]]], source: str) -> list[dict]:
         result = []
         for category in sorted(bucket):
             items = sorted(bucket[category], key=lambda m: m["slug"])
@@ -610,6 +610,13 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
                 {
                     "type": "category",
                     "label": category,
+                    # Docusaurus generates a translation key from the label by
+                    # default (e.g. sidebar.docs.category.productivity). When
+                    # the same category name appears under both Bundled and
+                    # Optional, the duplicate keys break i18n extraction and
+                    # fail the build. Scope each category by source to keep
+                    # the keys unique.
+                    "key": f"skills-{source}-{category}",
                     "collapsed": True,
                     "items": [sidebar_doc_id(m) for m in items],
                 }
@@ -617,8 +624,8 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
         return result
 
     return {
-        "bundled_categories": cat_section(bundled),
-        "optional_categories": cat_section(optional),
+        "bundled_categories": cat_section(bundled, "bundled"),
+        "optional_categories": cat_section(optional, "optional"),
     }
 
 
@@ -633,6 +640,8 @@ def _render_sidebar_item(item: Any, indent: int) -> list[str]:
     lines.append(f"{pad}{{")
     lines.append(f"{pad}  type: 'category',")
     lines.append(f"{pad}  label: '{item['label']}',")
+    if item.get("key"):
+        lines.append(f"{pad}  key: '{item['key']}',")
     if item.get("collapsed", True):
         lines.append(f"{pad}  collapsed: true,")
     lines.append(f"{pad}  items: [")

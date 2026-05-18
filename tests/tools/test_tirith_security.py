@@ -334,6 +334,103 @@ class TestEnsureInstalled:
 
 
 # ---------------------------------------------------------------------------
+# Unsupported platform (Windows etc.) — silent fast-path everywhere
+# ---------------------------------------------------------------------------
+
+class TestUnsupportedPlatform:
+    """When _detect_target() returns None (no tirith binary for this OS+arch),
+    the entire subsystem must stay silent: no PATH probes, no download thread,
+    no disk failure marker, no spawn attempts, no CLI banner. Pattern-matching
+    guards still cover the gap; tirith content scanning is just absent."""
+
+    def test_is_platform_supported_true_on_linux_x86_64(self):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="x86_64"):
+            assert _tirith_mod.is_platform_supported() is True
+
+    def test_is_platform_supported_true_on_darwin_arm64(self):
+        with patch("tools.tirith_security.platform.system", return_value="Darwin"), \
+             patch("tools.tirith_security.platform.machine", return_value="arm64"):
+            assert _tirith_mod.is_platform_supported() is True
+
+    def test_is_platform_supported_false_on_windows(self):
+        with patch("tools.tirith_security.platform.system", return_value="Windows"), \
+             patch("tools.tirith_security.platform.machine", return_value="AMD64"):
+            assert _tirith_mod.is_platform_supported() is False
+
+    def test_is_platform_supported_false_on_unknown_arch(self):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="riscv64"):
+            assert _tirith_mod.is_platform_supported() is False
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_ensure_installed_unsupported_returns_none_no_thread(self, mock_cfg):
+        """Windows: don't start a background install thread, don't write a
+        failure marker — just cache the verdict and return None."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.threading.Thread") as MockThread, \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark, \
+             patch("tools.tirith_security.shutil.which") as mock_which:
+            result = ensure_installed()
+            assert result is None
+            MockThread.assert_not_called()
+            mock_mark.assert_not_called()
+            mock_which.assert_not_called()
+            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+            assert _tirith_mod._install_failure_reason == "unsupported_platform"
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_check_command_security_unsupported_allows_silently(self, mock_cfg):
+        """Windows: skip the resolver and spawn entirely — return allow with
+        an empty summary so callers can't accidentally surface 'tirith
+        unavailable' messaging to the user."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.subprocess.run") as mock_run, \
+             patch("tools.tirith_security._resolve_tirith_path") as mock_resolve:
+            result = check_command_security("rm -rf /")
+            assert result == {"action": "allow", "findings": [], "summary": ""}
+            mock_run.assert_not_called()
+            mock_resolve.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_resolve_path_unsupported_caches_failure_without_probing(self, mock_cfg):
+        """The per-command resolver must also short-circuit on Windows so
+        long-running gateways don't churn through `shutil.which` and disk
+        I/O for every scanned command."""
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.shutil.which") as mock_which:
+            result = _tirith_mod._resolve_tirith_path("tirith")
+            assert result == "tirith"
+            mock_which.assert_not_called()
+            assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+            assert _tirith_mod._install_failure_reason == "unsupported_platform"
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_explicit_path_still_honored_on_unsupported_platform(self, mock_cfg):
+        """If a user explicitly configured a tirith_path (e.g. they built it
+        themselves under WSL), the unsupported-platform short-circuit must
+        NOT override that — explicit config wins."""
+        mock_cfg.return_value = {"tirith_enabled": True,
+                                 "tirith_path": "/opt/custom/tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": True}
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.access", return_value=True):
+            result = _tirith_mod._resolve_tirith_path("/opt/custom/tirith")
+            assert result == "/opt/custom/tirith"
+            assert _tirith_mod._resolved_path == "/opt/custom/tirith"
+
+
+# ---------------------------------------------------------------------------
 # Failed download caches the miss (Finding #1)
 # ---------------------------------------------------------------------------
 

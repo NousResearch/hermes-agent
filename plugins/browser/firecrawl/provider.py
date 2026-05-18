@@ -1,26 +1,61 @@
-"""Firecrawl cloud browser provider."""
+"""Firecrawl cloud browser provider — plugin form.
+
+Subclasses :class:`agent.browser_provider.BrowserProvider` (the plugin-facing
+ABC introduced in PR #25214). The legacy in-tree module
+``tools.browser_providers.firecrawl`` was removed in the same PR; this file
+is now the canonical implementation.
+
+This is the cloud-browser path — distinct from the firecrawl WEB plugin at
+``plugins/web/firecrawl/`` which handles search/extract/crawl on
+``/v2/search`` / ``/v2/scrape`` / ``/v2/crawl``. The two plugins share the
+``FIRECRAWL_API_KEY`` env var but talk to different endpoints (this one
+hits ``/v2/browser``).
+
+Config keys this provider responds to::
+
+    browser:
+      cloud_provider: "firecrawl"   # explicit selection only — not in the
+                                    # legacy auto-detect walk
+
+Auth env vars::
+
+    FIRECRAWL_API_KEY=...           # https://firecrawl.dev
+    FIRECRAWL_API_URL=...           # optional override (default https://api.firecrawl.dev)
+    FIRECRAWL_BROWSER_TTL=...       # optional, default 300 seconds
+"""
+
+from __future__ import annotations
 
 import logging
 import os
 import uuid
-from typing import Dict
+from typing import Any, Dict
 
 import requests
 
-from tools.browser_providers.base import CloudBrowserProvider
+from agent.browser_provider import BrowserProvider
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.firecrawl.dev"
 
 
-class FirecrawlProvider(CloudBrowserProvider):
-    """Firecrawl (https://firecrawl.dev) cloud browser backend."""
+class FirecrawlBrowserProvider(BrowserProvider):
+    """Firecrawl (https://firecrawl.dev) cloud browser backend.
 
-    def provider_name(self) -> str:
+    Cloud-browser path only — search/extract/crawl live in the separate
+    ``plugins/web/firecrawl/`` plugin.
+    """
+
+    @property
+    def name(self) -> str:
+        return "firecrawl"
+
+    @property
+    def display_name(self) -> str:
         return "Firecrawl"
 
-    def is_configured(self) -> bool:
+    def is_available(self) -> bool:
         return bool(os.environ.get("FIRECRAWL_API_KEY"))
 
     # ------------------------------------------------------------------
@@ -100,13 +135,34 @@ class FirecrawlProvider(CloudBrowserProvider):
             return False
 
     def emergency_cleanup(self, session_id: str) -> None:
+        if not self.is_available():
+            logger.warning(
+                "Cannot emergency-cleanup Firecrawl session %s — missing credentials",
+                session_id,
+            )
+            return
         try:
             requests.delete(
                 f"{self._api_url()}/v2/browser/{session_id}",
                 headers=self._headers(),
                 timeout=5,
             )
-        except ValueError:
-            logger.warning("Cannot emergency-cleanup Firecrawl session %s — missing credentials", session_id)
         except Exception as e:
-            logger.debug("Emergency cleanup failed for Firecrawl session %s: %s", session_id, e)
+            logger.debug(
+                "Emergency cleanup failed for Firecrawl session %s: %s", session_id, e
+            )
+
+    def get_setup_schema(self) -> Dict[str, Any]:
+        return {
+            "name": "Firecrawl",
+            "badge": "paid",
+            "tag": "Cloud browser with remote execution",
+            "env_vars": [
+                {
+                    "key": "FIRECRAWL_API_KEY",
+                    "prompt": "Firecrawl API key",
+                    "url": "https://firecrawl.dev",
+                },
+            ],
+            "post_setup": "agent_browser",
+        }

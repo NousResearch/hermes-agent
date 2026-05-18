@@ -27,6 +27,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime
+
 from agent.anthropic_adapter import _is_oauth_token
 from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -291,8 +293,9 @@ def run_conversation(
             _should_review_memory = True
             agent._turns_since_memory = 0
 
-    # Add user message
-    user_msg = {"role": "user", "content": user_message}
+    # Add user message with timestamp (system-level, survives context compaction)
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S CST')
+    user_msg = {"role": "user", "content": f"[{ts}] {user_message}"}
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

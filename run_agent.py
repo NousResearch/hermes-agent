@@ -1150,6 +1150,10 @@ class AIAgent:
         history. When an override is configured for the active turn, mutate the
         in-memory messages list in place so both persistence and returned
         history stay clean.
+
+        Also preserves the system-level timestamp prefix (injected by
+        conversation_loop) so persisted messages survive context compaction
+        with their temporal context intact.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
@@ -1158,7 +1162,10 @@ class AIAgent:
         if 0 <= idx < len(messages):
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
-                msg["content"] = override
+                # Preserve timestamp prefix in persisted version
+                from datetime import datetime
+                ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S CST')
+                msg["content"] = f"[{ts}] {override}"
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.

@@ -523,6 +523,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        abort_on_summary_failure: bool = False,
     ):
         self.model = model
         self.base_url = base_url
@@ -534,6 +535,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        # When True, summary-generation failure aborts compression entirely
+        # (returns messages unchanged, sets _last_compress_aborted=True).
+        # When False (default = historical behavior), insert a static
+        # "summary unavailable" placeholder and drop the middle window.
+        self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1596,24 +1602,26 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
-        # If summary generation failed, ABORT compression entirely.  Returning
-        # the original messages unchanged preserves the full conversation
-        # context.  Previously this branch dropped every middle message and
-        # replaced them with a static "summary unavailable" placeholder,
-        # which silently lost N turns of work whenever the aux LLM hiccuped.
-        # Auto-compress callers detect the no-op (post-compress length ==
-        # pre-compress length) and stop looping.  The next call to
-        # _generate_summary is gated by _summary_failure_cooldown_until, so
-        # we don't burn the aux model every turn.  Users can force a retry
-        # via /compress (which passes force=True to clear the cooldown).
-        if not summary:
+        # If summary generation failed, behavior splits on
+        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
+        #   True  → ABORT compression entirely. Return messages unchanged
+        #           and set _last_compress_aborted=True so callers can warn
+        #           the user and stop the auto-compress retry loop.
+        #   False → Fall through to the legacy fallback path below: insert
+        #           a static "summary unavailable" placeholder and drop the
+        #           middle window.  Records _last_summary_fallback_used /
+        #           _last_summary_dropped_count for gateway hygiene to
+        #           surface a warning.
+        # Default is False (historical behavior).
+        if not summary and self.abort_on_summary_failure:
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
             if not self.quiet_mode:
                 logger.warning(
-                    "Summary generation failed — aborting compression. "
+                    "Summary generation failed — aborting compression "
+                    "(compression.abort_on_summary_failure=true). "
                     "%d message(s) preserved unchanged. Conversation is "
                     "frozen until the next /compress or /new.",
                     n_skipped,
@@ -1633,6 +1641,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
                     )
             compressed.append(msg)
+
+        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
+        # is False (the default).  Insert a static placeholder so the model
+        # knows context was lost rather than silently dropping everything.
+        if not summary:
+            if not self.quiet_mode:
+                logger.warning("Summary generation failed — inserting static fallback context marker")
+            n_dropped = compress_end - compress_start
+            self._last_summary_dropped_count = n_dropped
+            self._last_summary_fallback_used = True
+            summary = (
+                f"{SUMMARY_PREFIX}\n"
+                f"Summary generation was unavailable. {n_dropped} message(s) were "
+                f"removed to free context space but could not be summarized. The removed "
+                f"messages contained earlier work in this session. Continue based on the "
+                f"recent messages below and the current state of any files or resources."
+            )
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

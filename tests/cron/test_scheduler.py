@@ -1956,7 +1956,7 @@ class TestRunJobWakeGate:
         import cron.scheduler as scheduler
 
         call_count = 0
-        def _script_stub(path):
+        def _script_stub(path, workdir=None):
             nonlocal call_count
             call_count += 1
             return (True, "regular output")
@@ -2386,3 +2386,50 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/fast.mp4"
+
+
+# ---------------------------------------------------------------------------
+# _run_job_script workdir
+# ---------------------------------------------------------------------------
+
+
+class TestRunJobScriptWorkdir:
+    """_run_job_script must run the subprocess in the configured workdir."""
+
+    def test_script_runs_from_workdir_when_set(self, tmp_path, monkeypatch):
+        """Script cwd == workdir when workdir is provided."""
+        from cron.scheduler import _run_job_script
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # A script that prints its working directory.
+        script = scripts_dir / "whereami.py"
+        script.write_text("import os; print(os.getcwd())")
+
+        target = tmp_path / "project"
+        target.mkdir()
+
+        ok, output = _run_job_script(str(script), workdir=str(target))
+        assert ok
+        assert str(target) in output, (
+            f"Expected script to run from {target}, got: {output}"
+        )
+
+    def test_script_runs_from_script_dir_when_no_workdir(self, tmp_path, monkeypatch):
+        """Script cwd == script parent dir when workdir is not set."""
+        from cron.scheduler import _run_job_script
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        script = scripts_dir / "whereami.py"
+        script.write_text("import os; print(os.getcwd())")
+
+        ok, output = _run_job_script(str(script))
+        assert ok
+        assert str(scripts_dir) in output, (
+            f"Expected script to run from {scripts_dir}, got: {output}"
+        )

@@ -705,7 +705,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, workdir: Optional[str] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -727,6 +727,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        workdir: Optional absolute path to run the script from.  When set,
+            the subprocess uses this as its cwd rather than the script's
+            parent directory.  This lets data-collection scripts run from
+            the job's configured project directory (e.g. to pick up venv,
+            .env, or project-relative paths).
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -786,12 +791,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     try:
+        # Use the job's configured workdir if available, otherwise default to
+        # the script's own directory.  This lets data-collection scripts run
+        # from the project directory so they can find venvs, .env files, and
+        # project-relative paths (the terminal/file/code-exec tools all honor
+        # workdir through TERMINAL_CWD; scripts should too).
+        _cwd = str(workdir) if workdir else str(path.parent)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=_cwd,
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -1069,7 +1080,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, workdir=_job_workdir)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1158,7 +1169,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        # Resolve workdir for the script subprocess so it can find project
+        # venvs, .env files, and project-relative paths.  Using a separate
+        # extraction here (rather than _job_workdir from the TERMINAL_CWD
+        # block below) because the original TERMINAL_CWD logic runs after
+        # this point and we don't want to restructure existing code.
+        _script_workdir = (job.get("workdir") or "").strip() or None
+        prerun_script = _run_job_script(script_path, workdir=_script_workdir)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

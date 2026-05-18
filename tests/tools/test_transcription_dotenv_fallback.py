@@ -24,6 +24,8 @@ def isolate_env(monkeypatch):
         "MISTRAL_API_KEY",
         "XAI_API_KEY",
         "XAI_STT_BASE_URL",
+        "ELEVENLABS_API_KEY",
+        "ELEVENLABS_STT_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -230,6 +232,32 @@ class TestTranscribeCallSitesReadDotenv:
 
         assert result["success"] is True
         assert captured["headers"]["Authorization"] == "Bearer xai-dotenv-key"
+
+    def test_transcribe_elevenlabs_forwards_dotenv_key(self):
+        from tools import transcription_tools as tt
+
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured["headers"] = kwargs.get("headers", {})
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {"text": "hello"}
+            return response
+
+        def fake_get_env_value(name, default=None):
+            if name == "ELEVENLABS_API_KEY":
+                return "elevenlabs-dotenv-key"
+            return None
+
+        with patch.object(tt, "get_env_value", side_effect=fake_get_env_value), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=fake_post), \
+             patch("builtins.open", MagicMock()):
+            result = tt._transcribe_elevenlabs("/tmp/fake.mp3", "scribe_v2")
+
+        assert result["success"] is True
+        assert captured["headers"]["xi-api-key"] == "elevenlabs-dotenv-key"
 
 
 class TestEndToEndRegressionGuard:

@@ -306,6 +306,7 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | **Local Whisper** (default) | Good | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
+| **ElevenLabs Scribe v2** | Best | Paid | `ELEVENLABS_API_KEY` |
 
 :::info Zero Config
 Local transcription works out of the box when `faster-whisper` is installed. If that's unavailable, Hermes can also use a local `whisper` CLI from common install locations (like `/opt/homebrew/bin`) or a custom command via `HERMES_LOCAL_STT_COMMAND`.
@@ -316,7 +317,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
@@ -325,6 +326,12 @@ stt:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-stt"         # xAI Grok STT
+  elevenlabs:
+    model: "scribe_v2"        # scribe_v2 | scribe_v1
+    language_code: ""         # optional ISO-639-1/3; empty = auto-detect
+    base_url: ""              # optional EU/US residency endpoint override
+    tag_audio_events: true
+    diarize: false
 ```
 
 ### Provider Details
@@ -346,6 +353,8 @@ stt:
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `pip install hermes-agent[mistral]`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
+
+**ElevenLabs Scribe v2** — Requires `ELEVENLABS_API_KEY` (same key as ElevenLabs TTS). Posts to `https://api.elevenlabs.io/v1/speech-to-text` with `model_id: scribe_v2` for industry-leading accuracy across 90+ languages. **Explicit opt-in only** — set `stt.provider: elevenlabs` in config; Hermes never auto-selects this paid provider. Optional `stt.elevenlabs.base_url` supports EU/US residency endpoints.
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 

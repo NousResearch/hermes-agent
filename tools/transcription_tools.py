@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -11,6 +11,8 @@ Provides speech-to-text transcription with six providers:
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **elevenlabs** — ElevenLabs Scribe v2 API, requires ``ELEVENLABS_API_KEY``.
+    Industry-leading accuracy across 90+ languages (explicit opt-in only).
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -84,6 +86,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -91,6 +94,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -99,6 +103,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+ELEVENLABS_STT_MODELS = {"scribe_v2", "scribe_v1"}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -197,6 +202,27 @@ def _normalize_local_command_model(model_name: Optional[str]) -> str:
     return _normalize_local_model(model_name)
 
 
+def _normalize_elevenlabs_model(model_name: Optional[str]) -> str:
+    """Return a valid ElevenLabs Scribe model ID, mapping cloud-only names to the default."""
+    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        if model_name and (model_name in OPENAI_MODELS or model_name in GROQ_MODELS):
+            logger.warning(
+                "STT model '%s' is not valid for ElevenLabs Scribe. Falling back to '%s'. "
+                "Set stt.elevenlabs.model to scribe_v2 or scribe_v1.",
+                model_name,
+                DEFAULT_ELEVENLABS_STT_MODEL,
+            )
+        return DEFAULT_ELEVENLABS_STT_MODEL
+    if model_name not in ELEVENLABS_STT_MODELS:
+        logger.warning(
+            "STT model '%s' is not a known ElevenLabs Scribe model. Falling back to '%s'.",
+            model_name,
+            DEFAULT_ELEVENLABS_STT_MODEL,
+        )
+        return DEFAULT_ELEVENLABS_STT_MODEL
+    return model_name
+
+
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
@@ -272,6 +298,14 @@ def _get_provider(stt_config: dict) -> str:
                 return "xai"
             logger.warning(
                 "STT provider 'xai' configured but no xAI credentials are available"
+            )
+            return "none"
+
+        if provider == "elevenlabs":
+            if get_env_value("ELEVENLABS_API_KEY"):
+                return "elevenlabs"
+            logger.warning(
+                "STT provider 'elevenlabs' configured but ELEVENLABS_API_KEY not set"
             )
             return "none"
 
@@ -807,6 +841,150 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: elevenlabs (Scribe v2 API)
+# ---------------------------------------------------------------------------
+
+
+def _extract_elevenlabs_transcript(result: Dict[str, Any]) -> str:
+    """Extract plain transcript text from an ElevenLabs STT JSON response."""
+    text = result.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    transcripts = result.get("transcripts")
+    if isinstance(transcripts, list):
+        parts = []
+        for item in transcripts:
+            if isinstance(item, dict):
+                chunk = item.get("text")
+                if isinstance(chunk, str) and chunk.strip():
+                    parts.append(chunk.strip())
+        if parts:
+            return "\n".join(parts)
+
+    return ""
+
+
+def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using ElevenLabs Scribe API (batch speech-to-text).
+
+    Uses ``POST /v1/speech-to-text`` with multipart/form-data.
+    Requires ``ELEVENLABS_API_KEY`` environment variable.
+    """
+    api_key = (get_env_value("ELEVENLABS_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/",
+        }
+
+    stt_config = _load_stt_config()
+    el_config = stt_config.get("elevenlabs", {})
+    base_url = str(
+        el_config.get("base_url")
+        or get_env_value("ELEVENLABS_STT_BASE_URL")
+        or ELEVENLABS_STT_BASE_URL
+    ).strip().rstrip("/")
+    model_id = _normalize_elevenlabs_model(model_name)
+    language_code = str(
+        el_config.get("language_code")
+        or stt_config.get("local", {}).get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or ""
+    ).strip()
+    tag_audio_events = is_truthy_value(el_config.get("tag_audio_events", True))
+    use_diarize = is_truthy_value(el_config.get("diarize", False))
+
+    try:
+        import requests
+
+        data: Dict[str, str] = {
+            "model_id": model_id,
+            "tag_audio_events": "true" if tag_audio_events else "false",
+            "diarize": "true" if use_diarize else "false",
+        }
+        if language_code:
+            data["language_code"] = language_code
+
+        audio_path = Path(file_path)
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                f"{base_url}/v1/speech-to-text",
+                headers={"xi-api-key": api_key},
+                files={
+                    "file": (audio_path.name, audio_file),
+                },
+                data=data,
+                timeout=120,
+            )
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                err_body = response.json()
+                if isinstance(err_body, dict):
+                    detail_obj = err_body.get("detail")
+                    if isinstance(detail_obj, dict):
+                        detail = str(detail_obj.get("message", "") or detail_obj)
+                    elif isinstance(detail_obj, str):
+                        detail = detail_obj
+                    if not detail:
+                        detail = str(err_body.get("message", "") or err_body)
+                else:
+                    detail = str(err_body)
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"ElevenLabs STT API error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "ElevenLabs STT returned an unexpected response format",
+            }
+
+        if result.get("request_id") and not result.get("text") and not result.get("transcripts"):
+            return {
+                "success": False,
+                "transcript": "",
+                "error": (
+                    "ElevenLabs STT returned an async webhook response; "
+                    "Hermes only supports synchronous transcription"
+                ),
+            }
+
+        transcript_text = _extract_elevenlabs_transcript(result)
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "ElevenLabs STT returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via ElevenLabs Scribe (%s, lang=%s, %d chars)",
+            audio_path.name,
+            model_id,
+            result.get("language_code", language_code or "auto"),
+            len(transcript_text),
+        )
+
+        return {"success": True, "transcript": transcript_text, "provider": "elevenlabs"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("ElevenLabs STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"ElevenLabs STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -879,6 +1057,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
+    if provider == "elevenlabs":
+        el_cfg = stt_config.get("elevenlabs", {})
+        model_name = model or el_cfg.get("model", DEFAULT_ELEVENLABS_STT_MODEL)
+        return _transcribe_elevenlabs(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -886,9 +1069,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "set GROQ_API_KEY for free Groq Whisper, set ELEVENLABS_API_KEY for ElevenLabs Scribe, "
+            "set MISTRAL_API_KEY for Mistral Voxtral Transcribe, configure xAI OAuth or set "
+            "XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for "
+            "the OpenAI Whisper API."
         ),
     }
 

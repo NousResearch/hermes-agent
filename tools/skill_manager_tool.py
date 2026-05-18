@@ -44,6 +44,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from agent.skill_mutation_policy import readonly_external_skill_error
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +442,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
+    readonly_err = readonly_external_skill_error(name, existing["path"], "edit")
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -482,6 +487,10 @@ def _patch_skill(
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    readonly_err = readonly_external_skill_error(name, skill_dir, "patch")
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
 
     if file_path:
         # Patching a supporting file
@@ -570,6 +579,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
+    readonly_err = readonly_external_skill_error(name, existing["path"], "delete")
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -639,6 +652,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
+    readonly_err = readonly_external_skill_error(name, existing["path"], "write_file")
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -674,6 +691,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    readonly_err = readonly_external_skill_error(name, skill_dir, "remove_file")
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
 
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
@@ -821,10 +842,11 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
-        "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
-        "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "Pinned local skills are protected from deletion only — skill_manage(action='delete') "
+        "will refuse and point to `hermes curator unpin`. Pinned skills resolved "
+        "from configured external skill dirs are treated as read-only: patch, edit, "
+        "write_file, remove_file, delete, and Curator archive/relocate-style "
+        "mutations are refused until explicitly unpinned or opted into mutability."
     ),
     "parameters": {
         "type": "object",

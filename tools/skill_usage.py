@@ -34,6 +34,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from agent.skill_mutation_policy import (
+    find_skill_dir_across_roots,
+    readonly_external_skill_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +491,20 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
     skill_dir = _find_skill_dir(skill_name)
     if skill_dir is None:
+        external_skill_dir = find_skill_dir_across_roots(skill_name)
+        if external_skill_dir is not None:
+            readonly_err = readonly_external_skill_error(
+                skill_name,
+                external_skill_dir,
+                "archive",
+            )
+            if readonly_err:
+                return False, readonly_err
         return False, f"skill '{skill_name}' not found"
+
+    readonly_err = readonly_external_skill_error(skill_name, skill_dir, "archive")
+    if readonly_err:
+        return False, readonly_err
 
     archive_root = _archive_dir()
     try:

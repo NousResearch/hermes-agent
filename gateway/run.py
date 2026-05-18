@@ -7170,6 +7170,47 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
+        message_text = self._apply_pending_interaction_handoff(
+            event=event,
+            source=source,
+            message_text=message_text,
+        )
+
+        return message_text
+
+    def _apply_pending_interaction_handoff(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        message_text: str,
+    ) -> str:
+        """Prefix Discord replies with pending-interaction context when present."""
+
+        platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        if platform_name.lower() != "discord" or event.is_command():
+            return message_text
+
+        try:
+            from gateway.pending_interactions import resolve_pending_reply
+
+            resolution = resolve_pending_reply(
+                platform=platform_name,
+                channel_id=source.chat_id,
+                thread_id=source.thread_id,
+                user_id=source.user_id,
+                reply_text=message_text,
+            )
+            if resolution.status in {"resolved", "ambiguous"}:
+                logger.info(
+                    "Applied pending interaction %s for Discord channel=%s thread=%s",
+                    resolution.status,
+                    source.chat_id,
+                    source.thread_id,
+                )
+                return resolution.message
+        except Exception as exc:
+            logger.debug("Pending interaction handoff failed: %s", exc)
         return message_text
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
@@ -7212,6 +7253,42 @@ class GatewayRunner:
             except Exception:
                 pass
         return source
+
+    def _record_pending_interaction_from_response(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        response: Optional[str],
+    ) -> None:
+        """Persist a profile-local Discord handoff record when a response asks for input."""
+
+        platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        if platform_name.lower() != "discord" or not response:
+            return
+
+        channel_id = source.parent_chat_id or source.chat_id
+        thread_id = source.thread_id
+        try:
+            from gateway.pending_interactions import maybe_record_pending_interaction
+
+            record = maybe_record_pending_interaction(
+                platform=platform_name,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                user_id=source.user_id,
+                source_session_id=session_id,
+                response_text=response,
+            )
+            if record:
+                logger.info(
+                    "Recorded pending interaction %s for Discord channel=%s thread=%s",
+                    record.get("id"),
+                    channel_id,
+                    thread_id,
+                )
+        except Exception as exc:
+            logger.debug("Pending interaction record creation failed: %s", exc)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -8115,6 +8192,13 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            if not is_context_overflow_failure and not agent_failed_early:
+                self._record_pending_interaction_from_response(
+                    source=source,
+                    session_id=session_entry.session_id,
+                    response=response,
+                )
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

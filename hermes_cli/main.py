@@ -10723,6 +10723,26 @@ def main():
             "doctor` first to see active advisories and their IDs."
         ),
     )
+    doctor_parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Append a concise Markdown system health dashboard",
+    )
+    doctor_parser.add_argument(
+        "--dashboard-only",
+        action="store_true",
+        help="Print only the concise Markdown system health dashboard",
+    )
+    doctor_parser.add_argument(
+        "--dashboard-fail-exit",
+        action="store_true",
+        help="Exit nonzero when the system dashboard contains FAIL entries",
+    )
+    doctor_parser.add_argument(
+        "--check-dashboard-reachability",
+        action="store_true",
+        help="Opt into reachability checks such as Honcho client initialization",
+    )
     doctor_parser.set_defaults(func=cmd_doctor)
 
     # =========================================================================

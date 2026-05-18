@@ -145,6 +145,7 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -424,6 +425,45 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     targets = _resolve_delivery_targets(job)
     return targets[0] if targets else None
+
+
+def _record_cron_pending_interactions(job: dict, response_text: str, output_file: Optional[Path] = None) -> list[dict]:
+    """Record Discord follow-up handoffs for a delivered cron response."""
+
+    if not response_text:
+        return []
+    try:
+        from gateway.pending_interactions import maybe_record_pending_interaction
+    except Exception as exc:
+        logger.debug("Cron pending interaction support unavailable: %s", exc)
+        return []
+
+    artifact_paths = [str(output_file)] if output_file else []
+    records = []
+    for target in _resolve_delivery_targets(job):
+        if str(target.get("platform", "")).lower() != "discord":
+            continue
+        try:
+            record = maybe_record_pending_interaction(
+                platform="discord",
+                channel_id=target.get("chat_id"),
+                thread_id=target.get("thread_id"),
+                job_id=job.get("id"),
+                response_text=response_text,
+                artifact_paths=artifact_paths,
+            )
+            if record:
+                records.append(record)
+                logger.info(
+                    "Job '%s': recorded pending interaction %s for Discord %s thread=%s",
+                    job.get("id", "?"),
+                    record.get("id"),
+                    target.get("chat_id"),
+                    target.get("thread_id"),
+                )
+        except Exception as exc:
+            logger.debug("Job '%s': pending interaction record failed: %s", job.get("id", "?"), exc)
+    return records
 
 
 # Media extension sets — audio routing is centralized in gateway.platforms.base
@@ -1765,6 +1805,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+                    if success and not delivery_error:
+                        _record_cron_pending_interactions(job, final_response, output_file)
 
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.

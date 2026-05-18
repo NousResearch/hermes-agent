@@ -195,6 +195,19 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _print_system_dashboard_from_doctor(args) -> None:
+    """Print the structured system dashboard from the legacy doctor command."""
+
+    from hermes_cli.system_doctor import print_system_doctor_dashboard
+
+    exit_code = print_system_doctor_dashboard(
+        fail_on_fail=getattr(args, "dashboard_fail_exit", False),
+        check_honcho_reachability=getattr(args, "check_dashboard_reachability", False),
+    )
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -364,6 +377,9 @@ def run_doctor(args):
             sys.exit(1)
         return
 
+    if getattr(args, "dashboard_only", False):
+        _print_system_dashboard_from_doctor(args)
+        return
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
     fixed_count = 0
@@ -1909,3 +1925,6 @@ def run_doctor(args):
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
     
     print()
+
+    if getattr(args, "dashboard", False):
+        _print_system_dashboard_from_doctor(args)

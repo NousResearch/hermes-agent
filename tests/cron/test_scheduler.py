@@ -1595,7 +1595,7 @@ class TestRunJobConfigEnvVarExpansion:
 
 
 class TestRunJobSkillBacked:
-    def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
+    def test_run_job_does_not_preserve_managed_skill_secret_passthrough(self, tmp_path):
         job = {
             "id": "skill-env-job",
             "name": "skill env test",
@@ -1615,7 +1615,7 @@ class TestRunJobSkillBacked:
         def _run_conversation(prompt):
             from tools.env_passthrough import get_all_passthrough
 
-            assert "NOTION_API_KEY" in get_all_passthrough()
+            assert "NOTION_API_KEY" not in get_all_passthrough()
             return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \

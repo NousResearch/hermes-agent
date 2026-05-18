@@ -2142,10 +2142,9 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
-    # These use category="skill" (distinct from "tool") so the sandbox
-    # env blocklist in tools/environments/local.py does NOT rewrite them —
-    # skills legitimately need these passed through to curl via
-    # tools/env_passthrough.py when the user's skill calls out.
+    # These are managed secrets: they can be saved/reloaded by Hermes, but
+    # subprocess sandboxes must not inherit them implicitly or via skill
+    # env_passthrough registration.
     "NOTION_API_KEY": {
         "description": "Notion integration token (used by the `notion` skill)",
         "prompt": "Notion API key",

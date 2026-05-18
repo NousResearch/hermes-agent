@@ -2363,9 +2363,10 @@ def _xai_callback_cors_origin(origin: Optional[str]) -> str:
         "https://auth.x.ai",
     }
     return origin if origin in allowed else ""
-
-
-def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
+def _make_xai_callback_handler(
+    expected_path: str,
+    callback_event: threading.Event,
+) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
     result: dict[str, Any] = {
         "code": None,
         "state": None,
@@ -2403,6 +2404,13 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
             result["error"] = params.get("error", [None])[0]
             result["error_description"] = params.get("error_description", [None])[0]
 
+            logger.debug(
+                "xAI OAuth callback received: code=%s error=%s state=%s",
+                "***" if result["code"] else None,
+                result["error"],
+                result["state"],
+            )
+
             self.send_response(200)
             self._maybe_write_cors_headers()
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2413,6 +2421,8 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
                 body = "<html><body><h1>xAI authorization received.</h1>You can close this tab.</body></html>"
             self.wfile.write(body.encode("utf-8"))
 
+            callback_event.set()
+
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return
 
@@ -2421,10 +2431,11 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
 
 def _xai_start_callback_server(
     preferred_port: int = XAI_OAUTH_REDIRECT_PORT,
-) -> tuple[HTTPServer, threading.Thread, dict[str, Any], str]:
+) -> tuple[HTTPServer, threading.Thread, dict[str, Any], str, threading.Event]:
     host = XAI_OAUTH_REDIRECT_HOST
     expected_path = XAI_OAUTH_REDIRECT_PATH
-    handler_cls, result = _make_xai_callback_handler(expected_path)
+    callback_event = threading.Event()
+    handler_cls, result = _make_xai_callback_handler(expected_path, callback_event)
 
     class _ReuseHTTPServer(HTTPServer):
         allow_reuse_address = True
@@ -2455,31 +2466,127 @@ def _xai_start_callback_server(
         daemon=True,
     )
     thread.start()
-    return server, thread, result, redirect_uri
+    return server, thread, result, redirect_uri, callback_event
 
 
 def _xai_wait_for_callback(
     server: HTTPServer,
     thread: threading.Thread,
     result: dict[str, Any],
+    callback_event: threading.Event,
     *,
     timeout_seconds: float = 180.0,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + max(5.0, timeout_seconds)
     try:
-        while time.monotonic() < deadline:
-            if result["code"] or result["error"]:
-                return result
-            time.sleep(0.1)
+        callback_received = callback_event.wait(timeout=max(0.0, float(timeout_seconds)))
+    except KeyboardInterrupt:
+        print("\nCancelled by user.")
+        raise
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+
+    if not callback_received:
+        return {"code": None, "state": None, "error": None, "error_description": None}
+
+    if result["code"] or result["error"]:
+        return result
+    # Event was set but neither code nor error arrived — shouldn't happen,
+    # but handle gracefully.
     raise AuthError(
-        "xAI authorization timed out waiting for the local callback.",
+        "xAI authorization: callback received but no code or error present.",
         provider="xai-oauth",
-        code="xai_callback_timeout",
+        code="xai_callback_empty",
     )
+
+
+def _xai_oauth_exchange_code_for_tokens(
+    *,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+    token_endpoint: str,
+    timeout_seconds: float = 20.0,
+    code_challenge: str | None = None,
+) -> Dict[str, Any]:
+    """Exchange an authorization code for tokens.
+
+    Returns a dict with keys: access_token, refresh_token, id_token,
+    expires_in, token_type.
+    """
+    if not code_verifier:
+        raise AuthError(
+            "xAI token exchange requires a non-empty code_verifier (issue #26990).",
+            provider="xai-oauth",
+            code="xai_pkce_verifier_missing",
+        )
+    try:
+        data: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": XAI_OAUTH_CLIENT_ID,
+            "code_verifier": code_verifier,
+        }
+        if code_challenge:
+            data["code_challenge"] = code_challenge
+            data["code_challenge_method"] = "S256"
+        response = httpx.post(
+            token_endpoint,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            data=data,
+            timeout=max(20.0, timeout_seconds),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token exchange failed: {exc}",
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        ) from exc
+    if response.status_code != 200:
+        detail = response.text.strip()
+        raise AuthError(
+            "xAI token exchange failed."
+            + (f" HTTP {response.status_code}. Response: {detail}" if detail else ""),
+            provider="xai-oauth",
+            code="xai_token_exchange_failed",
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"xAI token exchange returned invalid JSON: {exc}",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthError(
+            "xAI token exchange response was not a JSON object.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    access_token = str(payload.get("access_token", "") or "").strip()
+    refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "xAI token exchange did not return an access_token.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    if not refresh_token:
+        raise AuthError(
+            "xAI token exchange did not return a refresh_token.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "id_token": str(payload.get("id_token", "") or "").strip(),
+        "expires_in": payload.get("expires_in"),
+        "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+    }
 
 
 def _spotify_token_payload_to_state(
@@ -2881,7 +2988,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
         return
     host = parsed.hostname or ""
     port = parsed.port
-    if host not in {"127.0.0.1", "::1", "localhost"} or not port:
+    if host not in ("127.0.0.1", "::1", "localhost") or not port:
         return
     print()
     print("Remote session detected. Your browser will redirect to")
@@ -5870,27 +5977,25 @@ def _login_xai_oauth(
 ) -> None:
     del pconfig
 
+    # Pre-flight check: if valid credentials exist, print status and exit.
+    # --force (force_new_login=True) overrides and forces a fresh flow.
     if not force_new_login:
         try:
             existing = resolve_xai_oauth_runtime_credentials()
             api_key = existing.get("api_key", "")
-            if isinstance(api_key, str) and api_key and not _xai_access_token_is_expiring(api_key, 60):
-                print("Existing xAI OAuth credentials found in Hermes auth store.")
-                try:
-                    reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    reuse = "y"
-                if reuse in {"", "y", "yes"}:
-                    config_path = _update_config_for_provider(
-                        "xai-oauth",
-                        existing.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL),
-                    )
-                    print()
-                    print("Login successful!")
-                    print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
-                    return
+            if (
+                isinstance(api_key, str)
+                and api_key
+                and not _xai_access_token_is_expiring(api_key, XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
+            ):
+                print("Existing xAI OAuth credentials found and are still valid.")
+                print("Use --force to override and start a fresh login.")
+                return
         except AuthError:
             pass
+    else:
+        print("--force: forcing a fresh xAI OAuth login.")
+        print()
 
     print()
     print("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
@@ -5946,107 +6051,6 @@ def _xai_oauth_build_authorize_url(
     return f"{authorization_endpoint}?{urlencode(authorize_params)}"
 
 
-def _xai_oauth_exchange_code_for_tokens(
-    *,
-    token_endpoint: str,
-    code: str,
-    redirect_uri: str,
-    code_verifier: str,
-    code_challenge: str,
-    timeout_seconds: float = 20.0,
-) -> Dict[str, Any]:
-    """POST the authorization code to xAI's token endpoint and return
-    the parsed JSON payload.
-
-    Sends ``code_verifier`` as required by RFC 7636 §4.5.  Also echoes
-    ``code_challenge`` + ``code_challenge_method`` in the request body
-    as a defense-in-depth measure for OAuth servers (xAI's among them,
-    per #26990) that re-validate the challenge at the token step
-    instead of relying solely on server-side session state captured
-    during the authorize step.  Echoing the challenge is harmless for
-    strict RFC-compliant servers — RFC 7636 doesn't forbid additional
-    parameters at the token endpoint — and decisively fixes the
-    ``code_challenge is required`` failure mode users hit on the
-    loopback flow.
-
-    Raises :class:`AuthError` on any non-2xx response or transport
-    failure; the error message embeds the HTTP status code and the
-    full response body so users can disambiguate cause at a glance.
-    """
-    # Paranoia: if upstream call sites ever drop ``code_verifier`` we
-    # want to surface a precise, local error rather than send a
-    # missing-PKCE request to xAI and receive their generic "code
-    # challenge required" message back.
-    if not code_verifier:
-        raise AuthError(
-            "xAI token exchange refused locally: PKCE code_verifier is empty. "
-            "This is a bug in Hermes — please report at "
-            "https://github.com/NousResearch/hermes-agent/issues/26990.",
-            provider="xai-oauth",
-            code="xai_pkce_verifier_missing",
-        )
-
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "client_id": XAI_OAUTH_CLIENT_ID,
-        "code_verifier": code_verifier,
-    }
-    # Defense-in-depth: include the original ``code_challenge`` and
-    # ``code_challenge_method``.  Some OAuth servers (including xAI's
-    # auth.x.ai implementation, per the symptom reported in #26990)
-    # validate these at the token endpoint instead of relying purely on
-    # state captured during the authorize step — without them, xAI
-    # rejects the exchange with ``code_challenge is required`` even
-    # though we sent a valid ``code_verifier``.
-    if code_challenge:
-        data["code_challenge"] = code_challenge
-        data["code_challenge_method"] = "S256"
-
-    try:
-        response = httpx.post(
-            token_endpoint,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data=data,
-            timeout=max(20.0, timeout_seconds),
-        )
-    except Exception as exc:
-        raise AuthError(
-            f"xAI token exchange failed: {exc}",
-            provider="xai-oauth",
-            code="xai_token_exchange_failed",
-        ) from exc
-
-    if response.status_code != 200:
-        body = response.text.strip()
-        raise AuthError(
-            f"xAI token exchange failed (HTTP {response.status_code})."
-            + (f" Response: {body}" if body else ""),
-            provider="xai-oauth",
-            code="xai_token_exchange_failed",
-        )
-
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise AuthError(
-            f"xAI token exchange returned invalid JSON: {exc}",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AuthError(
-            "xAI token exchange response was not a JSON object.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
-    return payload
-
-
 def _xai_oauth_loopback_login(
     *,
     timeout_seconds: float = 20.0,
@@ -6056,7 +6060,7 @@ def _xai_oauth_loopback_login(
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
 
-    server, thread, callback_result, redirect_uri = _xai_start_callback_server()
+    server, thread, callback_result, redirect_uri, callback_event = _xai_start_callback_server()
     try:
         _xai_validate_loopback_redirect_uri(redirect_uri)
         code_verifier = _oauth_pkce_code_verifier()
@@ -6075,6 +6079,7 @@ def _xai_oauth_loopback_login(
         print(authorize_url)
         print()
         print(f"Waiting for callback on {redirect_uri}")
+        print("Press Ctrl+C at any time to cancel.")
 
         _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
 
@@ -6092,8 +6097,21 @@ def _xai_oauth_loopback_login(
             server,
             thread,
             callback_result,
-            timeout_seconds=max(30.0, timeout_seconds * 9),
+            callback_event,
+            timeout_seconds=timeout_seconds,
         )
+    except KeyboardInterrupt:
+        print("\nCancelled by user.")
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
+        raise SystemExit(130)
     except Exception:
         try:
             server.shutdown()
@@ -6105,6 +6123,60 @@ def _xai_oauth_loopback_login(
         except Exception:
             pass
         raise
+
+    # If callback was cancelled (no code, no error), prompt for manual paste
+    if not callback.get("code") and not callback.get("error"):
+        print()
+        print("No callback received from browser.")
+        print("If you completed authorization in the browser, paste the authorization")
+        print("code from the browser's address bar below.")
+        print("(Look for '?code=...' in the URL after authorizing)")
+        print("Or press Enter to cancel.")
+        print()
+        try:
+            pasted_code = input("Authorization code: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled by user.")
+            raise SystemExit(130)
+        if not pasted_code:
+            print("No code provided. Login cancelled.")
+            raise SystemExit(130)
+
+        try:
+            token_payload = _xai_oauth_exchange_code_for_tokens(
+                code=pasted_code,
+                code_verifier=code_verifier,
+                code_challenge=code_challenge,
+                redirect_uri=redirect_uri,
+                token_endpoint=token_endpoint,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            raise AuthError(
+                f"xAI token exchange with pasted code failed: {exc}",
+                provider="xai-oauth",
+                code="xai_token_exchange_failed",
+            ) from exc
+
+        base_url = (
+            os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+            or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_XAI_OAUTH_BASE_URL
+        )
+        return {
+            "tokens": {
+                "access_token": token_payload["access_token"],
+                "refresh_token": token_payload["refresh_token"],
+                "id_token": token_payload["id_token"],
+                "expires_in": token_payload["expires_in"],
+                "token_type": token_payload["token_type"],
+            },
+            "discovery": discovery,
+            "redirect_uri": redirect_uri,
+            "base_url": base_url,
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "source": "oauth-loopback",
+        }
 
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
@@ -6127,28 +6199,14 @@ def _xai_oauth_loopback_login(
             code="xai_code_missing",
         )
 
-    payload = _xai_oauth_exchange_code_for_tokens(
-        token_endpoint=token_endpoint,
+    token_payload = _xai_oauth_exchange_code_for_tokens(
         code=code,
-        redirect_uri=redirect_uri,
         code_verifier=code_verifier,
         code_challenge=code_challenge,
+        redirect_uri=redirect_uri,
+        token_endpoint=token_endpoint,
         timeout_seconds=timeout_seconds,
     )
-    access_token = str(payload.get("access_token", "") or "").strip()
-    refresh_token = str(payload.get("refresh_token", "") or "").strip()
-    if not access_token:
-        raise AuthError(
-            "xAI token exchange did not return an access_token.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
-    if not refresh_token:
-        raise AuthError(
-            "xAI token exchange did not return a refresh_token.",
-            provider="xai-oauth",
-            code="xai_token_exchange_invalid",
-        )
 
     base_url = (
         os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
@@ -6157,11 +6215,11 @@ def _xai_oauth_loopback_login(
     )
     return {
         "tokens": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": str(payload.get("id_token", "") or "").strip(),
-            "expires_in": payload.get("expires_in"),
-            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+            "access_token": token_payload["access_token"],
+            "refresh_token": token_payload["refresh_token"],
+            "id_token": token_payload["id_token"],
+            "expires_in": token_payload["expires_in"],
+            "token_type": token_payload["token_type"],
         },
         "discovery": discovery,
         "redirect_uri": redirect_uri,

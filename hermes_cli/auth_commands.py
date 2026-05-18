@@ -336,6 +336,24 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
+        force = getattr(args, "force", False)
+        if not force:
+            try:
+                existing = auth_mod.resolve_xai_oauth_runtime_credentials()
+                api_key = existing.get("api_key", "")
+                if (
+                    isinstance(api_key, str)
+                    and api_key
+                    and not auth_mod._xai_access_token_is_expiring(
+                        api_key,
+                        auth_mod.XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+                    )
+                ):
+                    print("Existing xAI OAuth credentials are still valid — no re-authentication needed.")
+                    return
+            except auth_mod.AuthError as exc:
+                logger.debug("Pre-flight credentials check failed: %s", exc)
+
         creds = auth_mod._xai_oauth_loopback_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
             open_browser=not getattr(args, "no_browser", False),

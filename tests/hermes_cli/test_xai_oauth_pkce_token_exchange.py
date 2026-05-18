@@ -297,8 +297,7 @@ def test_non_dict_payload_raises_invalid_json(monkeypatch):
 
 
 def test_success_returns_full_payload_dict(post_recorder):
-    """200 happy path: the parsed JSON dict comes back verbatim so the
-    caller can pluck ``access_token`` / ``refresh_token`` etc."""
+    """200 happy path returns every normalized token field callers use."""
     out = _xai_oauth_exchange_code_for_tokens(
         token_endpoint="https://auth.x.ai/oauth2/token",
         code="AUTHCODE",
@@ -306,8 +305,45 @@ def test_success_returns_full_payload_dict(post_recorder):
         code_verifier="v" * 64,
         code_challenge="c" * 43,
     )
-    assert out["access_token"] == "AT-fresh"
-    assert out["refresh_token"] == "RT-fresh"
+    assert out == {
+        "access_token": "AT-fresh",
+        "refresh_token": "RT-fresh",
+        "id_token": "ID",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    }
+
+
+def test_token_exchange_rejects_missing_access_token(monkeypatch):
+    recorder = _PostRecorder(_ok_response({"refresh_token": "RT-fresh"}))
+    monkeypatch.setattr("hermes_cli.auth.httpx.post", recorder)
+
+    with pytest.raises(AuthError) as exc_info:
+        _xai_oauth_exchange_code_for_tokens(
+            token_endpoint="https://auth.x.ai/oauth2/token",
+            code="AUTHCODE",
+            redirect_uri="http://127.0.0.1:56121/callback",
+            code_verifier="v" * 64,
+            code_challenge="c" * 43,
+        )
+
+    assert exc_info.value.code == "xai_token_exchange_invalid"
+
+
+def test_token_exchange_rejects_missing_refresh_token(monkeypatch):
+    recorder = _PostRecorder(_ok_response({"access_token": "AT-fresh"}))
+    monkeypatch.setattr("hermes_cli.auth.httpx.post", recorder)
+
+    with pytest.raises(AuthError) as exc_info:
+        _xai_oauth_exchange_code_for_tokens(
+            token_endpoint="https://auth.x.ai/oauth2/token",
+            code="AUTHCODE",
+            redirect_uri="http://127.0.0.1:56121/callback",
+            code_verifier="v" * 64,
+            code_challenge="c" * 43,
+        )
+
+    assert exc_info.value.code == "xai_token_exchange_invalid"
 
 
 # ---------------------------------------------------------------------------

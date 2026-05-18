@@ -3678,6 +3678,16 @@ _PLATFORMS = [
              "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
         ],
     },
+    {
+        # NATS uses a bespoke setup flow (3-way transport menu, cross-profile
+        # collision check, writes to config.yaml). Dispatched via
+        # ``_builtin_setup_fn("nats") -> _setup_nats`` rather than the standard
+        # ``vars`` schema, so this entry intentionally has no ``vars`` field.
+        "key": "nats",
+        "label": "NATS",
+        "emoji": "🛰️",
+        "token_var": "HERMES_NATS_OWNER",
+    },
 ]
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
@@ -3804,6 +3814,18 @@ def _platform_status(platform: dict) -> str:
             return "configured"
         if val or token:
             return "partially configured"
+        return "not configured"
+    if platform.get("key") == "nats":
+        # NATS settings live in config.yaml under platforms.nats, not .env.
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if cfg.get("platforms", {}).get("nats", {}).get("enabled"):
+                return "configured"
+        except Exception:
+            pass
+        if val:
+            return "configured"
         return "not configured"
     if val:
         return "configured"
@@ -4752,6 +4774,7 @@ def _builtin_setup_fn(key: str):
         "feishu": _setup_feishu,
         "wecom": _setup_wecom,
         "qqbot": _setup_qqbot,
+        "nats": _s._setup_nats,
     }.get(key)
 def _configure_platform(platform: dict) -> None:
     """Run the interactive setup flow for a single platform.

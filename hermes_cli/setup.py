@@ -11,6 +11,7 @@ Modular wizard with independently-runnable sections:
 Config files are stored in ~/.hermes/ for easy access.
 """
 
+import getpass
 import importlib.util
 import json
 import logging
@@ -1964,6 +1965,200 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+def _discover_nats_contexts() -> list[str]:
+    """Return sorted list of NATS CLI context names available on this system."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    ctx_dir = Path(base) / "nats" / "context"
+    if not ctx_dir.is_dir():
+        return []
+    return sorted(p.stem for p in ctx_dir.glob("*.json") if p.is_file())
+
+
+def _find_nats_profile_collisions(
+    agent: str, owner: str, session_name: str
+) -> list[dict]:
+    """Return metadata for OTHER profiles whose NATS triple collides with ours.
+
+    The NATS adapter takes a scoped lock on ``{agent}:{owner}:{session_name}``
+    (see ``gateway/platforms/nats.py`` and `docs/nats-gateway-design.md` §5),
+    so two profiles sharing a triple cannot run their gateways simultaneously
+    — one will fail to acquire the lock at startup. This wizard catches that
+    at config time instead of leaving the user to debug a startup crash.
+
+    The active profile (the one being configured) is excluded — re-running the
+    wizard with unchanged values must not flag self-collision.
+
+    Failures to read sibling configs are swallowed; we'd rather miss a
+    collision than block setup on an unrelated YAML problem.
+    """
+    import yaml
+
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+    except Exception:
+        return []
+
+    try:
+        active = get_active_profile_name()
+        profiles = list_profiles()
+    except Exception:
+        return []
+
+    target = (agent, owner, session_name)
+    conflicts: list[dict] = []
+    for prof in profiles:
+        if prof.name == active:
+            continue
+        config_path = prof.path / "config.yaml"
+        if not config_path.is_file():
+            continue
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        nats_cfg = (data.get("platforms") or {}).get("nats") or {}
+        if not nats_cfg.get("enabled"):
+            continue
+        extra = nats_cfg.get("extra") or {}
+        from gateway.platforms.nats import DEFAULT_AGENT
+        their = (
+            extra.get("agent") or DEFAULT_AGENT,
+            extra.get("owner"),
+            extra.get("session_name"),
+        )
+        if their == target:
+            conflicts.append({
+                "profile": prof.name,
+                "path": str(config_path),
+                "agent": their[0],
+                "owner": their[1],
+                "session_name": their[2],
+            })
+    return conflicts
+
+
+def _setup_nats(config: Optional[dict] = None):
+    """Configure NATS gateway channel (writes to config.yaml, not .env).
+
+    When ``config`` is provided, mutates it in place and leaves persistence
+    to the caller. When ``config`` is ``None``, loads/saves config.yaml
+    directly so the function is callable from ``_configure_platform`` (the
+    new registry-driven dispatch in ``hermes_cli.gateway``) which doesn't
+    thread a config dict.
+    """
+    from gateway.platforms.nats import DEFAULT_AGENT
+    from hermes_cli.config import load_config, save_config
+
+    self_loaded = config is None
+    if self_loaded:
+        config = load_config()
+
+    print_header("NATS")
+
+    nats_cfg = config.setdefault("platforms", {}).setdefault("nats", {})
+    extra = nats_cfg.setdefault("extra", {})
+
+    if nats_cfg.get("enabled"):
+        print_info("NATS: already configured")
+        if not prompt_yes_no("Reconfigure NATS?", False):
+            return
+
+    # ── Stage values in locals; commit to extra only after collision check ──
+    contexts = _discover_nats_contexts()
+    choices = [
+        "Use the public demo server (nats://demo.nats.io)",
+        "Enter a custom NATS server URL",
+    ]
+    if contexts:
+        choices.append(f"Use an existing NATS CLI context  ({len(contexts)} available)")
+
+    idx = prompt_choice("How should Hermes connect to NATS?", choices, 0)
+
+    new_servers: Optional[list] = None
+    new_context: Optional[str] = None
+
+    if idx == 0:
+        new_servers = ["nats://demo.nats.io"]
+        print_success("Using public demo server: nats://demo.nats.io")
+    elif idx == 1:
+        while True:
+            url = prompt("NATS server URL", "nats://localhost:4222").strip()
+            if not url:
+                return
+            if not (
+                url.startswith("nats://")
+                or url.startswith("tls://")
+                or url.startswith("ws://")
+                or url.startswith("wss://")
+            ):
+                print_error("URL must start with nats://, tls://, ws://, or wss://")
+                continue
+            new_servers = [url]
+            break
+    else:
+        ctx_idx = prompt_choice("Select a context:", contexts, 0)
+        new_context = contexts[ctx_idx]
+        print_success(f"Using NATS context: {new_context}")
+
+    default_owner = extra.get("owner") or getpass.getuser()
+    print_info("Owner is the 4th subject token (e.g. your GitHub handle).")
+    owner = prompt("Owner", default_owner).strip() or default_owner
+
+    default_session = extra.get("session_name") or "demo"
+    print_info("Session name is the 5th subject token; one service = one session.")
+    session = prompt("Session name", default_session).strip() or default_session
+
+    agent = extra.get("agent") or DEFAULT_AGENT
+
+    # ── Cross-profile lock-collision check ──
+    conflicts = _find_nats_profile_collisions(agent, owner, session)
+    if conflicts:
+        print()
+        print_error(
+            f"NATS lock collision: {agent}:{owner}:{session} is already used by "
+            "another profile."
+        )
+        print_info(
+            "Each profile must have a unique (agent, owner, session_name) triple — "
+            "the NATS adapter takes a scoped lock on that triple, so two profiles "
+            "sharing it cannot run their gateways simultaneously."
+        )
+        print()
+        for c in conflicts:
+            print_info(
+                f"  • profile {c['profile']!r}: agent={c['agent']} "
+                f"owner={c['owner']} session_name={c['session_name']}"
+            )
+            print_info(f"    config: {c['path']}")
+        print()
+        print_info(
+            "Re-run 'hermes setup gateway' (or 'hermes -p <name> setup gateway') "
+            "with a different owner or session_name."
+        )
+        return
+
+    # ── Commit ──
+    # Reset transport keys so re-config can swap demo↔url↔context cleanly
+    # (adapter enforces XOR between servers and context).
+    extra.pop("servers", None)
+    extra.pop("context", None)
+    if new_servers is not None:
+        extra["servers"] = new_servers
+    else:
+        extra["context"] = new_context
+    extra["owner"] = owner
+    extra["session_name"] = session
+    extra.setdefault("attachments_ok", True)
+
+    nats_cfg["enabled"] = True
+
+    if self_loaded:
+        save_config(config)
+
+    print_success(f"NATS configured: agents.prompt.{agent}.{owner}.{session}")
+
+
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
@@ -2458,7 +2653,6 @@ def _setup_webhooks():
     print_info("   Route configuration guide:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  hermes config edit")
     print_info("   Open config in your editor:  hermes config edit")
 
 

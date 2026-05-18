@@ -554,12 +554,15 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_falls_back_to_sigterm_when_drain_fails(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
-        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1",
+            lambda pid, drain: False,
+        )
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
         monkeypatch.setattr(
@@ -580,28 +583,46 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_drains_then_kickstarts_without_force(self, monkeypatch, capsys):
+        # Regression guard for #27745: launchd_restart invoked from a fresh
+        # shell (non-ancestor PID) must still take the drain-aware SIGUSR1
+        # path and then kickstart (without -k) to respawn immediately.  The
+        # pre-fix call to _request_gateway_self_restart returned False for
+        # non-ancestor PIDs, falling straight through to SIGTERM and skipping
+        # the drain handler entirely.
         calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1",
+            lambda pid, drain: calls.append(("sigusr1", pid, drain)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli, "terminate_pid",
+            lambda pid, force=False: pytest.fail("SIGTERM fallback must not run when drain succeeds"),
+        )
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
         )
-        monkeypatch.setattr(
-            gateway_cli,
-            "_request_gateway_self_restart",
-            lambda pid: calls.append(("self", pid)) or True,
-        )
-        monkeypatch.setattr(
-            gateway_cli.subprocess,
-            "run",
-            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
-        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        # Drain succeeded → unforced kickstart, NOT kickstart -k.  -k would
+        # SIGKILL the in-flight runs the drain handler just spent up to
+        # drain_timeout seconds protecting.
+        assert calls == [
+            ("sigusr1", 321, 17.0),  # drain_timeout + 5
+            ["launchctl", "kickstart", target],
+        ]
+        assert "drained" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""

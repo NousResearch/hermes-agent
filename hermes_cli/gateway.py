@@ -3056,8 +3056,19 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
+        if pid is not None and _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+            # SIGUSR1 drain succeeded: the gateway exited with code 75.
+            # KeepAlive (SuccessfulExit=false) will eventually respawn it,
+            # but only after launchd's throttle interval — kickstart fires
+            # the replacement immediately so the operator-requested restart
+            # is responsive, mirroring systemd_restart's reset-failed +
+            # restart shortcut.
+            subprocess.run(
+                ["launchctl", "kickstart", target],
+                check=False,
+                timeout=30,
+            )
+            print("✓ Service restarted (drained)")
             return
         if pid is not None:
             try:

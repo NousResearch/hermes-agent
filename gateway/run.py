@@ -6223,12 +6223,14 @@ class GatewayRunner:
             GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
             resolve_command as _resolve_cmd,
+            resolve_gateway_command_name as _resolve_gateway_command_name,
         )
 
         # Resolve aliases to canonical name so dispatch and hook names
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
+        canonical = _resolve_gateway_command_name(canonical) or canonical
 
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
@@ -6251,6 +6253,7 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+                        canonical = _resolve_gateway_command_name(canonical) or canonical
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
@@ -6316,6 +6319,7 @@ class GatewayRunner:
                     command = event.get_command()
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
+                    canonical = _resolve_gateway_command_name(canonical) or canonical
                     break
 
         if canonical == "new":
@@ -6527,7 +6531,10 @@ class GatewayRunner:
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_command = (
+                    _resolve_gateway_command_name(command) or command.replace("_", "-")
+                )
+                plugin_handler = get_plugin_command_handler(plugin_command)
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)

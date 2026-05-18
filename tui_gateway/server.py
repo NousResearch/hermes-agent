@@ -3032,6 +3032,52 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _dispatch_notification(
+    evt: dict, sid: str, session: dict
+) -> str:
+    """Process a single completion_queue event: filter, format, emit, dispatch.
+
+    Returns:
+        'dispatched': Successfully dispatched as an agent turn.
+        'consumed': Already consumed via wait/poll/log — skipped.
+        'empty': format_process_notification returned empty.
+        'busy': Agent is running; event was re-enqueued (caller decides retry/break).
+        'dispatch_failed': _run_prompt_submit raised (session["running"] released).
+    """
+    from tools.process_registry import process_registry, format_process_notification
+
+    _evt_sid = evt.get("session_id", "")
+    if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        return "consumed"
+
+    text = format_process_notification(evt)
+    if not text:
+        return "empty"
+
+    _emit("status.update", sid, {"kind": "process", "text": text})
+
+    with session["history_lock"]:
+        if session.get("running"):
+            process_registry.completion_queue.put(evt)
+            return "busy"
+        session["running"] = True
+
+    rid = f"__notif__{time.time_ns()}"
+    try:
+        _emit("message.start", sid)
+        _run_prompt_submit(rid, sid, session, text)
+        return "dispatched"
+    except Exception as exc:
+        print(
+            f"[tui_gateway] notification poller dispatch failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        with session["history_lock"]:
+            session["running"] = False
+        return "dispatch_failed"
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -3046,7 +3092,7 @@ def _notification_poller_loop(
     even if the process was started by a different session. This matches
     CLI/gateway behavior (single session per process).
     """
-    from tools.process_registry import process_registry, format_process_notification
+    from tools.process_registry import process_registry
 
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
@@ -3054,34 +3100,9 @@ def _notification_poller_loop(
         except Exception:
             continue
 
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        status = _dispatch_notification(evt, sid, session)
+        if status == "busy":
             continue
-
-        text = format_process_notification(evt)
-        if not text:
-            continue
-
-        _emit("status.update", sid, {"kind": "process", "text": text})
-
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                continue
-            session["running"] = True
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
-        except Exception as exc:
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            with session["history_lock"]:
-                session["running"] = False
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown).
@@ -3090,33 +3111,10 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
-        _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-            continue
-        text = format_process_notification(evt)
-        if not text:
-            continue
 
-        _emit("status.update", sid, {"kind": "process", "text": text})
-
-        with session["history_lock"]:
-            if session.get("running"):
-                process_registry.completion_queue.put(evt)
-                break
-            session["running"] = True
-
-        rid = f"__notif__{int(time.time() * 1000)}"
-        try:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
-        except Exception as exc:
-            print(
-                f"[tui_gateway] notification poller dispatch failed: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            with session["history_lock"]:
-                session["running"] = False
+        status = _dispatch_notification(evt, sid, session)
+        if status == "busy":
+            break
 
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:

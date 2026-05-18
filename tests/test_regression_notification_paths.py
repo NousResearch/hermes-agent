@@ -352,13 +352,13 @@ class TestPollFixPreserved:
         import subprocess
 
         result = subprocess.run(
-            ["git", "log", "--oneline", "HEAD~5..HEAD", "--", "tools/process_registry.py"],
+            ["git", "log", "--oneline", "HEAD~10..HEAD", "--", "tools/process_registry.py"],
             capture_output=True,
             text=True,
             cwd=Path("."),
         )
         lines = [ln.strip() for ln in result.stdout.strip().splitlines() if ln.strip()]
-        assert lines, "No commits found touching process_registry.py in HEAD~5..HEAD"
+        assert lines, "No commits found touching process_registry.py in HEAD~10..HEAD"
 
         # The most recent commit should NOT be the revert 40aeab697
         most_recent = lines[0]

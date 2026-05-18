@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -130,6 +130,46 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
+
+    vi.useFakeTimers()
+    try {
+      onEvent({
+        payload: { kind: 'goal', text: verdict },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(verdict)
+      expect(getUiState().status).toBe('✓ goal complete')
+
+      vi.advanceTimersByTime(6001)
+      expect(getUiState().status).toBe('ready')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('maps goal status.update prefixes to short status strings', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'goal', text: '↻ Continuing toward goal (1/10): reason' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('↻ goal continuing')
+
+    onEvent({
+      payload: { kind: 'goal', text: '⏸ Goal paused — budget exhausted.' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('⏸ goal paused')
   })
 
   it('surfaces self-improvement review summaries as a persistent system line', () => {
@@ -735,6 +775,61 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
+  })
+
+  it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', status: 'timeout', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    // Late start/spawn updates must not clobber terminal timeout/error states.
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    onEvent({
+      payload: { goal: 'error child', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'error child', status: 'error', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-error')?.status).toBe('error')
+  })
+
+  it('normalizes unknown subagent.complete statuses to completed', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'weird child', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'weird child', status: 'mystery_status', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
   })
 
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {

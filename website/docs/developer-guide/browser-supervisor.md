@@ -217,7 +217,6 @@ Issue planned against `jo-inc/camofox-browser` adding:
 Unit tests use an asyncio mock CDP server that speaks enough of the protocol
 to exercise all state transitions: attach, enable, navigate, dialog fire,
 dialog dismiss, frame attach/detach, child target attach, session teardown.
-Real-backend E2E (Browserbase + local Chrome) is manual; probe scripts from
-the 2026-04-23 investigation kept in-repo under
-`scripts/browser_supervisor_e2e.py` so anyone can re-verify on new backend
-versions.
+Real-backend E2E (Browserbase + local Chrome) is manual — exercise via
+`/browser connect` to a live Chrome and run the dialog/frame test cases
+described above.

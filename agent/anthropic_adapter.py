@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,6 +36,14 @@ def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
     if _anthropic_sdk is ...:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("provider.anthropic", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            # FeatureUnavailable — fall through to ImportError handling below
+            pass
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -231,33 +240,30 @@ def _supports_fast_mode(model: str) -> bool:
     return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
-# Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
+# Beta headers for enhanced features that are safe on ordinary/native Anthropic
+# requests. As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
-# that still gate on the headers continue to get the enhanced features.
+# here so older Claude (4.5, 4.1) + compatible endpoints that still gate on
+# the headers continue to get the enhanced features.
 #
-# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
-# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
-# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
-# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
-# at 200K even though model_metadata.py advertises 1M. The header is a harmless
-# no-op on endpoints where 1M is GA.
+# Do NOT include ``context-1m-2025-08-07`` here. Anthropic returns HTTP 400
+# ("long context beta is not yet available for this subscription") for
+# accounts without the long-context beta, which breaks normal short auxiliary
+# calls like title generation/session summarization.
 #
-# Migration guide: remove these if you no longer support ≤4.5 models or once
-# Bedrock/Azure promote 1M to GA.
+# ``context-1m-2025-08-07`` is still required to unlock the 1M context window
+# on Claude Opus 4.6/4.7 and Sonnet 4.6 when served via AWS Bedrock or Azure
+# AI Foundry. Add it only for those endpoint-specific paths below.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
-    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
-# Bearer-auth (MiniMax) endpoints since they host their own models and
-# unknown Anthropic beta headers risk request rejection.
+# 1M context beta. Native Anthropic does not get this by default because some
+# subscriptions reject it, but Bedrock/Azure still need it for 1M context.
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
@@ -359,7 +365,7 @@ def _normalize_base_url_text(base_url) -> str:
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
-    Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted) authenticate
+    Third-party proxies (Microsoft Foundry, AWS Bedrock, self-hosted) authenticate
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
@@ -466,14 +472,64 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer *** of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
+    Foundry's Anthropic-style endpoint follow this pattern.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+    return (
+        normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+        or "azure.com" in normalized
+    )
+
+
+def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
+    """Return True for endpoints that still gate 1M context behind a beta."""
+    normalized = _normalize_base_url_text(base_url).lower()
+    if not normalized:
+        return False
+    return "azure.com" in normalized
+
+
+def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for MiniMax's Anthropic-compatible endpoints.
+
+    MiniMax rejects the fine-grained-tool-streaming and context-1m betas;
+    those need to be stripped even though MiniMax also uses Bearer auth.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    normalized = normalized.rstrip("/").lower()
+    return normalized.startswith(
+        ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
+    )
+
+
+def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Azure-hosted Anthropic Messages endpoints.
+
+    Covers both the modern Foundry host family (``*.services.ai.azure.*``)
+    and the legacy Azure OpenAI host family (``*.openai.azure.*``) when
+    serving Anthropic's ``/anthropic`` route. Used to opt-in those hosts
+    to the ``api-version`` query-param plumbing required by Azure.
+
+    Intentionally avoids a finite allow-list of TLD suffixes so it works
+    across sovereign / private Azure clouds.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = (parsed.path or "").lower()
+    host_padded = f".{host}."
+    is_foundry_host = ".services.ai.azure." in host_padded
+    is_legacy_azoai_host = ".openai.azure." in host_padded
+    return (is_foundry_host or is_legacy_azoai_host) and "/anthropic" in path
 
 
 def _common_betas_for_base_url(
@@ -485,37 +541,121 @@ def _common_betas_for_base_url(
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error.  Strip that beta for
-    Bearer-auth endpoints while keeping all other betas intact.
+    tool-use message triggers a connection error. They also reject the
+    1M-context beta. Azure AI Foundry's Anthropic endpoint also uses
+    Bearer auth but keeps both betas (it needs the 1M beta for 1M context).
 
-    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
-    endpoints — MiniMax hosts its own models, not Claude, so the header is
-    irrelevant at best and risks request rejection at worst.
+    The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
+    default because some subscriptions reject it. Add it only for endpoint
+    families that still require it for 1M context, currently Microsoft Foundry.
+    Bedrock uses its own client helper below and opts in explicitly.
 
-    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
-    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
-    a subscription rejects the beta with
-    "The long context beta is not yet available for this subscription" so
-    subsequent requests in the same session don't repeat the probe. See the
-    reactive recovery loop in ``run_agent.py`` and issue-comment history on
-    PR #17680 for the full rationale.
+    ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
+    would otherwise include it after a subscription/endpoint rejects the beta.
     """
-    if _requires_bearer_auth(base_url):
+    betas = list(_COMMON_BETAS)
+    if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
+        betas.append(_CONTEXT_1M_BETA)
+    if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
-        return [b for b in _COMMON_BETAS if b not in _stripped]
+        return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
-        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
-    return _COMMON_BETAS
+        return [b for b in betas if b != _CONTEXT_1M_BETA]
+    return betas
+
+
+def _build_anthropic_client_with_bearer_hook(
+    token_provider,
+    base_url: str = None,
+    timeout: float = None,
+    *,
+    drop_context_1m_beta: bool = False,
+):
+    """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
+
+    Anthropic SDK 0.86.0 stores ``api_key`` / ``auth_token`` as static
+    strings; there is no callable-token contract. To get per-request
+    bearer refresh (Microsoft's documented Foundry pattern), we hand
+    the SDK a custom ``httpx.Client`` whose request event hook mints a
+    fresh JWT from the Entra credential chain and rewrites
+    ``Authorization: Bearer <jwt>`` on every outbound request. The SDK
+    ignores its own auth logic when ``http_client`` is provided (the
+    hook strips any pre-set Authorization).
+
+    The placeholder ``auth_token`` is required because the SDK raises
+    ``AnthropicError`` at construction if neither ``api_key`` nor
+    ``auth_token`` is set — but the hook overrides it per-request so
+    the placeholder value never reaches Azure.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for Azure Foundry Anthropic-style "
+            "endpoints with Entra ID auth. Install with: pip install 'anthropic>=0.39.0'"
+        )
+
+    normalize_proxy_env_vars()
+
+    from httpx import Timeout
+    from agent.azure_identity_adapter import build_bearer_http_client
+
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
+
+    # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
+    normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        import re as _re
+        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
+
+    http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
+
+    kwargs = {
+        "timeout": timeout_obj,
+        "http_client": http_client,
+        # The SDK requires *something* for api_key/auth_token. Our
+        # event hook overrides Authorization per request so this value
+        # is never sent. The sentinel string makes accidental leaks
+        # diagnosable in logs.
+        "auth_token": "entra-id-bearer-via-http-hook",
+    }
+
+    if normalized_base_url:
+        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+            kwargs["base_url"] = normalized_base_url
+            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        else:
+            kwargs["base_url"] = normalized_base_url
+
+    common_betas = _common_betas_for_base_url(
+        normalized_base_url,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
+    if common_betas:
+        kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    return _anthropic_sdk.Anthropic(**kwargs)
 
 
 def build_anthropic_client(
-    api_key: str,
+    api_key,
     base_url: str = None,
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+
+    ``api_key`` accepts either:
+
+    * a static ``str`` — the historical contract for all key-based and
+      OAuth flows.
+    * a ``Callable[[], str]`` — an Entra ID bearer token provider from
+      :mod:`agent.azure_identity_adapter`. The Anthropic SDK itself
+      requires a static string, so when given a callable we construct
+      a custom ``httpx.Client`` with a request event hook that mints a
+      fresh JWT per outbound request and rewrites the ``Authorization``
+      header. The SDK never sees the callable directly.
 
     If *timeout* is provided it overrides the default 900s read timeout.  The
     connect timeout stays at 10s.  Callers pass this from the per-provider /
@@ -538,6 +678,14 @@ def build_anthropic_client(
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
 
+    # Callable api_key → Entra ID bearer provider path. Delegated to a
+    # helper so the existing static-key code below stays unchanged.
+    if callable(api_key) and not isinstance(api_key, str):
+        return _build_anthropic_client_with_bearer_hook(
+            api_key, base_url, timeout,
+            drop_context_1m_beta=drop_context_1m_beta,
+        )
+
     normalize_proxy_env_vars()
 
     from httpx import Timeout
@@ -552,8 +700,7 @@ def build_anthropic_client(
         # Pass it via default_query so the SDK appends it to every request URL
         # without corrupting the base_url (appending it directly produces
         # malformed paths like /anthropic?api-version=.../v1/messages).
-        _is_azure_endpoint = "azure.com" in normalized_base_url.lower()
-        if _is_azure_endpoint and "api-version" not in normalized_base_url:
+        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
             kwargs["base_url"] = normalized_base_url.rstrip("/")
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
@@ -583,7 +730,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
-        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
+        # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
@@ -642,7 +789,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
-        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
 
 
@@ -1049,10 +1196,12 @@ def _generate_pkce() -> tuple:
 
 def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import secrets
     import time
     import webbrowser
 
     verifier, challenge = _generate_pkce()
+    oauth_state = secrets.token_urlsafe(32)
 
     params = {
         "code": "true",
@@ -1062,7 +1211,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         "scope": _OAUTH_SCOPES,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "state": verifier,
+        "state": oauth_state,
     }
     from urllib.parse import urlencode
 
@@ -1099,7 +1248,12 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
 
     splits = auth_code.split("#")
     code = splits[0]
-    state = splits[1] if len(splits) > 1 else ""
+    received_state = splits[1] if len(splits) > 1 else ""
+
+    # Validate state to prevent CSRF (RFC 6749 §10.12)
+    if received_state != oauth_state:
+        logger.warning("OAuth state mismatch — possible CSRF, aborting")
+        return None
 
     try:
         import urllib.request
@@ -1108,7 +1262,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "grant_type": "authorization_code",
             "client_id": _OAUTH_CLIENT_ID,
             "code": code,
-            "state": state,
+            "state": received_state,
             "redirect_uri": _OAUTH_REDIRECT_URI,
             "code_verifier": verifier,
         }).encode()
@@ -1286,13 +1440,20 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
-        result.append({
+        anthropic_tool: Dict[str, Any] = {
             "name": name,
             "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
                 fn.get("parameters", {"type": "object", "properties": {}})
             ),
-        })
+        }
+        # Forward cache_control marker when present on the OpenAI-format
+        # tool dict. Anthropic's tools array supports cache_control on the
+        # last tool to cache the entire schema cross-session.
+        cache_control = t.get("cache_control")
+        if isinstance(cache_control, dict):
+            anthropic_tool["cache_control"] = dict(cache_control)
+        result.append(anthropic_tool)
     return result
 
 
@@ -1419,6 +1580,32 @@ def _convert_content_to_anthropic(content: Any) -> Any:
     return converted
 
 
+def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
+    """Convert OpenAI-style tool-message content parts → Anthropic tool_result inner blocks.
+
+    Used for multimodal tool results (e.g. computer_use screenshots). Each
+    part is normalized via `_convert_content_part_to_anthropic`, then
+    filtered to the block types Anthropic tool_result accepts (text + image).
+    """
+    if not isinstance(parts, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for part in parts:
+        block = _convert_content_part_to_anthropic(part)
+        if not block:
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text_val = block.get("text")
+            if isinstance(text_val, str) and text_val:
+                out.append({"type": "text", "text": text_val})
+        elif btype == "image":
+            src = block.get("source")
+            if isinstance(src, dict) and src:
+                out.append({"type": "image", "source": src})
+    return out
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -1508,7 +1695,7 @@ def convert_messages_to_anthropic(
             # downgraded to a spurious text block on the last assistant message.
             reasoning_content = m.get("reasoning_content")
             _already_has_thinking = any(
-                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
                 for b in blocks
             )
             if isinstance(reasoning_content, str) and not _already_has_thinking:
@@ -1521,8 +1708,41 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "tool":
-            # Sanitize tool_use_id and ensure non-empty content
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            # Sanitize tool_use_id and ensure non-empty content.
+            # Computer-use (and other multimodal) tool results arrive as
+            # either a list of OpenAI-style content parts, or a dict
+            # marked `_multimodal` with an embedded `content` list. Convert
+            # both into Anthropic `tool_result` inner blocks (text + image).
+            multimodal_blocks: Optional[List[Dict[str, Any]]] = None
+            if isinstance(content, dict) and content.get("_multimodal"):
+                multimodal_blocks = _content_parts_to_anthropic_blocks(
+                    content.get("content") or []
+                )
+                # Fallback text if the conversion produced nothing usable.
+                if not multimodal_blocks and content.get("text_summary"):
+                    multimodal_blocks = [
+                        {"type": "text", "text": str(content["text_summary"])}
+                    ]
+            elif isinstance(content, list):
+                converted = _content_parts_to_anthropic_blocks(content)
+                if any(b.get("type") == "image" for b in converted):
+                    multimodal_blocks = converted
+            # Back-compat: some callers stash blocks under a private key.
+            if multimodal_blocks is None:
+                stashed = m.get("_anthropic_content_blocks")
+                if isinstance(stashed, list) and stashed:
+                    text_content = content if isinstance(content, str) and content.strip() else None
+                    multimodal_blocks = (
+                        [{"type": "text", "text": text_content}] + stashed
+                        if text_content else list(stashed)
+                    )
+
+            if multimodal_blocks:
+                result_content: Any = multimodal_blocks
+            elif isinstance(content, str):
+                result_content = content
+            else:
+                result_content = json.dumps(content) if content else "(no output)"
             if not result_content:
                 result_content = "(no output)"
             tool_result = {
@@ -1626,7 +1846,7 @@ def convert_messages_to_anthropic(
                 if isinstance(m["content"], list):
                     m["content"] = [
                         b for b in m["content"]
-                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                        if not (isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"})
                     ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
@@ -1652,7 +1872,7 @@ def convert_messages_to_anthropic(
     # causing HTTP 400 "Invalid signature in thinking block".
     #
     # Signatures are Anthropic-proprietary.  Third-party endpoints
-    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
+    # (MiniMax, Microsoft Foundry, self-hosted proxies) cannot validate
     # them and will reject them outright.  When targeting a third-party
     # endpoint, strip ALL thinking/redacted_thinking blocks from every
     # assistant message — the third-party will generate its own
@@ -1745,6 +1965,38 @@ def convert_messages_to_anthropic(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+    # ── Image eviction: keep only the most recent N screenshots ─────
+    # computer_use screenshots (base64 images) sit inside tool_result
+    # blocks: they accumulate and are sent with every API call. Each
+    # costs ~1,465 tokens; after 10+ the conversation becomes slow
+    # even for simple text queries. Walk backward, keep the most recent
+    # _MAX_KEEP_IMAGES, replace older ones with a text placeholder.
+    _MAX_KEEP_IMAGES = 3
+    _image_count = 0
+    for msg in reversed(result):
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            inner = block.get("content")
+            if not isinstance(inner, list):
+                continue
+            has_image = any(
+                isinstance(b, dict) and b.get("type") == "image"
+                for b in inner
+            )
+            if not has_image:
+                continue
+            _image_count += 1
+            if _image_count > _MAX_KEEP_IMAGES:
+                block["content"] = [
+                    b if b.get("type") != "image"
+                    else {"type": "text", "text": "[screenshot removed to save context]"}
+                    for b in inner
+                ]
 
     return system, result
 
@@ -1966,5 +2218,3 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
-

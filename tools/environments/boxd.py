@@ -76,6 +76,13 @@ class BoxdEnvironment(BaseEnvironment):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.boxd", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
         from boxd import (
             BoxConfig,
             BoxdError,

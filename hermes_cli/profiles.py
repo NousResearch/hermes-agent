@@ -64,32 +64,99 @@ _CLONE_SUBDIR_FILES = [
     "memories/USER.md",
 ]
 
-# Runtime files stripped after --clone-all (shouldn't carry over)
-_CLONE_ALL_STRIP = [
+# Runtime files stripped after --clone-all (shouldn't carry over).
+# Kept as a post-copy step rather than in the ignore filter because they
+# are created dynamically during normal use and may be absent at copy time.
+_CLONE_ALL_STRIP: list[str] = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
 ]
 
+# Infrastructure artifacts excluded from --clone-all when the source is the
+# default profile (``~/.hermes``).  Named profiles never contain these
+# directories at root, so the exclusion is gated to avoid silently dropping
+# user data from a named-profile source.
+#
+# Rationale per item:
+#   hermes-agent  — git repo checkout (~84 MB source + ~3 GB venv)
+#   .worktrees    — git worktrees
+#   profiles      — sibling named profiles (recursive copy never intended)
+#   bin           — installed binaries (tirith etc., ~10 MB) shared per-host
+#   node_modules  — npm packages (hundreds of MB)
+#
+# See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
+# exclusion list (export drops state.db / logs / caches too because the
+# archive is a portable snapshot; clone-all keeps those because the cloned
+# profile is meant to keep working immediately).
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+})
+
+# Marker file written by `hermes profile create --no-skills`.  When present in
+# a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
+# update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
+# for that profile.  The user can still install skills manually via
+# `hermes skills install` or drop SKILL.md files into the profile's skills/.
+# Delete the marker file to opt back in.
+NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+
+def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
+    """Return True if the profile opted out of bundled-skill seeding."""
+    try:
+        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
+    except OSError:
+        return False
+
 
 def _clone_all_copytree_ignore(source_dir: Path):
-    """Ignore ``profiles/`` at the root of *source_dir* only.
+    """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
-    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
-    new profile (recursive ``.../profiles/.../profiles/...``). Export already
-    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
-    behavior for ``--clone-all``.
+    Two categories:
+      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+         Hermes infrastructure directories that only the default profile
+         (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
+         being the default profile so a named-profile source never has its
+         own data silently dropped.
+      2. Universal exclusions at any depth — Python bytecode caches that
+         are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
+         and runtime sockets / temp files (``*.sock``, ``*.tmp``).
+
+    The export-side ignore (``_default_export_ignore``) uses the same
+    two-tier pattern with the broader ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` set
+    because the export archive is a portable snapshot rather than a live
+    clone.
     """
     source_resolved = source_dir.resolve()
+    is_default_source = source_resolved == _get_default_hermes_home().resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
-        try:
-            if Path(directory).resolve() == source_resolved:
-                return [n for n in names if n == "profiles"]
-        except (OSError, ValueError):
-            pass
-        return []
+        ignored: list[str] = []
+        for entry in names:
+            # Universal exclusions at any depth.
+            if (
+                entry == "__pycache__"
+                or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
+            ):
+                ignored.append(entry)
+                continue
+            # Root-level exclusions only apply when cloning the default profile.
+            if is_default_source:
+                try:
+                    if Path(directory).resolve() == source_resolved:
+                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                            ignored.append(entry)
+                except (OSError, ValueError):
+                    # ``resolve()`` can fail on unusual FS layouts (broken
+                    # symlinks, missing parents).  Fail open — better to
+                    # over-copy than silently drop user data.
+                    pass
+        return ignored
 
     return _ignore
 
@@ -205,6 +272,12 @@ def validate_profile_name(name: str) -> None:
     call :func:`normalize_profile_name` first. This separation keeps validate
     honest about what the on-disk directory name must look like, while
     ingress-point normalization handles UX flexibility (see #18498).
+
+    Also rejects names in :data:`_RESERVED_NAMES` (``hermes``, ``test``,
+    ``tmp``, ``root``, ``sudo``) that would create confusing on-disk
+    collisions (a ``hermes`` profile inside ``~/.hermes/``) or get refused
+    at alias-creation time anyway. ``default`` is a special pass-through —
+    it's a valid alias for the built-in root profile.
     """
     if name == "default":
         return  # special alias for ~/.hermes
@@ -212,6 +285,12 @@ def validate_profile_name(name: str) -> None:
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
             f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+    if name in _RESERVED_NAMES:
+        raise ValueError(
+            f"Profile name {name!r} is reserved — it collides with either "
+            f"the Hermes installation itself or a common system binary.  "
+            f"Pick a different name."
         )
 
 
@@ -329,6 +408,46 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
+    # Distribution metadata (None if the profile wasn't installed from a distribution).
+    distribution_name: Optional[str] = None
+    distribution_version: Optional[str] = None
+    distribution_source: Optional[str] = None
+    # Free-form description (1-2 sentences) of what this profile is good
+    # at. Persisted in ``<profile_dir>/profile.yaml``. Empty when the
+    # user has not described the profile (legacy profiles, fresh
+    # installs). Surfaced to the kanban decomposer so it can route work
+    # to the right profile based on role rather than name alone.
+    description: str = ""
+    # When True, ``description`` was auto-generated by the LLM
+    # describer and has not been confirmed by the user. The dashboard
+    # surfaces a "review" badge in this case so the user can edit or
+    # accept.
+    description_auto: bool = False
+
+
+def _read_distribution_meta(profile_dir: Path) -> tuple:
+    """Return ``(name, version, source)`` from the profile's ``distribution.yaml``
+    if present; ``(None, None, None)`` otherwise.
+
+    Failures (missing file, bad YAML) are swallowed — a bad manifest should
+    never break ``hermes profile list`` for an unrelated profile.
+    """
+    mf_path = profile_dir / "distribution.yaml"
+    if not mf_path.is_file():
+        return None, None, None
+    try:
+        import yaml
+        with open(mf_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return None, None, None
+        return (
+            data.get("name"),
+            data.get("version"),
+            data.get("source"),
+        )
+    except Exception:
+        return None, None, None
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
@@ -338,7 +457,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
     try:
         import yaml
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
@@ -372,6 +491,82 @@ def _count_skills(profile_dir: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# profile.yaml — per-profile metadata (description, role, etc.)
+# ---------------------------------------------------------------------------
+#
+# We keep this file deliberately tiny and separate from the profile's
+# ``config.yaml``. ``config.yaml`` is the user-facing Hermes config
+# (~5000 lines of defaults); ``profile.yaml`` is metadata ABOUT the
+# profile itself (its role, who described it). Mixing them makes both
+# harder to read.
+#
+# Missing file -> empty defaults; never an error. The kanban decomposer
+# tolerates empty descriptions and just falls back to the profile name.
+
+
+def _profile_yaml_path(profile_dir: Path) -> Path:
+    return profile_dir / "profile.yaml"
+
+
+def read_profile_meta(profile_dir: Path) -> dict:
+    """Read ``<profile_dir>/profile.yaml`` and return a dict.
+
+    Returns ``{"description": "", "description_auto": False}`` when the
+    file is missing or unreadable. Never raises — a corrupt
+    profile.yaml on an unrelated profile must not break
+    ``hermes profile list``.
+    """
+    path = _profile_yaml_path(profile_dir)
+    if not path.is_file():
+        return {"description": "", "description_auto": False}
+    try:
+        import yaml
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {"description": "", "description_auto": False}
+    if not isinstance(data, dict):
+        return {"description": "", "description_auto": False}
+    return {
+        "description": str(data.get("description") or "").strip(),
+        "description_auto": bool(data.get("description_auto", False)),
+    }
+
+
+def write_profile_meta(
+    profile_dir: Path,
+    *,
+    description: Optional[str] = None,
+    description_auto: Optional[bool] = None,
+) -> None:
+    """Update ``<profile_dir>/profile.yaml`` in place.
+
+    Only the explicitly passed fields are overwritten; unspecified
+    fields preserve existing values. Creates the file if missing.
+    Profile directory itself must exist.
+    """
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
+    import yaml
+    path = _profile_yaml_path(profile_dir)
+    existing: dict = {}
+    if path.is_file():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    if description is not None:
+        existing["description"] = description.strip()
+    if description_auto is not None:
+        existing["description_auto"] = bool(description_auto)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+
+
+# ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
 
@@ -384,6 +579,8 @@ def list_profiles() -> List[ProfileInfo]:
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
+        dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
+        meta = read_profile_meta(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
@@ -393,6 +590,11 @@ def list_profiles() -> List[ProfileInfo]:
             provider=provider,
             has_env=(default_home / ".env").exists(),
             skill_count=_count_skills(default_home),
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
+            description=meta.get("description", ""),
+            description_auto=meta.get("description_auto", False),
         ))
 
     # Named profiles
@@ -406,6 +608,8 @@ def list_profiles() -> List[ProfileInfo]:
                 continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name
+            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
+            meta = read_profile_meta(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -416,6 +620,11 @@ def list_profiles() -> List[ProfileInfo]:
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
                 alias_path=alias_path if alias_path.exists() else None,
+                distribution_name=dist_name,
+                distribution_version=dist_version,
+                distribution_source=dist_source,
+                description=meta.get("description", ""),
+                description_auto=meta.get("description_auto", False),
             ))
 
     return profiles
@@ -427,6 +636,8 @@ def create_profile(
     clone_all: bool = False,
     clone_config: bool = False,
     no_alias: bool = False,
+    no_skills: bool = False,
+    description: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory.
 
@@ -444,12 +655,22 @@ def create_profile(
         skills, and selected profile identity files from the source profile.
     no_alias:
         If True, skip wrapper script creation.
+    no_skills:
+        If True, create an empty profile with no bundled skills, and write
+        a marker file so ``hermes update`` skips re-seeding this profile's
+        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
+        explicitly copy skills from the source).
 
     Returns
     -------
     Path
         The newly created profile directory.
     """
+    if no_skills and (clone_config or clone_all):
+        raise ValueError(
+            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "(cloning explicitly copies skills from the source profile)."
+        )
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
 
@@ -527,6 +748,32 @@ def create_profile(
         except Exception:
             pass  # best-effort — don't fail profile creation over this
 
+    # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
+    # all-profile sync loop both skip this profile for bundled-skill seeding.
+    if no_skills:
+        try:
+            (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
+                "This profile opted out of bundled-skill seeding "
+                "(`hermes profile create --no-skills`).\n"
+                "Delete this file to re-enable sync on the next `hermes update`.\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # best-effort — the feature still works via the empty skills/ dir
+
+    # Persist description if the caller provided one. Done last so a
+    # partial-create failure doesn't strand a description file in an
+    # incomplete profile.
+    if description and description.strip():
+        try:
+            write_profile_meta(
+                profile_dir,
+                description=description.strip(),
+                description_auto=False,
+            )
+        except Exception:
+            pass  # non-fatal — user can describe later with `hermes profile describe`
+
     return profile_dir
 
 
@@ -535,7 +782,19 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
     Uses subprocess because sync_skills() caches HERMES_HOME at module level.
     Returns the sync result dict, or None on failure.
+
+    Profiles that opted out of bundled skills (via ``hermes profile create
+    --no-skills`` — which writes ``.no-bundled-skills`` to the profile root)
+    are skipped and get an empty-result dict so callers can report
+    "opted out" instead of "failed".
     """
+    if has_bundled_skills_opt_out(profile_dir):
+        return {
+            "copied": [],
+            "updated": [],
+            "user_modified": [],
+            "skipped_opt_out": True,
+        }
     project_root = Path(__file__).parent.parent.resolve()
     try:
         result = subprocess.run(
@@ -588,6 +847,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     skill_count = _count_skills(profile_dir)
+    dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
 
     print(f"\nProfile: {canon}")
     print(f"Path:    {profile_dir}")
@@ -595,6 +855,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
     if skill_count:
         print(f"Skills:  {skill_count}")
+    if dist_name:
+        print(f"Distribution: {dist_name}@{dist_version or '?'}")
+        if dist_source:
+            print(f"Installed from: {dist_source}")
 
     items = [
         "All config, API keys, memories, sessions, skills, cron jobs",
@@ -706,7 +970,6 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 def _stop_gateway_process(profile_dir: Path) -> None:
     """Stop a running gateway process via its PID file."""
-    import signal as _signal
     import time as _time
 
     pid_file = profile_dir / "gateway.pid"
@@ -717,19 +980,25 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         raw = pid_file.read_text().strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, _signal.SIGTERM)
-        # Wait up to 10s for graceful shutdown
+        # Route through terminate_pid so Windows uses the appropriate
+        # primitive (taskkill / TerminateProcess) — raw os.kill with
+        # _signal.SIGKILL raises AttributeError at import time on Windows,
+        # and raw os.kill with SIGTERM doesn't cascade to child processes
+        # the same way taskkill /T does.
+        from gateway.status import terminate_pid as _terminate_pid
+        from gateway.status import _pid_exists
+        _terminate_pid(pid)  # graceful first
+        # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
+        # is NOT a no-op — use the handle-based existence check.
         for _ in range(20):
             _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not _pid_exists(pid):
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
         # Force kill
         try:
-            os.kill(pid, _signal.SIGKILL)
-        except ProcessLookupError:
+            _terminate_pid(pid, force=True)
+        except (ProcessLookupError, OSError):
             pass
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):
@@ -827,7 +1096,7 @@ def _default_export_ignore(root_dir: Path):
             if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
                 ignored.add(entry)
             # npm lockfiles can appear at root
-            elif entry in ("package.json", "package-lock.json"):
+            elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
         # Root-level exclusions
         if Path(directory) == root_dir:
@@ -895,7 +1164,7 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
     ):
         raise ValueError(f"Unsafe archive member path: {member_name}")
 
-    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    parts = [part for part in posix_path.parts if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe archive member path: {member_name}")
     return parts
@@ -1131,91 +1400,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         pass
 
     return new_dir
-
-
-# ---------------------------------------------------------------------------
-# Tab completion
-# ---------------------------------------------------------------------------
-
-def generate_bash_completion() -> str:
-    """Generate a bash completion script for hermes profile names."""
-    return '''# Hermes Agent profile completion
-# Add to ~/.bashrc: eval "$(hermes completion bash)"
-
-_hermes_profiles() {
-    local profiles_dir="$HOME/.hermes/profiles"
-    local profiles="default"
-    if [ -d "$profiles_dir" ]; then
-        profiles="$profiles $(ls "$profiles_dir" 2>/dev/null)"
-    fi
-    echo "$profiles"
-}
-
-_hermes_completion() {
-    local cur prev
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-    # Complete profile names after -p / --profile
-    if [[ "$prev" == "-p" || "$prev" == "--profile" ]]; then
-        COMPREPLY=($(compgen -W "$(_hermes_profiles)" -- "$cur"))
-        return
-    fi
-
-    # Complete profile subcommands
-    if [[ "${COMP_WORDS[1]}" == "profile" ]]; then
-        case "$prev" in
-            profile)
-                COMPREPLY=($(compgen -W "list use create delete show alias rename export import" -- "$cur"))
-                return
-                ;;
-            use|delete|show|alias|rename|export)
-                COMPREPLY=($(compgen -W "$(_hermes_profiles)" -- "$cur"))
-                return
-                ;;
-        esac
-    fi
-
-    # Top-level subcommands
-    if [[ "$COMP_CWORD" == 1 ]]; then
-        local commands="chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version"
-        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
-    fi
-}
-
-complete -F _hermes_completion hermes
-'''
-
-
-def generate_zsh_completion() -> str:
-    """Generate a zsh completion script for hermes profile names."""
-    return '''#compdef hermes
-# Hermes Agent profile completion
-# Add to ~/.zshrc: eval "$(hermes completion zsh)"
-
-_hermes() {
-    local -a profiles
-    profiles=(default)
-    if [[ -d "$HOME/.hermes/profiles" ]]; then
-        profiles+=("${(@f)$(ls $HOME/.hermes/profiles 2>/dev/null)}")
-    fi
-
-    _arguments \\
-        '-p[Profile name]:profile:($profiles)' \\
-        '--profile[Profile name]:profile:($profiles)' \\
-        '1:command:(chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version)' \\
-        '*::arg:->args'
-
-    case $words[1] in
-        profile)
-            _arguments '1:action:(list use create delete show alias rename export import)' \\
-                        '2:profile:($profiles)'
-            ;;
-    esac
-}
-
-_hermes "$@"
-'''
 
 
 # ---------------------------------------------------------------------------

@@ -208,3 +208,197 @@ def test_kanban_not_gateway_only():
     cmd = next(c for c in COMMAND_REGISTRY if c.name == "kanban")
     assert not cmd.cli_only
     assert not cmd.gateway_only
+
+
+# ---------------------------------------------------------------------------
+# reclaim + reassign CLI smoke tests
+# ---------------------------------------------------------------------------
+
+def test_run_slash_reclaim_running_task(kanban_home):
+    import re
+    import time
+    import secrets
+    from hermes_cli import kanban_db as kb
+
+    out1 = kc.run_slash("create 'stuck worker task' --assignee broken-model")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    assert m
+    tid = m.group(1)
+
+    # Simulate a running claim outside TTL.
+    conn = kb.connect()
+    try:
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 4242, tid),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (tid, lock, int(time.time()) + 3600, 4242, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kc.run_slash(f"reclaim {tid} --reason 'test'")
+    assert "Reclaimed" in out, out
+    # Status back to ready.
+    out2 = kc.run_slash(f"show {tid}")
+    assert "ready" in out2.lower()
+
+
+def test_run_slash_reassign_with_reclaim_flag(kanban_home):
+    import re
+    import time
+    import secrets
+    from hermes_cli import kanban_db as kb
+
+    out1 = kc.run_slash("create 'switch model' --assignee orig")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    tid = m.group(1)
+
+    # Simulate a running claim.
+    conn = kb.connect()
+    try:
+        lock = secrets.token_hex(4)
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=? WHERE id=?",
+            (lock, int(time.time()) + 3600, 4242, tid),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (tid, lock, int(time.time()) + 3600, 4242, int(time.time())),
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (rid, tid))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kc.run_slash(f"reassign {tid} newbie --reclaim --reason 'switch'")
+    assert "Reassigned" in out, out
+    out2 = kc.run_slash(f"show {tid}")
+    assert "newbie" in out2
+
+
+# ---------------------------------------------------------------------------
+# /kanban specify — slash surface (same entry point CLI + gateway use)
+# ---------------------------------------------------------------------------
+
+def test_run_slash_specify_end_to_end(kanban_home, monkeypatch):
+    """The /kanban specify slash command routes through run_slash, which
+    both the interactive CLI and every gateway platform use. This test
+    covers both surfaces."""
+    from unittest.mock import MagicMock
+
+    # Create a triage task via the same slash surface.
+    create_out = kc.run_slash("create 'rough idea' --triage")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", create_out)
+    assert m, f"no task id in: {create_out!r}"
+    tid = m.group(1)
+
+    # Mock the auxiliary client so we don't hit a real provider.
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = (
+        '{"title": "Spec: rough idea", "body": "**Goal**\\nShip it."}'
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, "test-model"),
+    )
+
+    # Specify via slash.
+    out = kc.run_slash(f"specify {tid}")
+    assert "Specified" in out
+    assert tid in out
+
+    # Task is promoted and retitled.
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status in {"todo", "ready"}
+    assert task.title == "Spec: rough idea"
+
+
+def test_run_slash_specify_help_is_reachable(kanban_home):
+    """`-h`/`--help` on a subcommand returns the actual help text — see
+    issue #21794. argparse writes help to stdout and exits 0; run_slash
+    must capture both streams and treat exit 0 as success, not error."""
+    out = kc.run_slash("specify --help")
+    assert "specify" in out.lower()
+    # Help dump should NOT come back wrapped as a usage error.
+    assert not out.startswith("⚠")
+
+
+# ---------------------------------------------------------------------------
+# /kanban help / no-args / unknown-action UX (issue #21794)
+# ---------------------------------------------------------------------------
+
+def test_run_slash_bare_returns_curated_help(kanban_home):
+    """Bare `/kanban` returns the curated short-help block — not a 5KB
+    argparse usage dump."""
+    out = kc.run_slash("")
+    assert "/kanban" in out
+    assert "list" in out
+    assert "show" in out
+    # Sanity: should be a chat-friendly size, not the raw usage tree.
+    assert len(out) < 2000
+    # Shouldn't surface argparse's usage-error sentinel.
+    assert "usage error" not in out.lower()
+
+
+@pytest.mark.parametrize("alias", ["help", "--help", "-h", "?"])
+def test_run_slash_help_aliases_match_bare(kanban_home, alias):
+    """Every documented help alias produces the same curated output."""
+    bare = kc.run_slash("")
+    out = kc.run_slash(alias)
+    assert out == bare
+
+
+def test_run_slash_subcommand_help_returns_help_text(kanban_home):
+    """`/kanban show -h` returns the actual subcommand help, not a
+    fake `(usage error: 0)` sentinel."""
+    out = kc.run_slash("show -h")
+    assert "task_id" in out
+    assert "/kanban show" in out
+    assert not out.startswith("⚠")
+
+
+def test_run_slash_unknown_action_friendly_error(kanban_home):
+    """Unknown subcommand surfaces a single-line usage error prefixed
+    with our marker — no `(usage error: 2)` wrapping, no doubled
+    `kanban kanban` prog string."""
+    out = kc.run_slash("frobnicate")
+    assert "/kanban" in out
+    assert "frobnicate" in out
+    assert "/kanban-wrap" not in out
+    assert "/kanban kanban" not in out
+    assert "(usage error: " not in out
+
+
+def test_run_slash_missing_required_arg_friendly_error(kanban_home):
+    """Missing positional argument shows the subcommand-scoped usage
+    line, not the top-level kanban tree."""
+    out = kc.run_slash("show")
+    assert "/kanban show" in out
+    assert "task_id" in out
+
+
+def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+
+    kc.run_slash("--board alpha list")
+
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"

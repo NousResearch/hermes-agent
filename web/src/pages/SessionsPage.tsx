@@ -274,6 +274,7 @@ function SessionRow({
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -344,8 +345,40 @@ function SessionRow({
                   </span>
                 </>
               )}
+              {(session.input_tokens > 0 || session.output_tokens > 0) && (
+                <>
+                  <span className="text-border">&#183;</span>
+                  <span className="tabular-nums">
+                    {session.input_tokens >= 1000
+                      ? `${(session.input_tokens / 1000).toFixed(1)}K`
+                      : session.input_tokens}{" "}
+                    in
+                  </span>
+                  <span className="text-border">&#183;</span>
+                  <span className="tabular-nums">
+                    {session.output_tokens >= 1000
+                      ? `${(session.output_tokens / 1000).toFixed(1)}K`
+                      : session.output_tokens}{" "}
+                    out
+                  </span>
+                </>
+              )}
               <span className="text-border">&#183;</span>
               <span>{timeAgo(session.last_active)}</span>
+              <span className="text-border">&#183;</span>
+              <button
+                className={`text-[10px] transition-colors ${copied ? "text-success" : "text-muted-foreground/50 hover:text-foreground"}`}
+                title="Click to copy session ID"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigator.clipboard.writeText(session.id).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  });
+                }}
+              >
+                {copied ? "Copied!" : session.id}
+              </button>
             </div>
             {snippet && <SnippetHighlight snippet={snippet} />}
           </div>

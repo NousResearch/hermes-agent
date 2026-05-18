@@ -22,6 +22,7 @@ from pathlib import Path
 from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def save_clipboard_image(dest: Path) -> bool:
@@ -378,10 +379,13 @@ def _wayland_save(dest: Path) -> bool:
             dest.unlink(missing_ok=True)
             return False
 
-        # BMP needs conversion to PNG (common in WSLg where only BMP
-        # is bridged from Windows clipboard via RDP).
-        if mime == "image/bmp":
-            return _convert_to_png(dest)
+        # save_clipboard_image() promises a PNG output path. Wayland can offer
+        # JPEG/GIF/WebP/BMP payloads, so normalize every non-PNG result before
+        # returning success.
+        if mime != "image/png":
+            if not _convert_to_png(dest) or not _is_png_file(dest):
+                dest.unlink(missing_ok=True)
+                return False
 
         return True
 
@@ -431,6 +435,15 @@ def _convert_to_png(path: Path) -> bool:
 
     # Can't convert — BMP is still usable as-is for most APIs
     return path.exists() and path.stat().st_size > 0
+
+
+def _is_png_file(path: Path) -> bool:
+    """Return True when *path* starts with the PNG file signature."""
+    try:
+        with path.open("rb") as f:
+            return f.read(len(_PNG_SIGNATURE)) == _PNG_SIGNATURE
+    except OSError:
+        return False
 
 
 # ── X11 (xclip) ─────────────────────────────────────────────────────────

@@ -221,6 +221,114 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     return json.dumps(shrunken, ensure_ascii=False)
 
 
+_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
+
+
+def _is_image_part(part: Any) -> bool:
+    """True if ``part`` is a multimodal image content block.
+
+    Recognizes all three shapes the agent handles:
+      - OpenAI chat.completions: ``{"type": "image_url", "image_url": ...}``
+      - OpenAI Responses API:    ``{"type": "input_image", "image_url": "..."}``
+      - Anthropic native:        ``{"type": "image", "source": {...}}``
+    """
+    if not isinstance(part, dict):
+        return False
+    return part.get("type") in _IMAGE_PART_TYPES
+
+
+def _content_has_images(content: Any) -> bool:
+    """True if a message's ``content`` is a multimodal list with image parts."""
+    if not isinstance(content, list):
+        return False
+    return any(_is_image_part(p) for p in content)
+
+
+def _strip_images_from_content(content: Any) -> Any:
+    """Return a copy of ``content`` with every image part replaced by a
+    short text placeholder.
+
+    - String content is returned unchanged.
+    - Non-list, non-string content is returned unchanged.
+    - List content: image parts become ``{"type": "text", "text": "[Attached
+      image — stripped after compression]"}``; other parts are preserved as-is.
+
+    Input is never mutated.
+    """
+    if not isinstance(content, list):
+        return content
+    if not any(_is_image_part(p) for p in content):
+        return content
+
+    new_parts: List[Any] = []
+    for p in content:
+        if _is_image_part(p):
+            new_parts.append({
+                "type": "text",
+                "text": "[Attached image — stripped after compression]",
+            })
+        else:
+            new_parts.append(p)
+    return new_parts
+
+
+def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Replace image parts in older messages with placeholder text.
+
+    The anchor is the *last* user message that has any image content. Every
+    message before that anchor gets its image parts replaced with a short
+    placeholder so the outgoing request stops re-shipping the same multi-MB
+    base-64 image blobs on every turn.
+
+    If no user message carries images, the list is returned unchanged.
+    If the only user message with images is the very first one (nothing
+    earlier to strip), the list is returned unchanged.
+
+    Shallow copies of touched messages only; input is never mutated.
+    Port of Kilo-Org/kilocode#9434 (adapted for the OpenAI-style message
+    shape the hermes compressor emits).
+    """
+    if not messages:
+        return messages
+
+    # Find the newest user message that carries at least one image part.
+    # We anchor on image-bearing user messages (not all user messages) so
+    # a plain text follow-up after a big-image turn still strips the old
+    # image — matching the problem kilocode#9434 set out to solve.
+    anchor = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        if _content_has_images(msg.get("content")):
+            anchor = i
+            break
+
+    if anchor <= 0:
+        # No image-bearing user message, or it's the very first message —
+        # nothing before it to strip.
+        return messages
+
+    changed = False
+    result: List[Dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        if i >= anchor or not isinstance(msg, dict):
+            result.append(msg)
+            continue
+        content = msg.get("content")
+        if not _content_has_images(content):
+            result.append(msg)
+            continue
+        new_msg = msg.copy()
+        new_msg["content"] = _strip_images_from_content(content)
+        result.append(new_msg)
+        changed = True
+
+    return result if changed else messages
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -1185,6 +1293,26 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx += 1
         return idx
 
+    def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
+        """Total count of head messages to protect.
+
+        ``protect_first_n`` is defined as *additional* messages protected
+        beyond the system prompt.  The system prompt (if present at index 0)
+        is always implicitly protected — it's load-bearing context that
+        must never be summarised away.  This keeps semantics stable across
+        call paths where the system prompt may or may not be included in
+        the ``messages`` list (e.g. the gateway ``/compress`` handler
+        strips it before calling compress()).
+
+        Examples:
+          protect_first_n=0 → system prompt only (or nothing if no system msg)
+          protect_first_n=3 → system + first 3 non-system messages
+        """
+        head = 0
+        if messages and messages[0].get("role") == "system":
+            head = 1
+        return head + self.protect_first_n
+
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
         tool_call / result group.
@@ -1343,7 +1471,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         skip the LLM call when the transcript is still entirely inside
         the protected head/tail.
         """
-        compress_start = self._align_boundary_forward(messages, self.protect_first_n)
+        compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
         return compress_start < compress_end
 
@@ -1379,7 +1507,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_model = None
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -1399,7 +1527,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
+        compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
@@ -1409,15 +1537,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+        # A persisted handoff summary can sit in the protected head after a
+        # resume (commonly immediately after the system prompt). Search from
+        # the first non-system message through the compression window so we can
+        # rehydrate iterative-summary state without serializing that handoff as
+        # a new turn. Protected messages after the handoff remain live context,
+        # so only summarize messages that are both after the handoff and inside
+        # the current compression window.
+        summary_search_start = 1 if messages and messages[0].get("role") == "system" else 0
         summary_idx, summary_body = self._find_latest_context_summary(
             messages,
-            compress_start,
+            summary_search_start,
             compress_end,
         )
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
-            turns_to_summarize = messages[summary_idx + 1:compress_end]
+            turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
 
         if not self.quiet_mode:
             logger.info(
@@ -1530,6 +1666,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self.compression_count += 1
 
         compressed = self._sanitize_tool_pairs(compressed)
+
+        # Replace image parts in all compressed messages before the newest
+        # image-bearing user turn with a short text placeholder. Without
+        # this, tail messages keep their original multi-MB base-64 image
+        # payloads forever, which can push every subsequent API request
+        # past the provider's body-size limit and wedge the session.
+        # Port of Kilo-Org/kilocode#9434.
+        compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate

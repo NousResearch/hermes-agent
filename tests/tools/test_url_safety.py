@@ -22,6 +22,14 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("https://example.com/image.png") is True
 
+    def test_ftp_scheme_blocked(self):
+        """Only http/https should be allowed for fetch tools."""
+        assert is_safe_url("ftp://example.com/file.txt") is False
+
+    def test_missing_scheme_blocked(self):
+        """Bare host/path should be rejected to avoid ambiguous handling."""
+        assert is_safe_url("example.com/path") is False
+
     def test_localhost_blocked(self):
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("127.0.0.1", 0)),

@@ -479,10 +479,33 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
     Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Symlink cycles are detected by tracking each directory's resolved
+    (canonical) path, so a self-referencing tree under ``skills_dir`` will
+    not cause infinite recursion (#18809).
     """
     matches = []
+    try:
+        root_real = os.path.realpath(skills_dir)
+    except OSError:
+        root_real = str(skills_dir)
+    visited_realpaths = {root_real}
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        # Filter excluded directories first to keep behavior unchanged.
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        # Drop any subdirectory whose canonical path we've already visited —
+        # this is the only way to break os.walk's untracked symlink loops.
+        unique_dirs = []
+        for d in dirs:
+            try:
+                real = os.path.realpath(os.path.join(root, d))
+            except OSError:
+                # Treat unreadable entries as visited so we don't keep retrying.
+                continue
+            if real in visited_realpaths:
+                continue
+            visited_realpaths.add(real)
+            unique_dirs.append(d)
+        dirs[:] = unique_dirs
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

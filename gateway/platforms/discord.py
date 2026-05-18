@@ -1601,22 +1601,208 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        Discord caps a single message at 2000 characters.  Streaming
+        replies (token-by-token output, tool-progress markers) and
+        autonomous multi-step runs routinely grow past this limit
+        during a single turn -- and an oversized edit MUST NOT be
+        silently truncated.  Pre-#27881 this method clipped the
+        payload to ``MAX_MESSAGE_LENGTH - 3`` chars plus ``"..."`` and
+        returned ``SendResult(success=True)``, so the gateway's stream
+        consumer believed the full reply had been delivered when in
+        fact the tail was discarded.  The user perceived the agent as
+        "terminating mid-task" during autonomous workflows and had to
+        re-prompt to continue, matching the symptoms in the bug
+        report.
+
+        This implementation split-and-delivers: edit the existing
+        message with the first chunk and send the rest as
+        continuation messages (each one threaded as a reply to the
+        previous so Discord renders them as a contiguous block),
+        returning the final chunk's id so subsequent streaming edits
+        target the most recent visible message.
+
+        Mirrors the Telegram fix added in PR/commit ``bf1f40996``.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
         try:
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
+
             formatted = self.format_message(content)
+
+            # Pre-flight: if the rendered payload exceeds the cap,
+            # skip the doomed edit and split-and-deliver directly.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                return await self._edit_overflow_split(
+                    channel, message_id, formatted, finalize=finalize,
+                )
+
+            msg = await channel.fetch_message(int(message_id))
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
+            # Reactive split: a formatter or future Discord-side limit
+            # change can still inflate a payload past the cap even
+            # when the raw text was under.  Handle the documented
+            # 50035 error code the same way the pre-flight path does
+            # instead of treating it as a generic edit failure.
+            err_text = str(e)
+            err_lower = err_text.lower()
+            if (
+                "error code: 50035" in err_text
+                and ("2000 or fewer" in err_lower or "must be 2000" in err_lower
+                     or "longer than 2000" in err_lower)
+            ) or "must be 2000 or fewer" in err_lower:
+                logger.debug(
+                    "[%s] edit_message overflow (%d > %d), splitting",
+                    self.name, len(content), self.MAX_MESSAGE_LENGTH,
+                )
+                try:
+                    channel = self._client.get_channel(int(chat_id))
+                    if not channel:
+                        channel = await self._client.fetch_channel(int(chat_id))
+                    return await self._edit_overflow_split(
+                        channel, message_id, self.format_message(content),
+                        finalize=finalize,
+                    )
+                except Exception as split_err:  # pragma: no cover - defensive
+                    logger.error(
+                        "[%s] Overflow split fallback failed: %s",
+                        self.name, split_err, exc_info=True,
+                    )
+                    return SendResult(success=False, error=str(split_err))
+
+            logger.error(
+                "[%s] Failed to edit Discord message %s: %s",
+                self.name, message_id, e, exc_info=True,
+            )
+            return SendResult(success=False, error=err_text)
+
+    async def _edit_overflow_split(
+        self,
+        channel,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool,
+    ) -> SendResult:
+        """Split an oversized edit across the original message + continuations.
+
+        Edit the original ``message_id`` with chunk 1 (with the
+        platform's usual ``(1/N)`` indicator preserved by
+        :meth:`BasePlatformAdapter.truncate_message`), then send the
+        remaining chunks as new messages each threaded as a reply to
+        the previous chunk so Discord renders the whole reply as a
+        contiguous thread.
+
+        Returns ``SendResult(success=True, message_id=<last>,
+        continuation_message_ids=(...))`` so the stream consumer can
+        keep editing the most recent visible message and the gateway
+        sees every message id we put on screen.
+
+        Fails (``success=False``) only when the first-chunk edit
+        itself fails for a non-overflow reason -- that's a real
+        adapter problem, not an overflow.  Continuation-send failures
+        are best-effort: we report success with however many chunks
+        landed and let the stream consumer's next tick retry the
+        tail.
+        """
+        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) <= 1:
+            # Defensive: should not happen given the caller's pre-flight,
+            # but if for some reason truncate_message returned a single
+            # chunk, just edit normally.
+            chunks = [content]
+
+        # Step 1 -- edit the original message with the first chunk.
+        first_chunk = chunks[0]
+        try:
+            msg = await channel.fetch_message(int(message_id))
+            await msg.edit(content=first_chunk)
+        except Exception as e:
+            logger.error(
+                "[%s] Overflow split: first-chunk edit failed: %s",
+                self.name, e, exc_info=True,
+            )
             return SendResult(success=False, error=str(e))
+
+        # Step 2 -- send each remaining chunk as a continuation
+        # message, threaded as a reply to the previous so Discord
+        # groups them visually.
+        continuation_ids: list[str] = []
+        prev_id = message_id
+        for chunk in chunks[1:]:
+            sent_msg = None
+            reference = None
+            try:
+                ref_msg = await channel.fetch_message(int(prev_id))
+                if hasattr(ref_msg, "to_reference"):
+                    reference = ref_msg.to_reference(fail_if_not_exists=False)
+            except Exception:
+                reference = None
+
+            try:
+                sent_msg = await channel.send(
+                    content=chunk, reference=reference,
+                )
+            except Exception as send_err:
+                err_text = str(send_err)
+                # Reply target missing / system-message / etc -- retry
+                # without the reply reference rather than dropping the
+                # chunk entirely.
+                if reference is not None and (
+                    "error code: 50035" in err_text
+                    or "error code: 10008" in err_text
+                ):
+                    try:
+                        sent_msg = await channel.send(content=chunk)
+                    except Exception as retry_err:
+                        logger.warning(
+                            "[%s] Overflow continuation no-reply retry "
+                            "failed: %s",
+                            self.name, retry_err,
+                        )
+                        sent_msg = None
+                else:
+                    logger.warning(
+                        "[%s] Overflow continuation send failed: %s",
+                        self.name, send_err,
+                    )
+                    sent_msg = None
+
+            if sent_msg is None:
+                logger.warning(
+                    "[%s] Overflow split: stopped at %d/%d chunks delivered",
+                    self.name, 1 + len(continuation_ids), len(chunks),
+                )
+                break
+
+            new_id = str(getattr(sent_msg, "id", "")) or prev_id
+            continuation_ids.append(new_id)
+            prev_id = new_id
+
+        last_id = continuation_ids[-1] if continuation_ids else message_id
+        # Track the most recent message we put on screen so the
+        # history-backfill fast path stays consistent.
+        try:
+            self._last_self_message_id[str(channel.id)] = last_id
+        except Exception:
+            pass
+
+        logger.debug(
+            "[%s] Overflow split delivered %d chunks; last_id=%s",
+            self.name, 1 + len(continuation_ids), last_id,
+        )
+        return SendResult(
+            success=True,
+            message_id=last_id,
+            continuation_message_ids=tuple(continuation_ids),
+        )
 
     async def _send_file_attachment(
         self,

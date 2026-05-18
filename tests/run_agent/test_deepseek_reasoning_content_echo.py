@@ -160,11 +160,8 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg["reasoning_content"] == " "
 
-    def test_non_thinking_provider_preserves_empty_reasoning_content_verbatim(self) -> None:
-        """The stale-placeholder upgrade ONLY fires when the active provider
-        enforces thinking-mode echo. On non-thinking providers, an empty
-        reasoning_content must still round-trip verbatim.
-        """
+    def test_non_thinking_provider_strips_empty_reasoning_content(self) -> None:
+        """Providers that don't require the echo must not receive reasoning_content."""
         agent = _make_agent(
             provider="openrouter",
             model="anthropic/claude-sonnet-4.6",
@@ -177,7 +174,51 @@ class TestCopyReasoningContentForApi:
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert api_msg["reasoning_content"] == ""
+        assert "reasoning_content" not in api_msg
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("custom", "groq/compound", "https://api.groq.com/openai/v1"),
+            ("groq", "groq/compound", "https://api.groq.com/openai/v1"),
+            ("custom", "qwen-3-235b-a22b-instruct-2507", "https://api.cerebras.ai/v1"),
+            ("cerebras", "qwen-3-235b-a22b-instruct-2507", "https://api.cerebras.ai/v1"),
+        ],
+    )
+    def test_openai_compatible_custom_providers_strip_reasoning_content(
+        self, provider: str, model: str, base_url: str
+    ) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        source = {
+            "role": "assistant",
+            "content": "prior answer",
+            "reasoning_content": "thinking from another provider",
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert "reasoning_content" not in api_msg
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("custom", "groq/compound", "https://api.groq.com/openai/v1"),
+            ("groq", "groq/compound", "https://api.groq.com/openai/v1"),
+            ("custom", "qwen-3-235b-a22b-instruct-2507", "https://api.cerebras.ai/v1"),
+            ("cerebras", "qwen-3-235b-a22b-instruct-2507", "https://api.cerebras.ai/v1"),
+        ],
+    )
+    def test_openai_compatible_custom_providers_do_not_promote_reasoning(
+        self, provider: str, model: str, base_url: str
+    ) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        source = {
+            "role": "assistant",
+            "content": "prior answer",
+            "reasoning": "thinking from another provider",
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert "reasoning_content" not in api_msg
 
     def test_deepseek_reasoning_field_promoted(self) -> None:
         """When only 'reasoning' is set, it gets promoted to reasoning_content."""

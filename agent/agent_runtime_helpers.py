@@ -1793,10 +1793,12 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # doesn't 400 the user on the next turn.
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if existing == "" and agent._needs_thinking_reasoning_pad():
-            api_msg["reasoning_content"] = " "
-        else:
-            api_msg["reasoning_content"] = existing
+        needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+        if needs_thinking_pad:
+            if existing == "":
+                api_msg["reasoning_content"] = " "
+            else:
+                api_msg["reasoning_content"] = existing
         return
 
     needs_thinking_pad = agent._needs_thinking_reasoning_pad()
@@ -1827,7 +1829,7 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # This must happen before the unconditional empty-string fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
     # PR #15478).
-    if isinstance(normalized_reasoning, str) and normalized_reasoning:
+    if needs_thinking_pad and isinstance(normalized_reasoning, str) and normalized_reasoning:
         api_msg["reasoning_content"] = normalized_reasoning
         return
 

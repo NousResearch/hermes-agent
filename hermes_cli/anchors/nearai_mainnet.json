@@ -45,7 +45,7 @@
       }
     },
     "deepseek-ai/DeepSeek-V3.1": {
-      "_status": "Model substitution still observed 2026-05-09 (initial detection 2026-05-05): requesting deepseek-ai/DeepSeek-V3.1 returns model_name=Qwen/Qwen3.5-122B-A10B (file=Qwen3.5-122B.yaml). Filed nearai/cloud-api#573. Hermes' model_name check fails closed on this regardless of which compose_hash the substituted backend reports. inner_yaml left empty until DeepSeek-V3.1 is restored to its own backend.",
+      "_status": "Model substitution still observed 2026-05-18 (initial detection 2026-05-05; previously confirmed 2026-05-09): requesting deepseek-ai/DeepSeek-V3.1 returns model_name=Qwen/Qwen3.5-122B-A10B (file=Qwen3.5-122B.yaml). Filed nearai/cloud-api#573. Hermes' model_name check fails closed on this regardless of which compose_hash the substituted backend reports. inner_yaml left empty until DeepSeek-V3.1 is restored to its own backend.",
       "app_id": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
       "compose_hashes": [
         "242a62724303cc32f364da0fc92738706b0078e7587821b7ba3e75488223797b",
@@ -53,7 +53,7 @@
       ]
     },
     "openai/gpt-oss-120b": {
-      "_note": "Inner YAML small-models.yaml hosts gpt-oss-120b alongside qwen3-30b/qwen3-vl/qwen3-embeddings/qwen3-reranker/whisper3-large/flux. Each model gets its own vllm-proxy-* service in one CVM, MODEL_NAME env per service drives KMS-derived signing key. New compose_hash 0x95cbf0a8 admitted 2026-05-09 — added on-chain at block from tx 0x241f819ca10b on 2026-05-08T12:22:07Z; preimage diff vs 0x242a6272 = pre_launch_script gains kernel-tuning lines (vm.swappiness=0, vm.dirty_ratio=5, etc.) for inference workloads. compose-manager image @sha256:f561539a unchanged; allowed_envs unchanged. Benign perf tuning, off the prompt path.",
+      "_note": "Inner YAML small-models.yaml hosts gpt-oss-120b alongside qwen3-30b/qwen3-vl/qwen3-embeddings/qwen3-reranker/whisper3-large/flux. Each model gets its own vllm-proxy-* service in one CVM, MODEL_NAME env per service drives KMS-derived signing key. New compose_hash 0x95cbf0a8 admitted 2026-05-09 — added on-chain at block from tx 0x241f819ca10b on 2026-05-08T12:22:07Z; preimage diff vs 0x242a6272 = pre_launch_script gains kernel-tuning lines (vm.swappiness=0, vm.dirty_ratio=5, etc.) for inference workloads. compose-manager image @sha256:f561539a unchanged; allowed_envs unchanged. Benign perf tuning, off the prompt path. 2026-05-18 inner_yaml refresh: admit commit 0x64fff09a (live-served). Diff vs anchored 0xe59f9a29 spans 13 commits — all sampling/parser/GPU-rebalance config + adds Qwen3.6-35B-A3B-FP8 and gemma-4-31B-it services on the existing vllm/vllm-openai@sha256:518c1d… (v0.20.2-cu129-ubuntu2404) image + the qwen3.6 fp8-kv-cache toggle dance (ce3c022 adds → 64fff09a reverts due to qwen3_5_moe dequant overhead). PROXY_TOKEN already in outer allowed_envs; no new mounts, privs or env_keys; image pinned by digest.",
       "app_id": "2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b",
       "compose_hashes": [
         "242a62724303cc32f364da0fc92738706b0078e7587821b7ba3e75488223797b",
@@ -64,11 +64,13 @@
         "file": "small-models.yaml",
         "commits": [
           "105dc607b8eb12209955a97fd84f06caf196a781",
-          "e59f9a29f3eb2bf16b2fb74d48aaa558f497bbd2"
+          "e59f9a29f3eb2bf16b2fb74d48aaa558f497bbd2",
+          "64fff09aef51e9e55b9fed6c503bb4271dbdd12d"
         ],
         "file_sha256s": [
           "148a8ceb82b66c8c40d1ee2bdf95c75bcf1cdbf4869e556e253069057f6cb21a",
-          "bc4fc688e822b24331fbc028e13b3d23023c0fd62e50a0008676a3c48682d70c"
+          "bc4fc688e822b24331fbc028e13b3d23023c0fd62e50a0008676a3c48682d70c",
+          "bf74336057426af7bd3682920e67fd86c03cccdd17b356eefeb54c2840f66471"
         ]
       }
     }

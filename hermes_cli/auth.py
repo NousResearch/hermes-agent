@@ -2899,9 +2899,31 @@ def resolve_spotify_runtime_credentials(
         if not should_refresh and refresh_if_expiring:
             should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
         if should_refresh:
-            state = _refresh_spotify_oauth_state(state)
-            _store_provider_state(auth_store, "spotify", state, set_active=False)
-            _save_auth_store(auth_store)
+            try:
+                state = _refresh_spotify_oauth_state(state)
+                _store_provider_state(auth_store, "spotify", state, set_active=False)
+                _save_auth_store(auth_store)
+            except AuthError as exc:
+                if exc.relogin_required and state.get("refresh_token"):
+                    # Terminal refresh failure — clear dead tokens from auth.json
+                    # so subsequent calls fail fast without a network retry.
+                    # Mirrors the Nous / xAI-OAuth / Codex-OAuth / MiniMax pattern.
+                    for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+                        state.pop(_k, None)
+                    state["last_auth_error"] = {
+                        "provider": "spotify",
+                        "code": exc.code or "refresh_failed",
+                        "message": str(exc),
+                        "reason": "runtime_refresh_failure",
+                        "relogin_required": True,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    try:
+                        _store_provider_state(auth_store, "spotify", state, set_active=False)
+                        _save_auth_store(auth_store)
+                    except Exception as _save_exc:
+                        logger.debug("Spotify OAuth: failed to persist quarantined state: %s", _save_exc)
+                raise
 
     access_token = str(state.get("access_token", "") or "").strip()
     if not access_token:

@@ -99,6 +99,36 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _is_direct_deepseek_route(provider_name: str, base_url: object) -> bool:
+    """Return True for DeepSeek's direct OpenAI-compatible API route."""
+    provider = (provider_name or "").strip().lower()
+    if provider == "deepseek":
+        return True
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    return "api.deepseek.com" in normalized and not normalized.endswith("/anthropic")
+
+
+def _deepseek_reasoning_effort(reasoning_config: dict | None) -> str | None:
+    """Map Hermes reasoning levels to direct DeepSeek V4 effort values.
+
+    DeepSeek's direct Chat Completions API accepts top-level
+    ``reasoning_effort`` of ``high`` or ``max`` when thinking mode is enabled.
+    Their compatibility contract maps low/medium to high and xhigh to max.
+    """
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        return None
+
+    effort = "high"
+    if isinstance(reasoning_config, dict):
+        effort = str(reasoning_config.get("effort") or "high").strip().lower()
+
+    if effort in {"xhigh", "max"}:
+        return "max"
+    if effort == "none":
+        return None
+    return "high"
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -318,6 +348,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
+        is_direct_deepseek = _is_direct_deepseek_route(provider_name, base_url)
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -348,9 +379,24 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
+        # Direct DeepSeek V4: thinking is controlled by top-level
+        # reasoning_effort plus extra_body.thinking. Do not use
+        # OpenRouter-style extra_body.reasoning on the direct API.
+        if is_direct_deepseek and model_lower.startswith("deepseek-v4"):
+            _ds_effort = _deepseek_reasoning_effort(reasoning_config)
+            extra_body["thinking"] = {
+                "type": "enabled" if _ds_effort else "disabled",
+            }
+            if _ds_effort:
+                api_kwargs["reasoning_effort"] = _ds_effort
+
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
-        if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
+        if (
+            params.get("supports_reasoning", False)
+            and not params.get("is_lmstudio", False)
+            and not is_direct_deepseek
+        ):
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:

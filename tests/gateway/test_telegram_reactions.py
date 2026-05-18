@@ -126,8 +126,8 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
-    """Processing start should add eyes reaction when enabled."""
+async def test_on_processing_start_adds_zap_reaction(monkeypatch):
+    """Processing start should add zap reaction when enabled."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -137,7 +137,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f440",
+        reaction="\u26a1",
     )
 
 
@@ -175,7 +175,7 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set thumbs-up reaction."""
+    """Successful processing should set checkmark reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -185,13 +185,13 @@ async def test_on_processing_complete_success(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44d",
+        reaction="\u2705",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set thumbs-down reaction."""
+    """Failed processing should set cross-mark reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -201,7 +201,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44e",
+        reaction="\u274c",
     )
 
 
@@ -221,8 +221,8 @@ async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
 async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
     """Cancelled processing should clear the in-progress reaction.
 
-    Without this clear, the 👀 reaction lingers on the user's message
-    indefinitely (until another agent run swaps it for 👍/👎). On a
+    Without this clear, the ⚡ reaction lingers on the user's message
+    indefinitely (until another agent run swaps it for ✅/❌). On a
     ``/stop`` that ends a session, that reaction never gets cleaned up.
     """
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")

@@ -3209,7 +3209,19 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                except AuthError as exc:
+                    cli_tokens = _import_codex_cli_tokens() if getattr(exc, "relogin_required", False) else None
+                    if not cli_tokens:
+                        raise
+                    logger.warning(
+                        "Codex token refresh failed with %s; adopting valid Codex CLI tokens from CODEX_HOME.",
+                        getattr(exc, "code", None) or "auth_error",
+                    )
+                    _save_codex_tokens(cli_tokens)
+                    data = _read_codex_tokens(_lock=False)
+                    tokens = dict(data["tokens"])
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (

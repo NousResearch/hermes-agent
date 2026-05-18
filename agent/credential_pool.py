@@ -541,6 +541,37 @@ class CredentialPool:
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
+            stale_token_error = (
+                entry.last_error_code in (401, 403)
+                or "token_expired" in str(entry.last_error_message or "")
+                or "session expired" in str(entry.last_error_message or "").lower()
+            )
+            if (
+                store_access
+                and entry.last_status == STATUS_EXHAUSTED
+                and stale_token_error
+                and not _codex_access_token_is_expiring(store_access, 0)
+            ):
+                logger.debug(
+                    "Pool entry %s: clearing stale Codex auth exhaustion after valid auth.json token adoption",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": store_access,
+                    "refresh_token": store_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if state.get("last_refresh"):
+                    field_updates["last_refresh"] = state["last_refresh"]
+                updated = replace(entry, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
         except Exception as exc:
             logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
         return entry
@@ -890,6 +921,75 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            # For Codex: the ChatGPT OAuth refresh token is single-use too.
+            # If Codex CLI / VS Code consumed it first, recover by adopting
+            # a still-valid Codex CLI token from CODEX_HOME instead of
+            # leaving the pool exhausted until manual re-auth.
+            if self.provider == "openai-codex":
+                try:
+                    cli_tokens = auth_mod._import_codex_cli_tokens()
+                except Exception:
+                    cli_tokens = None
+                if cli_tokens and cli_tokens.get("access_token"):
+                    last_refresh = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    logger.warning(
+                        "Codex pool refresh failed; adopting valid Codex CLI tokens from CODEX_HOME.",
+                    )
+                    try:
+                        auth_mod._save_codex_tokens(cli_tokens, last_refresh)
+                    except Exception as save_exc:
+                        logger.debug("Failed to save adopted Codex CLI tokens to auth store: %s", save_exc)
+                    updated = replace(
+                        entry,
+                        access_token=cli_tokens.get("access_token", ""),
+                        refresh_token=cli_tokens.get("refresh_token") or entry.refresh_token,
+                        last_refresh=last_refresh,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
+
+            # For Codex: the ChatGPT OAuth refresh token is single-use too.
+            # If Codex CLI / VS Code consumed it first, recover by adopting
+            # a still-valid Codex CLI token from CODEX_HOME instead of
+            # leaving the pool exhausted until manual re-auth.
+            if self.provider == "openai-codex":
+                try:
+                    cli_tokens = auth_mod._import_codex_cli_tokens()
+                except Exception:
+                    cli_tokens = None
+                if cli_tokens and cli_tokens.get("access_token"):
+                    last_refresh = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    logger.warning(
+                        "Codex pool refresh failed; adopting valid Codex CLI tokens from CODEX_HOME.",
+                    )
+                    try:
+                        auth_mod._save_codex_tokens(cli_tokens, last_refresh)
+                    except Exception as save_exc:
+                        logger.debug("Failed to save adopted Codex CLI tokens to auth store: %s", save_exc)
+                    updated = replace(
+                        entry,
+                        access_token=cli_tokens.get("access_token", ""),
+                        refresh_token=cli_tokens.get("refresh_token") or entry.refresh_token,
+                        last_refresh=last_refresh,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    return updated
+
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
             # HTTP call.  Re-check auth.json and adopt the fresh tokens if
@@ -1087,6 +1187,39 @@ class CredentialPool:
                         self._current_id = None
                     self._persist()
                     return None
+            # For Codex: the ChatGPT OAuth refresh token is single-use too.
+            # If Codex CLI / VS Code consumed it first, recover by adopting
+            # a still-valid Codex CLI token from CODEX_HOME instead of
+            # leaving the pool exhausted until manual re-auth.
+            if self.provider == "openai-codex":
+                try:
+                    cli_tokens = auth_mod._import_codex_cli_tokens()
+                except Exception:
+                    cli_tokens = None
+                if cli_tokens and cli_tokens.get("access_token"):
+                    last_refresh = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    logger.warning(
+                        "Codex pool refresh failed; adopting valid Codex CLI tokens from CODEX_HOME.",
+                    )
+                    try:
+                        auth_mod._save_codex_tokens(cli_tokens, last_refresh)
+                    except Exception as save_exc:
+                        logger.debug("Failed to save adopted Codex CLI tokens to auth store: %s", save_exc)
+                    updated = replace(
+                        entry,
+                        access_token=cli_tokens.get("access_token", ""),
+                        refresh_token=cli_tokens.get("refresh_token") or entry.refresh_token,
+                        last_refresh=last_refresh,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(entry, updated)
+                    self._persist()
+                    return updated
             self._mark_exhausted(entry, None)
             return None
 

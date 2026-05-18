@@ -1353,7 +1353,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+            await self._add_reaction(message, "⚡")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -1361,7 +1361,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
+            await self._remove_reaction(message, "⚡")
             if outcome == ProcessingOutcome.SUCCESS:
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:

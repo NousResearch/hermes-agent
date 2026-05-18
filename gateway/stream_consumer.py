@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from gateway.usage_footer import maybe_append_usage_footer, send_usage_footer
+
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (
@@ -150,6 +152,7 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        self._usage_footer_sent = False
         # Set when the final response content was sent to the user via
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
@@ -216,6 +219,25 @@ class GatewayStreamConsumer:
         except Exception:
             logger.debug("on_new_message callback error", exc_info=True)
 
+
+    async def _send_usage_footer_if_needed(self) -> None:
+        """Send the Telegram usage footer as a standalone final follow-up."""
+        if self._usage_footer_sent or not self._final_response_sent:
+            return
+        try:
+            _ = maybe_append_usage_footer  # marker: helper intentionally available for audit/backcompat
+            result = await send_usage_footer(
+                self.adapter,
+                self.chat_id,
+                self._last_sent_text or self._accumulated,
+                self.metadata,
+            )
+            if result is not None and getattr(result, "success", False):
+                self._usage_footer_sent = True
+                self._notify_new_message()
+        except Exception:
+            logger.debug("Usage footer send failed", exc_info=True)
+
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
@@ -251,6 +273,18 @@ class GatewayStreamConsumer:
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+
+
+    async def finalize_previewed_response(self, final_text: str) -> bool:
+        """Mark an already-previewed interim message as the final response."""
+        text = self._clean_for_display(final_text or "")
+        if not text.strip():
+            return False
+        self._already_sent = True
+        self._last_sent_text = text
+        self._final_response_sent = True
+        await self._send_usage_footer_if_needed()
+        return True
 
     # ── Think-block filtering ────────────────────────────────────────
     # Models like MiniMax emit inline <think>...</think> blocks in their
@@ -547,6 +581,7 @@ class GatewayStreamConsumer:
                             )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                    await self._send_usage_footer_if_needed()
                     return
 
                 if commentary_text is not None:

@@ -2089,13 +2089,13 @@ class MatrixAdapter(BasePlatformAdapter):
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
+        """Add zap reaction when the agent starts processing a message."""
         if not self._reactions_enabled:
             return
         msg_id = event.message_id
         room_id = event.source.chat_id
         if msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+            reaction_event_id = await self._send_reaction(room_id, msg_id, "\u26a1")
             if reaction_event_id:
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
@@ -2104,7 +2104,7 @@ class MatrixAdapter(BasePlatformAdapter):
         event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
-        """Replace eyes with checkmark (success) or cross (failure)."""
+        """Replace zap with checkmark (success) or cross (failure)."""
         if not self._reactions_enabled:
             return
         msg_id = event.message_id
@@ -2115,10 +2115,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         reaction_key = (room_id, msg_id)
         if reaction_key in self._pending_reactions:
-            eyes_event_id = self._pending_reactions.pop(reaction_key)
+            in_progress_event_id = self._pending_reactions.pop(reaction_key)
             self._schedule_reaction_redaction(
                 room_id,
-                eyes_event_id,
+                in_progress_event_id,
                 "processing complete",
             )
         await self._send_reaction(

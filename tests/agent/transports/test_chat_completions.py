@@ -175,6 +175,35 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+
+    def test_direct_deepseek_v4_xhigh_maps_to_max_thinking(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=msgs,
+            provider_name="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            supports_reasoning=True,
+        )
+        assert kw["reasoning_effort"] == "max"
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning" not in kw["extra_body"]
+
+    def test_direct_deepseek_v4_disabled_turns_thinking_off(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=msgs,
+            provider_name="deepseek",
+            base_url="https://api.deepseek.com/v1",
+            reasoning_config={"enabled": False},
+            supports_reasoning=True,
+        )
+        assert "reasoning_effort" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning" not in kw["extra_body"]
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")

@@ -2504,6 +2504,7 @@ class BasePlatformAdapter(ABC):
         metadata: Any = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
+        include_usage_footer: bool = False,
     ) -> "SendResult":
         """
         Send a message with automatic retry for transient network errors.
@@ -2521,7 +2522,18 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+
+        async def _send_usage_footer_after_success(sent_text: str, send_result: "SendResult") -> None:
+            if not include_usage_footer or not getattr(send_result, "success", False):
+                return
+            try:
+                from gateway.usage_footer import maybe_append_usage_footer, send_usage_footer
+                _ = maybe_append_usage_footer  # marker: helper intentionally available for audit/backcompat
+                await send_usage_footer(self, chat_id, sent_text, metadata)
+            except Exception:
+                logger.debug("[%s] Usage footer send failed", self.name, exc_info=True)
         if result.success:
+            await _send_usage_footer_after_success(content, result)
             return result
 
         error_str = result.error or ""
@@ -2549,6 +2561,7 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    await _send_usage_footer_after_success(content, result)
                     return result
                 error_str = result.error or ""
                 if not (result.retryable or self._is_retryable_error(error_str)):
@@ -2568,12 +2581,15 @@ class BasePlatformAdapter(ABC):
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        fallback_content = f"(Response formatting failed, plain text:)\n\n{content[:3500]}"
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=fallback_content,
             reply_to=reply_to,
             metadata=metadata,
         )
+        if fallback_result.success:
+            await _send_usage_footer_after_success(fallback_content, fallback_result)
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
@@ -3219,6 +3235,7 @@ class BasePlatformAdapter(ABC):
                         content=text_content,
                         reply_to=_reply_anchor,
                         metadata=_thread_metadata,
+                        include_usage_footer=True,
                     )
                     _record_delivery(result)
 

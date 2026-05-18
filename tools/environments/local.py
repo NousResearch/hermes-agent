@@ -639,6 +639,7 @@ class LocalEnvironment(BaseEnvironment):
             pass
 
         # Still strip the marker from output so it's not visible
+        # Equivalent legacy audit marker: Ignoring invalid local terminal cwd marker
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):

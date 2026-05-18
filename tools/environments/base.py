@@ -793,7 +793,7 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _rewrite_compound_background
         exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
-        effective_cwd = cwd or self.cwd
+        effective_cwd = self._sanitize_effective_cwd(cwd or self.cwd)
 
         # Merge sudo stdin with caller stdin
         if sudo_stdin is not None and stdin_data is not None:
@@ -829,6 +829,10 @@ class BaseEnvironment(ABC):
         """Alias for cleanup (compat with older callers)."""
         self.cleanup()
 
+
+    def _sanitize_effective_cwd(self, cwd: str) -> str:
+        """Return a backend-valid cwd before wrapping/spawning a command."""
+        return cwd
     def __del__(self):
         try:
             self.cleanup()

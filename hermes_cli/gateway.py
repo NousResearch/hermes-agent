@@ -89,6 +89,15 @@ def _get_service_pids() -> set:
                     capture_output=True, text=True, timeout=5,
                 )
                 for line in result.stdout.strip().splitlines():
+                    stripped = line.strip().rstrip(";")
+                    if stripped.replace('"', "").startswith("PID") and "=" in stripped:
+                        try:
+                            pid = int(stripped.split("=", 1)[1].strip().strip('";'))
+                            if pid > 0:
+                                pids.add(pid)
+                        except ValueError:
+                            pass
+                        continue
                     parts = line.split()
                     if not parts or not parts[0].endswith(".service"):
                         continue
@@ -2539,6 +2548,7 @@ def systemd_start(system: bool = False):
 
 def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
+    _refuse_gateway_spawned_service_stop("stop")
     if system:
         _require_root_for_system_service("stop")
     _require_service_installed("stop", system=system)
@@ -2561,6 +2571,27 @@ def systemd_stop(system: bool = False):
         return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
+
+
+
+def _is_gateway_spawned_cli() -> bool:
+    """Return True when this CLI call was spawned by the live Hermes gateway."""
+    return any(
+        os.environ.get(name)
+        for name in (
+            "HERMES_EXEC_ASK",
+            "HERMES_GATEWAY_SESSION",
+            "HERMES_SESSION_KEY",
+        )
+    )
+
+
+def _refuse_gateway_spawned_service_stop(action: str) -> None:
+    if not _is_gateway_spawned_cli():
+        return
+    print(f"Refusing to {action} Hermes gateway service from a Hermes-spawned tool process.")
+    print("Run the command from an external terminal, or use `hermes gateway restart` outside Hermes.")
+    raise SystemExit(2)
 
 
 def systemd_restart(system: bool = False):
@@ -2772,6 +2803,43 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+
+def _is_transient_launchd_bootstrap_failure(exc_or_result) -> bool:
+    returncode = getattr(exc_or_result, "returncode", None)
+    stderr = getattr(exc_or_result, "stderr", "") or ""
+    stdout = getattr(exc_or_result, "stdout", "") or ""
+    text = f"{stdout}\n{stderr}".lower()
+    return returncode == 5 or "input/output error" in text
+
+
+def _launchctl_bootstrap(plist_path: Path, *, check: bool, timeout: int = 30):
+    """Bootstrap launchd, retrying the transient macOS error-5 race."""
+    import time
+
+    cmd = ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)]
+    last_result = None
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                cmd,
+                check=check,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            if _is_transient_launchd_bootstrap_failure(exc) and attempt < 2:
+                time.sleep(1 + attempt)
+                continue
+            raise
+
+        last_result = result
+        if result.returncode == 0 or not _is_transient_launchd_bootstrap_failure(result) or attempt == 2:
+            return result
+        time.sleep(1 + attempt)
+    return last_result
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2798,6 +2866,13 @@ def generate_launchd_plist() -> str:
     sane_path = ":".join(
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
+
+    codex_home = os.environ.get("CODEX_HOME") or get_env_value("CODEX_HOME")
+    codex_home_xml = ""
+    if codex_home:
+        codex_home_xml = f"""
+        <key>CODEX_HOME</key>
+        <string>{codex_home}</string>"""
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
@@ -2838,6 +2913,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        {codex_home_xml}
     </dict>
     
     <key>RunAtLoad</key>
@@ -2869,12 +2945,27 @@ def launchd_plist_is_current() -> bool:
     return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+def _launchd_job_is_loaded(label: str | None = None) -> bool:
+    label = label or get_launchd_label()
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def refresh_launchd_plist_if_needed(*, reload_launchd: bool = True) -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
     ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    bootstrap to make launchd re-read the updated plist immediately unless the
+    caller is only trying to start an already-loaded service.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
@@ -2882,10 +2973,13 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
-    print("↻ Updated gateway launchd service definition to match the current Hermes install")
+    if reload_launchd:
+        # Bootout/bootstrap so launchd picks up the new definition.
+        subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+        _launchctl_bootstrap(plist_path, check=False, timeout=30)
+        print("↻ Updated gateway launchd service definition to match the current Hermes install")
+    else:
+        print("↻ Updated gateway launchd service definition; it will be reloaded on the next restart")
     return True
 
 
@@ -2906,7 +3000,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    _launchctl_bootstrap(plist_path, check=True, timeout=30)
     
     print()
     print("✓ Service installed and loaded!")
@@ -2936,25 +3030,31 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchctl_bootstrap(plist_path, check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
+    # `start` should never kill a healthy loaded gateway just because the
+    # plist is stale. This matters when `hermes gateway start` is run from a
+    # Telegram tool call inside the gateway itself: booting out launchd from
+    # that child command can strand Telegram offline. `restart` remains the
+    # explicit command for reloading a running service definition.
+    refresh_launchd_plist_if_needed(reload_launchd=not _launchd_job_is_loaded(label))
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchctl_bootstrap(plist_path, check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
+    _refuse_gateway_spawned_service_stop("unload launchd")
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
         pid = get_running_pid(cleanup_stale=False)
@@ -3046,7 +3146,7 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchctl_bootstrap(plist_path, check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
 

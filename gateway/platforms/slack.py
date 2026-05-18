@@ -1332,7 +1332,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(channel_id, ts, "zap")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -1345,7 +1345,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
+        await self._remove_reaction(channel_id, ts, "zap")
         if outcome == ProcessingOutcome.SUCCESS:
             await self._add_reaction(channel_id, ts, "white_check_mark")
         elif outcome == ProcessingOutcome.FAILURE:

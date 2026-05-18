@@ -11147,15 +11147,7 @@ class GatewayRunner:
         platform_key = _platform_config_key(event.source.platform)
 
         # --- parse argument -------------------------------------------------
-        arg = ""
-        try:
-            text = (getattr(event, "message", None) or "").strip()
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                if len(parts) > 1:
-                    arg = parts[1].strip().lower()
-        except Exception:
-            arg = ""
+        arg = (event.get_command_args() or "").strip().lower()
 
         # --- load config ----------------------------------------------------
         try:

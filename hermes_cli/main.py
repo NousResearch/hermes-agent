@@ -5747,6 +5747,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_runtime(args):
+    """Runtime safety and health checks."""
+    from hermes_cli.runtime_preflight import runtime_command
+
+    runtime_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10741,6 +10748,33 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # runtime command
+    # =========================================================================
+    runtime_parser = subparsers.add_parser(
+        "runtime",
+        help="Runtime safety and health checks",
+        description="Run executable preflight checks before autonomous runtime work",
+    )
+    runtime_subparsers = runtime_parser.add_subparsers(dest="runtime_action")
+    runtime_preflight = runtime_subparsers.add_parser(
+        "preflight",
+        help="Run preflight checks for an operational scope",
+    )
+    runtime_preflight.add_argument(
+        "--scope",
+        choices=["kanban"],
+        default="kanban",
+        help="Operational scope to check (default: kanban)",
+    )
+    runtime_preflight.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON output",
+    )
+    runtime_parser.set_defaults(func=cmd_runtime)
+    runtime_preflight.set_defaults(func=cmd_runtime)
 
     # =========================================================================
     # cron command

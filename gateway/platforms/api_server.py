@@ -17,6 +17,10 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
+    - agent lifecycle events (run.queued, run.running, run.completed, run.failed)
+    - tool progress events (tool.started, tool.completed, tool.failed)
+    - approval events (approval.request)
+    - background process events (process.completed, process.watch_match)
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -3567,6 +3571,53 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    async def _run_api_server_watcher(
+        self,
+        watcher: dict,
+        run_id: str,
+        q: "asyncio.Queue",
+    ) -> None:
+        """Poll a background process and push completion events to the SSE queue.
+
+        This is the api_server equivalent of Gateway._run_process_watcher.
+        Instead of injecting a synthetic message into the gateway adapter,
+        we emit a structured ``process.completed`` event on the run's SSE stream.
+        """
+        from tools.process_registry import process_registry
+        from tools.ansi_strip import strip_ansi
+
+        session_id = watcher["session_id"]
+        interval = watcher["check_interval"]
+        agent_notify = watcher.get("notify_on_complete", False)
+
+        logger.debug(
+            "API server watcher started: %s (every %ss, agent_notify=%s)",
+            session_id, interval, agent_notify,
+        )
+
+        while True:
+            await asyncio.sleep(interval)
+            session = process_registry.get(session_id)
+            if session is None:
+                break
+            if session.exited:
+                from tools.process_registry import process_registry as _pr_check
+                if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                    _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    try:
+                        q.put_nowait({
+                            "event": "process.completed",
+                            "run_id": run_id,
+                            "timestamp": time.time(),
+                            "session_id": session_id,
+                            "command": session.command,
+                            "exit_code": session.exit_code,
+                            "output": _out,
+                        })
+                    except Exception:
+                        pass
+                break
+
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
@@ -3681,6 +3732,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
         async def _run_and_close():
+            _watcher_tasks = []
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
@@ -3729,6 +3781,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = set_session_vars(
                             platform="api_server",
+                            chat_id=body.get("chat_id", ""),
+                            chat_name=body.get("chat_name", ""),
+                            thread_id=str(body.get("thread_id", "")) if body.get("thread_id") else "",
+                            user_id=str(body.get("user_id", "")) if body.get("user_id") else "",
+                            user_name=str(body.get("user_name", "")) if body.get("user_name") else "",
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
@@ -3761,6 +3818,52 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await asyncio.get_running_loop().run_in_executor(
                     None, contextvars.copy_context().run, _run_sync
                 )
+
+                # Spawn process watchers for any background processes started during the run.
+                # The gateway path does this in _handle_message_with_agent (run.py:7950).
+                # The api_server must do it here because it does not go through the gateway handler.
+                try:
+                    from tools.process_registry import process_registry
+                    my_watchers = [
+                        w for w in process_registry.pending_watchers
+                        if w.get("session_key") == approval_session_key
+                    ]
+                    for w in my_watchers:
+                        process_registry.pending_watchers.remove(w)
+                        t = asyncio.create_task(self._run_api_server_watcher(w, run_id, q))
+                        _watcher_tasks.append(t)
+                except Exception as e:
+                    logger.error("[api_server] process watcher setup error: %s", e)
+
+                # Drain watch-pattern events that arrived during the agent run.
+                # Completion events are handled by the watcher tasks above;
+                # any orphaned queue events are harmless (skipped on next drain).
+                try:
+                    from tools.process_registry import process_registry as _pr
+                    _watch_events = []
+                    while not _pr.completion_queue.empty():
+                        evt = _pr.completion_queue.get_nowait()
+                        evt_type = evt.get("type", "completion")
+                        if evt_type in {"watch_match", "watch_disabled"}:
+                            _watch_events.append(evt)
+                    for evt in _watch_events:
+                        from gateway.run import _format_gateway_process_notification
+                        synth_text = _format_gateway_process_notification(evt)
+                        if synth_text:
+                            try:
+                                q.put_nowait({
+                                    "event": "process.watch_match",
+                                    "run_id": run_id,
+                                    "timestamp": time.time(),
+                                    "session_id": evt.get("session_id"),
+                                    "pattern": evt.get("pattern"),
+                                    "output": evt.get("output"),
+                                })
+                            except Exception as e2:
+                                logger.error("[api_server] watch event push error: %s", e2)
+                except Exception as e:
+                    logger.error("[api_server] watch event drain error: %s", e)
+
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
@@ -3827,6 +3930,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
+                # Cancel any watcher tasks spawned for this run.
+                for wt in _watcher_tasks:
+                    wt.cancel()
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those

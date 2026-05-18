@@ -230,6 +230,98 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
 RuleFn = Callable[[Any, list[Any], list[Any], int, dict], list[Diagnostic]]
 
 
+def _aux_slot_explicit(slot: Any) -> bool:
+    """Return True if the auxiliary slot has user-supplied non-default fields.
+
+    Defaults from ``DEFAULT_CONFIG`` use ``provider: "auto"`` with empty
+    model/base_url/api_key — that path falls through to the main model. An
+    "explicit" config is one where the user actively set a provider (not
+    "auto"), or supplied a model / base_url / api_key.
+    """
+    if not isinstance(slot, dict):
+        return False
+    provider = str(slot.get("provider") or "").strip().lower()
+    if provider and provider != "auto":
+        return True
+    for key in ("model", "base_url", "api_key"):
+        if str(slot.get(key) or "").strip():
+            return True
+    return False
+
+
+def _main_model_visible(raw_config: Any) -> bool:
+    """Best-effort check that a main model is configured.
+
+    Diagnostics runs in the dashboard process which may not share the CLI's
+    runtime state, so we read the raw config dict. If we cannot prove the
+    main model is set, we err on the side of NOT firing the diagnostic.
+    """
+    if not isinstance(raw_config, dict):
+        return False
+    model_cfg = raw_config.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        model = str(
+            model_cfg.get("default")
+            or model_cfg.get("model")
+            or model_cfg.get("name")
+            or ""
+        ).strip()
+        return bool(provider and model)
+    return bool(str(model_cfg or "").strip())
+
+
+def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
+    """Inspect raw config and report whether triage paths look configured.
+
+    Returns ``None`` when config context is unavailable (suppress diagnostic
+    to avoid noisy false positives in tests / low-level callers). Otherwise
+    returns a dict with:
+
+      - ``auto_decompose``: bool — whether the dispatcher auto-runs decompose
+      - ``decomposer_explicit``: bool — user-supplied decomposer slot
+      - ``specifier_explicit``: bool — user-supplied specifier slot
+      - ``main_model_visible``: bool — main model can serve as auto fallback
+    """
+    if not isinstance(config, dict):
+        return None
+
+    explicit = config.get("triage_aux_status")
+    if isinstance(explicit, dict):
+        return explicit
+
+    aux = config.get("auxiliary")
+    kanban_cfg = config.get("kanban") if isinstance(config.get("kanban"), dict) else {}
+
+    # Have we been handed any config context at all? When neither auxiliary
+    # nor kanban nor model keys are present, the caller is a low-level test
+    # passing {} — stay silent.
+    if (
+        not isinstance(aux, dict)
+        and not kanban_cfg
+        and "model" not in config
+    ):
+        return None
+
+    decomposer_explicit = False
+    specifier_explicit = False
+    if isinstance(aux, dict):
+        decomposer_explicit = _aux_slot_explicit(aux.get("kanban_decomposer"))
+        specifier_explicit = _aux_slot_explicit(aux.get("triage_specifier"))
+
+    # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
+    auto_decompose = True
+    if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
+        auto_decompose = bool(kanban_cfg.get("auto_decompose"))
+
+    return {
+        "auto_decompose": auto_decompose,
+        "decomposer_explicit": decomposer_explicit,
+        "specifier_explicit": specifier_explicit,
+        "main_model_visible": _main_model_visible(config),
+    }
+
+
 def _positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -282,6 +374,118 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         last_seen_at=last,
         count=len(hits),
         data={"phantom_ids": phantom_ids},
+    )]
+
+
+def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A triage task cannot leave triage without an auxiliary helper.
+
+    With the auto-decompose dispatcher (kanban.auto_decompose, default True),
+    triage tasks fan out via ``auxiliary.kanban_decomposer`` and fall back to
+    ``auxiliary.triage_specifier`` when the decomposer returns ``fanout=false``.
+    With auto-decompose off, the user must run ``hermes kanban specify``,
+    which only needs ``auxiliary.triage_specifier``.
+
+    The default slot is ``provider: auto`` → auto-falls back to the main model,
+    so this rule only fires when:
+
+      - the relevant slot is explicitly set to something broken, OR
+      - the auto fallback has no main model to fall back to.
+
+    Config context is required; pass {} from tests to keep the rule silent.
+    """
+    if _task_field(task, "status") != "triage":
+        return []
+
+    status = triage_aux_status(cfg)
+    if status is None:
+        return []
+
+    auto_decompose = bool(status.get("auto_decompose"))
+    decomposer_explicit = bool(status.get("decomposer_explicit"))
+    specifier_explicit = bool(status.get("specifier_explicit"))
+    main_visible = bool(status.get("main_model_visible"))
+
+    # Determine the primary slot and whether it is usable.
+    if auto_decompose:
+        primary_slot = "auxiliary.kanban_decomposer"
+        primary_explicit = decomposer_explicit
+        fallback_slot = "auxiliary.triage_specifier"
+        fallback_explicit = specifier_explicit
+        primary_desc = "decomposer"
+        detail_path = (
+            "Auto-decompose is on, so the dispatcher needs "
+            "auxiliary.kanban_decomposer (with auxiliary.triage_specifier as "
+            "a fallback for non-fan-out tasks)."
+        )
+    else:
+        primary_slot = "auxiliary.triage_specifier"
+        primary_explicit = specifier_explicit
+        fallback_slot = "auxiliary.kanban_decomposer"
+        fallback_explicit = decomposer_explicit
+        primary_desc = "specifier"
+        detail_path = (
+            "Auto-decompose is off, so triage tasks need "
+            "`hermes kanban specify`, which uses auxiliary.triage_specifier."
+        )
+
+    # The primary slot is usable when either: it was explicitly configured by
+    # the user, OR the default `provider: auto` can fall back to the main
+    # model. If both fail, we have a real configuration gap.
+    if primary_explicit or main_visible:
+        return []
+
+    task_id = _task_field(task, "id") or "<task_id>"
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Configure {primary_slot}",
+            payload={
+                "command": (
+                    f"hermes config set {primary_slot}.provider auto"
+                )
+            },
+            suggested=True,
+        ),
+    ]
+    if not fallback_explicit and not main_visible:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Or configure fallback {fallback_slot}",
+            payload={
+                "command": (
+                    f"hermes config set {fallback_slot}.provider auto"
+                )
+            },
+        ))
+    if not auto_decompose:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Specify manually: hermes kanban specify {task_id}",
+            payload={"command": f"hermes kanban specify {task_id}"},
+        ))
+
+    return [Diagnostic(
+        kind="triage_aux_unavailable",
+        severity="warning",
+        title=f"Triage {primary_desc} has no usable model",
+        detail=(
+            f"This task is still in triage and no working auxiliary model is "
+            f"visible to the dispatcher. {detail_path} The default slot uses "
+            f"`provider: auto` which falls back to the main model, but no main "
+            f"model is configured either. Configure the slot directly or set a "
+            f"main model so the auto fallback can take over."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data={
+            "task_id": task_id,
+            "auto_decompose": auto_decompose,
+            "primary_slot": primary_slot,
+            "main_model_visible": main_visible,
+        },
     )]
 
 
@@ -705,6 +909,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
+    _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
     _rule_repeated_crashes,
@@ -717,6 +922,7 @@ _RULES: list[RuleFn] = [
 # rules are added.
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
+    "triage_aux_unavailable",
     "prose_phantom_refs",
     "repeated_failures",
     "repeated_crashes",
@@ -760,6 +966,29 @@ def config_from_kanban_config(kanban_cfg: Optional[dict]) -> dict:
     ):
         diag_cfg["failure_threshold"] = diag_cfg["failure_limit"]
     return diag_cfg
+
+
+def config_from_runtime_config(raw_config: Optional[dict]) -> dict:
+    """Build diagnostics config from the full Hermes runtime config.
+
+    Carries through ``kanban``, ``auxiliary``, and ``model`` keys so triage-
+    aware rules can inspect the active aux-helper and main-model state.
+    Folds the ``kanban`` block through ``config_from_kanban_config`` so the
+    repeated-failure threshold derivation still applies.
+    """
+    raw_config = raw_config or {}
+    if not isinstance(raw_config, dict):
+        return {}
+    cfg: dict = {}
+    kanban_cfg = raw_config.get("kanban")
+    if isinstance(kanban_cfg, dict):
+        cfg.update(config_from_kanban_config(kanban_cfg))
+        cfg["kanban"] = kanban_cfg
+    for key in ("auxiliary", "model"):
+        value = raw_config.get(key)
+        if value is not None:
+            cfg[key] = value
+    return cfg
 
 
 def compute_task_diagnostics(

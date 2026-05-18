@@ -226,9 +226,7 @@ def _compute_task_diagnostics(
     from hermes_cli import kanban_diagnostics as kd
     from hermes_cli.config import load_config
 
-    diag_config = kd.config_from_kanban_config(
-        (load_config().get("kanban") or {})
-    )
+    diag_config = kd.config_from_runtime_config(load_config())
 
     # Build the candidate task list. We need each task's row + its
     # events + its runs. Doing N separate queries works but scales

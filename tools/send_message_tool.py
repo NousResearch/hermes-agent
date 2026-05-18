@@ -794,7 +794,33 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        # Resolve proxy — same chain as the gateway adapter (telegram.py).
+        # Without this, environments that require a proxy to reach
+        # api.telegram.org will timeout on every media upload.
+        _proxy_url = None
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _proxy_url = resolve_proxy_url("TELEGRAM_PROXY",
+                                           target_hosts=["api.telegram.org"])
+        except Exception:
+            pass
+
+        bot_kwargs: dict = {}
+        if _proxy_url:
+            try:
+                from telegram.request import HTTPXRequest as _HTTPXReq
+                _req = _HTTPXReq(
+                    proxy=_proxy_url,
+                    connect_timeout=10.0,
+                    read_timeout=20.0,
+                    write_timeout=20.0,
+                )
+                bot_kwargs["request"] = _req
+            except Exception:
+                # Fallback: some PTB versions accept proxy= directly
+                bot_kwargs["proxy"] = _proxy_url
+
+        bot = Bot(token=token, **bot_kwargs)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}

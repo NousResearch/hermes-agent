@@ -4361,25 +4361,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._app = None
         logger.info("[%s] API server stopped", self.name)
 
-    def push_process_event(self, session_key: str, event: dict) -> bool:
-        """Push a process completion event to the SSE queue for the given session_key.
-
-        Used by the gateway's _run_process_watcher to deliver background-process
-        notifications to api_server clients when the watcher's platform is
-        "api_server" (the adapter's send()/handle_message() paths do not work
-        for HTTP/SSE delivery).
-        """
-        for run_id, sk in self._run_approval_sessions.items():
-            if sk == session_key:
-                q = self._run_streams.get(run_id)
-                if q is not None:
-                    try:
-                        q.put_nowait(event)
-                        return True
-                    except Exception:
-                        pass
-        return False
-
     async def send(
         self,
         chat_id: str,

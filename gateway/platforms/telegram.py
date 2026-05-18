@@ -11,12 +11,16 @@ import asyncio
 import json
 import logging
 import os
+import random
 import tempfile
 import html as _html
 import re
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+_TELEGRAM_SEND_MAX_ATTEMPTS = 3
+_TELEGRAM_SEND_CONNECT_TIMEOUT_BACKOFF_BASE = 1.5
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -1563,7 +1567,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
                 msg = None
-                for _send_attempt in range(3):
+                for _send_attempt in range(_TELEGRAM_SEND_MAX_ATTEMPTS):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
@@ -1637,10 +1641,23 @@ class TelegramAdapter(BasePlatformAdapter):
                             raise
                         # TimedOut is also a subclass of NetworkError but
                         # indicates the request may have reached the server —
-                        # retrying risks duplicate message delivery.
+                        # retrying risks duplicate message delivery unless the
+                        # wrapped cause proves no TCP connection was established.
                         if _TimedOut and isinstance(send_err, _TimedOut):
+                            if self._is_safe_to_retry_send_timeout(send_err) and _send_attempt < _TELEGRAM_SEND_MAX_ATTEMPTS - 1:
+                                wait = self._send_retry_delay(_send_attempt)
+                                logger.warning(
+                                    "[%s] Telegram send connect timeout (attempt %d/%d), retrying in %.1fs: %s",
+                                    self.name,
+                                    _send_attempt + 1,
+                                    _TELEGRAM_SEND_MAX_ATTEMPTS,
+                                    wait,
+                                    send_err,
+                                )
+                                await asyncio.sleep(wait)
+                                continue
                             raise
-                        if _send_attempt < 2:
+                        if _send_attempt < _TELEGRAM_SEND_MAX_ATTEMPTS - 1:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
                                            self.name, _send_attempt + 1, wait, send_err)
@@ -1696,6 +1713,33 @@ class TelegramAdapter(BasePlatformAdapter):
             _to = locals().get("_TimedOut")
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(success=False, error=str(e), retryable=not is_timeout)
+
+    @staticmethod
+    def _is_safe_to_retry_send_timeout(error: Exception) -> bool:
+        """Return True when Telegram send failed before a TCP connection existed.
+
+        PTB wraps httpx/httpcore exceptions in ``telegram.error.TimedOut``.
+        A read/write timeout on ``send_message`` is ambiguous because Telegram
+        may have received the request already; retrying can duplicate the reply.
+        A connect timeout is safe to retry because no connection was
+        established, which matches BasePlatformAdapter's retry semantics.
+        """
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            name = type(current).__name__.lower()
+            if "connecttimeout" in name:
+                return True
+            if "readtimeout" in name or "writetimeout" in name:
+                return False
+            current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        text = repr(error).lower()
+        return "connecttimeout" in text and "readtimeout" not in text and "writetimeout" not in text
+
+    @staticmethod
+    def _send_retry_delay(attempt: int) -> float:
+        return _TELEGRAM_SEND_CONNECT_TIMEOUT_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
 
     async def edit_message(
         self,

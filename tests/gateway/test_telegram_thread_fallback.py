@@ -985,8 +985,8 @@ async def test_send_retries_network_errors_normally():
 
 
 @pytest.mark.asyncio
-async def test_send_does_not_retry_timeout():
-    """TimedOut (subclass of NetworkError) should NOT be retried in send().
+async def test_send_does_not_retry_ambiguous_timeout():
+    """Read/write style TimedOut errors should NOT be retried in send().
 
     The request may have already been delivered to the user — retrying
     would send duplicate messages.
@@ -1008,8 +1008,36 @@ async def test_send_does_not_retry_timeout():
 
     assert result.success is False
     assert "Timed out" in result.error
-    # CRITICAL: only 1 attempt — no retry for TimedOut
+    # CRITICAL: only 1 attempt — no retry for ambiguous TimedOut
     assert attempt[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_send_retries_safe_connect_timeout(monkeypatch):
+    """Connect timeout is safe to retry because no TCP connection existed."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(adapter, "_send_retry_delay", lambda attempt: 0)
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] < 3:
+            err = FakeTimedOut("Timed out")
+            err.__cause__ = type("ConnectTimeout", (TimeoutError,), {})("connect timed out")
+            raise err
+        return SimpleNamespace(message_id=201)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+    )
+
+    assert result.success is True
+    assert result.message_id == "201"
+    assert attempt[0] == 3
 
 
 @pytest.mark.asyncio

@@ -114,16 +114,6 @@ def _make_hermes_provider_class() -> Optional[type]:
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
 
-            Also eagerly fetches OAuth authorization-server metadata (PRM +
-            ASM) when we have stored tokens but no cached metadata, so the
-            SDK's ``_refresh_token`` can build the correct token_endpoint
-            URL on the preemptive-refresh path. Without this, the SDK
-            falls back to ``{mcp_server_url}/token`` (wrong for providers
-            whose AS is a different origin — BetterStack's MCP lives at
-            ``https://mcp.betterstack.com`` but its token endpoint is at
-            ``https://betterstack.com/oauth/token``), the refresh 404s, and
-            we drop through to full browser reauth.
-
             The SDK's base ``_initialize`` populates ``current_tokens`` but
             does NOT call ``update_token_expiry``, so ``token_expiry_time``
             stays ``None`` and ``is_token_valid()`` returns True for any
@@ -136,8 +126,8 @@ def _make_hermes_provider_class() -> Optional[type]:
 
             Seeding ``token_expiry_time`` from the reloaded token fixes that:
             ``is_token_valid()`` correctly reports False for expired tokens,
-            ``async_auth_flow`` takes the ``can_refresh_token()`` branch,
-            and the SDK quietly refreshes before the first real request.
+            ``async_auth_flow`` can take the ``can_refresh_token()`` branch
+            when trusted OAuth server metadata is available.
 
             Paired with :class:`HermesTokenStorage` persisting an absolute
             ``expires_at`` timestamp (``mcp_oauth.py:set_tokens``) so the
@@ -169,105 +159,18 @@ def _make_hermes_provider_class() -> Optional[type]:
                         meta.token_endpoint,
                     )
 
-            # Pre-flight OAuth AS discovery so ``_refresh_token`` has a
-            # correct ``token_endpoint`` before the first refresh attempt.
-            # Only runs when we have tokens on cold-load but no cached
-            # metadata — i.e. the exact scenario where the SDK's built-in
-            # 401-branch discovery hasn't had a chance to run yet.
-            if (
-                tokens is not None
-                and self.context.oauth_metadata is None
-            ):
-                try:
-                    await self._prefetch_oauth_metadata()
-                except Exception as exc:  # pragma: no cover — defensive
-                    # Non-fatal: if discovery fails, the SDK's normal 401-
-                    # branch discovery will run on the next request.
-                    logger.debug(
-                        "MCP OAuth '%s': pre-flight metadata discovery "
-                        "failed (non-fatal): %s",
-                        self._hermes_server_name, exc,
-                    )
-
-        async def _prefetch_oauth_metadata(self) -> None:
-            """Fetch PRM + ASM from the well-known endpoints, cache on context.
-
-            Mirrors the SDK's 401-branch discovery (oauth2.py ~line 511-551)
-            but runs synchronously before the first request instead of
-            inside the httpx auth_flow generator. Uses the SDK's own URL
-            builders and response handlers so we track whatever the SDK
-            version we're pinned to expects.
-            """
-            import httpx  # local import: httpx is an MCP SDK dependency
-            from mcp.client.auth.utils import (
-                build_oauth_authorization_server_metadata_discovery_urls,
-                build_protected_resource_metadata_discovery_urls,
-                create_oauth_metadata_request,
-                handle_auth_metadata_response,
-                handle_protected_resource_response,
-            )
-
-            server_url = self.context.server_url
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # Step 1: PRM discovery to learn the authorization_server URL.
-                for url in build_protected_resource_metadata_discovery_urls(
-                    None, server_url
-                ):
-                    req = create_oauth_metadata_request(url)
-                    try:
-                        resp = await client.send(req)
-                    except httpx.HTTPError as exc:
-                        logger.debug(
-                            "MCP OAuth '%s': PRM discovery to %s failed: %s",
-                            self._hermes_server_name, url, exc,
-                        )
-                        continue
-                    prm = await handle_protected_resource_response(resp)
-                    if prm:
-                        self.context.protected_resource_metadata = prm
-                        if prm.authorization_servers:
-                            self.context.auth_server_url = str(
-                                prm.authorization_servers[0]
-                            )
-                        break
-
-                # Step 2: ASM discovery against the auth_server_url (or
-                # server_url fallback for legacy providers).
-                for url in build_oauth_authorization_server_metadata_discovery_urls(
-                    self.context.auth_server_url, server_url
-                ):
-                    req = create_oauth_metadata_request(url)
-                    try:
-                        resp = await client.send(req)
-                    except httpx.HTTPError as exc:
-                        logger.debug(
-                            "MCP OAuth '%s': ASM discovery to %s failed: %s",
-                            self._hermes_server_name, url, exc,
-                        )
-                        continue
-                    ok, asm = await handle_auth_metadata_response(resp)
-                    if not ok:
-                        break
-                    if asm:
-                        self.context.oauth_metadata = asm
-                        # Persist immediately so a subsequent cold-load can
-                        # skip discovery entirely.
-                        storage = self.context.storage
-                        from tools.mcp_oauth import HermesTokenStorage
-                        if isinstance(storage, HermesTokenStorage):
-                            storage.save_oauth_metadata(asm)
-                        logger.debug(
-                            "MCP OAuth '%s': pre-flight ASM discovered "
-                            "token_endpoint=%s",
-                            self._hermes_server_name, asm.token_endpoint,
-                        )
-                        break
+            if tokens is not None and self.context.oauth_metadata is None:
+                logger.debug(
+                    "MCP OAuth '%s': cached tokens found without trusted "
+                    "OAuth metadata; skipping cold-load metadata discovery",
+                    self._hermes_server_name,
+                )
 
         def _persist_oauth_metadata_if_changed(self) -> None:
             """Persist discovered OAuth metadata for future process restarts.
 
             Called after the SDK's normal 401-branch auth flow completes so
-            metadata discovered via the lazy path (not pre-flight) is also
+            metadata discovered via the lazy SDK auth path is also
             saved. No-op when nothing to persist or metadata hasn't changed.
             """
             meta = self.context.oauth_metadata

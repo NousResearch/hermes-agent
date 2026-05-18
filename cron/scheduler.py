@@ -35,7 +35,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_dir, get_hermes_home
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -429,6 +429,62 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+_DOCUMENT_EXTS = frozenset({
+    '.pdf', '.md', '.txt', '.csv', '.log', '.json', '.xml', '.yaml', '.yml',
+    '.toml', '.ini', '.cfg', '.zip', '.docx', '.xlsx', '.pptx',
+})
+_CRON_MEDIA_EXTS = frozenset().union(_IMAGE_EXTS, _VIDEO_EXTS, _DOCUMENT_EXTS, {
+    '.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac',
+})
+_CRON_MEDIA_CACHE_DIRS = (
+    ("cache/audio", "audio_cache"),
+    ("cache/images", "image_cache"),
+    ("cache/videos", "video_cache"),
+    ("cache/documents", "document_cache"),
+    ("cache/screenshots", "browser_screenshots"),
+)
+
+
+def _is_safe_cron_media_path(media_path: str) -> bool:
+    """Return True for Hermes-generated MEDIA files that cron may attach.
+
+    Cron final responses are model-generated, so a MEDIA tag must not be able
+    to name arbitrary host files. Only existing files with expected attachment
+    extensions inside Hermes-controlled media cache directories are eligible.
+    """
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    if not path.is_file() or path.suffix.lower() not in _CRON_MEDIA_EXTS:
+        return False
+
+    for new_subpath, old_name in _CRON_MEDIA_CACHE_DIRS:
+        try:
+            cache_dir = get_hermes_dir(new_subpath, old_name).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        try:
+            path.relative_to(cache_dir)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _filter_cron_media_files(media_files: list, job: dict) -> list:
+    """Drop unsafe MEDIA paths before cron delivery opens or uploads them."""
+    safe_media = []
+    for media_path, is_voice in media_files:
+        if _is_safe_cron_media_path(media_path):
+            safe_media.append((media_path, is_voice))
+        else:
+            logger.warning(
+                "Job '%s': skipping unsafe MEDIA attachment path: %s",
+                job.get("id", "?"),
+                media_path,
+            )
+    return safe_media
 
 
 def _send_media_via_adapter(
@@ -526,6 +582,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_files = _filter_cron_media_files(media_files, job)
 
     try:
         config = load_gateway_config()
@@ -1215,14 +1272,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
-    _cron_context_vars = (
-        ("HERMES_CRON_SESSION", "1"),
-        ("HERMES_CRON_AUTO_DELIVER_PLATFORM", ""),
-        ("HERMES_CRON_AUTO_DELIVER_CHAT_ID", ""),
-        ("HERMES_CRON_AUTO_DELIVER_THREAD_ID", ""),
+    _cron_delivery_vars = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
     )
-    for _var_name, _var_value in _cron_context_vars:
-        _VAR_MAP[_var_name].set(_var_value)
+    for _var_name in _cron_delivery_vars:
+        _VAR_MAP[_var_name].set("")
 
     # Per-job working directory. Use a ContextVar-backed TERMINAL_CWD
     # override so this cron job sees its project cwd without exposing that
@@ -1332,11 +1388,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
-            # Persisted cron records may contain legacy base_url values created
-            # from model-callable tool args. Never pass them as explicit URLs,
-            # because the resolver would pair arbitrary endpoints with the
-            # operator's ambient API keys. Custom endpoints must come from the
-            # operator-controlled provider configuration instead.
+            if job.get("base_url"):
+                runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
@@ -1601,7 +1654,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             reset_terminal_cwd(_terminal_cwd_token)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
-        for _var_name, _ in _cron_context_vars:
+        for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
             try:

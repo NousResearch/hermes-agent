@@ -186,14 +186,14 @@ https://huggingface.co/api/models/<repo>/tree/main?recursive=true
 Then launch directly from the Hub without extra Hub tooling:
 
 ```bash
-llama-cli -hf <repo>:Q4_K_M
-llama-server -hf <repo>:Q4_K_M
+llama-cli -hf '<repo>:Q4_K_M'
+llama-server -hf '<repo>:Q4_K_M'
 ```
 
 If you need the exact file name from the tree API:
 
 ```bash
-llama-server --hf-repo <repo> --hf-file <filename.gguf>
+llama-server --hf-repo '<repo>' --hf-file '<filename.gguf>'
 ```
 
 ## Importance Matrices (imatrix)

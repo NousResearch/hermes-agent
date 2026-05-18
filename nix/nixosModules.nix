@@ -197,6 +197,12 @@
 
     # Default: /var/lib/hermes/workspace → /data/workspace.
     # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
+    workingDirectoryInStateDir =
+      cfg.workingDirectory == cfg.stateDir || lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory;
+
+    nativeReadWritePaths = [ cfg.stateDir ]
+      ++ lib.optional (! workingDirectoryInStateDir) cfg.workingDirectory;
+
     containerWorkDir =
       if lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory
       then "${containerDataDir}/${lib.removePrefix "${cfg.stateDir}/" cfg.workingDirectory}"
@@ -713,20 +719,66 @@
           "d ${cfg.stateDir}/.hermes/memories 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes/plugins 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.workingDirectory}         2770 ${cfg.user} ${cfg.group} - -"
         ];
       }
 
       # ── Activation: link config + auth + documents ────────────────────
       {
         system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
-          # Ensure directories exist (activation runs before tmpfiles)
-          mkdir -p ${cfg.stateDir}/.hermes
-          mkdir -p ${cfg.stateDir}/home
-          mkdir -p ${cfg.workingDirectory}
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
-          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
-          chmod 0750 ${cfg.stateDir}/home
+          # Ensure directories exist (activation runs before tmpfiles).
+          # Refuse symlinks before changing ownership or permissions: stateDir is
+          # writable by the service group, so following a replaced workspace
+          # symlink here would let an unprivileged hermes process alter the target.
+          fail_unsafe_dir() {
+            echo "hermes-agent: refusing unsafe directory $1" >&2
+            exit 1
+          }
+
+          ensure_hermes_dir() {
+            _path="$1"
+            _mode="$2"
+            if [ -L "$_path" ]; then
+              fail_unsafe_dir "$_path is a symlink"
+            fi
+            mkdir -p "$_path"
+            if [ -L "$_path" ]; then
+              fail_unsafe_dir "$_path is a symlink"
+            fi
+            chown -h ${cfg.user}:${cfg.group} "$_path"
+            chmod "$_mode" "$_path"
+          }
+
+          assert_parent_not_service_writable() {
+            _path="$1"
+            _parent="$(dirname "$_path")"
+            if [ -L "$_parent" ]; then
+              fail_unsafe_dir "parent $_parent is a symlink"
+            fi
+            _owner="$(stat -c %U "$_parent")"
+            _group="$(stat -c %G "$_parent")"
+            _mode="$(stat -c %A "$_parent")"
+            if [ "$_owner" = ${lib.escapeShellArg cfg.user} ]; then
+              fail_unsafe_dir "parent $_parent is owned by ${cfg.user}"
+            fi
+            case "$_mode" in
+              ?????w*)
+                if [ "$_group" = ${lib.escapeShellArg cfg.group} ]; then
+                  fail_unsafe_dir "parent $_parent is writable by group ${cfg.group}"
+                fi
+                ;;
+            esac
+            case "$_mode" in
+              ????????w*) fail_unsafe_dir "parent $_parent is world-writable" ;;
+            esac
+          }
+
+          ensure_hermes_dir ${lib.escapeShellArg cfg.stateDir} 2770
+          ensure_hermes_dir ${lib.escapeShellArg "${cfg.stateDir}/.hermes"} 2770
+          ensure_hermes_dir ${lib.escapeShellArg "${cfg.stateDir}/home"} 0750
+          ensure_hermes_dir ${lib.escapeShellArg cfg.workingDirectory} 2770
+          ${lib.optionalString (! workingDirectoryInStateDir) ''
+            assert_parent_not_service_writable ${lib.escapeShellArg cfg.workingDirectory}
+          ''}
 
           # Create subdirs, set setgid + group-writable, migrate existing files.
           # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
@@ -734,9 +786,7 @@
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
           for _subdir in cron sessions logs memories plugins; do
-            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
-            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
-            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
+            ensure_hermes_dir "${cfg.stateDir}/.hermes/$_subdir" 2770
             find "${cfg.stateDir}/.hermes/$_subdir" -type f \
               -exec chmod g+rw {} + 2>/dev/null || true
           done
@@ -908,10 +958,7 @@
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = false;
-            ReadWritePaths = [
-              cfg.stateDir
-              cfg.workingDirectory
-            ];
+            ReadWritePaths = nativeReadWritePaths;
             PrivateTmp = true;
           };
 

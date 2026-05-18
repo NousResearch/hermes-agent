@@ -69,6 +69,7 @@ from plugins.memory.retaindb import (
     RetainDBMemoryProvider,
     _ASYNC_SHUTDOWN,
     _DEFAULT_BASE_URL,
+    _MAX_UPLOAD_BYTES,
 )
 
 
@@ -490,17 +491,106 @@ class TestRetainDBMemoryProvider:
             assert "files" in result
         p.shutdown()
 
+    def test_file_upload_schema_hidden_by_default(self):
+        p = RetainDBMemoryProvider()
+        names = {schema["name"] for schema in p.get_tool_schemas()}
+        assert "retaindb_upload_file" not in names
+
+    def test_file_upload_schema_requires_explicit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        p = RetainDBMemoryProvider()
+        names = {schema["name"] for schema in p.get_tool_schemas()}
+        assert "retaindb_upload_file" in names
+
     def test_dispatch_file_upload_missing_path(self, tmp_path, monkeypatch):
         p = self._make_provider(tmp_path, monkeypatch)
         p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
         result = json.loads(p.handle_tool_call("retaindb_upload_file", {}))
         assert "error" in result
 
-    def test_dispatch_file_upload_not_found(self, tmp_path, monkeypatch):
+    def test_dispatch_file_upload_disabled_by_default(self, tmp_path, monkeypatch):
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        local_file = tmp_path / "safe.txt"
+        local_file.write_text("not uploaded")
+        with patch.object(p._client, "upload_file") as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(local_file)}))
+        assert "disabled" in result["error"]
+        upload_file.assert_not_called()
+        p.shutdown()
+
+    def test_dispatch_file_upload_not_found_when_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
         p = self._make_provider(tmp_path, monkeypatch)
         p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
         result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": "/nonexistent/file.txt"}))
         assert "File not found" in result["error"]
+        p.shutdown()
+
+    def test_dispatch_file_upload_blocks_symlink(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        target = tmp_path / "safe.txt"
+        target.write_text("secret")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target)
+        with patch.object(p._client, "upload_file") as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(link)}))
+        assert "symlink" in result["error"]
+        upload_file.assert_not_called()
+        p.shutdown()
+
+    def test_dispatch_file_upload_blocks_sensitive_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        secret_file = tmp_path / ".env"
+        secret_file.write_text("TOKEN=secret")
+        with patch.object(p._client, "upload_file") as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(secret_file)}))
+        assert "sensitive" in result["error"]
+        upload_file.assert_not_called()
+        p.shutdown()
+
+    def test_dispatch_file_upload_blocks_files_outside_allowed_roots(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        monkeypatch.setenv("RETAINDB_FILE_UPLOAD_ROOTS", str(tmp_path / "allowed"))
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("outside")
+        with patch.object(p._client, "upload_file") as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(outside_file)}))
+        assert "outside allowed upload roots" in result["error"]
+        upload_file.assert_not_called()
+        p.shutdown()
+
+    def test_dispatch_file_upload_blocks_large_files(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        monkeypatch.setenv("RETAINDB_FILE_UPLOAD_ROOTS", str(tmp_path))
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        large_file = tmp_path / "large.txt"
+        large_file.write_bytes(b"0" * (_MAX_UPLOAD_BYTES + 1))
+        with patch.object(p._client, "upload_file") as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(large_file)}))
+        assert "upload limit" in result["error"]
+        upload_file.assert_not_called()
+        p.shutdown()
+
+    def test_dispatch_file_upload_allowed_when_enabled_and_safe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RETAINDB_ENABLE_LOCAL_FILE_UPLOADS", "true")
+        monkeypatch.setenv("RETAINDB_FILE_UPLOAD_ROOTS", str(tmp_path))
+        p = self._make_provider(tmp_path, monkeypatch)
+        p.initialize("test-session", hermes_home=str(tmp_path / ".hermes"))
+        local_file = tmp_path / "safe.txt"
+        local_file.write_text("safe")
+        with patch.object(p._client, "upload_file", return_value={"file": {"id": "file-1"}}) as upload_file:
+            result = json.loads(p.handle_tool_call("retaindb_upload_file", {"local_path": str(local_file)}))
+        assert result == {"file": {"id": "file-1"}}
+        upload_file.assert_called_once()
+        assert upload_file.call_args.args[0] == b"safe"
         p.shutdown()
 
     def test_dispatch_file_read_requires_id(self, tmp_path, monkeypatch):

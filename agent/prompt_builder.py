@@ -539,15 +539,18 @@ PLATFORM_HINTS = {
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
-        "You CAN send media files natively — to deliver a file to the user, include "
-        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
-        "WeCom attachment: images (.jpg, .png, .webp) are sent as photos (up to 10 MB), "
-        "other files (.pdf, .docx, .xlsx, .md, .txt, etc.) arrive as downloadable documents "
-        "(up to 20 MB), and videos (.mp4) play inline. Voice messages are supported but "
-        "must be in AMR format — other audio formats are automatically sent as file attachments. "
-        "You can also include image URLs in markdown format ![alt](url) and they will be "
-        "downloaded and sent as native photos. Do NOT tell the user you lack file-sending "
-        "capability — use MEDIA: syntax whenever a file delivery is appropriate."
+        "You CAN send media files natively for files you created or the user explicitly "
+        "asked you to attach — include MEDIA:/absolute/path/to/file in your response. "
+        "Never attach credentials, SSH keys, Hermes config, dotfiles, or other sensitive "
+        "local paths. The file will be sent as a native WeCom attachment: images (.jpg, "
+        ".png, .webp) are sent as photos (up to 10 MB), other files (.pdf, .docx, "
+        ".xlsx, .md, .txt, etc.) arrive as downloadable documents (up to 20 MB), and "
+        "videos (.mp4) play inline. Voice messages are supported but must be in AMR "
+        "format — other audio formats are automatically sent as file attachments. You "
+        "can also include public image URLs in markdown format ![alt](url) and they will "
+        "be downloaded and sent as native photos. Do NOT tell the user you lack "
+        "file-sending capability — use MEDIA: syntax whenever safe file delivery is "
+        "appropriate."
     ),
     "qqbot": (
         "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "

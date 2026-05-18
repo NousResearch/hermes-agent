@@ -26,7 +26,6 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
-            os.path.join(home, ".hermes", ".env"),
             str(hermes_home / ".env"),
             str(hermes_home / "config.yaml"),
             os.path.join(home, ".bashrc"),
@@ -74,16 +73,9 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str, home: str | None = None) -> bool:
-    """Return True if path is blocked by the write denylist or safe root.
-
-    Args:
-        path: Candidate write path.
-        home: Optional target-environment home directory. When file tools run
-            over SSH or another remote backend, this must be the remote home
-            rather than the local Hermes process home.
-    """
-    home = os.path.realpath(os.path.expanduser(home or "~"))
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
     if resolved in build_write_denied_paths(home):

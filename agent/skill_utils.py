@@ -40,7 +40,6 @@ def yaml_load(content: str):
         loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
 
         def _load(value: str):
-            # Enforce safe_load via the SafeLoader/CSafeLoader explicitly
             return yaml.load(value, Loader=loader)
 
         _yaml_load_fn = _load

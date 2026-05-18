@@ -8,7 +8,7 @@ describe('readClipboardText', () => {
 
     await expect(readClipboardText('darwin', run)).resolves.toBe('hello world\n')
     expect(run).toHaveBeenCalledWith(
-      'pbpaste',
+      '/usr/bin/pbpaste',
       [],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
@@ -19,7 +19,7 @@ describe('readClipboardText', () => {
 
     await expect(readClipboardText('win32', run)).resolves.toBe('from windows\r\n')
     expect(run).toHaveBeenCalledWith(
-      'powershell',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
@@ -32,7 +32,7 @@ describe('readClipboardText', () => {
       'from wsl\n'
     )
     expect(run).toHaveBeenCalledWith(
-      'powershell.exe',
+      '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
@@ -45,7 +45,7 @@ describe('readClipboardText', () => {
       'from wayland\n'
     )
     expect(run).toHaveBeenCalledWith(
-      'wl-paste',
+      '/usr/bin/wl-paste',
       ['--type', 'text'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
@@ -62,13 +62,13 @@ describe('readClipboardText', () => {
     )
     expect(run).toHaveBeenNthCalledWith(
       1,
-      'wl-paste',
+      '/usr/bin/wl-paste',
       ['--type', 'text'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
     expect(run).toHaveBeenNthCalledWith(
       2,
-      'xclip',
+      '/usr/bin/xclip',
       ['-selection', 'clipboard', '-out'],
       expect.objectContaining({ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, windowsHide: true })
     )
@@ -136,7 +136,7 @@ describe('writeClipboardText', () => {
 
     await expect(writeClipboardText('hello world', 'darwin', start as any)).resolves.toBe(true)
     expect(start).toHaveBeenCalledWith(
-      'pbcopy',
+      '/usr/bin/pbcopy',
       [],
       expect.objectContaining({ stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
     )
@@ -180,7 +180,7 @@ describe('writeClipboardText', () => {
       writeClipboardText('wayland text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
     ).resolves.toBe(true)
     expect(start).toHaveBeenCalledWith(
-      'wl-copy',
+      '/usr/bin/wl-copy',
       ['--type', 'text/plain'],
       expect.objectContaining({ stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
     )
@@ -206,21 +206,11 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(
-      writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
-    ).resolves.toBe(true)
-    expect(start).toHaveBeenNthCalledWith(
-      1,
-      'wl-copy',
-      ['--type', 'text/plain'],
-      expect.anything()
+    await expect(writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })).resolves.toBe(
+      true
     )
-    expect(start).toHaveBeenNthCalledWith(
-      2,
-      'xclip',
-      ['-selection', 'clipboard', '-in'],
-      expect.anything()
-    )
+    expect(start).toHaveBeenNthCalledWith(1, '/usr/bin/wl-copy', ['--type', 'text/plain'], expect.anything())
+    expect(start).toHaveBeenNthCalledWith(2, '/usr/bin/xclip', ['-selection', 'clipboard', '-in'], expect.anything())
   })
 
   it('falls back to xsel when both wl-copy and xclip fail', async () => {
@@ -244,7 +234,7 @@ describe('writeClipboardText', () => {
     await expect(
       writeClipboardText('xsel text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
     ).resolves.toBe(true)
-    expect(start).toHaveBeenNthCalledWith(3, 'xsel', ['--clipboard', '--input'], expect.anything())
+    expect(start).toHaveBeenNthCalledWith(3, '/usr/bin/xsel', ['--clipboard', '--input'], expect.anything())
   })
 
   it('uses PowerShell on WSL2 when WSL_DISTRO_NAME is set', async () => {
@@ -263,9 +253,11 @@ describe('writeClipboardText', () => {
 
     const start = vi.fn().mockReturnValue(child)
 
-    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(true)
+    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(
+      true
+    )
     expect(start).toHaveBeenCalledWith(
-      'powershell.exe',
+      '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
@@ -296,7 +288,7 @@ describe('writeClipboardText', () => {
     ).resolves.toBe(true)
     expect(start).toHaveBeenNthCalledWith(
       1,
-      'powershell.exe',
+      '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )
@@ -321,7 +313,7 @@ describe('writeClipboardText', () => {
 
     await expect(writeClipboardText('windows text', 'win32', start as any)).resolves.toBe(true)
     expect(start).toHaveBeenCalledWith(
-      'powershell',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
       expect.arrayContaining(['-NoProfile', '-NonInteractive']),
       expect.anything()
     )

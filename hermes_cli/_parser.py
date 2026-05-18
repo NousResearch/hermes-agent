@@ -105,8 +105,9 @@ def build_top_level_parser():
             "One-shot mode: send a single prompt and print ONLY the final "
             "response text to stdout. No banner, no spinner, no tool "
             "previews, no session_id line. Tools, memory, rules, and "
-            "AGENTS.md in the CWD are loaded as normal; approvals are "
-            "auto-bypassed. Intended for scripts / pipes."
+            "AGENTS.md in the CWD are loaded as normal; dangerous "
+            "commands are blocked unless --yolo is explicit. Intended "
+            "for scripts / pipes."
         ),
     )
     # --model / --provider are accepted at the top level so they can pair

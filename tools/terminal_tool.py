@@ -932,6 +932,7 @@ _cleanup_running = False
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_container_aliases: Dict[str, str] = {}
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -962,17 +963,42 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 
+def register_task_container_alias(task_id: str, container_task_id: Optional[str]):
+    """Map a child tool-call task_id to its parent's sandbox key."""
+    if not task_id:
+        return
+    _task_container_aliases[task_id] = _resolve_container_task_id(container_task_id)
+
+
+def clear_task_container_alias(task_id: str):
+    """Remove a child task_id sandbox alias after the child completes."""
+    _task_container_aliases.pop(task_id, None)
+
+
+def _is_subagent_task_id(task_id: str) -> bool:
+    """Return True for delegate_task-generated child task identifiers."""
+    return task_id.startswith("sa-") or task_id.startswith("subagent-")
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by
     ``_active_environments``.
 
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived container
-    (one bash, one /workspace, one set of installed packages).
+    The top-level CLI agent passes ``task_id=None`` and lands on
+    ``"default"``.  Gateway/ACP callers pass per-session task IDs; those IDs
+    must remain distinct so authorized network sessions do not share shell
+    state, files, cwd, or cleanup lifetimes.
+
+    API server calls may use ``api-session-*`` task IDs while still targeting
+    the shared default CLI sandbox; those IDs should resolve to ``"default"``
+    for lookup/cleanup compatibility.
+
+    ``delegate_task`` children pass their own subagent ID so file-state
+    tracking, the active-subagents registry, and TUI events stay distinct per
+    child.  ``register_task_container_alias`` maps those child IDs back to the
+    parent's sandbox key while the child is running.  Legacy child IDs without
+    an alias still collapse to ``"default"`` for CLI backward compatibility.
 
     Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
     call ``register_task_env_overrides(task_id, {...})`` to request a
@@ -981,9 +1007,17 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     rollouts need their own isolated sandbox, which is the whole point of
     the override.
     """
-    if task_id and task_id in _task_env_overrides:
+    if not task_id or task_id == "default":
+        return "default"
+    if task_id in _task_env_overrides:
         return task_id
-    return "default"
+    if task_id in _task_container_aliases:
+        return _task_container_aliases[task_id]
+    if task_id.startswith("api-session-"):
+        return "default"
+    if _is_subagent_task_id(task_id):
+        return "default"
+    return task_id
 
 
 # Configuration from environment variables

@@ -55,9 +55,10 @@ def _on_session_end(**kwargs) -> None:
     not fail because the bot cleanup hit an edge case.
     """
     try:
-        status = pm.status()
+        session_id = kwargs.get("session_id")
+        status = pm.status(session_id=session_id)
         if status.get("ok") and status.get("alive"):
-            pm.stop(reason="session ended")
+            pm.stop(reason="session ended", session_id=session_id)
     except Exception as e:  # pragma: no cover — defensive
         logger.debug("google_meet on_session_end cleanup failed: %s", e)
 

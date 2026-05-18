@@ -388,21 +388,14 @@ class TestTranscribeLocalCommand:
             return _TempDir()
 
         def fake_run(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and len(cmd) > 0 and cmd[0].endswith("ffmpeg"):
+            if isinstance(cmd, list):
                 output_path = cmd[-1]
                 with open(output_path, "wb") as handle:
                     handle.write(b"RIFF....WAVEfmt ")
                 return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-            # The transcription command might be passed as a string or list
-            if isinstance(cmd, list) and any("whisper" in arg for arg in cmd):
-                (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-            elif isinstance(cmd, str) and "whisper" in cmd:
-                (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
         monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")

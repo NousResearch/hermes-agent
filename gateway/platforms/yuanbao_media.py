@@ -29,6 +29,8 @@ from typing import Optional, Any
 
 import httpx
 
+from tools.url_safety import is_safe_url
+
 logger = logging.getLogger(__name__)
 
 # ============ 常量 ============
@@ -199,6 +201,18 @@ def _parse_webp_size(buf: bytes) -> Optional[dict[str, int]]:
 
 # ============ URL 下载 ============
 
+def _validate_safe_download_url(url: str) -> None:
+    """Reject private/internal media URLs before httpx opens a connection."""
+    if not is_safe_url(url):
+        raise ValueError("Blocked unsafe URL: private/internal address")
+
+
+async def _ssrf_redirect_guard(response: httpx.Response) -> None:
+    """Re-check redirect targets so public URLs cannot bounce into SSRF targets."""
+    if response.is_redirect and response.next_request:
+        _validate_safe_download_url(str(response.next_request.url))
+
+
 async def download_url(
     url: str,
     max_size_mb: int = DEFAULT_MAX_SIZE_MB,
@@ -217,8 +231,14 @@ async def download_url(
         ValueError:  内容超过大小限制
         httpx.HTTPError: 网络/HTTP 错误
     """
+    _validate_safe_download_url(url)
+
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
         # 先 HEAD 检查大小
         try:
             head = await client.head(url)

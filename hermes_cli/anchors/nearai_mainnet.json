@@ -1,6 +1,23 @@
 {
   "_comment": "Pinned reference values for NEAR AI Cloud TEE backends (mainnet). The Base on-chain DstackKms/DstackApp registries are the authoritative SET of permitted (compose_hash, os_image_hash, app_id, kms_pubkey) — `cast logs --address $APP 'ComposeHashAdded(bytes32)' --rpc-url https://mainnet.base.org` enumerates them. CT-style anchoring: each on-chain-authorized compose_hash is admitted to this file only after we capture and audit its `app_compose` preimage from a live attestation (so the anchor is `on-chain authorized AND preimage-reviewed`). inner_yaml pins Block C (the inner YAML in `nearai/cvm-compose-files` is fetched at runtime by compose-manager and NOT in the outer compose_hash measurement; without this pin the operator can swap the inner YAML and exfiltrate prompts on the same KMS-derived signing key). Refresh on operator rotation by sweeping new `ComposeHashAdded` events on Base + capturing the preimage from a live `/v1/attestation/report`. Source captures: case-studies/near-ai-private-inference/sources/.",
-  "captured_at": "2026-05-09",
+  "captured_at": "2026-05-18",
+  "_pending_review": {
+    "_note": "On-chain ComposeHashAdded events on the near-ai/models DstackApp 0x2c0a0c96cb6dbd659bf1446e2f3fce58172ff91b that we are NOT yet admitting because no live attestation has surfaced the preimage. CT-style: chain-authorized ≠ anchored — we still need to capture and diff `app_compose` from a live /v1/attestation/report before adding. Sweep source: probes/onchain_sweep.py in amiller/awesome-private-inference (data/onchain-status.json).",
+    "compose_hashes": [
+      {
+        "compose_hash": "f39bd7632c0276908889a9a02ad5c530a22c1be94925c994458d1dbd84086534",
+        "first_seen_block": 45727026,
+        "first_seen_date": "2026-05-08T12:29:59Z",
+        "notes": "Admitted on-chain ~7 minutes after the gpt-oss-anchored 0x95cbf0a8 in the same block range — likely a staged rotation for the small-models.yaml host. Live 2026-05-18 capture of openai/gpt-oss-120b and Qwen/Qwen3-30B still returned 0x95cbf0a8, so this revision is not in active rotation yet."
+      },
+      {
+        "compose_hash": "bcbccccf457a8f2dcd837b615ef56f63eaa707e3675f1ecd08ee81cb06ec2b28",
+        "first_seen_block": 45946624,
+        "first_seen_date": "2026-05-13T14:29:55Z",
+        "notes": "Live 2026-05-18 capture across GLM-5/GLM-5.1-FP8/gpt-oss-120b/Qwen3-30B/DeepSeek-V3.1 did not surface this compose — staged but not in active rotation. Admit after capturing preimage."
+      }
+    ]
+  },
   "kms_contract_addr": "0x8fa1593fac104c1aa0c59eaa3553f7e3e162d637",
   "kms_provider_info_id": "3059301306072a8648ce3d020106082a8648ce3d03010703420004228f800590a10442cba9d0e6adb2fa9f195eea9e75e23dd35990d52b59dda2415a63674c38adebde4ffd4d4b265bf818985933820c8053cee3ce29b5fb0fbcbc",
   "os_image_hashes": [

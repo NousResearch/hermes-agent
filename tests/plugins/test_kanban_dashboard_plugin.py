@@ -1551,10 +1551,12 @@ def test_diagnostics_endpoint_severity_filter(client):
         # requires ``t_[a-f0-9]{8,}``.
         p1 = kb.create_task(conn, title="prose", assignee="a")
         kb.complete_task(conn, p1, summary="mentioned t_deadbeef1234")
-        # An error-severity diagnostic (spawn failures) on another
+        # An error-severity diagnostic (spawn failures) on another. Keep the
+        # count below the critical cutoff (threshold * 2) so severity=error
+        # remains an exact-filter assertion.
         p2 = kb.create_task(conn, title="spawn", assignee="b")
         conn.execute(
-            "UPDATE tasks SET consecutive_failures=5, last_failure_error='x' WHERE id=?",
+            "UPDATE tasks SET consecutive_failures=2, last_failure_error='x' WHERE id=?",
             (p2,),
         )
         conn.commit()

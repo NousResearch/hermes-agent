@@ -204,3 +204,10 @@ def test_claude_ready_preflight_does_not_create_state_files_when_missing_state(
     assert result.ok is True
     assert not halt_flags_path().exists()
     assert not envelope_state_path().exists()
+
+
+def test_package_exports_preflight_helpers():
+    import agent.cmh_subprocess as cmh_subprocess
+
+    assert callable(cmh_subprocess.prepare_claude_print_invocation)
+    assert callable(cmh_subprocess.prepare_codex_print_invocation)

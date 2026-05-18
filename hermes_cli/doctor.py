@@ -799,6 +799,15 @@ def run_doctor(args):
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+            if not _safe_which("codex"):
+                # Native OAuth uses Hermes' own device-code flow — the Codex
+                # CLI is only relevant if the user wants to import an
+                # existing ~/.codex/auth.json login. Keep the hint attached to
+                # the Codex auth check so it doesn't read like MiniMax advice.
+                check_info(
+                    "codex CLI not installed "
+                    "(optional — only required to import tokens from an existing Codex CLI login)"
+                )
 
         gemini_status = get_gemini_oauth_auth_status()
         if gemini_status.get("logged_in"):
@@ -839,15 +848,6 @@ def run_doctor(args):
 
     if _safe_which("codex"):
         check_ok("codex CLI")
-    else:
-        # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
-        # only needed if you want to import existing tokens from
-        # ~/.codex/auth.json.  Downgrade to info so users running
-        # `hermes auth openai-codex` aren't told they're missing something.
-        check_info(
-            "codex CLI not installed "
-            "(optional — only required to import tokens from an existing Codex CLI login)"
-        )
 
     _section("Directory Structure")
     hermes_home = HERMES_HOME

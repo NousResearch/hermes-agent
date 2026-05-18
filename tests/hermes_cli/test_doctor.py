@@ -892,6 +892,52 @@ class TestGitHubTokenCheck:
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
+def test_run_doctor_attaches_codex_cli_hint_to_codex_auth_not_minimax(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(
+        _auth_mod,
+        "get_codex_auth_status",
+        lambda: {"logged_in": False, "error": "No Codex credentials stored. Run `hermes auth` to authenticate."},
+    )
+    monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(doctor_mod, "_safe_which", lambda cmd: None if cmd == "codex" else "/usr/bin/ok")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    codex_block = (
+        "⚠ OpenAI Codex auth (not logged in)\n"
+        "    → No Codex credentials stored. Run `hermes auth` to authenticate.\n"
+        "    → codex CLI not installed (optional — only required to import tokens from an existing Codex CLI login)"
+    )
+    assert codex_block in out
+
+    minimax_index = out.index("⚠ MiniMax OAuth (not logged in)")
+    codex_hint_index = out.index("codex CLI not installed")
+    assert codex_hint_index < minimax_index
+
+
 def _run_doctor_with_healthy_oauth_fallback(
     monkeypatch,
     tmp_path,

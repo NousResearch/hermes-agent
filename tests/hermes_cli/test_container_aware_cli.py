@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli.config import (
+    _is_container,
     get_container_exec_info,
 )
 
@@ -91,6 +92,14 @@ def test_get_container_exec_info_not_skipped_when_hermes_dev_zero(container_env,
         info = get_container_exec_info()
 
     assert info is not None
+
+
+def test_is_container_skipped_when_hermes_dev(monkeypatch):
+    """HERMES_DEV=1 bypasses local container marker detection."""
+    monkeypatch.setenv("HERMES_DEV", "1")
+    monkeypatch.setattr(os.path, "exists", lambda p: p == "/.dockerenv")
+
+    assert _is_container() is False
 
 
 def test_get_container_exec_info_defaults():

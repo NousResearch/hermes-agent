@@ -248,9 +248,13 @@ def is_container() -> bool:
 
     Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
     and ``/proc/1/cgroup`` for container runtime markers.  Result is
-    cached for the process lifetime.  Import-safe — no heavy deps.
+    cached for the process lifetime.  ``HERMES_DEV=1`` bypasses detection
+    so local development checkouts can run directly even when marker files
+    are present.  Import-safe — no heavy deps.
     """
     global _container_detected
+    if os.environ.get("HERMES_DEV") == "1":
+        return False
     if _container_detected is not None:
         return _container_detected
     if os.path.exists("/.dockerenv"):

@@ -118,6 +118,14 @@ class TestIsContainer:
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
 
+    def test_hermes_dev_bypasses_container_detection_and_cache(self, monkeypatch):
+        """HERMES_DEV=1 forces local-dev mode even if container detection was cached."""
+        monkeypatch.setenv("HERMES_DEV", "1")
+        monkeypatch.setattr(hermes_constants, "_container_detected", True)
+        monkeypatch.setattr(os.path, "exists", lambda p: p == "/.dockerenv")
+
+        assert is_container() is False
+
 
 class TestParseReasoningEffort:
     """Tests for parse_reasoning_effort() — string → reasoning config dict."""

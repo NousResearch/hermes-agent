@@ -368,8 +368,11 @@ def _is_container() -> bool:
     When Hermes runs in a container with volume-mounted config files, forcing
     0o600 permissions breaks multi-process setups where the gateway and
     dashboard run as different UIDs or the volume mount requires broader
-    permissions.
+    permissions.  ``HERMES_DEV=1`` bypasses marker/cgroup detection so local
+    development checkouts can keep normal host file-permission behavior.
     """
+    if os.environ.get("HERMES_DEV") == "1":
+        return False
     # Explicit opt-out
     if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
         return True

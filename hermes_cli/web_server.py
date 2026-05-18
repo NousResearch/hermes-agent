@@ -3303,7 +3303,8 @@ async def _broadcast_event(channel: str, payload: str) -> None:
     async def _send(sub: WebSocket) -> None:
         try:
             await sub.send_text(payload)
-        except Exception:
+        except Exception as exc:
+            logger.debug("subscriber send failed on channel %s: %s", channel, exc)
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
             pass

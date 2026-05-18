@@ -2313,8 +2313,14 @@ class TestPtyWebSocket:
 
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                time.sleep(0.1)
-                received = sub.receive_text()
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(sub.receive_text)
+                    try:
+                        received = future.result(timeout=5.0)
+                    except FuturesTimeoutError as exc:
+                        raise AssertionError("subscriber did not receive broadcast within 5s") from exc
 
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received

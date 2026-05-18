@@ -296,3 +296,274 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+
+# ---------------------------------------------------------------------------
+# Issue #27941 regression tests -- writable_roots must cover every Kanban
+# path the dispatcher pinned, not just dirname(HERMES_KANBAN_DB).
+#
+# Before the fix, codex_app_server workers received only the DB-dir root, so
+# artifact writes under HERMES_KANBAN_WORKSPACES_ROOT / HERMES_KANBAN_WORKSPACE
+# (often on a different mount, e.g. /media/.../kanban-workspaces/) were
+# silently blocked by the Codex sandbox with a misleading
+# ``Errno 30 Read-only file system``.
+# ---------------------------------------------------------------------------
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in -- captures argv + env."""
+
+    captured: dict = {}
+
+    def __init__(self, cmd, *args, **kwargs):
+        type(self).captured = {
+            "cmd": list(cmd),
+            "env": dict(kwargs.get("env", {})),
+        }
+        self.stdin = None
+        self.stdout = None
+        self.stderr = None
+        self.pid = 1
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def _spawn_and_capture(monkeypatch, env: dict) -> list[str]:
+    """Spawn a CodexAppServerClient with ``env`` set and return its argv."""
+    import subprocess
+    from agent.transports import codex_app_server as cas
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    client = cas.CodexAppServerClient(codex_bin="codex")
+    client._closed = True
+    return list(_FakePopen.captured["cmd"])
+
+
+def _writable_roots_arg(cmd: list[str]) -> str:
+    """Return the single ``writable_roots=...`` -c override from the argv."""
+    for i, part in enumerate(cmd):
+        if part.startswith("sandbox_workspace_write.writable_roots="):
+            return part
+    raise AssertionError(f"writable_roots override missing from cmd: {cmd!r}")
+
+
+class TestKanbanWritableRootsIssue27941:
+    """Pin the post-fix writable-roots construction across the documented
+    dispatcher env-var combinations."""
+
+    DB = "/users/alice/.hermes/kanban/boards/smoke/kanban.db"
+    DB_DIR = "/users/alice/.hermes/kanban/boards/smoke"
+
+    def test_workspaces_root_on_separate_mount_is_included(self, monkeypatch):
+        """The exact #27941 scenario: workspaces pinned to /media/...,
+        DB under ~/.hermes/.  Both must appear in writable_roots."""
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACES_ROOT": "/media/data/kanban-workspaces",
+        })
+        roots = _writable_roots_arg(cmd)
+        assert self.DB_DIR in roots, "DB dir must remain in writable_roots"
+        assert "/media/data/kanban-workspaces" in roots, (
+            "pinned workspaces root must be added so artifact writes succeed"
+        )
+
+    def test_per_task_workspace_outside_db_dir_is_included(self, monkeypatch):
+        """The per-task workspace (HERMES_KANBAN_WORKSPACE) may also live
+        outside dirname(HERMES_KANBAN_DB) -- e.g. when the dispatcher
+        resolves it to a repo clone elsewhere on disk."""
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACE": "/media/data/Tools/staged-codex-scorecard",
+        })
+        roots = _writable_roots_arg(cmd)
+        assert self.DB_DIR in roots
+        assert "/media/data/Tools/staged-codex-scorecard" in roots
+
+    def test_workspaces_root_and_per_task_workspace_both_included(self, monkeypatch):
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACES_ROOT": "/media/data/kanban-workspaces",
+            "HERMES_KANBAN_WORKSPACE": "/media/data/kanban-workspaces/t_smoke",
+        })
+        roots = _writable_roots_arg(cmd)
+        assert self.DB_DIR in roots
+        assert "/media/data/kanban-workspaces" in roots
+        assert "/media/data/kanban-workspaces/t_smoke" in roots
+
+    def test_no_extra_roots_when_only_kanban_db_set(self, monkeypatch):
+        """Backward-compat: the pre-#27941 happy path (only DB set) still
+        yields a single-entry list with the DB dir.  Pins the existing
+        test_kanban_worker_adds_only_kanban_writable_root contract."""
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_HOME": "/users/alice/.hermes/profiles/backend-worker",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+        })
+        assert (
+            f'sandbox_workspace_write.writable_roots=["{self.DB_DIR}"]' in cmd
+        )
+
+    def test_duplicate_paths_are_deduplicated(self, monkeypatch):
+        """If a setup has workspaces_root == dirname(DB), the rendered
+        TOML array must not list the same path twice (Codex CLI would
+        accept it but the duplicate is noise + risks log diffs)."""
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACES_ROOT": self.DB_DIR,  # same path
+        })
+        roots = _writable_roots_arg(cmd)
+        assert roots.count(self.DB_DIR) == 1, (
+            f"duplicate path leaked into writable_roots: {roots!r}"
+        )
+
+    def test_empty_or_whitespace_env_vars_are_ignored(self, monkeypatch):
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACES_ROOT": "   ",
+            "HERMES_KANBAN_WORKSPACE": "",
+        })
+        # Should fall back to the single-DB-dir contract.
+        assert (
+            f'sandbox_workspace_write.writable_roots=["{self.DB_DIR}"]' in cmd
+        )
+
+    def test_order_db_dir_before_pinned_roots(self, monkeypatch):
+        """The DB dir is the most-needed root (board writes always go
+        there); the pinned workspaces follow, then the per-task
+        workspace.  Order matters for human inspection of the override."""
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_KANBAN_TASK": "t_smoke",
+            "HERMES_KANBAN_DB": self.DB,
+            "HERMES_KANBAN_WORKSPACES_ROOT": "/media/data/kanban-workspaces",
+            "HERMES_KANBAN_WORKSPACE": "/media/data/kanban-workspaces/t_smoke",
+        })
+        roots = _writable_roots_arg(cmd)
+        i_db = roots.index(self.DB_DIR)
+        i_root = roots.index("/media/data/kanban-workspaces")
+        i_ws = roots.index("/media/data/kanban-workspaces/t_smoke")
+        assert i_db < i_root < i_ws
+
+    def test_legacy_fallback_when_kanban_db_missing(self, monkeypatch):
+        """If only HERMES_KANBAN_TASK is set (no DB env), the legacy
+        ``HERMES_KANBAN_ROOT`` / ``HERMES_HOME/kanban`` fallback path
+        keeps working unchanged."""
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+            "HERMES_HOME": "/users/alice/.hermes/profiles/backend-worker",
+            "HERMES_KANBAN_TASK": "t_smoke",
+        })
+        roots = _writable_roots_arg(cmd)
+        assert "/users/alice/.hermes/profiles/backend-worker/kanban" in roots
+
+    def test_no_writable_roots_override_when_not_a_kanban_worker(self, monkeypatch):
+        """Without HERMES_KANBAN_TASK we must NOT inject any sandbox
+        override -- that would be a behaviour change for every non-Kanban
+        codex_app_server caller."""
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_WORKSPACES_ROOT", raising=False)
+        cmd = _spawn_and_capture(monkeypatch, {
+            "HOME": "/users/alice",
+        })
+        assert all(
+            not p.startswith("sandbox_") for p in cmd
+        ), f"non-Kanban codex_app_server invocations must not inject sandbox -c: {cmd!r}"
+
+
+class TestBuildKanbanWritableRootsHelper:
+    """Direct unit tests for the helper -- not via Popen, so they're cheap
+    and pinpoint the dedup/normalisation rules without environment leaks."""
+
+    def test_returns_db_dir_only(self):
+        from agent.transports.codex_app_server import _build_kanban_writable_roots
+        roots = _build_kanban_writable_roots({
+            "HERMES_KANBAN_DB": "/x/y/kanban.db",
+        })
+        assert roots == ["/x/y"]
+
+    def test_appends_pinned_roots_in_documented_order(self):
+        from agent.transports.codex_app_server import _build_kanban_writable_roots
+        roots = _build_kanban_writable_roots({
+            "HERMES_KANBAN_DB": "/x/y/kanban.db",
+            "HERMES_KANBAN_WORKSPACES_ROOT": "/m/workspaces",
+            "HERMES_KANBAN_WORKSPACE": "/m/workspaces/t1",
+        })
+        assert roots == ["/x/y", "/m/workspaces", "/m/workspaces/t1"]
+
+    def test_deduplicates(self):
+        from agent.transports.codex_app_server import _build_kanban_writable_roots
+        roots = _build_kanban_writable_roots({
+            "HERMES_KANBAN_DB": "/x/y/kanban.db",
+            "HERMES_KANBAN_WORKSPACES_ROOT": "/x/y",
+        })
+        assert roots == ["/x/y"]
+
+    def test_strips_whitespace(self):
+        from agent.transports.codex_app_server import _build_kanban_writable_roots
+        roots = _build_kanban_writable_roots({
+            "HERMES_KANBAN_DB": "/x/y/kanban.db",
+            "HERMES_KANBAN_WORKSPACES_ROOT": "   /m/w   ",
+        })
+        assert roots == ["/x/y", "/m/w"]
+
+    def test_skips_empty_and_blank_env_values(self):
+        from agent.transports.codex_app_server import _build_kanban_writable_roots
+        roots = _build_kanban_writable_roots({
+            "HERMES_KANBAN_DB": "/x/y/kanban.db",
+            "HERMES_KANBAN_WORKSPACES_ROOT": "",
+            "HERMES_KANBAN_WORKSPACE": "   ",
+        })
+        assert roots == ["/x/y"]
+
+
+class TestFormatTomlPathArray:
+    """The TOML array renderer must produce valid TOML for paths with
+    backslashes / quotes / control chars (Codex CLI parses ``-c`` as TOML)."""
+
+    def test_simple_posix_path(self):
+        from agent.transports.codex_app_server import _format_toml_path_array
+        assert _format_toml_path_array(["/x/y"]) == '["/x/y"]'
+
+    def test_multiple_paths_joined_with_comma_no_spaces(self):
+        from agent.transports.codex_app_server import _format_toml_path_array
+        assert _format_toml_path_array(["/a", "/b"]) == '["/a","/b"]'
+
+    def test_backslash_is_escaped(self):
+        from agent.transports.codex_app_server import _format_toml_path_array
+        # Windows path -- must not produce TOML escape sequences.
+        result = _format_toml_path_array(["C:\\Users\\alice\\.hermes"])
+        assert result == '["C:\\\\Users\\\\alice\\\\.hermes"]'
+
+    def test_embedded_quote_is_escaped(self):
+        from agent.transports.codex_app_server import _format_toml_path_array
+        result = _format_toml_path_array(['/x/"odd"/dir'])
+        assert result == '["/x/\\"odd\\"/dir"]'
+
+    def test_empty_list_renders_as_empty_array(self):
+        from agent.transports.codex_app_server import _format_toml_path_array
+        assert _format_toml_path_array([]) == "[]"

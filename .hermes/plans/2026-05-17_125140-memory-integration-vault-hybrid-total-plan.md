@@ -29,6 +29,8 @@
 
 Claude Code Opus max-effort read-only adversarial reviews were run on this plan on 2026-05-17 and 2026-05-18. The following amendments are incorporated before implementation:
 
+**2026-05-18 standalone extraction canonicalization patch:** user direction changed after W2A/W2B planning/implementation work. The canonical implementation target is now a standalone external memory plugin/repo at `/home/a01/hermes-memory-integration`, loaded by Hermes as an external plugin. Hermes core/local integration must be tiny and generic only if absolutely required. Preserve W2A/W2B artifacts before cleanup, do not introduce Hashline runtime dependencies, execute implementation via subagents, and do not close/delete the current branch until standalone preservation is verified and the user explicitly approves the close/archive step.
+
 - Use an explicit `vault.mode: dedicated | shared`; do **not** auto-detect vault layout from existing directories. If mode is unset, fail closed and ask/bootstrap explicitly.
 - Follow-up Opus review reversed the adapter recommendation: the strategic fix is to harden `obsidian-vault-adapter` into a stable shared library and import it, rather than reimplementing locator behavior in every product. V1 should improve/pin the adapter first if that can be time-boxed; only use an internal temporary locator if adapter hardening misses the time-box, with a deletion issue/date.
 - Treat Obsidian Headless as deferred operational sync infrastructure. V1 status may report sync as not configured/unsupported, but provider correctness must not depend on headless sync and Hermes must not manage `ob sync --continuous` in v1.
@@ -45,6 +47,14 @@ Claude Code Opus max-effort read-only adversarial reviews were run on this plan 
 - Workstream 2B is a deliberately small read-only provider skeleton: discovery, config parsing, adapter-backed vault root reporting, sidecar path reporting, and `memory_integration_status` only. It must not create SQLite files, create directories, write Markdown, create `_system/OWNER`, expose write/propose/search tools, or introduce Hashline/runtime npm dependencies.
 - `obsidian-vault-adapter` Workstream 1 is complete at commit `bd51129`; the public API is `resolve_vault_path(...)`. The memory provider should depend on that root-resolution contract and must not vendor/copy/shell out to alternative locator implementations in v1.
 - Hashline / `@angdrew/opencode-hashline-plugin` is reference/design inspiration only for future native Python patch-reference semantics. Do not install it and do not make it a Hermes runtime dependency.
+- Current observed Hermes loader behavior to verify and record in Workstream 2X Subagent A: external memory providers are discovered flat under `$HERMES_HOME/plugins/<name>/`, **not** under `$HERMES_HOME/plugins/memory/<name>/`. If confirmed, the standalone repo must be symlinked as `$HERMES_HOME/plugins/memory-integration` for isolated smoke tests.
+- Standalone repo root must itself be an obvious flat plugin directory with top-level `__init__.py` and `plugin.yaml`. A Python package may live under `src/`, but top-level Hermes plugin discovery must remain obvious and test-covered.
+- Current observed Hermes loader behavior to verify and record in Workstream 2X Subagent A: if a bundled same-name provider remains in the Hermes checkout, it shadows the external same-name provider. The required smoke strategy is to assert from loader diagnostics/import paths that the external symlinked provider was selected. Do **not** remove/rename bundled Hermes-core provider files as part of smoke testing unless the user explicitly approves a separate cleanup/core-delta action.
+- Symlink-only external loading is the first target. Defer pip/entry-point packaging until after the plugin is canonical and smoke-tested.
+- Add a hard gate named **Hermes-core deltas required** with target result `none`. Any non-empty generic primitive, loader shim, or core patch requires explicit user approval before implementation.
+- Branch deletion is replaced by archive/close sequencing: preserve standalone repo, verify hashes/smoke tests, then close PR/delete branch only with explicit user approval. Prefer retaining an archive branch for at least 30 days.
+- Hermes cleanup is split into separate decisions: remove bundled provider code, remove bundled tests, and decide disposition of plan docs independently.
+- Runtime dependency grep must include `hashline|opencode|npm`; none may appear as installed/runtime requirements.
 
 ## Evidence Log
 
@@ -95,6 +105,8 @@ Claude Code Opus max-effort read-only adversarial reviews were run on this plan 
 - Confirm whether provider activation should fail hard when the adapter import is missing, or provider discovery should remain available while `memory_integration_status` reports `adapter_unavailable`. For maintainability, prefer a single thin import boundary and explicit typed diagnostic rather than scattered try/excepts.
 - Confirm exact real-world Obsidian Sync conflict-file naming before pinning conflict detection beyond the provisional `*.conflict-*.md` pattern.
 - Confirm whether Hermes already passes `agent_context` into memory provider tool-call handling before implementing write suppression beyond status-only W2B.
+- Confirm and record the actual Hermes external plugin contract before migration: provider base class/import contract, `register`/registration expectations if any, `plugin.yaml` schema fields, and exact loader precedence when bundled and external plugins share the same name.
+- Confirm final standalone import/test layout. Tests and imports must be rewritten for the standalone flat plugin root plus optional `src/` package, not for `plugins/memory/memory-integration/` inside Hermes core.
 
 **Out of Scope for v1:**
 - No Obsidian desktop CLI dependency as the primary interface.
@@ -621,9 +633,66 @@ Bounded output sections:
 
 ---
 
+## Workstream 2X — Standalone Plugin Extraction (canonicalization gate)
+
+**Status:** canonical next workstream. Complete this gate before any new W2C+ feature work. Existing W2A/W2B content below is preserved as historical implementation detail and migration source material, not as the canonical future layout.
+
+**Goal:** preserve the existing memory-integration work, migrate it into `/home/a01/hermes-memory-integration` as a standalone external Hermes memory plugin, and prove it loads from an isolated `$HERMES_HOME/plugins/memory-integration` symlink without mutating the real `~/.hermes` or depending on bundled same-name code.
+
+**Standalone repo shape:**
+- Repo root is the plugin root: `/home/a01/hermes-memory-integration/`.
+- Required top-level discovery files: `__init__.py` and `plugin.yaml`.
+- Internal Python code may be under `src/` if useful, but imports/tests must be rewritten for the standalone package shape rather than `plugins/memory/memory-integration/` inside Hermes core.
+- First loading mode is symlink-only. Defer pip install, entry points, or package-manager integration until after the flat plugin contract is verified.
+- Existing-path guard: before creating or writing under `/home/a01/hermes-memory-integration`, inspect whether the path exists. If missing, create it deliberately. If present, verify it is the expected standalone memory-integration project or an empty safe target. If it contains unrelated files, an existing git history with a different purpose, or ambiguous ownership, stop and ask for explicit user approval. Never delete, overwrite, or merge into existing contents without approval.
+
+**Preflight inventory artifact (required before copy/move/cleanup writes):** after the existing-path guard passes, write exactly `/home/a01/hermes-memory-integration/PRESERVATION_INVENTORY.md` as the first allowed standalone artifact. If the path guard does not pass, write no standalone files; instead propose a temp preservation-bundle path for user approval. The inventory must contain:
+- confirmed Hermes `MemoryProvider`/provider lifecycle contract;
+- confirmed external plugin registration/import contract, including whether a `register` hook is required;
+- confirmed `plugin.yaml` schema/required fields;
+- exact preservation file list copied out of Hermes core;
+- W2A/W2B artifact hashes/checksums;
+- whether a bundled `plugins/memory/memory-integration` provider exists and whether it would shadow the external plugin;
+- current branch/PR identity and planned archive/close disposition.
+
+**Hermes-home isolation mechanism:**
+1. Create a temp home with `mktemp -d`.
+2. Write only a minimal config needed for memory-provider selection under that temp home.
+3. Create `$TEMP_HERMES_HOME/plugins/`.
+4. Symlink `/home/a01/hermes-memory-integration` to `$TEMP_HERMES_HOME/plugins/memory-integration`.
+5. Before smoke, snapshot the real `/home/a01/.hermes` at a bounded level sufficient to detect accidental mutation of config/plugin/plan/state files used by this flow (for example path list plus size/mtime/hash for relevant non-volatile files; explicitly exclude known volatile logs/caches if needed and record exclusions).
+6. Run smoke tests with `HERMES_HOME=$TEMP_HERMES_HOME` (and any documented profile env required by Hermes) so the real `~/.hermes` is not read or mutated. The smoke evidence must include a direct assertion/log showing Hermes resolved its home to the temp path during the test.
+7. After smoke, repeat the real `/home/a01/.hermes` snapshot and compare against the pre-smoke snapshot; any unexpected delta is a blocker.
+8. Before trusting the smoke test, assert from loader diagnostics/import paths that the external symlinked provider was selected. Do **not** remove/rename bundled same-name Hermes-core provider files for smoke testing unless explicitly approved under the cleanup/core-delta gates.
+
+**Hermes-core deltas required gate:** target result is `none`. If migration reveals any needed Hermes core change, loader shim, generic primitive, or compatibility patch, stop and request explicit user approval with the smallest possible diff and a reason it cannot live in the standalone plugin.
+
+**Cleanup/close sequencing:**
+- Preserve standalone repo and inventory first.
+- Verify hashes and isolated symlink smoke tests.
+- Split Hermes cleanup into separate choices: bundled provider code removal, bundled tests removal, and plan-doc disposition.
+- Do not delete the current branch or close/remove remotes in this workstream. After preservation and verification, request explicit user approval. Prefer retaining an archive branch for at least 30 days even if the PR is closed.
+
+**Runtime dependency guardrails:**
+- Hashline/OpenCode/npm are design references only; no runtime dependency, install step, lockfile, subprocess invocation, or package-manager requirement.
+- Verification must include grep-equivalent checks for `hashline|opencode|npm` across runtime files, packaging metadata, docs that could be copied into install instructions, and tests. Any intentional mention must be explicitly marked as non-runtime reference material.
+
+**Concrete subagent execution phases:**
+1. **Subagent A — guarded contract/inventory:** inspect Hermes memory provider loader, external plugin discovery, existing W2A/W2B files, and `/home/a01/hermes-memory-integration` path state. If the path is missing or verified safe, produce `/home/a01/hermes-memory-integration/PRESERVATION_INVENTORY.md` with hashes as the only write. If the path is unsafe/ambiguous, write nothing and return a stop-for-approval report.
+2. **Subagent B — standalone scaffold/copy:** only after Subagent A's path guard passes, create or reuse `/home/a01/hermes-memory-integration` as the flat plugin root, copy preserved W2B provider/status/config/readme material, add top-level `__init__.py` and `plugin.yaml`, and rewrite imports for standalone layout.
+3. **Subagent C — standalone tests/import rewrite:** move/rewrite tests so they exercise the standalone package and symlinked external loading, not Hermes bundled paths.
+4. **Subagent D — isolated smoke:** use a `mktemp` Hermes home, minimal config, and symlink into `$HERMES_HOME/plugins/memory-integration`; prove real `~/.hermes` is not mutated and prove the bundled provider did not shadow the external plugin.
+5. **Subagent E — cleanup proposal only:** report bundled code/test/doc cleanup options and archive/close options. No branch deletion, PR close, or remote mutation without explicit user approval.
+
+**Exit criteria:** standalone repo exists with flat plugin discovery files, W2A/W2B artifacts are preserved and hashed, isolated symlink smoke passes or produces actionable diagnostics, dependency grep passes for no Hashline/OpenCode/npm runtime dependency, and the Hermes-core-deltas gate remains empty or is escalated for approval.
+
+---
+
 ## Workstream 2B — Minimal Read-Only Provider Skeleton
 
 **Goal:** land the first maintainable vertical slice without creating semantic or operational state. This slice answers “is the provider installed/configured, what vault root would it use, and where would its sidecar live?”
+
+**Historical note after Workstream 2X:** this bundled-path workstream is preserved as W2B source material. Future implementation should migrate/translate it into the standalone flat plugin repo before extending behavior.
 
 **Allowed files:**
 - `plugins/memory/memory-integration/__init__.py`
@@ -670,7 +739,9 @@ If implementation proves a loader/test helper outside this allowlist is required
 
 ---
 
-## Workstream 2C — Vault Readiness and OWNER Read-Only Enforcement
+## Workstream 2C — Vault Readiness and OWNER Read-Only Enforcement (blocked/deferred)
+
+**Blocked/deferred after Workstream 2X:** preserve this section as historical W2C design input, but do not implement it in Hermes core or from bundled paths until standalone canonicalization completes. After Workstream 2X, rewrite this slice against `/home/a01/hermes-memory-integration` and its standalone tests/imports.
 
 **Goal:** extend the status-only provider from Workstream 2B into a read-only readiness surface for the configured memory root. This slice answers “is the configured vault/memory root safe for memory-integration to use?” without creating or mutating any vault, SQLite, lock, patch, or semantic state.
 

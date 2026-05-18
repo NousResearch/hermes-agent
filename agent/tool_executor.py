@@ -161,7 +161,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
-                agent.tool_progress_callback("tool.started", name, preview, args)
+                agent.tool_progress_callback("tool.started", name, preview, args, tool_call_id=tc.id)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -556,7 +556,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(function_name, function_args)
-                agent.tool_progress_callback("tool.started", function_name, preview, function_args)
+                agent.tool_progress_callback("tool.started", function_name, preview, function_args, tool_call_id=tool_call.id)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 

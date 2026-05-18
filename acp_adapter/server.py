@@ -66,6 +66,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_complete_cb,
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
@@ -1322,6 +1323,7 @@ class HermesACPAgent(acp.Agent):
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
             )
+            tool_complete_cb = make_tool_complete_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
@@ -1346,6 +1348,7 @@ class HermesACPAgent(acp.Agent):
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
         else:
             tool_progress_cb = None
+            tool_complete_cb = None
             reasoning_cb = None
             step_cb = None
             stream_delta_cb = None
@@ -1353,6 +1356,7 @@ class HermesACPAgent(acp.Agent):
 
         agent = state.agent
         agent.tool_progress_callback = tool_progress_cb
+        agent.tool_complete_callback = tool_complete_cb
         # ACP thought panes should not receive Hermes' local kawaii waiting/status
         # updates. Route provider/model reasoning deltas instead; if the provider
         # emits no reasoning, Zed should not get a fake "thinking" accordion.

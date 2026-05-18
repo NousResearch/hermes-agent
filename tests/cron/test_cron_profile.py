@@ -151,7 +151,11 @@ class TestCronjobToolProfile:
 
         assert "profile" in CRONJOB_SCHEMA["parameters"]["properties"]
         desc = CRONJOB_SCHEMA["parameters"]["properties"]["profile"]["description"]
-        assert "hermes profile" in desc.lower()
+        desc_lower = desc.lower()
+        assert "hermes profile" in desc_lower
+        assert "context-local" in desc_lower
+        assert "subprocess" in desc_lower
+        assert "temporarily sets hermes_home" not in desc_lower
 
 
 class TestRunJobProfileContext:
@@ -165,6 +169,12 @@ class TestRunJobProfileContext:
                 from hermes_constants import get_hermes_home
 
                 observed["env_home_during_init"] = os.environ.get("HERMES_HOME")
+                observed["profile_env_only_during_init"] = os.environ.get(
+                    "HERMES_PROFILE_TEST_ONLY"
+                )
+                observed["profile_env_shared_during_init"] = os.environ.get(
+                    "HERMES_PROFILE_TEST_SHARED"
+                )
                 observed["hermes_home_during_init"] = str(get_hermes_home())
                 observed["scheduler_home_during_init"] = str(sched._get_hermes_home())
                 observed["skip_context_files"] = kwargs.get("skip_context_files")
@@ -173,6 +183,12 @@ class TestRunJobProfileContext:
                 from hermes_constants import get_hermes_home
 
                 observed["env_home_during_run"] = os.environ.get("HERMES_HOME")
+                observed["profile_env_only_during_run"] = os.environ.get(
+                    "HERMES_PROFILE_TEST_ONLY"
+                )
+                observed["profile_env_shared_during_run"] = os.environ.get(
+                    "HERMES_PROFILE_TEST_SHARED"
+                )
                 observed["hermes_home_during_run"] = str(get_hermes_home())
                 observed["scheduler_home_during_run"] = str(sched._get_hermes_home())
                 return {"final_response": "done", "messages": []}
@@ -242,6 +258,48 @@ class TestRunJobProfileContext:
         assert observed["scheduler_home_during_init"] == str(profile_home.resolve())
         assert observed["scheduler_home_during_run"] == str(profile_home.resolve())
         assert observed["skip_context_files"] is True
+        assert os.environ["HERMES_HOME"] == str(root)
+        assert sched._get_hermes_home() == root
+
+    def test_profile_dotenv_environment_is_restored(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import dotenv
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        observed: dict = {}
+        self._install_agent_stubs(monkeypatch, observed)
+        monkeypatch.setenv("HERMES_PROFILE_TEST_SHARED", "outer")
+        monkeypatch.delenv("HERMES_PROFILE_TEST_ONLY", raising=False)
+
+        def fake_load_dotenv(path, *_a, **_kw):
+            observed.setdefault("dotenv_paths", []).append(str(path))
+            os.environ["HERMES_PROFILE_TEST_SHARED"] = "profile-value"
+            os.environ["HERMES_PROFILE_TEST_ONLY"] = "profile-only"
+            os.environ["HERMES_CRON_TIMEOUT"] = "123"
+            return True
+
+        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+
+        job = {
+            "id": "env-profile",
+            "name": "profile-env-job",
+            "profile": "support",
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        assert observed["dotenv_paths"] == [str(profile_home / ".env")]
+        assert observed["profile_env_only_during_init"] == "profile-only"
+        assert observed["profile_env_shared_during_init"] == "profile-value"
+        assert observed["profile_env_only_during_run"] == "profile-only"
+        assert observed["profile_env_shared_during_run"] == "profile-value"
+        assert os.environ["HERMES_PROFILE_TEST_SHARED"] == "outer"
+        assert "HERMES_PROFILE_TEST_ONLY" not in os.environ
+        assert os.environ["HERMES_CRON_TIMEOUT"] == "0"
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
 

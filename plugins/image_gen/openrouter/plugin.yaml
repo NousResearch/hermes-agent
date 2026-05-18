@@ -1,0 +1,7 @@
+name: openrouter
+version: 1.0.0
+description: "OpenRouter image generation backend via Chat Completions modalities. Saves base64 data URLs to $HERMES_HOME/cache/images/."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENROUTER_API_KEY

@@ -7,7 +7,7 @@ sidebar_position: 6
 
 # Image Generation
 
-Hermes Agent generates images from text prompts via FAL.ai. Nine models are supported out of the box, each with different speed, quality, and cost tradeoffs. The active model is user-configurable via `hermes tools` and persists in `config.yaml`.
+Hermes Agent generates images from text prompts via FAL.ai by default. Nine FAL models are supported out of the box, each with different speed, quality, and cost tradeoffs. Additional bundled image backends, including OpenAI, xAI, and OpenRouter, can be selected via `hermes tools`; the active backend/model persists in `config.yaml`.
 
 ## Supported Models
 
@@ -62,6 +62,23 @@ Your selection is saved to `config.yaml`:
 image_gen:
   model: fal-ai/flux-2/klein/9b
   use_gateway: false            # true if using Nous Subscription
+```
+
+### OpenRouter Image Models
+
+To use OpenRouter directly, choose **OpenRouter** in `hermes tools` → **Image Generation** and set `OPENROUTER_API_KEY`. Hermes calls OpenRouter's Chat Completions image-output API with `modalities` and saves returned base64 data URLs under `$HERMES_HOME/cache/images/`.
+
+The bundled picker includes common OpenRouter image-output models such as `google/gemini-3-pro-image-preview`, `google/gemini-3.1-flash-image-preview`, `google/gemini-2.5-flash-image`, `black-forest-labs/flux.2-pro`, `black-forest-labs/flux.2-flex`, and `sourceful/riverflow-v2-standard-preview`. You can also set any newer OpenRouter image model manually:
+
+```bash
+hermes config set image_gen.provider openrouter
+hermes config set image_gen.model google/gemini-3-pro-image-preview
+```
+
+Optional knobs:
+
+```bash
+hermes config set image_gen.openrouter.image_size 1K   # 0.5K, 1K, 2K, 4K depending on model
 ```
 
 ### GPT-Image Quality

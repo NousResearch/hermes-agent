@@ -1,0 +1,7 @@
+name: openrouter
+version: 1.0.0
+description: "OpenRouter video generation backend via the async /api/v1/videos API. Supports text-to-video, frame image-to-video, and reference images."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENROUTER_API_KEY

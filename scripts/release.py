@@ -104,6 +104,7 @@ AUTHOR_MAP = {
     "hugosequier@gmail.com": "Hugo-SEQUIER",
     "128259593+Gutslabs@users.noreply.github.com": "Gutslabs",
     "50326054+nocturnum91@users.noreply.github.com": "nocturnum91",
+    "52470719+gianfrancopiana@users.noreply.github.com": "gianfrancopiana",
     "223003280+Abd0r@users.noreply.github.com": "Abd0r",
     "HuangYuChuh@users.noreply.github.com": "HuangYuChuh",
     "aaronwong1989@gmail.com": "hrygo",

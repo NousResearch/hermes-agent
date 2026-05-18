@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "gateway run"
+startCommand = "/usr/bin/tini -g -- /opt/hermes/docker/entrypoint.sh gateway run"
 restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10

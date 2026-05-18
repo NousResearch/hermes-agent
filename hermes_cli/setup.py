@@ -3606,12 +3606,16 @@ def _run_quick_setup(config: dict, hermes_home):
     ]
     missing_config = get_missing_config_fields()
     current_ver, latest_ver = check_config_version()
+    nats_configured = bool(
+        config.get("platforms", {}).get("nats", {}).get("enabled")
+    )
 
     has_anything_missing = (
         missing_required
         or missing_optional
         or missing_config
         or current_ver < latest_ver
+        or not nats_configured
     )
 
     if not has_anything_missing:
@@ -3676,7 +3680,7 @@ def _run_quick_setup(config: dict, hermes_home):
             _prompt_api_key(var)
 
     # ── Messaging platforms (checklist then prompt for selected) ──
-    if missing_messaging:
+    if missing_messaging or not nats_configured:
         print()
         print_header("Messaging Platforms")
         print_info("Connect Hermes to messaging apps to chat from anywhere.")
@@ -3699,11 +3703,17 @@ def _run_quick_setup(config: dict, hermes_home):
                 platform_order.append(plat)
             platforms.setdefault(plat, []).append(var)
 
+        # NATS is config-driven (no env vars), so add it directly when not yet enabled.
+        if not nats_configured:
+            platform_order.append("NATS")
+            platforms["NATS"] = []
+
         platform_labels = [
             {
                 "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "NATS": "🛰️  NATS",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3715,6 +3725,10 @@ def _run_quick_setup(config: dict, hermes_home):
 
         for idx in selected_indices:
             plat = platform_order[idx]
+            if plat == "NATS":
+                _setup_nats(config)
+                save_config(config)
+                continue
             vars_list = platforms[plat]
             emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
             print()

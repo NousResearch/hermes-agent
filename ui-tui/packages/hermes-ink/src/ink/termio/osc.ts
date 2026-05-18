@@ -267,7 +267,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // Skipped entirely on terminals with first-class OSC 52 support (see
   // `shouldUseNativeClipboard()` above): running wl-copy/xclip/pbcopy in
   // parallel with OSC 52 on those terminals can corrupt the clipboard.
-  // wl-copy on Wayland is the worst offender — `probeLinuxCopy()` runs it
+  // wl-copy on Wayland is the worst offender — previously `probeLinuxCopy()` ran it
   // with empty stdin to check if the binary exists (which destructively
   // wipes the clipboard), and the subsequent real invocation forks a
   // background daemon that races the terminal's own OSC 52 write plus its
@@ -314,21 +314,22 @@ let linuxCopyProbePromise: Promise<'wl-copy' | 'xclip' | 'xsel' | null> | undefi
 async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
   const opts = { useCwd: false, timeout: 500 }
 
-  const r = await execFileNoThrow('wl-copy', [], opts)
+  // Use `which` to check binary existence instead of running the clipboard tool
+  // with empty stdin — wl-copy hangs without a Wayland compositor (even with the
+  // SIGTERM timeout), and running wl-copy/xclip/xsel as a probe destructively
+  // wipes the clipboard. The actual copy happens in copyNative() where the tool
+  // receives the text to copy via stdin.
+  const tools: Array<'wl-copy' | 'xclip' | 'xsel'> = ['wl-copy', 'xclip', 'xsel']
 
-  if (r.code === 0) {
-    return 'wl-copy'
+  for (const tool of tools) {
+    const r = await execFileNoThrow('which', [tool], opts)
+
+    if (r.code === 0) {
+      return tool
+    }
   }
 
-  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
-
-  if (r2.code === 0) {
-    return 'xclip'
-  }
-
-  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-
-  return r3.code === 0 ? 'xsel' : null
+  return null
 }
 
 /**

@@ -2840,6 +2840,114 @@ def release_stale_claims(
     return reclaimed
 
 
+def _detect_self_reclaim(
+    task_id: str,
+    worker_pid: Optional[int],
+    claim_lock: Optional[str],
+) -> bool:
+    """Return True if the *caller* of reclaim is, transitively, the
+    process holding the claim.
+
+    The self-reclaim case is "a worker is shelling out to
+    ``hermes kanban reassign --reclaim`` against its OWN task" — the
+    CLI subprocess is a child of the agent process whose PID is in
+    ``tasks.worker_pid``. Detected via two signals (either is sufficient):
+
+    1. ``HERMES_KANBAN_TASK`` env var matches ``task_id``. The dispatcher
+       sets this in :func:`_default_spawn` on the spawned agent; the env
+       inherits down to subprocesses via the terminal tool's default
+       ``env=os.environ``.
+    2. ``os.getppid()`` matches the recorded ``worker_pid``. Catches the
+       case where the agent shelled through a wrapper that scrubbed
+       ``HERMES_KANBAN_TASK`` but kept the parent-child relationship.
+
+    Belt-and-braces: either signal alone is enough; we don't require
+    both. The ``claim_lock`` is also available via
+    ``HERMES_KANBAN_CLAIM_LOCK`` but isn't load-bearing — the two PID-
+    side signals already cover the dangerous cases.
+    """
+    env_task = os.environ.get("HERMES_KANBAN_TASK")
+    if env_task and env_task == task_id:
+        return True
+    if worker_pid and hasattr(os, "getppid"):
+        try:
+            my_ppid = os.getppid()
+        except OSError:
+            return False
+        if my_ppid and my_ppid == int(worker_pid):
+            return True
+        # Also walk one more level: if the CLI was double-shelled
+        # (e.g. ``bash -c "hermes kanban ..."``), ppid is the shell,
+        # grandparent is the agent. Reading /proc is host-local only.
+        if sys.platform.startswith("linux"):
+            try:
+                with open(f"/proc/{my_ppid}/stat", "r", encoding="utf-8") as f:
+                    stat_line = f.read()
+                # PPID is the 4th field; comm (field 2) may contain
+                # spaces/parens so split on the last ')'.
+                tail = stat_line.rsplit(")", 1)[-1].split()
+                if tail:
+                    grandparent = int(tail[1])
+                    if grandparent == int(worker_pid):
+                        return True
+            except (OSError, ValueError, IndexError):
+                pass
+    return False
+
+
+def _reclaim_writes_in_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    prev_lock: Optional[str],
+    reason: Optional[str],
+    termination: dict[str, Any],
+    self_reclaim: bool,
+) -> bool:
+    """DB-side of reclaim: release claim, end the run, append event.
+
+    Caller must hold an open ``write_txn``. Returns True if the writes
+    landed (claim CAS succeeded), False otherwise. Does NOT kill any
+    process — the kill, when needed, happens BEFORE this helper is
+    invoked. Pulled out so :func:`reassign_task` can fold both the
+    reclaim writes and the assign writes into a single atomic txn
+    (acceptance property #1: "the reassign DB write and the claim
+    release MUST be atomic with respect to dispatcher observation").
+    """
+    cur = conn.execute(
+        "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+        "claim_expires = NULL, worker_pid = NULL "
+        "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+        "AND claim_lock IS ?",
+        (task_id, prev_lock),
+    )
+    if cur.rowcount != 1:
+        return False
+    run_id = _end_run(
+        conn, task_id,
+        outcome="reclaimed", status="reclaimed",
+        error=(
+            f"manual_reclaim: {reason}" if reason
+            else f"manual_reclaim lock={prev_lock}"
+        ),
+        metadata=termination,
+    )
+    payload = {
+        "manual": True,
+        "reason": reason,
+        "prev_lock": prev_lock,
+    }
+    if self_reclaim:
+        payload["self_reclaim"] = True
+    payload.update(termination)
+    _append_event(
+        conn, task_id, "reclaimed",
+        payload,
+        run_id=run_id,
+    )
+    return True
+
+
 def reclaim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2855,6 +2963,23 @@ def reclaim_task(
     when an operator wants to abort a running worker without waiting
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
+    **Self-reclaim safe path** (added 2026-05-18, t_f38a5d2d): if the
+    caller is itself the process holding the claim — i.e. a worker
+    shelling out to ``reassign --reclaim`` on its own task to hand off
+    to another profile — the kill is suppressed. The DB writes still
+    commit normally, the worker finishes its current turn, and the
+    next dispatch tick spawns the new assignee. Without this guard the
+    SIGTERM cascade (kill agent → agent's terminal tool kills its own
+    CLI child → DB writes never commit) self-immolates the handoff.
+    Detection: ``HERMES_KANBAN_TASK`` env var match OR PPID match
+    against recorded ``worker_pid``.
+
+    The ``signal_fn`` parameter remains supported for tests and external
+    callers that want to swap out the kill primitive entirely. When the
+    caller passes an explicit ``signal_fn`` AND we detect self-reclaim,
+    the caller's signal_fn is preserved — explicit beats implicit. (In
+    practice the test suite is the only caller that does this.)
+
     Returns True if a reclaim happened, False if the task isn't in a
     reclaimable state (not running, or doesn't exist).
     """
@@ -2868,39 +2993,31 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
+    self_reclaim = _detect_self_reclaim(
+        task_id, row["worker_pid"], prev_lock,
+    )
+    if self_reclaim and signal_fn is None:
+        # No-op kill: the holder is voluntarily handing off and will
+        # exit on its own as soon as its current turn finishes. Killing
+        # it would also kill THIS CLI subprocess (which is the agent's
+        # child) before the DB writes commit — that's the t_560bcee3
+        # bug.
+        signal_fn = lambda *_args, **_kwargs: None  # noqa: E731
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
+    if self_reclaim:
+        termination = {**termination, "self_reclaim": True}
     with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
-        )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
+        ok = _reclaim_writes_in_txn(
             conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            error=(
-                f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
-            ),
-            metadata=termination,
+            prev_lock=prev_lock,
+            reason=reason,
+            termination=termination,
+            self_reclaim=self_reclaim,
         )
-        payload = {
-            "manual": True,
-            "reason": reason,
-            "prev_lock": prev_lock,
-        }
-        payload.update(termination)
-        _append_event(
-            conn, task_id, "reclaimed",
-            payload,
-            run_id=run_id,
-        )
+        if not ok:
+            return False
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
@@ -2921,23 +3038,113 @@ def reassign_task(
 
     This is the recovery path for "this profile's model is broken, try
     a different one". If ``reclaim_first`` is True, any active claim is
-    released (via :func:`reclaim_task`) before the reassign happens;
-    otherwise the function refuses to reassign a currently-running task
-    and returns False (caller can retry with ``reclaim_first=True``).
+    released before the reassign happens; otherwise the function
+    refuses to reassign a currently-running task and returns False
+    (caller can retry with ``reclaim_first=True``).
+
+    **Atomicity** (acceptance property #1, t_f38a5d2d): when
+    ``reclaim_first=True`` and there is a live claim to release, the
+    claim release AND the assignee update happen in a single
+    ``write_txn``. The dispatcher never observes a state where the
+    claim was released but the assignee was not updated. The kill (if
+    any) is fired BEFORE the txn opens; the kill is suppressed
+    entirely for self-reclaim (the worker handing off to another
+    profile is alive on purpose). If the kill is non-self and slow,
+    the txn is held only for the DB writes themselves, not for the
+    kill wait.
 
     Returns True if the reassign landed. ``profile`` may be ``None`` to
     unassign entirely.
     """
-    if reclaim_first:
-        # Safe to call even if nothing to reclaim.
-        reclaim_task(conn, task_id, reason=reason or "reassign")
-    # assign_task handles its own txn + the still-running guard.
-    try:
-        return assign_task(conn, task_id, profile)
-    except RuntimeError:
-        # Task is still running and reclaim_first was False; caller
-        # needs to decide whether to retry with reclaim.
+    if not reclaim_first:
+        # No reclaim path — assign_task handles its own txn and the
+        # still-running guard. Backward-compatible with pre-fix behavior.
+        try:
+            return assign_task(conn, task_id, profile)
+        except RuntimeError:
+            return False
+
+    # reclaim_first=True: peek at the row to decide whether we have a
+    # live claim to release (and if so whether this is a self-reclaim).
+    profile = _canonical_assignee(profile)
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, assignee FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
         return False
+    live_claim = (
+        row["status"] == "running" or row["claim_lock"] is not None
+    )
+
+    if not live_claim:
+        # No claim to reclaim — fall back to a plain assign in its own
+        # txn. assign_task can no-op or update.
+        try:
+            return assign_task(conn, task_id, profile)
+        except RuntimeError:
+            return False
+
+    prev_lock = row["claim_lock"]
+    self_reclaim = _detect_self_reclaim(
+        task_id, row["worker_pid"], prev_lock,
+    )
+    # Kill happens BEFORE the txn — we don't want to hold the
+    # write lock across a 5-second SIGTERM→SIGKILL wait when this
+    # is an external reclaim. For self-reclaim, the kill is
+    # suppressed (signal_fn no-op).
+    signal_fn = None
+    if self_reclaim:
+        signal_fn = lambda *_args, **_kwargs: None  # noqa: E731
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+    )
+    if self_reclaim:
+        termination = {**termination, "self_reclaim": True}
+
+    effective_reason = reason or "reassign"
+    with write_txn(conn):
+        # Re-read inside the txn: another writer may have changed
+        # state between the peek and now. The CAS on prev_lock in
+        # _reclaim_writes_in_txn already guards correctness, but
+        # re-reading gives a clean fall-through if the row is gone.
+        ok = _reclaim_writes_in_txn(
+            conn, task_id,
+            prev_lock=prev_lock,
+            reason=effective_reason,
+            termination=termination,
+            self_reclaim=self_reclaim,
+        )
+        if not ok:
+            # Claim moved under us — give up cleanly. The txn rolls
+            # back on the exception path; here we just return False,
+            # which commits an empty txn (no writes happened).
+            return False
+        # Now do the assign portion inline, mirroring assign_task's
+        # body but reusing this open txn.
+        # Re-read assignee inside the txn for the consecutive-failures
+        # reset logic.
+        new_assignee_row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not new_assignee_row:
+            return False
+        if new_assignee_row["assignee"] != profile:
+            conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ?",
+                (profile, task_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ?",
+                (profile, task_id),
+            )
+        _append_event(conn, task_id, "assigned", {"assignee": profile})
+    # Outside the txn: fresh failure-counter budget on operator
+    # intervention. Matches reclaim_task's tail.
+    _clear_failure_counter(conn, task_id)
+    return True
 
 
 def _verify_created_cards(

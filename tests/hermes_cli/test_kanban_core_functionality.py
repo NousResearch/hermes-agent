@@ -4185,6 +4185,343 @@ def test_reassign_task_with_reclaim_first_switches_profile(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Self-reclaim safe path (t_f38a5d2d): a worker shelling out to
+# ``reassign --reclaim`` against its own task must NOT trigger the kill
+# that would terminate the agent process holding the claim — that kill
+# cascades through the agent's terminal tool back to the CLI subprocess
+# and prevents the DB writes from committing.
+# ---------------------------------------------------------------------------
+
+def _setup_running_task(conn, *, assignee, worker_pid, lock_host_prefix=True):
+    """Create a task and mark it running with a synthetic claim.
+
+    Returns (task_id, claim_lock). When ``lock_host_prefix`` is True, the
+    claim_lock starts with the local host prefix so ``_terminate_reclaimed_worker``
+    recognises it as host-local (which is what gates the kill at all).
+    """
+    import secrets
+    import time as _time
+    t = kb.create_task(conn, title="self-reclaim subject", assignee=assignee)
+    if lock_host_prefix:
+        prefix = kb._claimer_id().split(":", 1)[0]
+        lock = f"{prefix}:{secrets.token_hex(8)}"
+    else:
+        lock = secrets.token_hex(8)
+    future = int(_time.time()) + 3600
+    conn.execute(
+        "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+        "worker_pid=? WHERE id=?",
+        (lock, future, worker_pid, t),
+    )
+    conn.execute(
+        "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+        "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+        (t, lock, future, worker_pid, int(_time.time())),
+    )
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+    conn.commit()
+    return t, lock
+
+
+def test_detect_self_reclaim_via_env_var(kanban_home, monkeypatch):
+    """When HERMES_KANBAN_TASK matches the task id, _detect_self_reclaim
+    returns True regardless of PPID."""
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, _lock = _setup_running_task(conn, assignee="orig", worker_pid=99999)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", t)
+        # PPID won't match (99999 is synthetic); env var alone suffices.
+        assert _kb._detect_self_reclaim(t, 99999, "lock") is True
+    finally:
+        conn.close()
+
+
+def test_detect_self_reclaim_via_ppid(kanban_home, monkeypatch):
+    """When PPID matches worker_pid (and env var is absent),
+    _detect_self_reclaim returns True."""
+    import os as _os
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    my_ppid = _os.getppid()
+    # worker_pid set to current ppid → "the agent is my parent" → self.
+    assert _kb._detect_self_reclaim("t_anything", my_ppid, "lock") is True
+
+
+def test_detect_self_reclaim_returns_false_for_external(kanban_home, monkeypatch):
+    """No env var match AND no ppid match → external caller, return False."""
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    # 99999 is very unlikely to be our ppid.
+    assert _kb._detect_self_reclaim("t_unrelated", 99999, "lock") is False
+
+
+def test_reclaim_task_suppresses_kill_for_self_reclaim(kanban_home, monkeypatch):
+    """The smoking-gun test: when reclaim_task is invoked in the
+    self-reclaim case (env var set), the kill primitive is NOT invoked
+    against the recorded worker_pid. DB writes still commit. The event
+    payload carries self_reclaim=True for audit-trail clarity."""
+    import json as _json
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, lock = _setup_running_task(conn, assignee="orig", worker_pid=12345)
+        # Mark this call as a self-reclaim via env var.
+        monkeypatch.setenv("HERMES_KANBAN_TASK", t)
+
+        # Sentinel: if anything tries to kill PID 12345, we record it.
+        # Filter out signal=0 (kill(pid, 0) is the liveness probe used
+        # by _pid_alive, not a real termination signal).
+        killed: list[tuple[int, int]] = []
+
+        def _spy_kill(pid, sig):
+            if sig != 0:
+                killed.append((pid, sig))
+
+        # Patch os.kill so even if signal_fn defaulting picks it up,
+        # we'd catch the call. The implementation should pass a no-op
+        # signal_fn for self-reclaim and never reach os.kill.
+        monkeypatch.setattr(_kb.os, "kill", _spy_kill)
+
+        # Don't pass signal_fn — let the implementation decide. This
+        # exercises the actual self-reclaim default path.
+        assert _kb.reclaim_task(conn, t, reason="hand-off to peer") is True
+
+        # CRITICAL: no kill happened.
+        assert killed == [], (
+            f"self-reclaim must not kill the holder; got kills: {killed}"
+        )
+
+        # DB writes committed.
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id=?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["claim_lock"] is None
+        assert row["worker_pid"] is None
+
+        # Event payload carries self_reclaim=True.
+        reclaim_evs = [
+            _json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='reclaimed'",
+                (t,),
+            )
+        ]
+        assert len(reclaim_evs) == 1
+        assert reclaim_evs[0].get("self_reclaim") is True
+        assert reclaim_evs[0].get("manual") is True
+        # termination_attempted may be True (signal_fn was invoked) but
+        # the actual kill is a no-op lambda → no real signal sent.
+    finally:
+        conn.close()
+
+
+def test_external_reclaim_still_kills_holder(kanban_home, monkeypatch):
+    """Regression guard: when the caller is NOT the holder (env var
+    absent, ppid doesn't match), the kill path runs normally. Without
+    this, external reclaim would silently stop terminating orphaned
+    workers."""
+    import json as _json
+    import signal as _signal
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, _lock = _setup_running_task(conn, assignee="orig", worker_pid=12345)
+
+        # Ensure env var is NOT set; also force ppid to clearly not match.
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        # We can't easily change our ppid, but as long as 12345 isn't
+        # our ppid (which it isn't on any sane CI), detection returns False.
+        assert _kb._detect_self_reclaim(t, 12345, "lock") is False
+
+        killed: list[int] = []
+        state = {"alive": True}
+
+        def _signal_fn(pid, sig):
+            killed.append(sig)
+            if sig == _signal.SIGTERM:
+                state["alive"] = False
+
+        # Stub _pid_alive so the post-kill wait converges quickly.
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+
+        # Pass an explicit signal_fn — external callers (release_stale_claims,
+        # the test suite) already do this. The implementation should NOT
+        # override the caller's signal_fn even in pathological cases.
+        assert _kb.reclaim_task(
+            conn, t, reason="external reclaim", signal_fn=_signal_fn,
+        ) is True
+
+        # External reclaim DID kill the holder.
+        assert killed == [_signal.SIGTERM]
+
+        # self_reclaim flag is absent (False is the default — not in payload).
+        reclaim_evs = [
+            _json.loads(r["payload"])
+            for r in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='reclaimed'",
+                (t,),
+            )
+        ]
+        assert len(reclaim_evs) == 1
+        assert reclaim_evs[0].get("self_reclaim") is not True
+    finally:
+        conn.close()
+
+
+def test_reassign_task_self_reclaim_atomic_and_no_kill(kanban_home, monkeypatch):
+    """Acceptance properties 1 + 2: self-reassign-with-reclaim doesn't
+    kill the holder AND the claim release + assignee update land in a
+    single observable txn (no in-between state where the claim is
+    released but the assignee is unchanged)."""
+    import json as _json
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, _lock = _setup_running_task(conn, assignee="orig", worker_pid=12345)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", t)
+
+        killed: list[tuple[int, int]] = []
+        # Filter signal=0 (liveness probe), only record real termination signals.
+        monkeypatch.setattr(
+            _kb.os, "kill",
+            lambda p, s: killed.append((p, s)) if s != 0 else None,
+        )
+
+        assert kb.reassign_task(
+            conn, t, "new-profile",
+            reclaim_first=True, reason="self-handoff to peer",
+        ) is True
+
+        # No kill of the holder.
+        assert killed == [], f"self-reassign must not kill the holder: {killed}"
+
+        # Final state has BOTH the claim release AND the new assignee.
+        row = conn.execute(
+            "SELECT status, assignee, claim_lock, worker_pid "
+            "FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["assignee"] == "new-profile"
+        assert row["claim_lock"] is None
+        assert row["worker_pid"] is None
+
+        # The event sequence shows reclaimed → assigned in order, both
+        # tagged for the same operation; no observation of "claim released
+        # but assignee still 'orig'" is possible because they're in one txn.
+        evs = list(conn.execute(
+            "SELECT kind, payload, id FROM task_events WHERE task_id=? "
+            "ORDER BY id", (t,),
+        ))
+        kinds_after_create = [
+            r["kind"] for r in evs if r["kind"] in ("reclaimed", "assigned")
+        ]
+        assert kinds_after_create == ["reclaimed", "assigned"]
+        reclaim_payload = _json.loads(
+            [r["payload"] for r in evs if r["kind"] == "reclaimed"][0]
+        )
+        assert reclaim_payload.get("self_reclaim") is True
+        assign_payload = _json.loads(
+            [r["payload"] for r in evs if r["kind"] == "assigned"][-1]
+        )
+        assert assign_payload.get("assignee") == "new-profile"
+    finally:
+        conn.close()
+
+
+def test_reassign_task_external_reclaim_still_kills(kanban_home, monkeypatch):
+    """Regression guard for property #3: external reassign --reclaim
+    (a different process releasing someone else's claim) MUST still
+    terminate the holding process, preserving the orphaned-claim
+    contract."""
+    import signal as _signal
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, _lock = _setup_running_task(conn, assignee="orig", worker_pid=99999)
+        # External: env var absent, ppid won't match 99999.
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        killed: list[int] = []
+        state = {"alive": True}
+
+        def _spy_kill(pid, sig):
+            killed.append(sig)
+            if sig == _signal.SIGTERM:
+                state["alive"] = False
+
+        monkeypatch.setattr(_kb.os, "kill", _spy_kill)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+
+        assert kb.reassign_task(
+            conn, t, "new-profile",
+            reclaim_first=True, reason="external recovery",
+        ) is True
+
+        # External reclaim DID kill the holder (preserves contract).
+        assert _signal.SIGTERM in killed
+
+        row = conn.execute(
+            "SELECT status, assignee FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["assignee"] == "new-profile"
+    finally:
+        conn.close()
+
+
+def test_reassign_task_atomic_under_assign_failure(kanban_home, monkeypatch):
+    """If the assign portion of reassign_task fails inside the combined
+    txn, the reclaim portion must NOT have committed. Either both apply
+    or neither (property #1).
+
+    We force assign failure by monkeypatching ``_append_event`` to raise
+    when the kind is 'assigned'. The txn must roll back the reclaim
+    writes too, leaving the row in its original running state.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        t, lock = _setup_running_task(conn, assignee="orig", worker_pid=12345)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", t)
+        monkeypatch.setattr(_kb.os, "kill", lambda *a, **kw: None)
+
+        original_append = _kb._append_event
+
+        def _flaky_append(_conn, _task_id, kind, *args, **kwargs):
+            if kind == "assigned":
+                raise RuntimeError("simulated assign failure mid-txn")
+            return original_append(_conn, _task_id, kind, *args, **kwargs)
+
+        monkeypatch.setattr(_kb, "_append_event", _flaky_append)
+
+        # The exception should bubble (or, depending on contract, be
+        # caught). Either way, the row must not be in a half-committed
+        # state.
+        with pytest.raises(RuntimeError, match="simulated assign failure"):
+            kb.reassign_task(
+                conn, t, "new-profile",
+                reclaim_first=True, reason="atomicity test",
+            )
+
+        # Row must still be running with the original claim.
+        row = conn.execute(
+            "SELECT status, assignee, claim_lock FROM tasks WHERE id=?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "running", (
+            "atomicity violation: claim release committed despite assign failure"
+        )
+        assert row["assignee"] == "orig"
+        assert row["claim_lock"] == lock
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Unified failure counter — timeout + crash paths increment the same counter
 # as spawn failures, and the circuit breaker trips after N consecutive
 # failures regardless of which outcome caused them.

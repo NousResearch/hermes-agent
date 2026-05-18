@@ -171,6 +171,26 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
 
+## Handing off to another profile mid-run (self-reclaim)
+
+If you decide partway through a task that a different profile should finish it — e.g. you're a generalist and the work turned out to need a specialist — you can hand off directly:
+
+```
+hermes kanban reassign <your-task-id> <specialist-profile> --reclaim --reason "needs <X>"
+```
+
+This is the "self-reclaim" path. The dispatcher detects that the caller IS the holder (`HERMES_KANBAN_TASK` env var or PPID match against the recorded `worker_pid`) and suppresses the kill that would normally terminate the running worker — your agent process finishes its current turn, the DB writes (claim release + assignee change) land atomically in one transaction, and the next dispatcher tick spawns the specialist.
+
+Use this when:
+- You're partway through and realise the work needs a different profile entirely.
+- You want to hand off WITHOUT going through `block`+human-routing.
+
+Don't use this when:
+- You're not sure which profile should pick up — use `kanban_block(reason="...")` and let a human (or orchestrator) decide.
+- The work is review-able and you want eyes on it before continuing — use the review-required block pattern above.
+
+After the reassign commits, your current turn finishes normally. Any subsequent writes you attempt (`complete_task`, `heartbeat_worker`) will be rejected by the claim-lock guard — they're harmless no-ops at that point. The cleanest exit is to return from your current turn promptly.
+
 ## Pitfalls
 
 **Task state can change between dispatch and your startup.** Between when the dispatcher claimed and when your process actually booted, the task may have been blocked, reassigned, or archived. Always `kanban_show` first. If it reports `blocked` or `archived`, stop — you shouldn't be running.

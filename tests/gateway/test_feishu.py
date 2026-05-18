@@ -365,10 +365,16 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_progress")
         self.assertEqual(captured["request"].message_id, "om_progress")
-        self.assertEqual(captured["request"].request_body.msg_type, "text")
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
         self.assertEqual(
-            captured["request"].request_body.content,
-            json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
+            json.loads(captured["request"].request_body.content),
+            {
+                "zh_cn": {
+                    "content": [
+                        [{"tag": "md", "text": "📖 read_file: \"/tmp/image.png\""}]
+                    ]
+                }
+            },
         )
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2505,6 +2511,67 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n  2. 子项\n- 外层\n  - 内层\n<u>下划线</u> 和 ~~删除线~~"}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_payload_routes_table_to_post_not_text(self):
+        """Regression: markdown tables must go through `post` + md tag.
+
+        Earlier code defensively downgraded any message containing a
+        markdown table to `text` (msg_type=text), under the assumption
+        that Feishu's `md` tag couldn't render tables. That assumption
+        was wrong on both Lark and Feishu — the `md` tag renders tables
+        fine — and the downgrade caused the ENTIRE message (headers,
+        bold, lists, code) to display as raw markdown source whenever a
+        single table appeared. This test pins the fix in place.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "## 标题\n\n"
+            "正文带 **粗体**。\n\n"
+            "| 列 A | 列 B |\n"
+            "|------|------|\n"
+            "| 1 | 2 |\n"
+            "| 3 | 4 |\n"
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        parsed = json.loads(payload)
+        # The full content (including the table) must be preserved verbatim
+        # inside an `md` tag — not stripped, not split, not converted.
+        rows = parsed["zh_cn"]["content"]
+        flat_text = "".join(
+            el.get("text", "")
+            for row in rows
+            for el in row
+            if el.get("tag") == "md"
+        )
+        self.assertIn("| 列 A | 列 B |", flat_text)
+        self.assertIn("|------|------|", flat_text)
+        self.assertIn("## 标题", flat_text)
+        self.assertIn("**粗体**", flat_text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_outbound_payload_plain_text_uses_post_md(self):
+        """Plain text now also routes through post + md tag (md is a strict
+        superset of text on current Feishu/Lark clients; see
+        _build_outbound_payload for the rationale)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload("你好，今天天气不错。")
+
+        self.assertEqual(msg_type, "post")
+        decoded = json.loads(payload)
+        self.assertEqual(
+            decoded,
+            {"zh_cn": {"content": [[{"tag": "md", "text": "你好，今天天气不错。"}]]}},
         )
 
     @patch.dict(os.environ, {}, clear=True)

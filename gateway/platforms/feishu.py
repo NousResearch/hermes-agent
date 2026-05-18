@@ -149,13 +149,6 @@ logger = logging.getLogger(__name__)
 # Regex patterns
 # ---------------------------------------------------------------------------
 
-_MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
-    re.MULTILINE,
-)
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -4222,16 +4215,31 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Always route outbound messages through the post + `md` tag path.
+        #
+        # Background: Feishu's post-type `md` tag renders markdown (including
+        # tables) correctly on current Lark (international) and Feishu (CN)
+        # clients. Earlier versions of this method maintained a "markdown
+        # detection" regex that downgraded plain-looking text to msg_type=text
+        # and downgraded table-containing content even harder. Both heuristics
+        # were sources of bugs:
+        #   - The table-downgrade caused the *entire* message (headers, bold,
+        #     lists, code, the lot) to render as raw markdown source whenever
+        #     a single GFM pipe-table appeared.
+        #   - The hint-regex caused subtle mis-routing for messages that
+        #     happened to contain `_`, `*`, `#`, `>` as literal characters
+        #     (shell output, code traces, prose punctuation) — the regex
+        #     either over-matched and triggered post-mode for no reason, or
+        #     under-matched and lost styling on legitimate markdown that
+        #     didn't fit its patterns.
+        #
+        # Empirically the `md` tag is a strict superset of plain text on both
+        # clients: prose without markup renders identically to msg_type=text,
+        # URLs auto-link, mentions still work. We rely on the outer
+        # `_feishu_send_with_retry` to fall back to msg_type=text if the
+        # Feishu API ever rejects a specific payload with
+        # "content format of the post type is incorrect".
+        return "post", _build_markdown_post_payload(content)
 
     async def _send_uploaded_file_message(
         self,

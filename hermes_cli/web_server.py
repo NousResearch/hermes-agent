@@ -3184,13 +3184,28 @@ def _is_public_bind() -> bool:
     return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
 
 
+def _is_explicit_non_loopback_bind() -> bool:
+    """True when bound to a specific non-loopback interface.
+
+    ``start_server`` only permits this shape when the operator explicitly passed
+    ``--insecure``. Treat it like an intentional network exposure for the PTY
+    WebSocket gate too; otherwise the HTTP dashboard is reachable on a
+    Tailscale/LAN IP but the embedded chat fails after token auth. The token is
+    not robust remote-user authentication in insecure mode; network access must
+    still be restricted to trusted/private interfaces.
+    """
+    bound_host = str(getattr(app.state, "bound_host", "") or "").lower()
+    return bool(bound_host) and bound_host not in _LOOPBACK_HOSTS and not _is_public_bind()
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Allows loopback always. Allows any client when bound to a deliberate
+    non-loopback interface (specific IP or all-interfaces), guarded by the
+    session token auth that every dashboard PTY WebSocket requires.
     """
-    if _is_public_bind():
+    if _is_public_bind() or _is_explicit_non_loopback_bind():
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:

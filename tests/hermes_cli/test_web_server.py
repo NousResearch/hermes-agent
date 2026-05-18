@@ -2127,6 +2127,65 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_ws_client_gate_allows_explicit_non_loopback_bind(self, monkeypatch):
+        """Specific Tailscale/LAN binds are intentional non-local exposure.
+
+        `start_server` only allows this when the operator passes --insecure; the
+        PTY WebSocket gate should not force users to bind to 0.0.0.0 just to
+        make embedded chat work over a trusted tailnet.
+        """
+        from types import SimpleNamespace
+        from typing import Any, cast
+
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "100.64.12.34", raising=False
+        )
+        fake_ws = cast(Any, SimpleNamespace(client=SimpleNamespace(host="100.80.1.2")))
+
+        assert self.ws_module._ws_client_is_allowed(fake_ws)
+
+    def test_ws_client_gate_still_rejects_remote_client_on_loopback_bind(self, monkeypatch):
+        from types import SimpleNamespace
+        from typing import Any, cast
+
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "127.0.0.1", raising=False
+        )
+        fake_ws = cast(Any, SimpleNamespace(client=SimpleNamespace(host="100.80.1.2")))
+
+        assert not self.ws_module._ws_client_is_allowed(fake_ws)
+
+    def test_start_server_refuses_explicit_non_loopback_without_insecure(self):
+        with pytest.raises(SystemExit) as exc:
+            self.ws_module.start_server(
+                host="100.64.12.34",
+                port=9119,
+                open_browser=False,
+                allow_public=False,
+            )
+
+        assert "Refusing to bind to 100.64.12.34" in str(exc.value)
+
+    def test_start_server_accepts_explicit_non_loopback_with_insecure(self, monkeypatch):
+        captured = {}
+
+        def fake_uvicorn_run(app, host, port, **kwargs):
+            captured.update({"app": app, "host": host, "port": port, "kwargs": kwargs})
+
+        monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
+
+        self.ws_module.start_server(
+            host="100.64.12.34",
+            port=9119,
+            open_browser=False,
+            allow_public=True,
+        )
+
+        assert captured["host"] == "100.64.12.34"
+        assert captured["port"] == 9119
+        assert self.ws_module.app.state.bound_host == "100.64.12.34"
+        assert self.ws_module.app.state.bound_port == 9119
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,

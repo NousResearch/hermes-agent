@@ -93,6 +93,7 @@ from toolsets import get_toolset_names
 VALID_STATUSES = {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+_IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes; after that the next
 # dispatcher tick reclaims it.  Workers that outlive this window should call
@@ -2776,6 +2777,180 @@ def specify_triage_task(
     return True
 
 
+def decompose_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    root_assignee: Optional[str],
+    children: list[dict],
+    author: Optional[str] = None,
+) -> Optional[list[str]]:
+    """Fan a triage task out into child tasks and promote the root to ``todo``.
+
+    The root task stays alive and becomes the parent of every child —
+    when all children reach ``done``, the root promotes to ``ready`` and
+    its assignee (typically the orchestrator profile) wakes back up to
+    judge completion or spawn more work.
+
+    ``children`` is a list of dicts, each shaped like::
+
+        {
+            "title": "...",
+            "body": "...",                     # optional
+            "assignee": "profile-name",        # optional, None -> default fallback
+            "parents": [0, 2],                 # indices into this same children list
+        }
+
+    Returns the list of created child task ids (in input order) on
+    success. Returns ``None`` when:
+      - The root task does not exist
+      - The root task is not in ``triage``
+      - A cycle would result (caller built a bad graph)
+
+    Validation of titles/assignees happens inside the same write_txn as
+    the inserts so a malformed entry aborts the whole decomposition
+    cleanly (no orphan children).
+    """
+    if not children:
+        return None
+    if root_assignee is not None:
+        root_assignee = _canonical_assignee(root_assignee)
+
+    # Pre-validate the children list shape outside the txn. Cheap checks
+    # that don't need DB access. Bad input aborts before we touch the DB.
+    for idx, child in enumerate(children):
+        if not isinstance(child, dict):
+            raise ValueError(f"child[{idx}] is not a dict")
+        title = child.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"child[{idx}].title is required")
+        parents_idx = child.get("parents") or []
+        if not isinstance(parents_idx, list):
+            raise ValueError(f"child[{idx}].parents must be a list")
+        for p in parents_idx:
+            if not isinstance(p, int) or p < 0 or p >= len(children):
+                raise ValueError(
+                    f"child[{idx}].parents[{p}] is not a valid index into children"
+                )
+            if p == idx:
+                raise ValueError(f"child[{idx}] cannot list itself as a parent")
+
+    # We do the full decomposition in a SINGLE write_txn so it's
+    # atomic: either every child is created AND the root flips to
+    # ``todo``, or nothing changes. We deliberately do NOT call any
+    # kb helper that opens its own write_txn (create_task, link_tasks,
+    # add_comment) from inside this block — see architecture.md
+    # write_txn pitfalls. Instead we inline the INSERTs and
+    # _append_event calls.
+    now = int(time.time())
+    child_ids: list[str] = []
+    with write_txn(conn):
+        root_row = conn.execute(
+            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if root_row is None:
+            return None
+        if root_row["status"] != "triage":
+            return None
+        tenant = root_row["tenant"]
+
+        # Create children. Status is 'todo' regardless of parents — we
+        # link them under the root AFTER creation so the dispatcher
+        # sees a coherent state, and recompute_ready() at the end
+        # promotes parent-free children to 'ready'.
+        for idx, child in enumerate(children):
+            new_id = _new_task_id()
+            title = child["title"].strip()
+            body = child.get("body")
+            assignee = _canonical_assignee(child.get("assignee"))
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, title, body, assignee, status, workspace_kind, "
+                " tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                (
+                    new_id,
+                    title,
+                    body if isinstance(body, str) else None,
+                    assignee,
+                    tenant,
+                    now,
+                    (author or "decomposer"),
+                ),
+            )
+            _append_event(
+                conn, new_id, "created",
+                {"by": author or "decomposer", "from_decompose_of": task_id},
+            )
+            child_ids.append(new_id)
+
+        # Link children to their sibling parents (within the decomposed graph).
+        for idx, child in enumerate(children):
+            for p_idx in child.get("parents") or []:
+                parent_id = child_ids[p_idx]
+                child_id = child_ids[idx]
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                    "VALUES (?, ?)",
+                    (parent_id, child_id),
+                )
+                _append_event(
+                    conn, child_id, "linked",
+                    {"parent": parent_id, "child": child_id},
+                )
+
+        # Link the ROOT task as a child of every leaf child — i.e. the
+        # root waits for the whole graph. Simpler than computing leaves:
+        # link root under every child. Cycle-free because the root is
+        # only ever a child here, never a parent of children.
+        for cid in child_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                "VALUES (?, ?)",
+                (cid, task_id),
+            )
+
+        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        sets = ["status = 'todo'"]
+        params: list[Any] = []
+        if root_assignee is not None:
+            sets.append("assignee = ?")
+            params.append(root_assignee)
+        params.append(task_id)
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+
+        # Audit comment + event on the root so the timeline shows the fan-out.
+        if author and author.strip():
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    task_id,
+                    author.strip(),
+                    "Decomposed into "
+                    + ", ".join(child_ids)
+                    + ". Root will wake when all children complete.",
+                    now,
+                ),
+            )
+        _append_event(
+            conn, task_id, "decomposed",
+            {
+                "child_ids": child_ids,
+                "root_assignee": root_assignee,
+            },
+        )
+
+    # Outside the write_txn: promote parent-free children to 'ready'
+    # so the dispatcher picks them up on its next tick. Same pattern
+    # specify_triage_task uses.
+    recompute_ready(conn)
+    return child_ids
+
+
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
@@ -2891,6 +3066,11 @@ DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
+DEFAULT_LOG_BACKUP_COUNT = 1
+
+# Keep a little wall-clock budget for the worker to observe a terminal timeout
+# and call kanban_block/kanban_complete before max_runtime_seconds kills it.
+KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 
 @dataclass
@@ -3850,25 +4030,84 @@ def dispatch_once(
     return result
 
 
-def _rotate_worker_log(log_path: Path, max_bytes: int) -> None:
-    """Rotate ``<log>`` to ``<log>.1`` if it exceeds ``max_bytes``.
+def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
 
-    Single-generation rotation — one old file kept, newer one replaces it.
-    Keeps disk usage bounded while still giving the user a chance to grab
-    the prior run's output.
+
+def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
+    """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
+
+    Defaults preserve the historical behavior: rotate at 2 MiB and keep one
+    backup generation (``.log.1``). Operators with long-running workers can
+    raise either value from ``config.yaml`` without changing dispatcher code.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    max_bytes = _positive_int(
+        (kanban_cfg or {}).get("worker_log_rotate_bytes"),
+        DEFAULT_LOG_ROTATE_BYTES,
+        minimum=1,
+    )
+    backup_count = _positive_int(
+        (kanban_cfg or {}).get("worker_log_backup_count"),
+        DEFAULT_LOG_BACKUP_COUNT,
+        minimum=0,
+    )
+    return max_bytes, backup_count
+
+
+def _rotated_log_path(log_path: Path, generation: int) -> Path:
+    return log_path.with_suffix(log_path.suffix + f".{generation}")
+
+
+def _rotate_worker_log(
+    log_path: Path,
+    max_bytes: int,
+    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+) -> None:
+    """Rotate ``<log>`` when it exceeds ``max_bytes``.
+
+    ``backup_count=1`` preserves the legacy single-generation behavior:
+    ``<log>`` moves to ``<log>.1`` and any previous ``.1`` is replaced.
+    Higher values shift older generations up to ``backup_count``.
     """
     try:
         if not log_path.exists():
             return
         if log_path.stat().st_size <= max_bytes:
             return
-        rotated = log_path.with_suffix(log_path.suffix + ".1")
+        backup_count = _positive_int(
+            backup_count,
+            DEFAULT_LOG_BACKUP_COUNT,
+            minimum=0,
+        )
+        if backup_count == 0:
+            log_path.unlink()
+            return
+        oldest = _rotated_log_path(log_path, backup_count)
         try:
-            if rotated.exists():
-                rotated.unlink()
+            if oldest.exists():
+                oldest.unlink()
         except OSError:
             pass
-        log_path.rename(rotated)
+        for generation in range(backup_count - 1, 0, -1):
+            src = _rotated_log_path(log_path, generation)
+            if not src.exists():
+                continue
+            try:
+                src.rename(_rotated_log_path(log_path, generation + 1))
+            except OSError:
+                pass
+        log_path.rename(_rotated_log_path(log_path, 1))
     except OSError:
         pass
 
@@ -3900,6 +4139,36 @@ def _resolve_hermes_argv() -> list[str]:
     # console-script target declared in pyproject.toml, NOT a top-level
     # ``hermes`` package — there is no ``hermes`` package to import.
     return [sys.executable, "-m", "hermes_cli.main"]
+
+
+def _worker_terminal_timeout_env(
+    max_runtime_seconds: Optional[int],
+    current_timeout: Optional[str],
+) -> Optional[str]:
+    """Return a worker-scoped TERMINAL_TIMEOUT override, if needed.
+
+    Kanban's ``max_runtime_seconds`` bounds the whole worker attempt. The
+    terminal tool has its own default timeout via ``TERMINAL_TIMEOUT``; when
+    the worker runtime is longer, raise only the child process default so a
+    long command is not killed by the generic terminal default first.
+    """
+    if max_runtime_seconds is None:
+        return None
+    try:
+        runtime = int(max_runtime_seconds)
+    except (TypeError, ValueError):
+        return None
+    if runtime <= 0:
+        return None
+
+    desired = max(1, runtime - KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS)
+    try:
+        existing = int(str(current_timeout).strip()) if current_timeout else 0
+    except (TypeError, ValueError):
+        existing = 0
+    if existing >= desired:
+        return None
+    return str(desired)
 
 
 def _default_spawn(
@@ -3957,6 +4226,18 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    terminal_timeout = _worker_terminal_timeout_env(
+        task.max_runtime_seconds,
+        env.get("TERMINAL_TIMEOUT"),
+    )
+    if terminal_timeout is not None:
+        env["TERMINAL_TIMEOUT"] = terminal_timeout
+    foreground_timeout = _worker_terminal_timeout_env(
+        task.max_runtime_seconds,
+        env.get("TERMINAL_MAX_FOREGROUND_TIMEOUT"),
+    )
+    if foreground_timeout is not None:
+        env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when the worker activates a profile (`hermes -p <name>`
     # rewrites HERMES_HOME), its kanban paths still match the
@@ -4011,7 +4292,8 @@ def _default_spawn(
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    _rotate_worker_log(log_path, DEFAULT_LOG_ROTATE_BYTES)
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
@@ -4024,6 +4306,7 @@ def _default_spawn(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
         log_f.close()
@@ -4146,6 +4429,15 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    if task.max_runtime_seconds is not None:
+        terminal_timeout = _worker_terminal_timeout_env(
+            task.max_runtime_seconds,
+            os.environ.get("TERMINAL_TIMEOUT"),
+        )
+        effective_terminal_timeout = terminal_timeout or os.environ.get("TERMINAL_TIMEOUT")
+        lines.append(f"Max runtime: {task.max_runtime_seconds}s")
+        if effective_terminal_timeout:
+            lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     lines.append("")
 
     if task.body and task.body.strip():

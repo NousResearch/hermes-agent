@@ -1548,14 +1548,12 @@
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestrator profile"),
-            h(Select, {
+            h(Select, Object.assign({
               value: settings.orchestrator_profile || "",
               className: "h-8",
-              onChange: function (e) {
-                const v = (e && e.target ? e.target.value : e) || "";
-                saveSettings({ orchestrator_profile: v });
-              },
-            },
+            }, selectChangeHandler(function (v) {
+              saveSettings({ orchestrator_profile: v });
+            })),
               h(SelectOption, { value: "" },
                 "(default: " + (settings.active_profile || "default") + ")"),
               profileOptions,
@@ -1566,14 +1564,12 @@
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
               "Default assignee"),
-            h(Select, {
+            h(Select, Object.assign({
               value: settings.default_assignee || "",
               className: "h-8",
-              onChange: function (e) {
-                const v = (e && e.target ? e.target.value : e) || "";
-                saveSettings({ default_assignee: v });
-              },
-            },
+            }, selectChangeHandler(function (v) {
+              saveSettings({ default_assignee: v });
+            })),
               h(SelectOption, { value: "" },
                 "(default: " + (settings.active_profile || "default") + ")"),
               profileOptions,

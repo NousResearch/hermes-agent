@@ -3729,20 +3729,30 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
         if self._bot:
+            _is_dm_topic: bool = False
+            message_thread_id: Optional[int] = None
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
+                _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                # No retry-without-thread fallback here: _message_thread_id_for_typing
-                # already maps the forum General topic to None, so any non-None value
-                # reaching this call is a user-created topic. If Telegram rejects it
-                # (e.g. topic deleted mid-session), we swallow the failure rather than
-                # showing a typing indicator in the wrong chat/All Messages.
                 await self._bot.send_chat_action(
                     chat_id=int(chat_id),
                     action="typing",
                     message_thread_id=message_thread_id,
                 )
             except Exception as e:
+                # For DM topic lanes, Telegram may reject message_thread_id.
+                # Fall back to sending typing without thread_id so the typing
+                # indicator at least appears in the main DM view.
+                if _is_dm_topic and message_thread_id is not None:
+                    try:
+                        await self._bot.send_chat_action(
+                            chat_id=int(chat_id),
+                            action="typing",
+                        )
+                        return
+                    except Exception:
+                        pass
                 # Typing failures are non-fatal; log at debug level only.
                 logger.debug(
                     "[%s] Failed to send Telegram typing indicator: %s",

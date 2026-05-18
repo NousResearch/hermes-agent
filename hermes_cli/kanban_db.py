@@ -5392,7 +5392,7 @@ def _default_spawn(
         cmd.extend(["-m", task.model_override])
     cmd.extend([
         "chat",
-        "-q", prompt,
+        "-z", prompt,  # -z = one-shot mode, skips TUI init (fixes protocol violation in no-TTY envs like launchd/cron)
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so

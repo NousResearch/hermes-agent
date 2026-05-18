@@ -34,6 +34,7 @@ Usage:
 """
 
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -1015,7 +1016,44 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
-def _get_env_config() -> Dict[str, Any]:
+def _valid_dir(path: Optional[str]) -> Optional[str]:
+    """Return an expanded directory path when it exists, else None."""
+    if not path:
+        return None
+    expanded = os.path.expanduser(path)
+    if os.path.isdir(expanded):
+        return expanded
+    return None
+
+
+def _safe_getcwd() -> Optional[str]:
+    """Return the process cwd, or None when the cwd was deleted."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        logger.warning(
+            "Process cwd is no longer available; falling back to a safe terminal cwd."
+        )
+        return None
+
+
+def _resolve_start_cwd(requested_workdir: Optional[str] = None) -> str:
+    """Resolve a startup cwd without letting a deleted process cwd abort tools."""
+    current = _safe_getcwd()
+    if current:
+        return current
+
+    configured_cwd = os.getenv("TERMINAL_CWD", "")
+    for candidate in (requested_workdir, configured_cwd, os.getenv("HOME"), "/tmp"):
+        valid = _valid_dir(candidate)
+        if valid:
+            logger.warning("Selected fallback terminal cwd: %s", valid)
+            return valid
+
+    return "/tmp"
+
+
+def _get_env_config(requested_workdir: Optional[str] = None) -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
@@ -1027,7 +1065,7 @@ def _get_env_config() -> Dict[str, Any]:
     # remote home, Vercel uses its documented workspace root, and everything
     # else starts in the backend's default root-like cwd.
     if env_type == "local":
-        default_cwd = os.getcwd()
+        default_cwd = _resolve_start_cwd(requested_workdir)
     elif env_type == "ssh":
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
@@ -1039,13 +1077,22 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    configured_cwd = os.getenv("TERMINAL_CWD")
+    if env_type == "local" and configured_cwd and not _valid_dir(configured_cwd):
+        logger.warning(
+            "Ignoring TERMINAL_CWD=%r because it is not an existing directory. "
+            "Using %r instead.",
+            configured_cwd,
+            default_cwd,
+        )
+        configured_cwd = None
+    cwd = configured_cwd or default_cwd
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
+        docker_cwd_source = os.getenv("TERMINAL_CWD") or _resolve_start_cwd(requested_workdir)
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
@@ -1101,6 +1148,17 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
         "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
     }
+
+
+def _get_env_config_for_call(requested_workdir: Optional[str] = None) -> Dict[str, Any]:
+    """Call _get_env_config while tolerating older zero-arg test doubles."""
+    try:
+        parameters = inspect.signature(_get_env_config).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "requested_workdir" in parameters:
+        return _get_env_config(requested_workdir=requested_workdir)
+    return _get_env_config()
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -1872,7 +1930,7 @@ def terminal_tool(
             }, ensure_ascii=False)
 
         # Get configuration
-        config = _get_env_config()
+        config = _get_env_config_for_call(requested_workdir=workdir)
         env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
@@ -2499,7 +2557,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
-    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
+    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD') or _resolve_start_cwd()}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")

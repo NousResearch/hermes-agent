@@ -1633,8 +1633,12 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):
             return expanded
-    here = os.getcwd()
-    if os.path.isdir(here):
+    try:
+        from tools.terminal_tool import _safe_getcwd
+        here = _safe_getcwd()
+    except Exception:
+        here = None
+    if here and os.path.isdir(here):
         return here
     return staging_dir
 

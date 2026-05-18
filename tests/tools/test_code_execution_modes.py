@@ -214,6 +214,11 @@ class TestResolveChildCwd(unittest.TestCase):
         with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist/anywhere"}):
             self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), os.getcwd())
 
+    def test_project_deleted_process_cwd_falls_back_to_staging(self):
+        with patch.dict(os.environ, {"TERMINAL_CWD": "/does/not/exist/anywhere"}):
+            with patch("tools.terminal_tool.os.getcwd", side_effect=FileNotFoundError):
+                self.assertEqual(_resolve_child_cwd("project", "/tmp/staging"), "/tmp/staging")
+
     def test_project_expands_tilde(self):
         import pathlib
         home = str(pathlib.Path.home())

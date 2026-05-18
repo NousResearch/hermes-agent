@@ -47,6 +47,20 @@ import ssl
 import sys
 import tempfile
 import time
+
+
+def _safe_process_cwd(*fallbacks: str | None) -> str:
+    """Return process cwd, or the first valid fallback if cwd was deleted."""
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        for fallback in fallbacks:
+            if fallback and os.path.isdir(os.path.expanduser(fallback)):
+                return os.path.expanduser(fallback)
+        home = os.getenv("HOME")
+        if home and os.path.isdir(os.path.expanduser(home)):
+            return os.path.expanduser(home)
+        return "/tmp"
 import threading
 from types import SimpleNamespace
 import urllib.request
@@ -10463,7 +10477,11 @@ class AIAgent:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = (
+                            function_args.get("workdir")
+                            or os.getenv("TERMINAL_CWD")
+                            or _safe_process_cwd()
+                        )
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -10933,7 +10951,11 @@ class AIAgent:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = (
+                            function_args.get("workdir")
+                            or os.getenv("TERMINAL_CWD")
+                            or _safe_process_cwd()
+                        )
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -15288,7 +15310,7 @@ class AIAgent:
         # Spawned on first turn, reused across turns, closed at AIAgent
         # shutdown (see _cleanup hook).
         if not hasattr(self, "_codex_session") or self._codex_session is None:
-            cwd = getattr(self, "session_cwd", None) or os.getcwd()
+            cwd = getattr(self, "session_cwd", None) or _safe_process_cwd(os.getenv("TERMINAL_CWD"))
             # Approval callback: defer to Hermes' standard prompt flow if a
             # CLI thread has installed one. Gateway / cron contexts get the
             # codex-side fail-closed default.
